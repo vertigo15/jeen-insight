@@ -1,6 +1,6 @@
 """Insight generation service for analyzing query results."""
 
-from typing import Dict, Any, List
+from typing import Any, Dict, List, Optional
 import json
 import pandas as pd
 from pathlib import Path
@@ -10,7 +10,9 @@ async def generate_insights(
     dataset: Any,
     context: Dict[str, Any],
     original_question: str,
-    llm_service: Any = None
+    llm_service: Any = None,
+    prompt_template: Optional[str] = None,
+    model_override: Any = None,
 ) -> Dict[str, Any]:
     """
     Analyzes a dataset and returns insights.
@@ -61,7 +63,8 @@ async def generate_insights(
         prompt = _build_insight_prompt(
             dataset_summary=dataset_summary,
             context=context,
-            original_question=original_question
+            original_question=original_question,
+            prompt_template=prompt_template,
         )
         
         # Call LLM if service is provided
@@ -75,7 +78,8 @@ async def generate_insights(
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,
-            max_tokens=1024
+            max_tokens=1024,
+            model_override=model_override,
         )
         
         # Parse LLM response
@@ -146,19 +150,46 @@ def _prepare_dataset_summary(df: pd.DataFrame) -> Dict[str, Any]:
 def _build_insight_prompt(
     dataset_summary: Dict[str, Any],
     context: Dict[str, Any],
-    original_question: str
+    original_question: str,
+    prompt_template: Optional[str] = None,
 ) -> str:
-    """Build the insight generation prompt."""
-    
-    # Load prompt template
-    template_path = Path(__file__).parent.parent.parent / "templates" / "insight_prompt.txt"
-    
-    if template_path.exists():
-        with open(template_path, 'r', encoding='utf-8') as f:
-            template = f.read()
+    """Build the insight generation prompt.
+
+    If *prompt_template* is provided (resolved from PromptCache) it is used.
+    Otherwise the template file is read from disk as before.
+    """
+    if prompt_template is not None:
+        template = prompt_template
     else:
-        # Fallback inline template
-        template = """You are a senior data analyst. Analyze the query results and provide insights.
+        # Legacy fallback: read from disk directly.
+        template_path = Path(__file__).parent.parent.parent / "templates" / "insight_prompt.txt"
+        if template_path.exists():
+            with open(template_path, "r", encoding="utf-8") as f:
+                template = f.read()
+        else:
+            template = _FALLBACK_INSIGHT_TEMPLATE
+
+    business_rules = ""
+    if context and "documentation" in context:
+        rules = context["documentation"]
+        if isinstance(rules, list):
+            business_rules = "\n".join([f"- {rule}" for rule in rules[:5]])
+        else:
+            business_rules = str(rules)
+    if not business_rules:
+        business_rules = "No specific business rules provided"
+
+    return template.format(
+        original_question=original_question,
+        business_rules=business_rules,
+        row_count=dataset_summary["row_count"],
+        column_names=", ".join(dataset_summary["column_names"]),
+        data_sample=dataset_summary["data_sample"],
+        column_stats=dataset_summary["column_stats"],
+    )
+
+
+_FALLBACK_INSIGHT_TEMPLATE = """You are a senior data analyst. Analyze the query results and provide insights.
 
 ## RULES
 - ONLY report findings you are highly confident about
@@ -207,30 +238,6 @@ If the dataset is too small or no meaningful insights exist, return:
   "findings": [],
   "suggestions": []
 }}"""
-    
-    # Get business rules from context
-    business_rules = ""
-    if context and 'documentation' in context:
-        rules = context['documentation']
-        if isinstance(rules, list):
-            business_rules = "\n".join([f"- {rule}" for rule in rules[:5]])  # Limit to 5
-        else:
-            business_rules = str(rules)
-    
-    if not business_rules:
-        business_rules = "No specific business rules provided"
-    
-    # Fill template
-    prompt = template.format(
-        original_question=original_question,
-        business_rules=business_rules,
-        row_count=dataset_summary["row_count"],
-        column_names=", ".join(dataset_summary["column_names"]),
-        data_sample=dataset_summary["data_sample"],
-        column_stats=dataset_summary["column_stats"]
-    )
-    
-    return prompt
 
 
 def _parse_insights_response(content: str) -> Dict[str, Any]:
@@ -293,6 +300,8 @@ async def generate_insights_stream(
     context: Dict[str, Any],
     original_question: str,
     llm_service: Any = None,
+    prompt_template: Optional[str] = None,
+    model_override: Any = None,
 ):
     """Streaming variant of ``generate_insights``.
 
@@ -361,6 +370,7 @@ async def generate_insights_stream(
             dataset_summary=_prepare_dataset_summary(df),
             context=context,
             original_question=original_question,
+            prompt_template=prompt_template,
         )
 
         if llm_service is None:
@@ -387,6 +397,7 @@ async def generate_insights_stream(
                 ],
                 temperature=0.3,
                 max_tokens=1024,
+                model_override=model_override,
             ):
                 if ev.get("type") == "delta":
                     text = ev.get("text") or ""

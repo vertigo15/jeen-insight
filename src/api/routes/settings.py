@@ -31,11 +31,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
-# ── Prompt file registry ─────────────────────────────────────────────────────
+# ── Prompt file registry ──────────────────────────────────────────────────────────────────
 
 _BASE = Path(__file__).resolve().parent.parent.parent  # src/
 _PROMPTS_DIR = _BASE / "agent" / "prompts"
-_DEFAULTS_DIR = _PROMPTS_DIR / ".defaults"
 _INSIGHTS_PROMPT = _BASE.parent / "templates" / "insight_prompt.txt"  # templates/
 
 # Ordered list: defines nav order in the UI.
@@ -149,7 +148,6 @@ _ESCAPED_RE = re.compile(r"\{\{[^}]*\}\}")  # {{ }} — literal braces in output
 
 def _extract_placeholders(text: str) -> List[str]:
     """Return unique {placeholder} names, ignoring {{ escaped }} literals."""
-    # Blank out escaped double-brace sequences first so they're not matched.
     cleaned = _ESCAPED_RE.sub("", text)
     return sorted(set(_PLACEHOLDER_RE.findall(cleaned)))
 
@@ -158,19 +156,13 @@ def _entry_for(name: str) -> Optional[Dict[str, Any]]:
     return next((e for e in PROMPT_REGISTRY if e["name"] == name), None)
 
 
-def _read_prompt(path: Path) -> str:
+def _read_file(path: Path) -> str:
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8")
 
 
-def _is_custom(entry: Dict[str, Any]) -> bool:
-    """True when a backup exists — meaning the main file has been customised."""
-    backup = _DEFAULTS_DIR / entry["path"].name
-    return backup.exists()
-
-
-# ── Response models ──────────────────────────────────────────────────────────
+# ── Response models ──────────────────────────────────────────────────────────────────
 
 class PromptMeta(BaseModel):
     name: str
@@ -179,6 +171,9 @@ class PromptMeta(BaseModel):
     description: str
     is_custom: bool
     placeholders: List[str]
+    version: int = 1
+    model_id: Optional[int] = None
+    model_name: Optional[str] = None
 
 
 class PromptDetail(PromptMeta):
@@ -189,127 +184,289 @@ class PromptUpdate(BaseModel):
     content: str
 
 
-# ── Routes ───────────────────────────────────────────────────────────────────
+class SetPromptModelRequest(BaseModel):
+    model_name: Optional[str] = None  # None = clear override, use global default
+
+
+# ── DB helpers for prompts ──────────────────────────────────────────────────────────────
+
+_LIST_PROMPTS_SQL = """
+    SELECT ip.prompt_place, ip.version, ip.is_custom, ip.model_id,
+           am.name AS model_name, ip.content
+    FROM insights_prompts ip
+    LEFT JOIN admin_models am ON am.id = ip.model_id
+    WHERE ip.is_active = true
+"""
+
+
+async def _db_list_prompts() -> Dict[str, Any]:
+    """Return a dict keyed by prompt_place with DB row data."""
+    from src.metadata import get_metadata_pool
+    pool = await get_metadata_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(_LIST_PROMPTS_SQL)
+    return {r["prompt_place"]: dict(r) for r in rows}
+
+
+async def _db_get_prompt(place: str) -> Optional[Dict[str, Any]]:
+    """Return the active row for *place*, or None."""
+    from src.metadata import get_metadata_pool
+    pool = await get_metadata_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT ip.prompt_place, ip.version, ip.is_custom, ip.model_id,
+                   am.name AS model_name, ip.content
+            FROM insights_prompts ip
+            LEFT JOIN admin_models am ON am.id = ip.model_id
+            WHERE ip.prompt_place = $1 AND ip.is_active = true
+            LIMIT 1
+            """,
+            place,
+        )
+    return dict(row) if row else None
+
+
+async def _db_save_prompt(place: str, content: str) -> int:
+    """Deactivate current active row, insert new version (preserving model_id).
+    Returns the new version number.
+    """
+    from src.metadata import get_metadata_pool
+    pool = await get_metadata_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            current = await conn.fetchrow(
+                "SELECT version, model_id FROM insights_prompts "
+                "WHERE prompt_place = $1 AND is_active = true",
+                place,
+            )
+            if not current:
+                raise HTTPException(404, f"No active prompt row for '{place}'. Restart to re-seed.")
+            new_version = current["version"] + 1
+            model_id = current["model_id"]
+            await conn.execute(
+                "UPDATE insights_prompts SET is_active = false, updated_at = NOW() "
+                "WHERE prompt_place = $1 AND is_active = true",
+                place,
+            )
+            await conn.execute(
+                """
+                INSERT INTO insights_prompts
+                    (prompt_place, content, version, is_active, is_custom, model_id)
+                VALUES ($1, $2, $3, true, true, $4)
+                """,
+                place, content, new_version, model_id,
+            )
+    return new_version
+
+
+async def _db_reset_prompt(place: str, default_content: str) -> int:
+    """Deactivate current row, insert file default (is_custom=false, model_id=NULL)."""
+    from src.metadata import get_metadata_pool
+    pool = await get_metadata_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            current = await conn.fetchrow(
+                "SELECT version, is_custom FROM insights_prompts "
+                "WHERE prompt_place = $1 AND is_active = true",
+                place,
+            )
+            if not current:
+                raise HTTPException(404, f"No active prompt row for '{place}'. Restart to re-seed.")
+            if not current["is_custom"]:
+                return current["version"]  # already at default
+            new_version = current["version"] + 1
+            await conn.execute(
+                "UPDATE insights_prompts SET is_active = false, updated_at = NOW() "
+                "WHERE prompt_place = $1 AND is_active = true",
+                place,
+            )
+            await conn.execute(
+                """
+                INSERT INTO insights_prompts
+                    (prompt_place, content, version, is_active, is_custom, model_id)
+                VALUES ($1, $2, $3, true, false, NULL)
+                """,
+                place, default_content, new_version,
+            )
+    return new_version
+
+
+def _invalidate_cache(place: str) -> None:
+    """Best-effort: drop the cache entry so the next request reloads from DB."""
+    try:
+        from src.api import state as app_state
+        if app_state.prompt_cache:
+            app_state.prompt_cache.invalidate(place)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("settings: cache invalidation skipped: %s", exc)
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────────
 
 @router.get("/prompts", response_model=List[PromptMeta])
-def list_prompts():
-    """Return metadata for all prompts (no content)."""
+async def list_prompts():
+    """Return metadata for all prompts (no content), ordered by the registry."""
+    db_rows = await _db_list_prompts()
     result = []
     for entry in PROMPT_REGISTRY:
-        text = _read_prompt(entry["path"])
+        place = entry["name"]
+        row = db_rows.get(place, {})
+        content = row.get("content") or _read_file(entry["path"])
         result.append(PromptMeta(
-            name=entry["name"],
+            name=place,
             label=entry["label"],
             group=entry["group"],
             description=entry["description"],
-            is_custom=_is_custom(entry),
-            placeholders=_extract_placeholders(text),
+            is_custom=row.get("is_custom", False),
+            placeholders=_extract_placeholders(content),
+            version=row.get("version", 1),
+            model_id=row.get("model_id"),
+            model_name=row.get("model_name"),
         ))
     return result
 
 
 @router.get("/prompts/{name}", response_model=PromptDetail)
-def get_prompt(name: str):
+async def get_prompt(name: str):
     """Return full content for a single prompt."""
     entry = _entry_for(name)
     if not entry:
         raise HTTPException(status_code=404, detail=f"Prompt '{name}' not found")
-    text = _read_prompt(entry["path"])
+    row = await _db_get_prompt(name)
+    if row:
+        content   = row["content"]
+        is_custom = row["is_custom"]
+        version   = row["version"]
+        model_id  = row["model_id"]
+        model_name = row["model_name"]
+    else:
+        content   = _read_file(entry["path"])
+        is_custom = False
+        version   = 1
+        model_id  = None
+        model_name = None
     return PromptDetail(
-        name=entry["name"],
+        name=name,
         label=entry["label"],
         group=entry["group"],
         description=entry["description"],
-        is_custom=_is_custom(entry),
-        placeholders=_extract_placeholders(text),
-        content=text,
+        is_custom=is_custom,
+        placeholders=_extract_placeholders(content),
+        content=content,
+        version=version,
+        model_id=model_id,
+        model_name=model_name,
     )
 
 
 @router.put("/prompts/{name}", response_model=PromptDetail)
-def save_prompt(name: str, body: PromptUpdate):
-    """Save a custom prompt.  Backs up the original on the first save."""
+async def save_prompt(name: str, body: PromptUpdate):
+    """Save a custom prompt (new DB version)."""
     entry = _entry_for(name)
     if not entry:
         raise HTTPException(status_code=404, detail=f"Prompt '{name}' not found")
 
-    prompt_path: Path = entry["path"]
+    new_version = await _db_save_prompt(name, body.content)
+    _invalidate_cache(name)
+    logger.info("settings: saved prompt '%s' v%d (%d chars)", name, new_version, len(body.content))
 
-    # Ensure defaults directory exists.
-    _DEFAULTS_DIR.mkdir(parents=True, exist_ok=True)
-
-    backup_path = _DEFAULTS_DIR / prompt_path.name
-
-    # Back up the original only once so it stays pristine.
-    if not backup_path.exists() and prompt_path.exists():
-        backup_path.write_text(prompt_path.read_text(encoding="utf-8"), encoding="utf-8")
-        logger.info("settings: backed up default prompt → %s", backup_path)
-
-    # Write the custom content.
-    prompt_path.write_text(body.content, encoding="utf-8")
-    logger.info("settings: saved custom prompt '%s' (%d chars)", name, len(body.content))
-
-    # Hot-reload the PromptLoader if the agent exposes one.
-    _try_reload_prompt_loader()
-
+    row = await _db_get_prompt(name)
     return PromptDetail(
-        name=entry["name"],
+        name=name,
         label=entry["label"],
         group=entry["group"],
         description=entry["description"],
         is_custom=True,
         placeholders=_extract_placeholders(body.content),
         content=body.content,
+        version=new_version,
+        model_id=row["model_id"] if row else None,
+        model_name=row["model_name"] if row else None,
     )
 
 
 @router.delete("/prompts/{name}", response_model=PromptDetail)
-def reset_prompt(name: str):
-    """Reset a prompt to its default by restoring the backup."""
+async def reset_prompt(name: str):
+    """Reset a prompt to its file default (inserts a new DB version)."""
     entry = _entry_for(name)
     if not entry:
         raise HTTPException(status_code=404, detail=f"Prompt '{name}' not found")
 
-    prompt_path: Path = entry["path"]
-    backup_path = _DEFAULTS_DIR / prompt_path.name
-
-    if not backup_path.exists():
-        # Already at default — nothing to do.
-        text = _read_prompt(prompt_path)
-        return PromptDetail(
-            name=entry["name"],
-            label=entry["label"],
-            group=entry["group"],
-            description=entry["description"],
-            is_custom=False,
-            placeholders=_extract_placeholders(text),
-            content=text,
-        )
-
-    # Restore original.
-    original = backup_path.read_text(encoding="utf-8")
-    prompt_path.write_text(original, encoding="utf-8")
-    backup_path.unlink()
-    logger.info("settings: reset prompt '%s' to default", name)
-
-    _try_reload_prompt_loader()
+    default_content = _read_file(entry["path"])
+    new_version = await _db_reset_prompt(name, default_content)
+    _invalidate_cache(name)
+    logger.info("settings: reset prompt '%s' to default (v%d)", name, new_version)
 
     return PromptDetail(
-        name=entry["name"],
+        name=name,
         label=entry["label"],
         group=entry["group"],
         description=entry["description"],
         is_custom=False,
-        placeholders=_extract_placeholders(original),
-        content=original,
+        placeholders=_extract_placeholders(default_content),
+        content=default_content,
+        version=new_version,
+        model_id=None,
+        model_name=None,
     )
 
 
 @router.post("/prompts/reload")
 def reload_prompts():
-    """Force the PromptLoader to re-read all files from disk."""
-    reloaded = _try_reload_prompt_loader()
-    return {"reloaded": reloaded}
+    """Clear the in-process prompt cache so every prompt is re-read from DB."""
+    try:
+        from src.api import state as app_state
+        if app_state.prompt_cache:
+            app_state.prompt_cache.clear()
+            return {"reloaded": True}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("settings: prompt reload error: %s", exc)
+    return {"reloaded": False}
+
+
+@router.put("/prompts/{name}/model")
+async def set_prompt_model(name: str, body: SetPromptModelRequest):
+    """Assign a specific model to this prompt (or clear with ``model_name=null``).
+
+    ``null`` removes the override — the prompt will use the global active model.
+    """
+    entry = _entry_for(name)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Prompt '{name}' not found")
+
+    from src.metadata import get_metadata_pool
+    pool = await get_metadata_pool()
+
+    model_id: Optional[int] = None
+    if body.model_name:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id FROM admin_models WHERE name = $1 AND is_enabled = true",
+                body.model_name,
+            )
+        if not row:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model '{body.model_name}' not found or not enabled",
+            )
+        model_id = row["id"]
+
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "UPDATE insights_prompts SET model_id = $1, updated_at = NOW() "
+            "WHERE prompt_place = $2 AND is_active = true",
+            model_id, name,
+        )
+    if result == "UPDATE 0":
+        raise HTTPException(status_code=404, detail=f"No active prompt row for '{name}'")
+
+    _invalidate_cache(name)
+    logger.info(
+        "settings: prompt '%s' model → %s",
+        name, body.model_name or "global default",
+    )
+    return {"name": name, "model_id": model_id, "model_name": body.model_name}
 
 
 # ── AI Model endpoints ───────────────────────────────────────────────────────
@@ -465,6 +622,11 @@ async def set_active_model(body: SetModelRequest):
 
     # Persist.
     await _set_active_in_db(body.name)
+
+    # Clear prompt cache: prompts with no model override (model_id=NULL) use
+    # the global active model as fallback, so their cached chat model is stale.
+    if state.prompt_cache:
+        state.prompt_cache.clear()
 
     logger.info("settings: active model → %s", body.name)
     return {"name": body.name, "is_default": bool(match.get("is_db_default"))}

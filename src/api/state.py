@@ -16,6 +16,7 @@ from typing import Optional
 from src.agent import AgentRegistry
 from src.agent.conversation_history import ConversationHistoryService
 from src.agent.llm_service import LangChainLlmService
+from src.agent.prompt_cache import PromptCache
 from src.connections import ConnectionService
 from src.metadata import MetadataLoader
 
@@ -25,3 +26,4 @@ metadata_loader: Optional[MetadataLoader] = None
 connection_service: Optional[ConnectionService] = None
 history_service: Optional[ConversationHistoryService] = None
 llm_service: Optional[LangChainLlmService] = None
+prompt_cache: Optional[PromptCache] = None

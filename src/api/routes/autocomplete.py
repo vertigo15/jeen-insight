@@ -112,7 +112,18 @@ async def suggest_questions(request: SuggestQuestionsRequest):
         "\n".join(f"- {t}" for t in table_names) or "(no tables)"
     )
 
-    template = _load_autocomplete_prompt()
+    from src.api import state as app_state
+    if app_state.prompt_cache:
+        try:
+            template        = await app_state.prompt_cache.get_content("autocomplete_suggestions")
+            model_override  = await app_state.prompt_cache.get_model_override("autocomplete_suggestions")
+        except Exception:
+            template       = _load_autocomplete_prompt()
+            model_override = None
+    else:
+        template       = _load_autocomplete_prompt()
+        model_override = None
+
     prompt = template.format(
         partial=partial[:_MAX_PARTIAL_CHARS],
         available_tables=available_tables_blob,
@@ -129,6 +140,7 @@ async def suggest_questions(request: SuggestQuestionsRequest):
             ],
             temperature=AUTOCOMPLETE_PARAMS.temperature,
             max_tokens=AUTOCOMPLETE_PARAMS.max_tokens,
+            model_override=model_override,
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("Autocomplete LLM call failed")

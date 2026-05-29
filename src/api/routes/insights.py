@@ -38,12 +38,24 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
         bundle = await agent.metadata_loader.load_all(agent.source_key)
         context = {"documentation": [bundle.get("business_terms", "")]}
 
+        from src.api import state as app_state
+        prompt_template = None
+        model_override   = None
+        if app_state.prompt_cache:
+            try:
+                prompt_template = await app_state.prompt_cache.get_content("insights")
+                model_override   = await app_state.prompt_cache.get_model_override("insights")
+            except Exception:
+                pass
+
         start = time.time()
         insights = await generate_insights(
             dataset=request.dataset,
             context=context,
             original_question=request.question,
             llm_service=agent.llm,
+            prompt_template=prompt_template,
+            model_override=model_override,
         )
         exec_time_ms = int((time.time() - start) * 1000)
 
@@ -119,12 +131,24 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
         final_insights: dict = {}
         final_metrics: dict = {}
 
+        from src.api import state as app_state
+        prompt_template = None
+        model_override   = None
+        if app_state.prompt_cache:
+            try:
+                prompt_template = await app_state.prompt_cache.get_content("insights")
+                model_override   = await app_state.prompt_cache.get_model_override("insights")
+            except Exception:
+                pass
+
         try:
             async for ev in generate_insights_stream(
                 dataset=request.dataset,
                 context=context,
                 original_question=request.question,
                 llm_service=agent.llm,
+                prompt_template=prompt_template,
+                model_override=model_override,
             ):
                 kind = ev.get("type")
                 if kind == "open":

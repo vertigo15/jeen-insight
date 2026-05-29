@@ -22,21 +22,13 @@ from uuid import UUID, uuid4
 
 from src.agent.conversation_history import ConversationHistoryService
 from src.agent.llm_service import LangChainLlmService
+from src.agent.prompt_cache import PromptCache
 from src.agent.user_resolver import SimpleUserResolver
-from src.config import settings
 from src.connections import Connection, ConnectionService
 from src.metadata import MetadataLoader
 from src.tools.sql_tool import PostgresSqlRunner, RunSqlTool
 
 logger = logging.getLogger(__name__)
-
-PROMPT_TEMPLATE_PATH = (
-    Path(__file__).resolve().parent / "prompts" / "jeen_insights_system.md"
-)
-
-
-def _load_prompt_template() -> str:
-    return PROMPT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
 
 # ----------------------------------------------------------------------
@@ -51,10 +43,10 @@ class JeenInsightsAgent:
         connection: Connection,
         sql_runner: PostgresSqlRunner,
         llm_service: LangChainLlmService,
+        prompt_cache: PromptCache,
         metadata_loader: MetadataLoader,
         history_service: ConversationHistoryService,
         user_resolver: SimpleUserResolver,
-        prompt_template: str,
     ):
         self.connection = connection
         self.source_key = connection.source_key
@@ -62,6 +54,7 @@ class JeenInsightsAgent:
         self.database_type = connection.database_type
         self.sql_runner = sql_runner
         self.llm = llm_service
+        self.prompt_cache = prompt_cache
         self.metadata_loader = metadata_loader
         self.history = history_service
         self.user_resolver = user_resolver
@@ -70,7 +63,6 @@ class JeenInsightsAgent:
             connection_display_name=connection.display_name,
             database_type=connection.database_type,
         )
-        self._prompt_template = prompt_template
 
     async def process_question(
         self,
@@ -109,7 +101,11 @@ class JeenInsightsAgent:
                 rag_context=self._summarize_metadata(metadata_bundle),
             )
 
-            system_prompt = self._build_system_prompt(metadata_bundle)
+            # Load system prompt and optional per-prompt model override from
+            # cache (DB on first access, in-memory on subsequent calls).
+            prompt_template = await self.prompt_cache.get_content("jeen_insights_system")
+            model_override = await self.prompt_cache.get_model_override("jeen_insights_system")
+            system_prompt = self._build_system_prompt(prompt_template, metadata_bundle)
 
             messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
             for prev_qa in conversation_context:
@@ -171,6 +167,7 @@ class JeenInsightsAgent:
                 temperature=effective_temperature,
                 max_tokens=QUERY_PARAMS.max_tokens,
                 tools=tools,
+                model_override=model_override,
             )
             llm_latency_ms = int((time.time() - llm_start) * 1000)
 
@@ -279,8 +276,9 @@ class JeenInsightsAgent:
             logger.exception("Failed to fetch conversation context")
             return []
 
-    def _build_system_prompt(self, metadata_bundle: Dict[str, str]) -> str:
-        return self._prompt_template.format(
+    def _build_system_prompt(self, template: str, metadata_bundle: Dict[str, str]) -> str:
+        """Render the system prompt template with live metadata."""
+        return template.format(
             connection_display_name=self.display_name,
             database_type=self.database_type,
             tables=metadata_bundle.get("tables", ""),
@@ -344,17 +342,18 @@ class AgentRegistry:
         self,
         *,
         llm_service: LangChainLlmService,
+        prompt_cache: PromptCache,
         metadata_loader: MetadataLoader,
         connection_service: ConnectionService,
         history_service: ConversationHistoryService,
         user_resolver: SimpleUserResolver,
     ):
         self.llm = llm_service
+        self.prompt_cache = prompt_cache
         self.metadata_loader = metadata_loader
         self.connection_service = connection_service
         self.history = history_service
         self.user_resolver = user_resolver
-        self._prompt_template = _load_prompt_template()
         self._agents: Dict[str, JeenInsightsAgent] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
 
@@ -371,10 +370,10 @@ class AgentRegistry:
                 connection=connection,
                 sql_runner=runner,
                 llm_service=self.llm,
+                prompt_cache=self.prompt_cache,
                 metadata_loader=self.metadata_loader,
                 history_service=self.history,
                 user_resolver=self.user_resolver,
-                prompt_template=self._prompt_template,
             )
             self._agents[source_key] = agent
             logger.info("✅ Built JeenInsightsAgent for source_key=%s", source_key)

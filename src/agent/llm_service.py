@@ -26,9 +26,20 @@ import asyncio
 import base64
 import json
 import logging
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ── Per-prompt model override ─────────────────────────────────────────────────
+
+class ModelOverride(NamedTuple):
+    """Carries a resolved LangChain chat model and its provider name for
+    per-prompt model overrides.  Pass to ``generate*`` methods to bypass
+    the global active model for a single call.
+    """
+    chat_model: Any
+    provider_name: str
 
 
 # ── DB credential loading ──────────────────────────────────────────────────────────────────
@@ -74,6 +85,29 @@ _DEFAULT_CREDENTIAL_QUERY = """
       AND amp.is_enabled = true
       AND am.is_enabled  = true
     ORDER BY amp.sort_order
+    LIMIT 1
+"""
+
+
+_FETCH_BY_MODEL_ID = """
+    SELECT
+        am.name                         AS model_name,
+        am.display_name                 AS model_display_name,
+        p.name                          AS provider_name,
+        p.litellm_prefix,
+        amp.provider_model_identifier,
+        amp.api_key,
+        amp.config,
+        amp.max_output_tokens,
+        amp.timeout_seconds,
+        amp.max_retries
+    FROM admin_models_providers amp
+    JOIN admin_models am ON am.id = amp.model_id
+    JOIN admin_providers p  ON p.id = amp.provider_id
+    WHERE amp.model_id  = $1
+      AND amp.is_enabled = true
+      AND am.is_enabled  = true
+    ORDER BY amp.is_default DESC, amp.sort_order
     LIMIT 1
 """
 
@@ -342,6 +376,27 @@ class LangChainLlmService:
         )
         return cls(pool, settings.AZURE_OPENAI_DEPLOYMENT_NAME, chat_model, provider_name="azure_openai")
 
+    # ── Global model helpers ────────────────────────────────────────────
+
+    def get_default_chat_model(self) -> Any:
+        """Return the current global chat model instance."""
+        return self._chat_model
+
+    async def build_model_override_for_model_id(self, model_id: int) -> ModelOverride:
+        """Build a ModelOverride for a specific ``admin_models.id``.
+
+        Used by ``PromptCache`` to wire per-prompt model assignments.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(_FETCH_BY_MODEL_ID, model_id)
+        if not row:
+            raise ValueError(
+                f"No enabled credentials found for model_id={model_id}"
+            )
+        row_dict = dict(row)
+        chat_model = _build_chat_model(row_dict)
+        return ModelOverride(chat_model=chat_model, provider_name=row_dict["provider_name"])
+
     # ── Model switching ───────────────────────────────────────────────────
 
     def get_deployment(self) -> str:
@@ -390,20 +445,33 @@ class LangChainLlmService:
         temperature: float = 0.3,
         max_tokens: int = 4096,
         tools: Optional[List[Dict]] = None,
+        model_override: Optional[ModelOverride] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """Generate a non-streaming response.
 
+        Pass *model_override* (a :class:`ModelOverride` built by
+        ``PromptCache``) to use a per-prompt model instead of the global
+        active model.  When ``None`` the global model is used.
         ``tools`` should be OpenAI-format tool definitions; LangChain converts
         them to the wire format expected by each provider automatically.
         """
         lc_messages = _to_lc_messages(messages)
 
-        model = self._chat_model
+        if model_override is not None:
+            model = model_override.chat_model
+            token_kw = (
+                {"max_completion_tokens": max_tokens}
+                if model_override.provider_name == "azure_openai"
+                else {"max_tokens": max_tokens}
+            )
+        else:
+            model = self._chat_model
+            token_kw = self._token_kwargs(max_tokens)
+
         if tools:
             model = model.bind_tools(tools)
-        # bind() creates a cheap RunnableBinding wrapper — no network I/O.
-        model = model.bind(temperature=temperature, **self._token_kwargs(max_tokens))
+        model = model.bind(temperature=temperature, **token_kw)
 
         ai_msg = await model.ainvoke(lc_messages)
         return _from_lc_response(ai_msg)
@@ -413,11 +481,22 @@ class LangChainLlmService:
         messages: List[Dict[str, str]],
         temperature: float = 0.3,
         max_tokens: int = 4096,
+        model_override: Optional[ModelOverride] = None,
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
         """Yield raw text chunks (str)."""
         lc_messages = _to_lc_messages(messages)
-        model = self._chat_model.bind(temperature=temperature, **self._token_kwargs(max_tokens))
+        if model_override is not None:
+            base = model_override.chat_model
+            token_kw = (
+                {"max_completion_tokens": max_tokens}
+                if model_override.provider_name == "azure_openai"
+                else {"max_tokens": max_tokens}
+            )
+        else:
+            base = self._chat_model
+            token_kw = self._token_kwargs(max_tokens)
+        model = base.bind(temperature=temperature, **token_kw)
 
         async for chunk in model.astream(lc_messages):
             text = _extract_text(chunk.content)
@@ -429,6 +508,7 @@ class LangChainLlmService:
         messages: List[Dict[str, str]],
         temperature: float = 0.3,
         max_tokens: int = 4096,
+        model_override: Optional[ModelOverride] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Yield typed event dicts.
 
@@ -439,7 +519,17 @@ class LangChainLlmService:
             {"type": "error",   "error": str}
         """
         lc_messages = _to_lc_messages(messages)
-        model = self._chat_model.bind(temperature=temperature, **self._token_kwargs(max_tokens))
+        if model_override is not None:
+            base = model_override.chat_model
+            token_kw = (
+                {"max_completion_tokens": max_tokens}
+                if model_override.provider_name == "azure_openai"
+                else {"max_tokens": max_tokens}
+            )
+        else:
+            base = self._chat_model
+            token_kw = self._token_kwargs(max_tokens)
+        model = base.bind(temperature=temperature, **token_kw)
 
         try:
             async for chunk in model.astream(lc_messages):

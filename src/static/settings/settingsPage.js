@@ -425,6 +425,42 @@ export class SettingsPage {
         </div>`;
     }
 
+    // ── Model helpers ─────────────────────────────────────────────────────────
+
+    async _ensureModels() {
+        if (this._models !== null) return;
+        try {
+            const res = await fetch('/api/settings/models');
+            if (res.ok) this._models = await res.json();
+            else this._models = [];
+        } catch {
+            this._models = [];
+        }
+    }
+
+    async _setPromptModel(name, model_name) {
+        try {
+            const res = await fetch(`/api/settings/prompts/${name}/model`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model_name: model_name || null }),
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            if (this._prompts[name]) {
+                this._prompts[name].meta.model_name = data.model_name || null;
+                this._prompts[name].meta.model_id   = data.model_id   || null;
+            }
+            _showToast(
+                model_name ? `Model set to ${model_name}` : 'Using global active model',
+                'success',
+            );
+        } catch (e) {
+            console.error('[SettingsPage] setPromptModel failed:', e);
+            _showToast('Could not update model — ' + e.message, 'error');
+        }
+    }
+
     // ── Prompt editor ─────────────────────────────────────────────────────────
 
     async _renderPrompt(name) {
@@ -441,6 +477,9 @@ export class SettingsPage {
             await this._fetchPromptContent(name);
         }
 
+        // Ensure the model list is available for the model selector.
+        await this._ensureModels();
+
         const entry = this._prompts[name];
         if (!entry) return;
 
@@ -450,6 +489,18 @@ export class SettingsPage {
         const placeholders = meta.placeholders || _extractPlaceholders(content);
         const isDirty = entry.dirty || false;
         const isEditing = entry.editing || false;
+        const currentModelName = meta.model_name || null;
+
+        // Build model selector options.
+        const availableModels = (this._models || []).filter(m => m.available);
+        const modelOptions = [
+            `<option value=""${!currentModelName ? ' selected' : ''}>Default (global active model)</option>`,
+            ...availableModels.map(m =>
+                `<option value="${_esc(m.name)}"${
+                    m.name === currentModelName ? ' selected' : ''
+                }>${_esc(m.display_name)}</option>`
+            ),
+        ].join('');
 
         this._content.innerHTML = `
             <div class="sp-section-header">
@@ -458,6 +509,10 @@ export class SettingsPage {
                     <span class="sp-badge ${isCustom ? 'sp-badge-custom' : 'sp-badge-default'}">${isCustom ? 'Custom' : 'Default'}</span>
                 </div>
                 <p class="sp-section-desc">${_esc(meta.description || '')}</p>
+                <div class="sp-prompt-model-row">
+                    <span class="sp-prompt-model-label">Run with model:</span>
+                    <select class="settings-select sp-prompt-model-sel" id="sp-prompt-model-${_esc(name)}">${modelOptions}</select>
+                </div>
             </div>
 
             ${placeholders.length ? `
@@ -518,6 +573,14 @@ export class SettingsPage {
             if (newContent === undefined) return;
             await this._savePrompt(name, newContent);
         });
+
+        // Model selector
+        const modelSel = this._content.querySelector(`#sp-prompt-model-${name}`);
+        if (modelSel) {
+            modelSel.addEventListener('change', async () => {
+                await this._setPromptModel(name, modelSel.value || null);
+            });
+        }
 
         // Reset button
         this._content.querySelector(`#sp-reset-${name}`)?.addEventListener('click', async () => {
