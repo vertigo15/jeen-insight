@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
-from src.agent.llm_service import AzureOpenAILlmService
+from src.agent.llm_service import LangChainLlmService
 from src.tools.sql_tool import RunSqlTool
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ def _extract_sql(response: Dict[str, Any]) -> Optional[str]:
 # ── sql_generator ─────────────────────────────────────────────────────────────
 
 
-def make_sql_generator(llm: AzureOpenAILlmService, prompt_loader: PromptLoader):
+def make_sql_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
     """Return an async ``sql_generator`` node."""
 
     async def sql_generator(state: AgentState) -> Dict[str, Any]:
@@ -214,7 +214,7 @@ def make_sql_generator(llm: AzureOpenAILlmService, prompt_loader: PromptLoader):
 # ── memory_answer_generator ───────────────────────────────────────────────────
 
 
-def make_memory_answer_generator(llm: AzureOpenAILlmService, prompt_loader: PromptLoader):
+def make_memory_answer_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
     """Return an async ``memory_answer_generator`` node.
 
     If the LLM determines that a live query is still needed, it returns
