@@ -195,6 +195,13 @@ async function askQuestion() {
     if (prefs.temperature !== null && prefs.temperature !== undefined) {
         askPayload.temperature = prefs.temperature;
     }
+    // Always skip in-graph eval so the table appears as soon as SQL returns.
+    // When aiAnalytics=on, the InsightsManager runs the analysis separately
+    // in the background and updates the Insights panel when done.
+    askPayload.eval_analytics = false;
+    // Per-request LLM timeout override from the settings panel.
+    const _llmTimeoutSecs = window.JeenPreferences ? window.JeenPreferences.getLlmTimeoutSeconds() : null;
+    if (_llmTimeoutSecs !== null) askPayload.llm_timeout = _llmTimeoutSecs;
 
     const askStart = performance.now();
     try {
@@ -302,12 +309,14 @@ function displayResults(data) {
         // Initialize chart feature
         initializeChartFeature(data.results);
         
-        // Generate insights in parallel (non-blocking) — gated by user preference.
-        const _autoInsights = (window.JeenPreferences && window.JeenPreferences.getAll().autoInsights) || 'on';
-        if (_autoInsights === 'on') {
+        // Generate insights in background — gated by the AI Analytics preference.
+        // The table is already visible; InsightsManager streams the analysis
+        // and updates the Insights panel when each chunk arrives.
+        const _aiAnalytics = (window.JeenPreferences && window.JeenPreferences.getAll().aiAnalytics) || 'on';
+        if (_aiAnalytics === 'on') {
             generateInsights(data.results, currentQuestion, currentQueryId);
         } else {
-            // Hide the insights container when auto is off so we don't show a stale one.
+            // Hide the insights container when analytics is off.
             const ic = document.getElementById('insights-container');
             if (ic) ic.style.display = 'none';
         }
@@ -316,6 +325,19 @@ function displayResults(data) {
         if (typeof profilingManager !== 'undefined') {
             profilingManager.initialize(data.results);
         }
+    } else if (data.answer) {
+        // LLM returned a conversational text response (no SQL executed)
+        resultsDisplay.innerHTML = `<div class="llm-text-answer">${escapeHtml(data.answer).replace(/\n/g, '<br>')}</div>`;
+        showResultsToolbar(false);
+        exportBtn.style.display = 'none';
+        copyResultsBtn.style.display = 'none';
+        describeBtn.style.display = 'none';
+        currentResults = null;
+        window.currentResults = null;
+        if (typeof profilingManager !== 'undefined') {
+            profilingManager.hide();
+        }
+        setResultMeta(null, lastQueryDurationMs);
     } else {
         resultsDisplay.innerHTML = '<div class="no-results">No results to display</div>';
         showResultsToolbar(false);
@@ -334,6 +356,11 @@ function displayResults(data) {
     if (data.prompt) {
         currentPrompt = data.prompt;
         displayStructuredPrompt(data.prompt);
+    }
+
+    // Render execution trace into the Trace tab of the dev drawer
+    if (data.trace) {
+        renderTrace(data.trace, data.metrics);
     }
     
     // Display SQL in SQL tab
@@ -536,7 +563,11 @@ function setResultMeta(rowCount, durationMs) {
     if (!el) return;
     const seconds = (durationMs / 1000);
     const durStr = seconds >= 0.1 ? seconds.toFixed(1) + 's' : Math.max(1, Math.round(durationMs)) + 'ms';
-    el.textContent = `${rowCount} row${rowCount !== 1 ? 's' : ''} \u00b7 ${durStr}`;
+    if (rowCount === null || rowCount === undefined) {
+        el.textContent = durStr;
+    } else {
+        el.textContent = `${rowCount} row${rowCount !== 1 ? 's' : ''} \u00b7 ${durStr}`;
+    }
 }
 function showResultsToolbar(visible) {
     const el = document.getElementById('results-toolbar');
@@ -1628,6 +1659,91 @@ function filterHistoryLog() {
         (e.question || '').toLowerCase().includes(q)
     ));
 }
+
+// ── Execution Trace Panel ────────────────────────────────────────────────────
+
+/**
+ * Render the per-node execution trace into the Trace tab of the dev drawer.
+ * Called from displayResults() after each query.
+ *
+ * @param {Array} traceEvents  - Array of trace event objects from the API.
+ * @param {Object} metrics     - The metrics dict from the API response.
+ */
+function renderTrace(traceEvents, metrics) {
+    const panel = document.getElementById('trace-panel');
+    if (!panel) return;
+    if (!traceEvents || traceEvents.length === 0) {
+        panel.innerHTML = '<p class="trace-empty">No trace data for this query.</p>';
+        return;
+    }
+
+    const totalMs   = traceEvents.reduce((s, e) => s + (e.elapsed_ms || 0), 0);
+    const maxMs     = Math.max(...traceEvents.map(e => e.elapsed_ms || 0), 1);
+    const llmMs     = metrics && metrics.llm_latency_ms ? metrics.llm_latency_ms : 0;
+    const retries   = metrics && metrics.retry_count   ? metrics.retry_count   : 0;
+    const route     = metrics && metrics.route         ? metrics.route         : '?';
+
+    // ── Summary chips ─────────────────────────────────────────────────────
+    let html = '<div class="trace-summary">';
+    html += `<span class="trace-summary-chip">route: <strong>${escapeHtml(route)}</strong></span>`;
+    html += `<span class="trace-summary-chip">nodes: <strong>${traceEvents.length}</strong></span>`;
+    html += `<span class="trace-summary-chip">total: <strong>${_fmtMs(totalMs)}</strong></span>`;
+    html += `<span class="trace-summary-chip">LLM: <strong>${_fmtMs(llmMs)}</strong></span>`;
+    if (retries > 0) html += `<span class="trace-summary-chip">retries: <strong>${retries}</strong></span>`;
+    html += '</div>';
+
+    // ── Node timeline ─────────────────────────────────────────────────────
+    traceEvents.forEach((ev, idx) => {
+        const ms      = ev.elapsed_ms || 0;
+        const barPct  = Math.max(2, Math.round((ms / maxMs) * 100));
+        const icon    = escapeHtml(ev.icon  || '●');
+        const ntype   = escapeHtml(ev.type  || 'logic');
+        const name    = escapeHtml(ev.node  || '?');
+        const detail  = ev.detail ? escapeHtml(ev.detail) : '';
+        const status  = ev.status || '';
+
+        html += `<div class="trace-event" data-idx="${idx}" onclick="_toggleTraceEvent(this)">`;
+        html += `  <span class="trace-event-icon">${icon}</span>`;
+        html += `  <span class="trace-event-name">${name}</span>`;
+        html += `  <div class="trace-event-bar-wrap">`;
+        html += `    <div class="trace-event-bar" data-ntype="${ntype}" style="width:${barPct}%"></div>`;
+        if (detail) {
+            const detailClass = status ? `trace-event-detail trace-event-status" data-status="${escapeHtml(status)}` : 'trace-event-detail';
+            html += `    <span class="${detailClass}">${detail}</span>`;
+        }
+        html += `  </div>`;
+        html += `  <span class="trace-event-ms">${_fmtMs(ms)}</span>`;
+
+        // Expandable extra detail (SQL preview, full detail)
+        const expandParts = [];
+        if (ev.sql)             expandParts.push(`SQL: ${ev.sql}`);
+        if (ev.route)           expandParts.push(`route: ${ev.route}`);
+        if (ev.feedback_type)   expandParts.push(`feedback: ${ev.feedback_type}`);
+        if (ev.answers_intent !== undefined) expandParts.push(`answers_intent: ${ev.answers_intent}`);
+        if (expandParts.length) {
+            html += `  <div class="trace-event-expanded">${escapeHtml(expandParts.join('\n'))}</div>`;
+        }
+
+        html += `</div>`;
+    });
+
+    panel.innerHTML = html;
+
+    // Show the trace badge on the dev-panel button
+    const badge = document.getElementById('dev-panel-badge');
+    if (badge) badge.hidden = false;
+}
+
+function _fmtMs(ms) {
+    if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—';
+    if (ms >= 1000) return (ms / 1000).toFixed(1) + 's';
+    return Math.max(1, Math.round(ms)) + 'ms';
+}
+
+function _toggleTraceEvent(el) {
+    el.classList.toggle('is-open');
+}
+window._toggleTraceEvent = _toggleTraceEvent;
 
 // Chart Feature Initialization
 async function initializeChartFeature(results) {

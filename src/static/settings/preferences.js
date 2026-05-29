@@ -25,6 +25,8 @@ const KEYS = {
     chartType: 'chartTypePreference',
     autoInsights: 'autoInsights',
     temperature: 'temperature',
+    aiAnalytics: 'aiAnalytics',   // 'on' | 'off'  — run insights in background
+    llmTimeout: 'llmTimeout',     // seconds as string, or 'server' for server default
 };
 
 const DEFAULTS = Object.freeze({
@@ -32,7 +34,9 @@ const DEFAULTS = Object.freeze({
     rowLimit: 100,
     chartType: 'auto',
     autoInsights: 'on',
-    temperature: null, // null means "use server default"
+    temperature: null,   // null means "use server default"
+    aiAnalytics: 'on',   // show insights in background by default
+    llmTimeout: 'server', // 'server' = use server default; else seconds as string
 });
 
 const ALLOWED_THEMES = new Set(['light', 'dark', 'system']);
@@ -41,6 +45,8 @@ const ALLOWED_CHART_TYPES = new Set([
     'auto', 'bar', 'line', 'pie', 'area', 'scatter', 'horizontal_bar',
 ]);
 const ALLOWED_AUTO_INSIGHTS = new Set(['on', 'off']);
+const ALLOWED_AI_ANALYTICS  = new Set(['on', 'off']);
+const ALLOWED_LLM_TIMEOUTS  = new Set(['server', '10', '15', '20', '30', '60', '120']);
 
 function _readString(key, allowed, fallback) {
     try {
@@ -82,6 +88,8 @@ export const Preferences = {
             chartType: _readString(KEYS.chartType, ALLOWED_CHART_TYPES, DEFAULTS.chartType),
             autoInsights: _readString(KEYS.autoInsights, ALLOWED_AUTO_INSIGHTS, DEFAULTS.autoInsights),
             temperature: _readTemperature(),
+            aiAnalytics: _readString(KEYS.aiAnalytics, ALLOWED_AI_ANALYTICS, DEFAULTS.aiAnalytics),
+            llmTimeout: _readString(KEYS.llmTimeout, ALLOWED_LLM_TIMEOUTS, DEFAULTS.llmTimeout),
         };
     },
 
@@ -108,6 +116,34 @@ export const Preferences = {
         if (!ALLOWED_AUTO_INSIGHTS.has(value)) return false;
         localStorage.setItem(KEYS.autoInsights, value);
         return true;
+    },
+
+    setAiAnalytics(value) {
+        if (!ALLOWED_AI_ANALYTICS.has(value)) return false;
+        localStorage.setItem(KEYS.aiAnalytics, value);
+        return true;
+    },
+
+    /**
+     * Set the per-request LLM timeout override.
+     * 'server' removes the override so the server default is used.
+     */
+    setLlmTimeout(value) {
+        if (!ALLOWED_LLM_TIMEOUTS.has(value)) return false;
+        if (value === 'server') {
+            localStorage.removeItem(KEYS.llmTimeout);
+        } else {
+            localStorage.setItem(KEYS.llmTimeout, value);
+        }
+        return true;
+    },
+
+    /** Returns the timeout in seconds (number) or null if "use server default". */
+    getLlmTimeoutSeconds() {
+        const v = _readString(KEYS.llmTimeout, ALLOWED_LLM_TIMEOUTS, DEFAULTS.llmTimeout);
+        if (v === 'server') return null;
+        const n = parseInt(v, 10);
+        return Number.isFinite(n) ? n : null;
     },
 
     /** Pass null/'auto'/empty to fall back to the server default. */

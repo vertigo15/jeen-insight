@@ -14,6 +14,7 @@ from fastapi import FastAPI
 
 from src.agent import AgentRegistry
 from src.agent.conversation_history import ConversationHistoryService
+from src.agent.langgraph_agent import PromptLoader
 from src.agent.llm_service import AzureOpenAILlmService
 from src.agent.user_resolver import SimpleUserResolver
 from src.api import state
@@ -34,19 +35,46 @@ async def lifespan(_app: FastAPI):
     state.connection_service = ConnectionService(pool)
     state.history_service = ConversationHistoryService(pool)
 
+    timeout = settings.LLM_TIMEOUT_SECONDS
+
+    # Primary (large-model) LLM service for SQL generation and evaluation
     llm_service = AzureOpenAILlmService(
         api_key=settings.AZURE_OPENAI_API_KEY,
         endpoint=settings.AZURE_OPENAI_ENDPOINT,
         deployment=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
         api_version=settings.AZURE_OPENAI_API_VERSION,
+        timeout_seconds=timeout,
     )
+
+    # Router LLM: use a separate cheaper deployment when configured,
+    # otherwise reuse the primary service (same object, no extra cost).
+    router_deployment = settings.AZURE_OPENAI_ROUTER_DEPLOYMENT or settings.AZURE_OPENAI_DEPLOYMENT_NAME
+    if router_deployment != settings.AZURE_OPENAI_DEPLOYMENT_NAME:
+        router_llm_service = AzureOpenAILlmService(
+            api_key=settings.AZURE_OPENAI_API_KEY,
+            endpoint=settings.AZURE_OPENAI_ENDPOINT,
+            deployment=router_deployment,
+            api_version=settings.AZURE_OPENAI_API_VERSION,
+            timeout_seconds=timeout,
+        )
+        logger.info("Router LLM using separate deployment: %s", router_deployment)
+    else:
+        router_llm_service = llm_service
+
+    if timeout:
+        logger.info("LLM call timeout: %ds per call", timeout)
+
+    # Load all prompt templates from src/agent/prompts/
+    prompt_loader = PromptLoader()
 
     state.agent_registry = AgentRegistry(
         llm_service=llm_service,
+        router_llm_service=router_llm_service,
         metadata_loader=state.metadata_loader,
         connection_service=state.connection_service,
         history_service=state.history_service,
         user_resolver=SimpleUserResolver(),
+        prompt_loader=prompt_loader,
     )
 
     logger.info("✅ Jeen Insights ready")

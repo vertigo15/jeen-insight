@@ -25,6 +25,21 @@ class Settings(BaseSettings):
     APP_PORT: int = 8000
     LOG_LEVEL: str = "INFO"
 
+    # LangGraph agent settings
+    LANGGRAPH_MAX_RETRIES: int = 3
+    LANGGRAPH_MAX_HISTORY_TOKENS: int = 3000
+    # Optional cheaper deployment for router/summarizer nodes.
+    # Defaults to AZURE_OPENAI_DEPLOYMENT_NAME when empty.
+    AZURE_OPENAI_ROUTER_DEPLOYMENT: str = ""
+    DLP_ENABLED: bool = True
+    SQLGLOT_VALIDATION_ENABLED: bool = True
+    # Run fused_eval_analytics after non-trivial queries (summary + insights).
+    # Set False to skip the third LLM call and prioritise speed over analysis.
+    EVAL_ANALYTICS_ENABLED: bool = True
+    # Per-call Azure OpenAI timeout in seconds. Prevents a single hung LLM
+    # request from blocking the entire query. 0 = no timeout.
+    LLM_TIMEOUT_SECONDS: int = 30
+
     class Config:
         env_file = ".env"
         case_sensitive = True

@@ -126,15 +126,33 @@ export class SettingsPanel {
         }));
 
         body.appendChild(this._row({
-            label: 'Auto-insights',
-            help: 'Generate AI insights automatically after every result.',
+            label: 'AI Analytics',
+            help: 'Generate insights after query results (runs in background — data appears immediately).',
             control: this._select(
-                prefs.autoInsights,
+                prefs.aiAnalytics,
                 [
-                    { value: 'on', label: 'On' },
+                    { value: 'on',  label: '✨ On (background)' },
                     { value: 'off', label: 'Off' },
                 ],
-                (v) => Preferences.setAutoInsights(v),
+                (v) => Preferences.setAiAnalytics(v),
+            ),
+        }));
+
+        body.appendChild(this._row({
+            label: 'LLM timeout',
+            help: 'Max seconds per LLM call. Lower = fail fast on slow days. "Server" uses the .env default.',
+            control: this._select(
+                prefs.llmTimeout,
+                [
+                    { value: 'server', label: 'Server default' },
+                    { value: '10',    label: '10 s' },
+                    { value: '15',    label: '15 s' },
+                    { value: '20',    label: '20 s' },
+                    { value: '30',    label: '30 s (recommended)' },
+                    { value: '60',    label: '60 s' },
+                    { value: '120',   label: '120 s' },
+                ],
+                (v) => Preferences.setLlmTimeout(v),
             ),
         }));
 
@@ -302,13 +320,15 @@ export class SettingsPanel {
         if (!this._dialog) return;
         const prefs = Preferences.getAll();
         const selects = this._dialog.querySelectorAll('.settings-select');
-        // Order matches the order rows were appended: theme, rowLimit, chartType, autoInsights, temperature.
+        // Order matches the order rows were appended:
+        // [0] theme  [1] rowLimit  [2] chartType  [3] aiAnalytics  [4] llmTimeout  [5] temperature
         if (selects[0]) selects[0].value = prefs.theme;
         if (selects[1]) selects[1].value = String(prefs.rowLimit);
         if (selects[2]) selects[2].value = prefs.chartType;
-        if (selects[3]) selects[3].value = prefs.autoInsights;
-        if (selects[4]) {
-            selects[4].value = prefs.temperature === null
+        if (selects[3]) selects[3].value = prefs.aiAnalytics;
+        if (selects[4]) selects[4].value = prefs.llmTimeout;
+        if (selects[5]) {
+            selects[5].value = prefs.temperature === null
                 ? 'auto'
                 : String(prefs.temperature.toFixed(1));
         }

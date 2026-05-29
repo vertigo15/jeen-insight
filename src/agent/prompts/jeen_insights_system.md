@@ -103,4 +103,10 @@ Use the tables section to identify which tables to query dynamically. The struct
 
 # Tools
 
-You have access to the `run_sql` tool to execute SELECT queries. Always use it to run SQL against {connection_display_name}; never invent results.
+You have access to the `run_sql` tool to execute SELECT queries against the {connection_display_name} ({database_type}) database.
+
+Rules for tool use:
+- ALWAYS call `run_sql` to fetch data — never invent or estimate results.
+- For every data question, call `run_sql` with a valid SELECT query, then present the results.
+- If the user's request is ambiguous (e.g. "sales" could mean internet sales, reseller sales, or total), make a reasonable assumption, execute the query, and briefly note what you assumed.
+- Only skip `run_sql` for non-data interactions (greetings, capability questions, requests to modify data).

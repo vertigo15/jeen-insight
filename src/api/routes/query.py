@@ -26,6 +26,8 @@ async def query_database(request: QueryRequest):
             user_context=request.user_context or {},
             limit=request.limit,
             temperature=request.temperature,
+            eval_analytics=request.eval_analytics,
+            llm_timeout=request.llm_timeout,
         )
         return QueryResponse(**result)
     except HTTPException:
