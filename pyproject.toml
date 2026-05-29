@@ -18,6 +18,7 @@ requires-python = ">=3.11"
 testpaths = ["tests/unit"]
 addopts = "-q --strict-markers --tb=short"
 pythonpath = ["."]
+asyncio_mode = "auto"
 markers = [
     "integration: end-to-end test that requires live services (DB, browser, LLM)",
 ]

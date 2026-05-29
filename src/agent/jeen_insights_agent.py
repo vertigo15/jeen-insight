@@ -1,32 +1,32 @@
-"""Jeen Insights agent: text-to-SQL orchestrator.
+"""Jeen Insights agent: LangGraph-based text-to-SQL orchestrator.
 
-The agent fetches curated metadata from the shared metadata DB at the start
-of every question (via `MetadataLoader`), substitutes it into the system
-prompt, calls the LLM, executes the resulting SQL against the user-selected
-data source, and writes a full lifecycle record to `insights_*` tables.
+``JeenInsightsAgent`` builds a compiled LangGraph graph on initialisation and
+invokes it for every incoming question.  The graph handles memory management,
+routing, SQL generation, validation, governance, retry recovery, result
+evaluation, response formatting, history persistence, and observability.
 
-`AgentRegistry` lazily builds one `JeenInsightsAgent` per `source_key` and
-shares the heavy collaborators (LLM service, metadata pool, history service,
-connection service) across them.
+``AgentRegistry`` lazily builds one ``JeenInsightsAgent`` per ``source_key``
+and shares the heavy collaborators (LLM services, metadata pool, history
+service, connection service, prompt loader) across them.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
 from src.agent.conversation_history import ConversationHistoryService
-from src.agent.llm_service import LangChainLlmService
-from src.agent.prompt_cache import PromptCache
+from src.agent.langgraph_agent import PromptLoader, build_graph
+from src.agent.langgraph_agent.state import AgentState
+from src.agent.llm_service import AzureOpenAILlmService
 from src.agent.user_resolver import SimpleUserResolver
+from src.config import settings
 from src.connections import Connection, ConnectionService
 from src.metadata import MetadataLoader
-from src.tools.sql_tool import PostgresSqlRunner, RunSqlTool
+from src.tools.sql_tool import PostgresSqlRunner
 
 logger = logging.getLogger(__name__)
 
@@ -35,33 +35,45 @@ logger = logging.getLogger(__name__)
 # Agent
 # ----------------------------------------------------------------------
 class JeenInsightsAgent:
-    """Per-connection text-to-SQL agent."""
+    """Per-connection text-to-SQL agent backed by a LangGraph state graph."""
 
     def __init__(
         self,
         *,
         connection: Connection,
         sql_runner: PostgresSqlRunner,
-        llm_service: LangChainLlmService,
-        prompt_cache: PromptCache,
+        llm_service: AzureOpenAILlmService,
+        router_llm_service: AzureOpenAILlmService,
         metadata_loader: MetadataLoader,
         history_service: ConversationHistoryService,
         user_resolver: SimpleUserResolver,
+        prompt_loader: PromptLoader,
     ):
         self.connection = connection
         self.source_key = connection.source_key
         self.display_name = connection.display_name
         self.database_type = connection.database_type
-        self.sql_runner = sql_runner
-        self.llm = llm_service
-        self.prompt_cache = prompt_cache
         self.metadata_loader = metadata_loader
         self.history = history_service
         self.user_resolver = user_resolver
-        self.sql_tool = RunSqlTool(
-            sql_runner,
-            connection_display_name=connection.display_name,
-            database_type=connection.database_type,
+        self.llm = llm_service           # used by charts.py + insights.py routes
+
+        self.graph = build_graph(
+            llm=llm_service,
+            router_llm=router_llm_service,
+            sql_runner=sql_runner,
+            metadata_loader=metadata_loader,
+            history_service=history_service,
+            prompt_loader=prompt_loader,
+            deployment_name=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
+            max_retries=settings.LANGGRAPH_MAX_RETRIES,
+            max_history_tokens=settings.LANGGRAPH_MAX_HISTORY_TOKENS,
+            dlp_enabled=settings.DLP_ENABLED,
+            sqlglot_validation_enabled=settings.SQLGLOT_VALIDATION_ENABLED,
+            eval_analytics_enabled=settings.EVAL_ANALYTICS_ENABLED,
+        )
+        logger.info(
+            "✅ LangGraph agent ready for source_key=%s", self.source_key
         )
 
     async def process_question(
@@ -72,179 +84,129 @@ class JeenInsightsAgent:
         user_context: Optional[Dict[str, Any]] = None,
         limit: Optional[int] = None,
         temperature: Optional[float] = None,
+        eval_analytics: Optional[bool] = None,
+        llm_timeout: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Run the text-to-SQL pipeline.
+        """Run the LangGraph text-to-SQL pipeline.
 
         ``limit`` and ``temperature`` are optional per-request overrides
-        sourced from the user's settings panel. ``None`` means "use the
-        server's default". Server-side bounds are enforced by the Pydantic
+        sourced from the user's settings panel.  ``None`` means "use the
+        server's default".  Server-side bounds are enforced by the Pydantic
         request schema.
         """
         if not session_id:
             session_id = uuid4()
 
-        query_id: Optional[UUID] = None
-        llm_latency_ms: Optional[int] = None
-
         try:
             user = await self.user_resolver.resolve_user(user_context or {})
 
-            metadata_bundle = await self.metadata_loader.load_all(self.source_key)
-            conversation_context = await self._fetch_conversation_context(session_id)
-
-            query_id = await self.history.log_query(
-                user_id=user.id,
-                source_key=self.source_key,
-                session_id=session_id,
-                natural_language_query=question,
-                dataset_id=self.source_key,
-                rag_context=self._summarize_metadata(metadata_bundle),
+            # ── Parallel DB round-trips ──────────────────────────────────────
+            # metadata_loader, conversation history, and query audit log are
+            # all independent — run them concurrently to save ~1-2s of Azure
+            # network latency on every request.
+            #
+            # log_query is non-fatal: if the audit insert fails (e.g. DB
+            # hiccup) the flow continues with query_id=None and the error is
+            # surfaced in the UI via formatted_response["error"].
+            results = await asyncio.gather(
+                self.metadata_loader.load_all(self.source_key),
+                self._fetch_conversation_context(session_id),
+                self._safe_log_query(
+                    user_id=user.id,
+                    session_id=session_id,
+                    question=question,
+                ),
+                return_exceptions=True,
             )
 
-            # Load system prompt and optional per-prompt model override from
-            # cache (DB on first access, in-memory on subsequent calls).
-            prompt_template = await self.prompt_cache.get_content("jeen_insights_system")
-            model_override = await self.prompt_cache.get_model_override("jeen_insights_system")
-            system_prompt = self._build_system_prompt(prompt_template, metadata_bundle)
-
-            messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
-            for prev_qa in conversation_context:
-                if prev_qa.get("natural_language_query") and prev_qa.get("generated_sql"):
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": prev_qa["natural_language_query"],
-                        }
-                    )
-                    messages.append(
-                        {
-                            "role": "assistant",
-                            "content": prev_qa["generated_sql"],
-                        }
-                    )
-            messages.append({"role": "user", "content": question})
-
-            tools = [self.sql_tool.get_schema()]
-
-            structured_prompt = {
-                "tables": metadata_bundle.get("tables", ""),
-                "columns": metadata_bundle.get("columns", ""),
-                "relationships": metadata_bundle.get("relationships", ""),
-                "sources": metadata_bundle.get("sources", ""),
-                "knowledge_pairs": metadata_bundle.get("knowledge_pairs", ""),
-                "business_terms": metadata_bundle.get("business_terms", ""),
-                "tool_description": tools[0] if tools else None,
-                "conversation_history": [
-                    {
-                        "question": prev.get("natural_language_query"),
-                        "sql": prev.get("generated_sql"),
-                    }
-                    for prev in conversation_context
-                    if prev.get("natural_language_query") and prev.get("generated_sql")
-                ],
-                "current_question": question,
-                "full_text": system_prompt,
-                "connection": {
-                    "source_key": self.source_key,
-                    "display_name": self.display_name,
-                    "database_type": self.database_type,
-                },
-            }
-
-            llm_start = time.time()
-            # Per-request temperature override (clamped 0.0–1.0 by the request
-            # schema). Falls back to the centralised QUERY_PARAMS default.
-            from src.api.llm_params import QUERY_PARAMS
-
-            effective_temperature = (
-                temperature if temperature is not None else QUERY_PARAMS.temperature
+            # Unpack — keep going even if individual calls errored
+            metadata_bundle: Dict[str, str] = (
+                results[0] if not isinstance(results[0], Exception) else {}
             )
-            response = await self.llm.generate(
-                messages=messages,
-                temperature=effective_temperature,
-                max_tokens=QUERY_PARAMS.max_tokens,
-                tools=tools,
-                model_override=model_override,
+            conversation_context: List[Dict[str, Any]] = (
+                results[1] if not isinstance(results[1], Exception) else []
             )
-            llm_latency_ms = int((time.time() - llm_start) * 1000)
+            query_id = (
+                results[2] if not isinstance(results[2], Exception) else None
+            )
 
-            usage = response.get("usage") or {}
-            result: Dict[str, Any] = {
+            # Surface non-fatal pre-graph errors for observability
+            pre_graph_error: Optional[str] = None
+            if isinstance(results[0], Exception):
+                pre_graph_error = f"Metadata load failed: {results[0]}"
+                logger.error("metadata_loader.load_all failed: %s", results[0])
+            if isinstance(results[1], Exception):
+                logger.warning("_fetch_conversation_context failed: %s", results[1])
+            if isinstance(results[2], Exception):
+                pre_graph_error = pre_graph_error or f"Audit log failed: {results[2]}"
+                logger.warning("log_query failed (non-fatal): %s", results[2])
+
+            initial_state: AgentState = {
+                # ── Input ───────────────────────────────────────────────
                 "question": question,
-                "query_id": query_id,
                 "session_id": session_id,
-                "sql": None,
-                "results": None,
-                "prompt": structured_prompt,
-                "error": None,
-                "metrics": {
-                    "input_tokens": usage.get("prompt_tokens"),
-                    "output_tokens": usage.get("completion_tokens"),
-                    "total_tokens": usage.get("total_tokens"),
-                    "llm_latency_ms": llm_latency_ms,
-                },
+                "source_key": self.source_key,
+                "user_context": user_context or {},
+                "limit": limit,
+                "temperature": temperature,
+                # ── Connection ──────────────────────────────────────────
+                "connection_display_name": self.display_name,
+                "database_type": self.database_type,
+                # ── Audit ───────────────────────────────────────────────
+                "query_id": query_id,
+                "user_id": str(user.id),
+                "start_time": time.monotonic(),
+                "llm_call_count": 0,
+                "llm_latency_ms": 0,
+                "token_usage": {},
+                # ── Memory ──────────────────────────────────────────────
+                "conversation_history": conversation_context,
+                "memory_summary": None,
+                "is_over_budget": False,
+                # ── Routing ─────────────────────────────────────────────
+                "route": "needs_query",
+                "route_reason": "",
+                # ── Catalog ─────────────────────────────────────────────
+                "metadata_bundle": metadata_bundle,
+                "known_tables": [],
+                # ── SQL loop ────────────────────────────────────────────
+                "retry_count": 0,
+                "generated_sql": None,
+                "clarification": None,
+                "error_context": None,
+                # ── Validation ──────────────────────────────────────────
+                "sqlglot_error": None,
+                "dlp_blocked": False,
+                "governance_error": None,
+                # ── Execution ───────────────────────────────────────────
+                "query_result": None,
+                "exec_error": None,
+                "execution_time_ms": None,
+                # ── Evaluation ──────────────────────────────────────────
+                "is_trivial": False,
+                "eval_result": None,
+                # ── Feedback ────────────────────────────────────────────
+                "feedback_type": None,
+                # ── Per-request overrides ──────────────────────────────────────
+                "eval_analytics_override": eval_analytics,
+                "llm_timeout_seconds": llm_timeout,
+                # Empty list — operator.add in AgentState accumulates across nodes
+                "trace": [],
+                # ── Output ──────────────────────────────────────────────
+                "answer": None,
+                # Surface pre-graph errors (e.g. audit log failure) in the UI
+                # response without stopping the query flow.
+                "error": pre_graph_error,
             }
 
-            sql = self._extract_sql(response)
-            if sql:
-                result["sql"] = sql
-                await self.history.update_llm_response(
-                    query_id=query_id,
-                    generated_sql=sql,
-                    llm_model=self.llm.get_deployment(),
-                    llm_latency_ms=llm_latency_ms or 0,
-                    tokens_used=response.get("usage", {}).get("total_tokens", 0),
-                )
-
-                exec_start = time.time()
-                # Per-request row cap; sql_runner falls back to its built-in
-                # default (100) when None is passed.
-                query_result = await self.sql_runner.run_sql(
-                    sql, limit=limit if limit is not None else 100
-                )
-                exec_time_ms = int((time.time() - exec_start) * 1000)
-                result["results"] = query_result
-
-                if "error" in query_result:
-                    await self.history.update_execution(
-                        query_id=query_id,
-                        execution_status="error",
-                        execution_time_ms=exec_time_ms,
-                        row_count=0,
-                        result_preview=None,
-                        error_message=query_result["error"],
-                    )
-                    result["error"] = query_result["error"]
-                else:
-                    rows = query_result.get("rows", [])
-                    await self.history.update_execution(
-                        query_id=query_id,
-                        execution_status="success",
-                        execution_time_ms=exec_time_ms,
-                        row_count=len(rows),
-                        result_preview=rows[:10] if rows else None,
-                        error_message=None,
-                    )
-
-            return result
+            final_state = await self.graph.ainvoke(initial_state)
+            return final_state.get("formatted_response") or {}
 
         except Exception as e:  # noqa: BLE001
-            logger.exception("Error processing question")
-            if query_id:
-                try:
-                    await self.history.update_execution(
-                        query_id=query_id,
-                        execution_status="error",
-                        execution_time_ms=None,
-                        row_count=0,
-                        result_preview=None,
-                        error_message=str(e),
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception("Failed to log error to history")
+            logger.exception("Error processing question via LangGraph")
             return {
                 "question": question,
-                "query_id": query_id,
+                "query_id": None,
                 "session_id": session_id,
                 "sql": None,
                 "results": None,
@@ -256,6 +218,24 @@ class JeenInsightsAgent:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+    async def _safe_log_query(
+        self,
+        *,
+        user_id: Any,
+        session_id: UUID,
+        question: str,
+    ) -> Optional[UUID]:
+        """Insert the query audit record.  Returns the new query_id or raises
+        so the caller (``asyncio.gather``) can handle the failure gracefully."""
+        return await self.history.log_query(
+            user_id=user_id,
+            source_key=self.source_key,
+            session_id=session_id,
+            natural_language_query=question,
+            dataset_id=self.source_key,
+            rag_context={},  # metadata not yet available; parallel fetch
+        )
+
     async def _fetch_conversation_context(self, session_id: UUID) -> List[Dict[str, Any]]:
         try:
             ctx = await self.history.get_conversation_context(
@@ -273,84 +253,37 @@ class JeenInsightsAgent:
             logger.exception("Failed to fetch conversation context")
             return []
 
-    def _build_system_prompt(self, template: str, metadata_bundle: Dict[str, str]) -> str:
-        """Render the system prompt template with live metadata."""
-        return template.format(
-            connection_display_name=self.display_name,
-            database_type=self.database_type,
-            tables=metadata_bundle.get("tables", ""),
-            columns=metadata_bundle.get("columns", ""),
-            relationships=metadata_bundle.get("relationships", ""),
-            sources=metadata_bundle.get("sources", ""),
-            knowledge_pairs=metadata_bundle.get("knowledge_pairs", ""),
-            business_terms=metadata_bundle.get("business_terms", ""),
-        )
-
     def _summarize_metadata(self, bundle: Dict[str, str]) -> Dict[str, int]:
         return {
             key: len([line for line in value.splitlines() if line.startswith("- ")])
             for key, value in bundle.items()
         }
 
-    def _extract_sql(self, response: Dict[str, Any]) -> Optional[str]:
-        # Tool call path
-        tool_calls = response.get("tool_calls") or []
-        for tc in tool_calls:
-            if tc.get("function", {}).get("name") == "run_sql":
-                try:
-                    args = json.loads(tc["function"]["arguments"])
-                except (KeyError, json.JSONDecodeError):
-                    continue
-                sql = args.get("sql")
-                if sql:
-                    return sql
-
-        # Fallback: parse SQL out of the assistant text
-        text = response.get("content") or ""
-        if not text:
-            return None
-        if "```sql" in text.lower():
-            start = text.lower().find("```sql") + len("```sql")
-            end = text.find("```", start)
-            if end > start:
-                return text[start:end].strip()
-        if "SELECT" in text.upper():
-            lines = text.splitlines()
-            sql_lines: List[str] = []
-            in_sql = False
-            for line in lines:
-                if "SELECT" in line.upper():
-                    in_sql = True
-                if in_sql:
-                    sql_lines.append(line)
-                    if ";" in line:
-                        break
-            return "\n".join(sql_lines).strip() or None
-        return None
-
 
 # ----------------------------------------------------------------------
 # Registry
 # ----------------------------------------------------------------------
 class AgentRegistry:
-    """Lazily builds one `JeenInsightsAgent` per `source_key`."""
+    """Lazily builds one ``JeenInsightsAgent`` per ``source_key``."""
 
     def __init__(
         self,
         *,
-        llm_service: LangChainLlmService,
-        prompt_cache: PromptCache,
+        llm_service: AzureOpenAILlmService,
+        router_llm_service: AzureOpenAILlmService,
         metadata_loader: MetadataLoader,
         connection_service: ConnectionService,
         history_service: ConversationHistoryService,
         user_resolver: SimpleUserResolver,
+        prompt_loader: PromptLoader,
     ):
         self.llm = llm_service
-        self.prompt_cache = prompt_cache
+        self.router_llm = router_llm_service
         self.metadata_loader = metadata_loader
         self.connection_service = connection_service
         self.history = history_service
         self.user_resolver = user_resolver
+        self.prompt_loader = prompt_loader
         self._agents: Dict[str, JeenInsightsAgent] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
 
@@ -367,10 +300,11 @@ class AgentRegistry:
                 connection=connection,
                 sql_runner=runner,
                 llm_service=self.llm,
-                prompt_cache=self.prompt_cache,
+                router_llm_service=self.router_llm,
                 metadata_loader=self.metadata_loader,
                 history_service=self.history,
                 user_resolver=self.user_resolver,
+                prompt_loader=self.prompt_loader,
             )
             self._agents[source_key] = agent
             logger.info("✅ Built JeenInsightsAgent for source_key=%s", source_key)

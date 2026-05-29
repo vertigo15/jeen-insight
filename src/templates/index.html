@@ -301,6 +301,7 @@
             <button class="prompt-tab" onclick="switchPromptTab('query')" id="tab-query" role="tab" aria-selected="false" aria-controls="content-query">Query Prompt</button>
             <button class="prompt-tab" onclick="switchPromptTab('insights')" id="tab-insights" role="tab" aria-selected="false" aria-controls="content-insights">Insights Prompt</button>
             <button class="prompt-tab" onclick="switchPromptTab('chart')" id="tab-chart" role="tab" aria-selected="false" aria-controls="content-chart">Chart Prompt</button>
+            <button class="prompt-tab" onclick="switchPromptTab('trace')" id="tab-trace" role="tab" aria-selected="false" aria-controls="content-trace">⏱ Trace</button>
         </div>
         <div class="prompt-tab-content" style="display: none;">
             <div id="content-sql" class="tab-pane active" role="tabpanel" aria-labelledby="tab-sql">
@@ -323,6 +324,11 @@
             <div id="content-chart" class="tab-pane" style="display: none;" role="tabpanel" aria-labelledby="tab-chart">
                 <div id="chart-prompt-content" class="prompt-content">
                     <p style="color: var(--color-faint);">Chart prompt will appear here after a chart is generated.</p>
+                </div>
+            </div>
+            <div id="content-trace" class="tab-pane" style="display: none;" role="tabpanel" aria-labelledby="tab-trace">
+                <div id="trace-panel" class="trace-panel">
+                    <p class="trace-empty">Run a query to see the execution trace.</p>
                 </div>
             </div>
         </div>

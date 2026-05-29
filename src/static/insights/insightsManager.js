@@ -33,7 +33,16 @@ class InsightsManager {
         }
 
         const connection = (typeof getActiveConnection === 'function') ? getActiveConnection() : '';
-        const requestBody = { connection, dataset: results, question };
+
+        // Cap the rows sent to the LLM — insights don't need the full dataset,
+        // just a representative sample. Sending hundreds of rows bloats the
+        // prompt and slows Azure OpenAI significantly.
+        const MAX_INSIGHT_ROWS = 20;
+        const cappedResults = results && results.rows && results.rows.length > MAX_INSIGHT_ROWS
+            ? { ...results, rows: results.rows.slice(0, MAX_INSIGHT_ROWS), row_count: MAX_INSIGHT_ROWS }
+            : results;
+
+        const requestBody = { connection, dataset: cappedResults, question };
         if (queryId) requestBody.query_id = queryId;
         // Forward the SQL so the server can use the LangGraph eval node.
         if (sql) requestBody.sql = sql;
@@ -68,6 +77,7 @@ class InsightsManager {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
             body: JSON.stringify(requestBody),
+            signal: AbortSignal.timeout(90000),  // 90s — previously had NO timeout
         });
         if (!response.ok || !response.body) {
             throw new Error(`Stream returned ${response.status}: ${response.statusText}`);
@@ -153,7 +163,7 @@ class InsightsManager {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody),
-            signal: AbortSignal.timeout(30000),
+            signal: AbortSignal.timeout(90000),  // 90s — matches server LLM timeout
         });
         if (!response.ok) {
             throw new Error(`API returned ${response.status}: ${response.statusText}`);
@@ -331,6 +341,11 @@ class InsightsManager {
         if (!insights.prompt) {
             promptContent.innerHTML = '<p style="color: #999;">No prompt available</p>';
             return;
+        }
+
+        // Light up the </> button badge so the user knows there's content to view
+        if (typeof window._devDrawerShowBadge === 'function') {
+            window._devDrawerShowBadge();
         }
         
         // Parse the prompt into sections

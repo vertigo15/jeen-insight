@@ -25,14 +25,24 @@ class QueryRequest(BaseModel):
     # Bounds are server-enforced so the UI can't widen them.
     limit: Optional[int] = Field(default=None, ge=1, le=10_000)
     temperature: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    # Per-request LangGraph overrides.
+    # eval_analytics: None = use server default (EVAL_ANALYTICS_ENABLED);
+    #   False = skip fused_eval_analytics so the caller can run it separately
+    #   (UI shows table first, then requests insights in a background call).
+    eval_analytics: Optional[bool] = None
+    # llm_timeout: override LLM_TIMEOUT_SECONDS for this single request.
+    llm_timeout: Optional[int] = Field(default=None, ge=0, le=300)
 
 
 class QueryResponse(BaseModel):
+    model_config = {"arbitrary_types_allowed": True}
+
     question: str
     query_id: Optional[UUID] = None
     session_id: Optional[UUID] = None
     sql: Optional[str]
     results: Optional[Dict[str, Any]]
+    answer: Optional[str] = None
     prompt: Optional[Dict[str, Any]] = None
     error: Optional[str]
     # Per-request metrics surfaced to the UI:
@@ -40,6 +50,8 @@ class QueryResponse(BaseModel):
     #   - llm_latency_ms: total time spent inside llm.generate (not TTFT;
     #     real TTFT requires streaming, which we don't do today)
     metrics: Optional[Dict[str, Any]] = None
+    # Per-node execution trace. Each entry: {node, elapsed_ms, icon, type, detail, ...}
+    trace: Optional[List[Dict[str, Any]]] = None
 
 
 class ColumnInfo(BaseModel):
