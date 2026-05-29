@@ -56,6 +56,7 @@ class JeenInsightsAgent:
         self.metadata_loader = metadata_loader
         self.history = history_service
         self.user_resolver = user_resolver
+        self.llm = llm_service           # used by charts.py + insights.py routes
 
         self.graph = build_graph(
             llm=llm_service,
@@ -83,6 +84,8 @@ class JeenInsightsAgent:
         user_context: Optional[Dict[str, Any]] = None,
         limit: Optional[int] = None,
         temperature: Optional[float] = None,
+        eval_analytics: Optional[bool] = None,
+        llm_timeout: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Run the LangGraph text-to-SQL pipeline.
 
@@ -184,6 +187,11 @@ class JeenInsightsAgent:
                 "eval_result": None,
                 # ── Feedback ────────────────────────────────────────────
                 "feedback_type": None,
+                # ── Per-request overrides ──────────────────────────────────────
+                "eval_analytics_override": eval_analytics,
+                "llm_timeout_seconds": llm_timeout,
+                # Empty list — operator.add in AgentState accumulates across nodes
+                "trace": [],
                 # ── Output ──────────────────────────────────────────────
                 "answer": None,
                 # Surface pre-graph errors (e.g. audit log failure) in the UI

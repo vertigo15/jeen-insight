@@ -79,6 +79,7 @@ def make_fused_eval_analytics(llm: AzureOpenAILlmService, prompt_loader: PromptL
             ],
             temperature=0.2,
             max_tokens=600,
+            timeout=state.get("llm_timeout_seconds"),
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
 

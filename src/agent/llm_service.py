@@ -34,6 +34,7 @@ class AzureOpenAILlmService:
         temperature: float = 0.3,
         max_tokens: int = 4096,
         tools: Optional[List[Dict]] = None,
+        timeout: Optional[int] = None,  # per-call override of self.timeout_seconds
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -69,8 +70,10 @@ class AzureOpenAILlmService:
             lambda: self.client.chat.completions.create(**params)
         )
 
-        if self.timeout_seconds > 0:
-            response = await asyncio.wait_for(coro, timeout=self.timeout_seconds)
+        # Per-call timeout override (from request) takes priority over instance default.
+        effective_timeout = timeout if timeout is not None else self.timeout_seconds
+        if effective_timeout > 0:
+            response = await asyncio.wait_for(coro, timeout=effective_timeout)
         else:
             response = await coro
         

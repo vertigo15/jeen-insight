@@ -21,7 +21,8 @@ Field groups:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import operator
+from typing import Annotated, Any, Dict, List, Optional
 from uuid import UUID
 
 from typing_extensions import TypedDict
@@ -89,7 +90,17 @@ class AgentState(TypedDict, total=False):
     # Values: syntax | missing_table | exec | semantic | exhausted
     feedback_type: Optional[str]
 
-    # ── Output ────────────────────────────────────────────────────────────
+    # ── Per-request overrides (set by process_question from API request) ────
+    # None = use compiled graph / server defaults.
+    eval_analytics_override: Optional[bool]   # overrides EVAL_ANALYTICS_ENABLED
+    llm_timeout_seconds: Optional[int]        # overrides LLM_TIMEOUT_SECONDS per call
+
+    # ── Execution trace (accumulates across every node) ────────────────────
+    # Each node appends one event dict.  ``operator.add`` tells LangGraph to
+    # concatenate lists rather than overwrite, so the full history is preserved.
+    trace: Annotated[List[Dict[str, Any]], operator.add]
+
+    # ── Output ────────────────────────────────────────────────────────────────
     answer: Optional[str]
     formatted_response: Dict[str, Any]
     error: Optional[str]

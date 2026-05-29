@@ -112,9 +112,12 @@ def make_sql_generator(llm: AzureOpenAILlmService, prompt_loader: PromptLoader):
         # Build the message list
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
-        # Prior Q&As as proper tool-call / tool-result pairs
-        for qa in history:
+        # Prior Q&As as proper tool-call / tool-result pairs.
+        # Azure OpenAI requires every assistant message with tool_calls to be
+        # immediately followed by a tool message for each tool_call_id.
+        for i, qa in enumerate(history):
             if qa.get("natural_language_query") and qa.get("generated_sql"):
+                call_id = f"prev_call_{i}"  # unique per turn
                 messages.append({"role": "user", "content": qa["natural_language_query"]})
                 messages.append(
                     {
@@ -122,7 +125,7 @@ def make_sql_generator(llm: AzureOpenAILlmService, prompt_loader: PromptLoader):
                         "content": None,
                         "tool_calls": [
                             {
-                                "id": "prev_call",
+                                "id": call_id,
                                 "type": "function",
                                 "function": {
                                     "name": "run_sql",
@@ -130,6 +133,15 @@ def make_sql_generator(llm: AzureOpenAILlmService, prompt_loader: PromptLoader):
                                 },
                             }
                         ],
+                    }
+                )
+                # Required: tool result message for the tool_call above.
+                # Azure 400s if this is missing.
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": "Query executed successfully.",
                     }
                 )
 
@@ -156,6 +168,7 @@ def make_sql_generator(llm: AzureOpenAILlmService, prompt_loader: PromptLoader):
             temperature=effective_temperature,
             max_tokens=QUERY_PARAMS.max_tokens,
             tools=tools,
+            timeout=state.get("llm_timeout_seconds"),
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
 
@@ -233,6 +246,7 @@ def make_memory_answer_generator(llm: AzureOpenAILlmService, prompt_loader: Prom
             ],
             temperature=0.1,
             max_tokens=400,
+            timeout=state.get("llm_timeout_seconds"),
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
 

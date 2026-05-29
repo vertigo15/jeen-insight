@@ -45,7 +45,10 @@ Graph topology (simplified):
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
+import time
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -77,6 +80,57 @@ from src.metadata import MetadataLoader
 from src.tools.sql_tool import PostgresSqlRunner
 
 logger = logging.getLogger(__name__)
+
+
+# ── Node metadata for the trace panel ────────────────────────────────────────
+# (icon, type)  type is one of: llm | db | logic
+_NODE_META: dict[str, tuple[str, str]] = {
+    "memory_shrink_check":     ("🧠", "logic"),
+    "memory_summarizer":       ("🤏", "llm"),
+    "fused_router":            ("🔀", "llm"),
+    "memory_answer_generator": ("💬", "llm"),
+    "catalog_lookup":          ("📦", "db"),
+    "prompt_builder":          ("🔧", "logic"),
+    "sql_generator":           ("🧠", "llm"),
+    "sqlglot_validate":        ("✅", "logic"),
+    "dlp_check":               ("🛡", "logic"),
+    "execute_query":           ("▶", "db"),
+    "trivial_result_check":    ("⚡", "logic"),
+    "fused_eval_analytics":    ("📊", "llm"),
+    "feedback_classifier":     ("🔁", "logic"),
+    "response_formatter":      ("📋", "logic"),
+    "save_to_memory":          ("💾", "db"),
+    "observability_log":       ("🪵", "logic"),
+}
+
+
+def _timed(name: str, fn: Any) -> Any:
+    """Wrap a node function so it appends a timing event to ``AgentState.trace``.
+
+    Each wrapped node returns ``{"trace": [event]}`` in addition to its own
+    updates. LangGraph's ``operator.add`` reducer on the ``trace`` field
+    concatenates these single-event lists into the full execution history.
+    """
+    icon, ntype = _NODE_META.get(name, ("●", "logic"))
+
+    if asyncio.iscoroutinefunction(fn):
+        async def _async_wrapper(state):
+            t0 = time.monotonic()
+            result = await fn(state)
+            elapsed = round((time.monotonic() - t0) * 1000)
+            out = {} if result is None else dict(result)
+            out["trace"] = [{"node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype}]
+            return out
+        return _async_wrapper
+    else:
+        def _sync_wrapper(state):
+            t0 = time.monotonic()
+            result = fn(state)
+            elapsed = round((time.monotonic() - t0) * 1000)
+            out = {} if result is None else dict(result)
+            out["trace"] = [{"node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype}]
+            return out
+        return _sync_wrapper
 
 
 # ── Graph builder ─────────────────────────────────────────────────────────────
@@ -134,23 +188,26 @@ def build_graph(
     """
     builder: StateGraph = StateGraph(AgentState)
 
-    # ── Register nodes ────────────────────────────────────────────────────
-    builder.add_node("memory_shrink_check", make_memory_shrink_check(max_history_tokens))
-    builder.add_node("memory_summarizer", make_memory_summarizer(router_llm, prompt_loader))
-    builder.add_node("fused_router", make_fused_router(router_llm, prompt_loader))
-    builder.add_node("memory_answer_generator", make_memory_answer_generator(router_llm, prompt_loader))
-    builder.add_node("catalog_lookup", make_catalog_lookup(metadata_loader))
-    builder.add_node("prompt_builder", make_prompt_builder(prompt_loader))
-    builder.add_node("sql_generator", make_sql_generator(llm, prompt_loader))
-    builder.add_node("sqlglot_validate", make_sqlglot_validate(sqlglot_validation_enabled))
-    builder.add_node("dlp_check", make_dlp_check(dlp_enabled))
-    builder.add_node("execute_query", make_execute_query(sql_runner))
-    builder.add_node("trivial_result_check", trivial_result_check)
-    builder.add_node("fused_eval_analytics", make_fused_eval_analytics(llm, prompt_loader))
-    builder.add_node("feedback_classifier", make_feedback_classifier(max_retries))
-    builder.add_node("response_formatter", response_formatter)
-    builder.add_node("save_to_memory", make_save_to_memory(history_service, deployment_name))
-    builder.add_node("observability_log", observability_log)
+    # ── Register nodes (all wrapped with _timed for execution trace) ────────
+    def n(name, fn):  # shorthand: wrap + register
+        builder.add_node(name, _timed(name, fn))
+
+    n("memory_shrink_check",     make_memory_shrink_check(max_history_tokens))
+    n("memory_summarizer",       make_memory_summarizer(router_llm, prompt_loader))
+    n("fused_router",            make_fused_router(router_llm, prompt_loader))
+    n("memory_answer_generator", make_memory_answer_generator(router_llm, prompt_loader))
+    n("catalog_lookup",          make_catalog_lookup(metadata_loader))
+    n("prompt_builder",          make_prompt_builder(prompt_loader))
+    n("sql_generator",           make_sql_generator(llm, prompt_loader))
+    n("sqlglot_validate",        make_sqlglot_validate(sqlglot_validation_enabled))
+    n("dlp_check",               make_dlp_check(dlp_enabled))
+    n("execute_query",           make_execute_query(sql_runner))
+    n("trivial_result_check",    trivial_result_check)
+    n("fused_eval_analytics",    make_fused_eval_analytics(llm, prompt_loader))
+    n("feedback_classifier",     make_feedback_classifier(max_retries))
+    n("response_formatter",      response_formatter)
+    n("save_to_memory",          make_save_to_memory(history_service, deployment_name))
+    n("observability_log",       observability_log)
 
     # ── Edges ─────────────────────────────────────────────────────────────
     builder.add_edge(START, "memory_shrink_check")
@@ -226,9 +283,12 @@ def _route_from_execute(state: AgentState) -> str:
 
 
 def _make_route_from_trivial(eval_enabled: bool):
-    """Return a routing function that respects the eval_analytics_enabled flag."""
+    """Return a routing function that respects both the compiled flag and per-request override."""
     def _route_from_trivial(state: AgentState) -> str:
-        if state.get("is_trivial") or not eval_enabled:
+        # Per-request override (from UI) takes priority over the compiled default.
+        per_request = state.get("eval_analytics_override")
+        effective_eval = per_request if per_request is not None else eval_enabled
+        if state.get("is_trivial") or not effective_eval:
             return "response_formatter"
         return "fused_eval_analytics"
     return _route_from_trivial

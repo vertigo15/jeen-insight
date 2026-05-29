@@ -80,6 +80,7 @@ def make_memory_summarizer(llm: AzureOpenAILlmService, prompt_loader: PromptLoad
             ],
             temperature=0.1,
             max_tokens=300,
+            timeout=state.get("llm_timeout_seconds"),
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
 
