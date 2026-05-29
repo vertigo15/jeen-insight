@@ -1049,14 +1049,25 @@ label {
 .insights-suggestions { padding: var(--space-3) var(--space-4); background: var(--color-success-bg); border-left: 3px solid var(--color-success); border-radius: 0 var(--radius-md) var(--radius-md) 0; }
 .insights-suggestions strong { display: block; margin-bottom: var(--space-2); color: var(--color-text); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
 
-/* ── Follow-up questions chip grid ───────────────────────────────── */
+/* ── Follow-up questions chip list ─────────────────────────────────── */
 .follow-up-section { padding-top: var(--space-3); }
-.follow-up-label { font-size: var(--text-xs); font-weight: 600; letter-spacing: 0.06em; color: var(--color-muted); margin-bottom: var(--space-2); text-transform: uppercase; }
-.follow-up-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
-.follow-up-chip {
-  display: flex; align-items: center; justify-content: space-between;
+.follow-up-label {
+  font-size: var(--text-xs); font-weight: 600; letter-spacing: 0.06em;
+  color: var(--color-muted); margin-bottom: var(--space-2); text-transform: uppercase;
+}
+/* Single-column stack — each question on its own row, text wraps freely */
+.follow-up-grid {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  padding: 11px 13px;
+}
+.follow-up-chip {
+  display: flex;
+  align-items: flex-start;   /* top-align arrow with first line of text */
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
   background: var(--color-surface);
   border: 1px solid var(--color-border-2);
   border-radius: 10px;
@@ -1066,7 +1077,7 @@ label {
   color: var(--color-text);
   font-size: var(--text-sm);
   font-family: inherit;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 .follow-up-chip:hover {
   border-color: var(--color-accent);
@@ -1074,8 +1085,17 @@ label {
   box-shadow: 0 1px 4px oklch(0% 0 0 / 0.06);
 }
 .follow-up-chip:active { background: var(--color-surface-3); }
-.follow-up-chip-text { flex: 1; }
-.follow-up-chip-arrow { flex-shrink: 0; font-size: var(--text-base); color: var(--color-faint); transition: color 0.12s, transform 0.12s; }
+.follow-up-chip-text {
+  flex: 1;
+  white-space: normal;   /* allow wrapping */
+  word-break: break-word;
+}
+.follow-up-chip-arrow {
+  flex-shrink: 0;
+  margin-top: 2px;        /* nudge arrow to align with first text line */
+  font-size: var(--text-base); color: var(--color-faint);
+  transition: color 0.12s, transform 0.12s;
+}
 .follow-up-chip:hover .follow-up-chip-arrow { color: var(--color-accent); transform: translateX(2px); }
 .insights-loading { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); }
 .insights-loading p { display: none; }

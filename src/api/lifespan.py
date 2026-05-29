@@ -96,36 +96,54 @@ async def _warm_caches(
 
 
 async def _seed_prompts(conn) -> None:
-    """Insert a default v1 row for every registered prompt that has no active
-    row yet.  Idempotent: never touches rows that already exist.
+    """Seed and refresh default prompts in the DB.
+
+    - Inserts a v1 row for any prompt that has no active row yet.
+    - Updates the content of non-custom rows whose file has changed since the
+      row was last written (e.g. after a code update).  Custom rows are never
+      touched so user edits are always preserved.
     """
     # Import here to avoid a circular import at module load time.
     from src.api.routes.settings import PROMPT_REGISTRY
 
-    seeded = 0
+    seeded = updated = 0
     for entry in PROMPT_REGISTRY:
         place = entry["name"]
-        exists = await conn.fetchval(
-            "SELECT 1 FROM insights_prompts WHERE prompt_place = $1 AND is_active = true",
+        path  = entry["path"]
+        file_content = path.read_text(encoding="utf-8") if path.exists() else ""
+
+        row = await conn.fetchrow(
+            "SELECT id, content, is_custom "
+            "FROM insights_prompts WHERE prompt_place = $1 AND is_active = true",
             place,
         )
-        if exists:
-            continue
-        path = entry["path"]
-        content = path.read_text(encoding="utf-8") if path.exists() else ""
-        await conn.execute(
-            """
-            INSERT INTO insights_prompts
-                (prompt_place, content, version, is_active, is_custom, model_id)
-            VALUES ($1, $2, 1, true, false, NULL)
-            """,
-            place,
-            content,
-        )
-        seeded += 1
+
+        if not row:
+            # New prompt — insert default v1 row.
+            await conn.execute(
+                """
+                INSERT INTO insights_prompts
+                    (prompt_place, content, version, is_active, is_custom, model_id)
+                VALUES ($1, $2, 1, true, false, NULL)
+                """,
+                place,
+                file_content,
+            )
+            seeded += 1
+        elif not row["is_custom"] and row["content"] != file_content:
+            # Default row whose source file was updated — refresh in place.
+            await conn.execute(
+                "UPDATE insights_prompts SET content = $1, updated_at = NOW() "
+                "WHERE id = $2",
+                file_content,
+                row["id"],
+            )
+            updated += 1
 
     if seeded:
         logger.info("startup: seeded %d prompt row(s) in insights_prompts", seeded)
+    if updated:
+        logger.info("startup: refreshed %d default prompt row(s) from updated files", updated)
 
 
 @asynccontextmanager
@@ -172,7 +190,24 @@ async def lifespan(_app: FastAPI):
         user_resolver=SimpleUserResolver(),
     )
 
-    # ── Pre-warm caches (metadata + system prompt) for all connections ────────
+    # ── Build LangGraph insights eval subgraph ────────────────────────────
+    try:
+        from src.agent.langgraph_agent import build_insights_eval_graph
+        state.insights_eval_graph = build_insights_eval_graph(
+            llm_service, state.prompt_cache
+        )
+        logger.info("✅ insights_eval_graph ready")
+    except ImportError:
+        logger.warning(
+            "startup: langgraph not installed — insights eval graph disabled. "
+            "Add 'langgraph>=0.2.0' to requirements.txt and rebuild the image."
+        )
+        state.insights_eval_graph = None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("startup: insights_eval_graph build failed: %s", exc)
+        state.insights_eval_graph = None
+
+    # ── Pre-warm caches (metadata + system prompt) for all connections ────
     await _warm_caches(state.metadata_loader, state.connection_service, state.prompt_cache)
 
     logger.info("✅ Jeen Insights ready")
@@ -188,5 +223,6 @@ async def lifespan(_app: FastAPI):
         state.metadata_loader  = None
         state.connection_service = None
         state.history_service  = None
-        state.llm_service      = None
-        state.prompt_cache     = None
+        state.llm_service          = None
+        state.prompt_cache         = None
+        state.insights_eval_graph  = None

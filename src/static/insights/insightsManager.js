@@ -16,11 +16,16 @@ class InsightsManager {
      * Streams the LLM response via SSE for real TTFT + progressive UX.
      * Falls back to the non-streaming endpoint on transport failure.
      *
+     * When `sql` is provided the server routes the request through the
+     * LangGraph eval node (fused_eval_analytics) which returns richer
+     * follow-up questions alongside the summary and findings.
+     *
      * @param {Object} results - Query results with rows and columns
      * @param {string} question - Original user question
-     * @param {string} queryId - Query ID for linking to history (optional)
+     * @param {string|null} queryId - Query ID for linking to history (optional)
+     * @param {string|null} sql - SQL that produced the results (optional)
      */
-    async generateInsights(results, question, queryId = null) {
+    async generateInsights(results, question, queryId = null, sql = null) {
         const container = document.getElementById('insights-container');
         if (!container) {
             console.error('[InsightsManager] Insights container not found');
@@ -30,6 +35,8 @@ class InsightsManager {
         const connection = (typeof getActiveConnection === 'function') ? getActiveConnection() : '';
         const requestBody = { connection, dataset: results, question };
         if (queryId) requestBody.query_id = queryId;
+        // Forward the SQL so the server can use the LangGraph eval node.
+        if (sql) requestBody.sql = sql;
 
         this.showStreamingPlaceholder(container);
         this.state.isLoading = true;

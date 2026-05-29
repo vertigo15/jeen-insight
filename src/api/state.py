@@ -27,3 +27,5 @@ connection_service: Optional[ConnectionService] = None
 history_service: Optional[ConversationHistoryService] = None
 llm_service: Optional[LangChainLlmService] = None
 prompt_cache: Optional[PromptCache] = None
+# Compiled LangGraph eval subgraph; None when langgraph is not installed.
+insights_eval_graph: Optional[object] = None

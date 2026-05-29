@@ -311,7 +311,7 @@ function displayResults(data) {
         // Generate insights in parallel (non-blocking) — gated by user preference.
         const _autoInsights = (window.JeenPreferences && window.JeenPreferences.getAll().autoInsights) || 'on';
         if (_autoInsights === 'on') {
-            generateInsights(data.results, currentQuestion, currentQueryId);
+            generateInsights(data.results, currentQuestion, currentQueryId, currentSql);
         } else {
             // Hide the insights container when auto is off so we don't show a stale one.
             const ic = document.getElementById('insights-container');
@@ -1654,7 +1654,7 @@ async function initializeChartFeature(results) {
 }
 
 // Insights Feature
-function generateInsights(results, question, queryId = null) {
+function generateInsights(results, question, queryId = null, sql = null) {
     // Initialize insights manager if needed
     if (!insightsManager) {
         insightsManager = new window.InsightsManager();
@@ -1666,9 +1666,10 @@ function generateInsights(results, question, queryId = null) {
         insightsContainer.style.display = 'block';
     }
     
-    // Generate insights asynchronously (non-blocking) with query_id for history
+    // Generate insights asynchronously (non-blocking) with query_id + sql for
+    // the LangGraph eval node path.
     setTimeout(() => {
-        insightsManager.generateInsights(results, question, queryId);
+        insightsManager.generateInsights(results, question, queryId, sql);
     }, 0);
 }
 
