@@ -332,6 +332,78 @@ def suggest_questions():
 
 
 # ----------------------------------------------------------------------
+# Settings (prompts + models + app-info)
+# ----------------------------------------------------------------------
+
+@app.route("/api/settings/prompts", methods=["GET"])
+def settings_list_prompts():
+    return _proxy_get("/api/settings/prompts", timeout=10)
+
+
+@app.route("/api/settings/prompts/reload", methods=["POST"])
+def settings_reload_prompts():
+    return _proxy_post("/api/settings/prompts/reload", payload={}, timeout=10)
+
+
+@app.route("/api/settings/prompts/<name>", methods=["GET"])
+def settings_get_prompt(name: str):
+    return _proxy_get(f"/api/settings/prompts/{name}", timeout=10)
+
+
+@app.route("/api/settings/prompts/<name>", methods=["PUT"])
+def settings_save_prompt(name: str):
+    try:
+        resp = requests.put(
+            f"{API_BASE_URL}/api/settings/prompts/{name}",
+            json=request.get_json() or {},
+            timeout=10,
+        )
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+    return jsonify(resp.json()), resp.status_code
+
+
+@app.route("/api/settings/prompts/<name>", methods=["DELETE"])
+def settings_reset_prompt(name: str):
+    try:
+        resp = requests.delete(
+            f"{API_BASE_URL}/api/settings/prompts/{name}",
+            timeout=10,
+        )
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+    return jsonify(resp.json()), resp.status_code
+
+
+@app.route("/api/settings/models", methods=["GET"])
+def settings_list_models():
+    return _proxy_get("/api/settings/models", timeout=10)
+
+
+@app.route("/api/settings/models/active", methods=["GET"])
+def settings_get_active_model():
+    return _proxy_get("/api/settings/models/active", timeout=10)
+
+
+@app.route("/api/settings/models/active", methods=["PUT"])
+def settings_set_active_model():
+    try:
+        resp = requests.put(
+            f"{API_BASE_URL}/api/settings/models/active",
+            json=request.get_json() or {},
+            timeout=10,
+        )
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+    return jsonify(resp.json()), resp.status_code
+
+
+@app.route("/api/settings/app-info", methods=["GET"])
+def settings_app_info():
+    return _proxy_get("/api/settings/app-info", timeout=10)
+
+
+# ----------------------------------------------------------------------
 # Feedback / history
 # ----------------------------------------------------------------------
 @app.route("/api/feedback", methods=["POST"])
