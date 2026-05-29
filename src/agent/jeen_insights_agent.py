@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
 from src.agent.conversation_history import ConversationHistoryService
-from src.agent.llm_service import AzureOpenAILlmService
+from src.agent.llm_service import LangChainLlmService
 from src.agent.user_resolver import SimpleUserResolver
 from src.config import settings
 from src.connections import Connection, ConnectionService
@@ -50,7 +50,7 @@ class JeenInsightsAgent:
         *,
         connection: Connection,
         sql_runner: PostgresSqlRunner,
-        llm_service: AzureOpenAILlmService,
+        llm_service: LangChainLlmService,
         metadata_loader: MetadataLoader,
         history_service: ConversationHistoryService,
         user_resolver: SimpleUserResolver,
@@ -197,7 +197,7 @@ class JeenInsightsAgent:
                 await self.history.update_llm_response(
                     query_id=query_id,
                     generated_sql=sql,
-                    llm_model=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
+                    llm_model=self.llm.get_deployment(),
                     llm_latency_ms=llm_latency_ms or 0,
                     tokens_used=response.get("usage", {}).get("total_tokens", 0),
                 )
@@ -343,7 +343,7 @@ class AgentRegistry:
     def __init__(
         self,
         *,
-        llm_service: AzureOpenAILlmService,
+        llm_service: LangChainLlmService,
         metadata_loader: MetadataLoader,
         connection_service: ConnectionService,
         history_service: ConversationHistoryService,

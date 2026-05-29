@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi import FastAPI
 
 from src.agent import AgentRegistry
 from src.agent.conversation_history import ConversationHistoryService
-from src.agent.llm_service import AzureOpenAILlmService
+from src.agent.llm_service import LangChainLlmService
 from src.agent.user_resolver import SimpleUserResolver
 from src.api import state
 from src.config import settings
@@ -49,30 +50,20 @@ async def lifespan(_app: FastAPI):
             )
         """)
 
-    # ── Build LLM service, then apply any persisted model selection ───────────
-    llm_service = AzureOpenAILlmService(
-        api_key=settings.AZURE_OPENAI_API_KEY,
-        endpoint=settings.AZURE_OPENAI_ENDPOINT,
-        deployment=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
-        api_version=settings.AZURE_OPENAI_API_VERSION,
-    )
-
+    # ── Build LLM service from DB credentials ──────────────────────────────────
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT value FROM app_settings WHERE key = 'active_model'"
         )
-        if row and row["value"]:
-            # Look up the real Azure deployment_name for this model.
-            dep_row = await conn.fetchrow(
-                "SELECT deployment_name FROM admin_models WHERE name = $1",
-                row["value"],
-            )
-            deployment = (dep_row["deployment_name"] if dep_row else None) or row["value"]
-            logger.info(
-                "startup: applying persisted model '%s' → deployment '%s'",
-                row["value"], deployment,
-            )
-            llm_service.set_deployment(deployment)
+    active_model: Optional[str] = row["value"] if row else None
+
+    try:
+        llm_service = await LangChainLlmService.from_db(pool, active_model)
+    except Exception as exc:
+        logger.warning(
+            "startup: DB model load failed (%s); falling back to env-var Azure creds", exc
+        )
+        llm_service = LangChainLlmService.from_env_azure(pool, settings)
 
     state.llm_service = llm_service
 

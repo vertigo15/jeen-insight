@@ -27,9 +27,6 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-# Provider tag used to identify Azure-backed models (selectable without extra creds).
-_AZURE_TAG = "(Azure)"
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -324,7 +321,7 @@ class ModelInfo(BaseModel):
     description: str
     available: bool        # True = selectable with current credentials
     is_active: bool        # True = currently loaded in the LLM service
-    is_default: bool       # True = matches AZURE_OPENAI_DEPLOYMENT_NAME env setting
+    is_default: bool       # True = flagged is_default in admin_models_providers
 
 
 class SetModelRequest(BaseModel):
@@ -332,14 +329,32 @@ class SetModelRequest(BaseModel):
 
 
 async def _list_models_from_db() -> List[Dict[str, Any]]:
-    """Query admin_models, returning rows ordered by sort_order."""
+    """Query admin_models with credential availability from admin_models_providers."""
     from src.metadata import get_metadata_pool
     pool = await get_metadata_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, name, display_name, description, is_enabled, deployment_name "
-            "FROM admin_models "
-            "ORDER BY sort_order, id"
+            """
+            SELECT
+                am.id,
+                am.name,
+                am.display_name,
+                am.description,
+                am.is_enabled,
+                am.deployment_name,
+                EXISTS(
+                    SELECT 1 FROM admin_models_providers amp
+                    WHERE amp.model_id = am.id AND amp.is_enabled = true
+                ) AS has_credentials,
+                EXISTS(
+                    SELECT 1 FROM admin_models_providers amp
+                    WHERE amp.model_id = am.id
+                      AND amp.is_default = true
+                      AND amp.is_enabled = true
+                ) AS is_db_default
+            FROM admin_models am
+            ORDER BY am.sort_order, am.id
+            """
         )
     return [dict(r) for r in rows]
 
@@ -375,17 +390,11 @@ async def _set_active_in_db(name: str) -> None:
 async def list_models():
     """Return all admin_models with availability and active flags.
 
-    ``is_active`` is based on the persisted ``active_model`` key in
-    ``app_settings`` — not the env-var deployment name.  This lets the UI
-    correctly highlight whichever model the user last explicitly selected,
-    even when Azure deployment names differ from DB model names.
-    ``is_default`` marks the model whose name matches the env-var deployment
-    when no active selection has been made yet.
+    ``available`` is true when the model has at least one enabled row in
+    ``admin_models_providers`` (i.e. credentials are configured).
+    ``is_active`` reflects the persisted ``active_model`` setting.
+    ``is_default`` reflects the ``is_default`` flag in admin_models_providers.
     """
-    from src.config import settings as cfg
-
-    default_deployment = getattr(cfg, "AZURE_OPENAI_DEPLOYMENT_NAME", "")
-
     try:
         rows, active_model = await asyncio.gather(
             _list_models_from_db(),
@@ -396,8 +405,7 @@ async def list_models():
 
     result = []
     for r in rows:
-        dep = r.get("deployment_name") or ""
-        available = bool(dep) and _AZURE_TAG in (r["display_name"] or "")
+        available = bool(r.get("has_credentials")) and bool(r.get("is_enabled", True))
         result.append(ModelInfo(
             id=r["id"],
             name=r["name"],
@@ -405,31 +413,30 @@ async def list_models():
             description=r["description"] or "",
             available=available,
             is_active=(active_model is not None and r["name"] == active_model),
-            is_default=(dep == default_deployment),
+            is_default=bool(r.get("is_db_default")),
         ))
     return result
 
 
 @router.get("/models/active")
 async def get_active_model():
-    """Return the persisted active model name (the DB model name, not the
-    deployment string).  Returns ``null`` for ``name`` when no explicit
-    selection has been made yet.
-    """
-    from src.config import settings as cfg
+    """Return the persisted active model name.
 
-    default_deployment = getattr(cfg, "AZURE_OPENAI_DEPLOYMENT_NAME", "")
+    Returns ``null`` for ``name`` when no explicit selection has been made yet.
+    """
+    from src.api import state as app_state
+
     active = await _get_active_from_db()
-    return {"name": active, "default_deployment": default_deployment}
+    current = app_state.llm_service.get_deployment() if app_state.llm_service else None
+    return {"name": active, "current_deployment": current}
 
 
 @router.put("/models/active")
 async def set_active_model(body: SetModelRequest):
     """Switch to a different model live and persist the choice."""
-    from src.config import settings as cfg
     from src.api import state
 
-    # Validate: must exist and be available (Azure).
+    # Validate: must exist and have credentials configured.
     try:
         rows = await _list_models_from_db()
     except Exception as exc:
@@ -438,36 +445,47 @@ async def set_active_model(body: SetModelRequest):
     match = next((r for r in rows if r["name"] == body.name), None)
     if not match:
         raise HTTPException(status_code=404, detail=f"Model '{body.name}' not found")
-    deployment = match.get("deployment_name") or ""
-    if not deployment or _AZURE_TAG not in (match["display_name"] or ""):
+    if not match.get("has_credentials"):
         raise HTTPException(
             status_code=400,
-            detail=f"Model '{body.name}' is not available with current credentials",
+            detail=f"Model '{body.name}' has no configured credentials in admin_models_providers",
         )
 
-    # Apply live using the real Azure deployment name.
+    # Switch live — reloads credentials from DB.
     if state.llm_service:
-        state.llm_service.set_deployment(deployment)
+        try:
+            await state.llm_service.set_model(body.name)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Failed to switch to model '{body.name}': {exc}",
+            ) from exc
     else:
         logger.warning("set_active_model: llm_service not in state, skipping live switch")
 
     # Persist.
     await _set_active_in_db(body.name)
 
-    default_deployment = getattr(cfg, "AZURE_OPENAI_DEPLOYMENT_NAME", "")
     logger.info("settings: active model → %s", body.name)
-    return {"name": body.name, "is_default": body.name == default_deployment}
+    return {"name": body.name, "is_default": bool(match.get("is_db_default"))}
 
 
 @router.get("/app-info")
 def app_info():
     """Return read-only application metadata shown on the About page."""
     from src.config import settings as cfg
+    from src.api import state as app_state
+
+    active_model = (
+        app_state.llm_service.get_deployment()
+        if app_state.llm_service
+        else getattr(cfg, "AZURE_OPENAI_DEPLOYMENT_NAME", "—")
+    )
     return {
         "name": "Jeen Insights",
         "version": "2.0.0",
-        "description": "Natural-language analytics powered by Azure OpenAI.",
-        "llm_model": getattr(cfg, "AZURE_OPENAI_DEPLOYMENT_NAME", "—"),
+        "description": "Natural-language analytics powered by multiple LLM providers.",
+        "llm_model": active_model,
         "llm_endpoint": _mask_url(getattr(cfg, "AZURE_OPENAI_ENDPOINT", "—")),
         "api_version": getattr(cfg, "AZURE_OPENAI_API_VERSION", "—"),
         "llm_timeout": getattr(cfg, "LLM_TIMEOUT_SECONDS", 30),
