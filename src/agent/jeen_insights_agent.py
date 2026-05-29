@@ -113,19 +113,16 @@ class JeenInsightsAgent:
                     messages.append(
                         {
                             "role": "user",
-                            "content": f"Generate SQL for: {prev_qa['natural_language_query']}",
+                            "content": prev_qa["natural_language_query"],
                         }
                     )
                     messages.append(
                         {
                             "role": "assistant",
-                            "content": (
-                                "I'll generate SQL for that.\n\n"
-                                f"SQL:\n{prev_qa['generated_sql']}"
-                            ),
+                            "content": prev_qa["generated_sql"],
                         }
                     )
-            messages.append({"role": "user", "content": f"Generate SQL for: {question}"})
+            messages.append({"role": "user", "content": question})
 
             tools = [self.sql_tool.get_schema()]
 

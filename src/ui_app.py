@@ -271,6 +271,12 @@ def refresh_metadata(source_key: str):
     return _proxy_post(f"/api/connections/{source_key}/refresh-metadata", payload={}, timeout=15)
 
 
+@app.route("/api/connections/<source_key>/warm-cache", methods=["POST"])
+def warm_cache(source_key: str):
+    """Fire-and-forget metadata pre-warm for a connection."""
+    return _proxy_post(f"/api/connections/{source_key}/warm-cache", payload={}, timeout=30)
+
+
 # ----------------------------------------------------------------------
 # Query / data exploration
 # ----------------------------------------------------------------------

@@ -143,6 +143,12 @@ function onConnectionChange(sourceKey) {
     // Auto-load tables for the new connection.
     loadTables();
     if (typeof displayHistory === 'function') displayHistory();
+    // Fire-and-forget: pre-warm the metadata cache on the API server so the
+    // first query after a connection switch doesn't pay the fetch penalty.
+    fetch(`/api/connections/${encodeURIComponent(newConnection)}/warm-cache`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+    }).catch(() => {}); // non-critical
 }
 
 function setPageTitle(text) {

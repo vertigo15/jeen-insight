@@ -470,7 +470,7 @@ class LangChainLlmService:
             token_kw = self._token_kwargs(max_tokens)
 
         if tools:
-            model = model.bind_tools(tools)
+            model = model.bind_tools(tools, tool_choice="auto")
         model = model.bind(temperature=temperature, **token_kw)
 
         ai_msg = await model.ainvoke(lc_messages)

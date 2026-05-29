@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI
 
@@ -63,6 +63,36 @@ async def _ensure_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_insights_prompts_place
             ON insights_prompts(prompt_place)
     """)
+
+
+async def _warm_caches(
+    metadata_loader: Any,
+    connection_service: Any,
+    prompt_cache: Any,
+) -> None:
+    """Pre-warm metadata and prompt caches after startup.
+
+    Runs concurrently for all active connections so the first real query
+    never pays the cold-start penalty.
+    """
+    import asyncio as _asyncio
+    try:
+        connections = await connection_service.list_connections()
+        if connections:
+            tasks = [metadata_loader.load_all(c.source_key) for c in connections]
+            results = await _asyncio.gather(*tasks, return_exceptions=True)
+            ok = sum(1 for r in results if not isinstance(r, Exception))
+            errors = sum(1 for r in results if isinstance(r, Exception))
+            logger.info(
+                "startup: pre-warmed metadata for %d connection(s)%s",
+                ok,
+                f" ({errors} failed)" if errors else "",
+            )
+        # Warm the system prompt from DB.
+        await prompt_cache.get_content("jeen_insights_system")
+        logger.info("startup: pre-warmed prompt cache")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("startup: cache warm-up skipped: %s", exc)
 
 
 async def _seed_prompts(conn) -> None:
@@ -141,6 +171,9 @@ async def lifespan(_app: FastAPI):
         history_service=state.history_service,
         user_resolver=SimpleUserResolver(),
     )
+
+    # ── Pre-warm caches (metadata + system prompt) for all connections ────────
+    await _warm_caches(state.metadata_loader, state.connection_service, state.prompt_cache)
 
     logger.info("✅ Jeen Insights ready")
     try:
