@@ -337,7 +337,7 @@ async def _list_models_from_db() -> List[Dict[str, Any]]:
     pool = await get_metadata_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, name, display_name, description, is_enabled "
+            "SELECT id, name, display_name, description, is_enabled, deployment_name "
             "FROM admin_models "
             "ORDER BY sort_order, id"
         )
@@ -396,7 +396,8 @@ async def list_models():
 
     result = []
     for r in rows:
-        available = _AZURE_TAG in (r["display_name"] or "")
+        dep = r.get("deployment_name") or ""
+        available = bool(dep) and _AZURE_TAG in (r["display_name"] or "")
         result.append(ModelInfo(
             id=r["id"],
             name=r["name"],
@@ -404,7 +405,7 @@ async def list_models():
             description=r["description"] or "",
             available=available,
             is_active=(active_model is not None and r["name"] == active_model),
-            is_default=(r["name"] == default_deployment),
+            is_default=(dep == default_deployment),
         ))
     return result
 
@@ -437,15 +438,16 @@ async def set_active_model(body: SetModelRequest):
     match = next((r for r in rows if r["name"] == body.name), None)
     if not match:
         raise HTTPException(status_code=404, detail=f"Model '{body.name}' not found")
-    if _AZURE_TAG not in (match["display_name"] or ""):
+    deployment = match.get("deployment_name") or ""
+    if not deployment or _AZURE_TAG not in (match["display_name"] or ""):
         raise HTTPException(
             status_code=400,
             detail=f"Model '{body.name}' is not available with current credentials",
         )
 
-    # Apply live.
+    # Apply live using the real Azure deployment name.
     if state.llm_service:
-        state.llm_service.set_deployment(body.name)
+        state.llm_service.set_deployment(deployment)
     else:
         logger.warning("set_active_model: llm_service not in state, skipping live switch")
 

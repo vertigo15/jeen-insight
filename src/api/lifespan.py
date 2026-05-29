@@ -62,8 +62,17 @@ async def lifespan(_app: FastAPI):
             "SELECT value FROM app_settings WHERE key = 'active_model'"
         )
         if row and row["value"]:
-            logger.info("startup: applying persisted model selection → %s", row["value"])
-            llm_service.set_deployment(row["value"])
+            # Look up the real Azure deployment_name for this model.
+            dep_row = await conn.fetchrow(
+                "SELECT deployment_name FROM admin_models WHERE name = $1",
+                row["value"],
+            )
+            deployment = (dep_row["deployment_name"] if dep_row else None) or row["value"]
+            logger.info(
+                "startup: applying persisted model '%s' → deployment '%s'",
+                row["value"], deployment,
+            )
+            llm_service.set_deployment(deployment)
 
     state.llm_service = llm_service
 
