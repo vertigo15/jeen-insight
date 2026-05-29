@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     AZURE_OPENAI_ROUTER_DEPLOYMENT: str = ""
     DLP_ENABLED: bool = True
     SQLGLOT_VALIDATION_ENABLED: bool = True
+    # Run fused_eval_analytics after non-trivial queries (summary + insights).
+    # Set False to skip the third LLM call and prioritise speed over analysis.
+    EVAL_ANALYTICS_ENABLED: bool = True
+    # Per-call Azure OpenAI timeout in seconds. Prevents a single hung LLM
+    # request from blocking the entire query. 0 = no timeout.
+    LLM_TIMEOUT_SECONDS: int = 30
 
     class Config:
         env_file = ".env"

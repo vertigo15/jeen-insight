@@ -69,6 +69,7 @@ class JeenInsightsAgent:
             max_history_tokens=settings.LANGGRAPH_MAX_HISTORY_TOKENS,
             dlp_enabled=settings.DLP_ENABLED,
             sqlglot_validation_enabled=settings.SQLGLOT_VALIDATION_ENABLED,
+            eval_analytics_enabled=settings.EVAL_ANALYTICS_ENABLED,
         )
         logger.info(
             "✅ LangGraph agent ready for source_key=%s", self.source_key

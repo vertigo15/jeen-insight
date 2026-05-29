@@ -95,6 +95,7 @@ def build_graph(
     max_history_tokens: int = 3000,
     dlp_enabled: bool = True,
     sqlglot_validation_enabled: bool = True,
+    eval_analytics_enabled: bool = True,
 ) -> Any:
     """Build and compile the LangGraph text-to-SQL agent.
 
@@ -170,7 +171,10 @@ def build_graph(
     builder.add_conditional_edges("sqlglot_validate", _route_from_sqlglot)
     builder.add_conditional_edges("dlp_check", _route_from_dlp)
     builder.add_conditional_edges("execute_query", _route_from_execute)
-    builder.add_conditional_edges("trivial_result_check", _route_from_trivial)
+    builder.add_conditional_edges(
+        "trivial_result_check",
+        _make_route_from_trivial(eval_analytics_enabled),
+    )
     builder.add_conditional_edges("fused_eval_analytics", _route_from_eval)
     builder.add_conditional_edges("feedback_classifier", _route_from_feedback)
 
@@ -221,7 +225,16 @@ def _route_from_execute(state: AgentState) -> str:
     return "feedback_classifier" if state.get("exec_error") else "trivial_result_check"
 
 
-def _route_from_trivial(state: AgentState) -> str:
+def _make_route_from_trivial(eval_enabled: bool):
+    """Return a routing function that respects the eval_analytics_enabled flag."""
+    def _route_from_trivial(state: AgentState) -> str:
+        if state.get("is_trivial") or not eval_enabled:
+            return "response_formatter"
+        return "fused_eval_analytics"
+    return _route_from_trivial
+
+
+def _route_from_trivial(state: AgentState) -> str:  # kept for direct test imports
     return "response_formatter" if state.get("is_trivial") else "fused_eval_analytics"
 
 

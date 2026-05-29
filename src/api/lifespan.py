@@ -35,12 +35,15 @@ async def lifespan(_app: FastAPI):
     state.connection_service = ConnectionService(pool)
     state.history_service = ConversationHistoryService(pool)
 
+    timeout = settings.LLM_TIMEOUT_SECONDS
+
     # Primary (large-model) LLM service for SQL generation and evaluation
     llm_service = AzureOpenAILlmService(
         api_key=settings.AZURE_OPENAI_API_KEY,
         endpoint=settings.AZURE_OPENAI_ENDPOINT,
         deployment=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
         api_version=settings.AZURE_OPENAI_API_VERSION,
+        timeout_seconds=timeout,
     )
 
     # Router LLM: use a separate cheaper deployment when configured,
@@ -52,10 +55,14 @@ async def lifespan(_app: FastAPI):
             endpoint=settings.AZURE_OPENAI_ENDPOINT,
             deployment=router_deployment,
             api_version=settings.AZURE_OPENAI_API_VERSION,
+            timeout_seconds=timeout,
         )
         logger.info("Router LLM using separate deployment: %s", router_deployment)
     else:
         router_llm_service = llm_service
+
+    if timeout:
+        logger.info("LLM call timeout: %ds per call", timeout)
 
     # Load all prompt templates from src/agent/prompts/
     prompt_loader = PromptLoader()

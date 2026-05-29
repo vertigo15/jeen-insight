@@ -17,7 +17,8 @@ class AzureOpenAILlmService:
         api_key: str,
         endpoint: str,
         deployment: str,
-        api_version: str = "2025-01-01-preview"
+        api_version: str = "2025-01-01-preview",
+        timeout_seconds: int = 0,
     ):
         self.client = AzureOpenAI(
             api_key=api_key,
@@ -25,7 +26,8 @@ class AzureOpenAILlmService:
             azure_endpoint=endpoint
         )
         self.deployment = deployment
-    
+        self.timeout_seconds = timeout_seconds  # 0 = no timeout
+
     async def generate(
         self,
         messages: List[Dict[str, str]],
@@ -36,33 +38,41 @@ class AzureOpenAILlmService:
     ) -> Dict[str, Any]:
         """
         Generate response from Azure OpenAI.
-        
+
         Args:
             messages: List of message dicts with 'role' and 'content'
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
             tools: Optional tool definitions for function calling
-            
+
         Returns:
             Response dict with 'content', 'tool_calls', etc.
+
+        Raises:
+            asyncio.TimeoutError: When timeout_seconds > 0 and the call exceeds it.
         """
         loop = asyncio.get_event_loop()
-        
+
         params = {
             "model": self.deployment,
             "messages": messages,
             "temperature": temperature,
             "max_completion_tokens": max_tokens,
         }
-        
+
         if tools:
             params["tools"] = tools
             params["tool_choice"] = "auto"
-        
-        response = await loop.run_in_executor(
+
+        coro = loop.run_in_executor(
             None,
             lambda: self.client.chat.completions.create(**params)
         )
+
+        if self.timeout_seconds > 0:
+            response = await asyncio.wait_for(coro, timeout=self.timeout_seconds)
+        else:
+            response = await coro
         
         choice = response.choices[0]
         result = {
