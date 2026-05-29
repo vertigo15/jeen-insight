@@ -196,7 +196,8 @@ DO NOT report vague findings like "seems to" or "might be".
     "Finding 2 with specific numbers"
   ],
   "suggestions": [
-    "Actionable suggestion based on findings"
+    "Follow-up question the user could ask next — phrased as a short question",
+    "Another follow-up question (4-6 total)"
   ]
 }}
 

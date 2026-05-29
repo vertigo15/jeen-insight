@@ -13,12 +13,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Jeen Insights — Data Analytics</title>
-    <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
     <!-- Geist fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=38">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=39">
     <!-- CodeMirror 6 via ESM — exposes window.CodeMirrorService -->
     <script type="module">
       import { EditorView, lineNumbers } from 'https://esm.sh/@codemirror/view@6';
@@ -303,8 +303,20 @@
     </div>
 </aside>
 
-<script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=38"></script>
-<script src="{{ url_for('static', filename='profiling/profilingManager.js') }}?v=38"></script>
-<script src="{{ url_for('static', filename='script.js') }}?v=38"></script>
+<script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=39"></script>
+<script src="{{ url_for('static', filename='profiling/profilingManager.js') }}?v=39"></script>
+<script src="{{ url_for('static', filename='script.js') }}?v=39"></script>
+<!-- Settings page (full-screen) -->
+<script type="module">
+  import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=39';
+  const _sp = new SettingsPage();
+  _sp.mount({
+      onApplyTheme: (t) => {
+          if (typeof applyThemeFromPreference === 'function') applyThemeFromPreference(t);
+      },
+  });
+  window._settingsPage = _sp;
+  document.getElementById('settings-btn')?.addEventListener('click', () => _sp.toggle());
+</script>
 </body>
 </html>

@@ -25,7 +25,25 @@ class AzureOpenAILlmService:
             azure_endpoint=endpoint
         )
         self.deployment = deployment
-    
+
+    # ── Dynamic deployment switching ─────────────────────────────────────────
+
+    def get_deployment(self) -> str:
+        """Return the currently active Azure deployment name."""
+        return self.deployment
+
+    def set_deployment(self, deployment: str) -> None:
+        """Switch to a different Azure deployment live (no restart required).
+
+        Thread-safe: the assignment of a plain Python string is atomic on CPython.
+        The next LLM call will use the new deployment.
+        """
+        import logging
+        logging.getLogger(__name__).info(
+            "llm_service: switching deployment %s → %s", self.deployment, deployment
+        )
+        self.deployment = deployment
+
     async def generate(
         self,
         messages: List[Dict[str, str]],

@@ -2534,6 +2534,16 @@ function copyRowData(rowIdx) {
 
 // Make functions globally accessible for onclick handlers
 window.askQuestion = askQuestion;
+
+// Fill the question input from a follow-up chip and auto-submit
+window._fillFollowUp = function(question) {
+    const input = document.getElementById('question-input');
+    if (!input) return;
+    input.value = question;
+    input.focus();
+    // Small delay so the value is set before askQuestion reads it
+    setTimeout(() => askQuestion(), 50);
+};
 window.toggleSql = toggleSql;
 window.togglePrompt = togglePrompt;
 window.copySql = copySql;
@@ -3751,28 +3761,17 @@ document.addEventListener('DOMContentLoaded', () => {
         window._devDrawerClose = close;
     })();
 
-    // Settings panel + preferences. Loaded as ES modules so they're tree-
-    // shake-friendly and the rest of script.js stays import-free.
+    // Preferences module — load preferences and apply persisted theme.
+    // The settings button is now wired to SettingsPage (settingsPage.js module,
+    // loaded inline in index.html) so we only need to expose JeenPreferences here.
     (async () => {
         try {
             const prefsModule = await import('./settings/preferences.js');
             window.JeenPreferences = prefsModule.Preferences;
             // Apply persisted theme on page load (handles 'system' too).
             applyThemeFromPreference(prefsModule.Preferences.getAll().theme);
-
-            const panelModule = await import('./settings/settingsPanel.js');
-            const panel = new panelModule.SettingsPanel();
-            panel.mount({
-                onApplyTheme: (newTheme) => applyThemeFromPreference(newTheme),
-            });
-            window.JeenSettingsPanel = panel;
-
-            const settingsBtn = document.getElementById('settings-btn');
-            if (settingsBtn) {
-                settingsBtn.addEventListener('click', () => panel.toggle());
-            }
         } catch (e) {
-            console.warn('[Settings] Failed to initialise:', e);
+            console.warn('[Settings] Failed to initialise preferences:', e);
         }
     })();
 

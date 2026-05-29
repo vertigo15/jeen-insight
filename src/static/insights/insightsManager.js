@@ -253,17 +253,23 @@ class InsightsManager {
             html += `</ul></div>`;
         }
 
-        // Suggestions
+        // Follow-up questions chip grid
         if (insights.suggestions && insights.suggestions.length > 0) {
-            html += `<div class="insights-suggestions">
-                <strong>Suggestions:</strong>
-                <ul>`;
-            
-            insights.suggestions.forEach(suggestion => {
-                html += `<li>${this.escapeHtml(suggestion)}</li>`;
+            html += `<div class="follow-up-section">
+                <div class="follow-up-label">FOLLOW-UP QUESTIONS</div>
+                <div class="follow-up-grid">`;
+
+            insights.suggestions.forEach(q => {
+                const safe = this.escapeHtml(q);
+                // data-q carries the raw text so the onclick can prefill the input
+                html += `<button class="follow-up-chip" data-q="${safe}"
+                    onclick="window._fillFollowUp(this.dataset.q)">
+                    <span class="follow-up-chip-text">${safe}</span>
+                    <span class="follow-up-chip-arrow" aria-hidden="true">→</span>
+                </button>`;
             });
-            
-            html += `</ul></div>`;
+
+            html += `</div></div>`;
         }
 
         html += `</div></div>`;

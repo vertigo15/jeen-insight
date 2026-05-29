@@ -24,6 +24,11 @@ from src.metadata import MetadataLoader, close_metadata_pool, get_metadata_pool
 logger = logging.getLogger(__name__)
 
 
+def get_agent():
+    """Return the AgentRegistry for use by settings hot-reload."""
+    return state.agent_registry
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Initialise services on app startup; close them on shutdown."""
@@ -34,12 +39,33 @@ async def lifespan(_app: FastAPI):
     state.connection_service = ConnectionService(pool)
     state.history_service = ConversationHistoryService(pool)
 
+    # ── Ensure app_settings table exists ─────────────────────────────────────
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key   VARCHAR PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+
+    # ── Build LLM service, then apply any persisted model selection ───────────
     llm_service = AzureOpenAILlmService(
         api_key=settings.AZURE_OPENAI_API_KEY,
         endpoint=settings.AZURE_OPENAI_ENDPOINT,
         deployment=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
         api_version=settings.AZURE_OPENAI_API_VERSION,
     )
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT value FROM app_settings WHERE key = 'active_model'"
+        )
+        if row and row["value"]:
+            logger.info("startup: applying persisted model selection → %s", row["value"])
+            llm_service.set_deployment(row["value"])
+
+    state.llm_service = llm_service
 
     state.agent_registry = AgentRegistry(
         llm_service=llm_service,
@@ -62,3 +88,4 @@ async def lifespan(_app: FastAPI):
         state.metadata_loader = None
         state.connection_service = None
         state.history_service = None
+        state.llm_service = None
