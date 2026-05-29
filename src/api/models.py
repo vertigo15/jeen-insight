@@ -126,6 +126,9 @@ class GenerateInsightsRequest(BaseModel):
     dataset: Dict[str, Any]
     question: str
     query_id: Optional[UUID] = None
+    # SQL that produced the dataset — when provided the LangGraph eval node is
+    # used instead of the legacy insight_service path.
+    sql: Optional[str] = None
 
 
 class GenerateInsightsResponse(BaseModel):

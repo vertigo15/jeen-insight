@@ -1,16 +1,19 @@
 # Azure OpenAI
 openai>=1.0.0
 
-# LangGraph agent orchestration
-langgraph>=0.2.55
+# LangChain — multi-provider LLM abstraction
 langchain-core>=0.3.0
-
-# SQL parsing and validation
-sqlglot>=25.0.0
+langchain-openai>=0.3.0
+langchain-anthropic>=0.3.0
+langchain-google-genai>=2.0.0
+langgraph>=0.2.0
 
 # Database
 asyncpg>=0.29.0
 psycopg[binary]>=3.1.0
+
+# Auth
+bcrypt>=4.0.0
 
 # Web framework
 fastapi>=0.109.0

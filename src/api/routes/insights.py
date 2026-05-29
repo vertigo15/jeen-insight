@@ -31,12 +31,84 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
     agent = await resolve_agent(request.connection)
     logger.info("Generating insights for: %s", request.question[:50])
     try:
-        # Imported inline to keep startup fast (pandas/numpy heavy paths).
+        from src.api import state as app_state
+
+        # ── LangGraph eval path (preferred when SQL is available) ───────────
+        if request.sql and app_state.insights_eval_graph is not None:
+            logger.info("insights: using LangGraph eval node")
+            from src.agent.langgraph_agent import run_eval
+
+            columns  = request.dataset.get("columns", [])
+            rows_raw = request.dataset.get("rows") or request.dataset.get("data") or []
+            results  = [
+                dict(zip(columns, row)) if isinstance(row, (list, tuple)) else row
+                for row in rows_raw
+            ]
+
+            start = time.time()
+            state_out = await run_eval(
+                app_state.insights_eval_graph,
+                question  = request.question,
+                sql       = request.sql,
+                results   = results,
+                row_count = len(results),
+            )
+            exec_time_ms = int((time.time() - start) * 1000)
+
+            summary  = state_out.get("summary", "")
+            findings = state_out.get("insights") or []
+            suggestions = state_out.get("follow_up_questions") or []
+
+            history = get_history_service() if request.query_id else None
+            if history and request.query_id:
+                try:
+                    await history.add_insight(
+                        query_id=request.query_id,
+                        insight_type="summary",
+                        content=summary or "Analysis complete",
+                        llm_model=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
+                        llm_execution_time_ms=exec_time_ms,
+                        tokens_input=0,
+                        tokens_output=0,
+                    )
+                    for finding in findings:
+                        await history.add_insight(
+                            query_id=request.query_id,
+                            insight_type="finding",
+                            content=finding,
+                            llm_model=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
+                        )
+                    for suggestion in suggestions:
+                        await history.add_insight(
+                            query_id=request.query_id,
+                            insight_type="suggestion",
+                            content=suggestion,
+                            llm_model=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
+                        )
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to log eval insights to history")
+
+            return GenerateInsightsResponse(
+                summary=summary or "Analysis complete",
+                findings=findings,
+                suggestions=suggestions,
+            )
+
+        # ── Legacy insight_service path (no SQL, or graph unavailable) ──────
+        logger.info("insights: using legacy insight_service path")
         from src.agent.insight_service import generate_insights
 
-        # Use the curated metadata bundle as 'context' instead of the old RAG dict.
-        bundle = await agent.metadata_loader.load_all(agent.source_key)
+        bundle  = await agent.metadata_loader.load_all(agent.source_key)
         context = {"documentation": [bundle.get("business_terms", "")]}
+
+        prompt_template = None
+        model_override  = None
+        if app_state.prompt_cache:
+            try:
+                prompt_template = await app_state.prompt_cache.get_content("insights")
+                model_override  = await app_state.prompt_cache.get_model_override("insights")
+            except Exception:
+                pass
 
         start = time.time()
         insights = await generate_insights(
@@ -44,6 +116,8 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
             context=context,
             original_question=request.question,
             llm_service=agent.llm,
+            prompt_template=prompt_template,
+            model_override=model_override,
         )
         exec_time_ms = int((time.time() - start) * 1000)
 
@@ -105,6 +179,7 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
     agent = await resolve_agent(request.connection)
     logger.info("Streaming insights for: %s", request.question[:50])
 
+    from src.api import state as app_state
     from src.agent.insight_service import generate_insights_stream
 
     bundle = await agent.metadata_loader.load_all(agent.source_key)
@@ -112,44 +187,90 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
     history = get_history_service() if request.query_id else None
 
     async def event_generator():
-        # Emit one initial heartbeat so proxies/buffers flush immediately
-        # and the client can start its placeholder UI.
         yield ": ping\n\n"
 
         final_insights: dict = {}
         final_metrics: dict = {}
 
-        try:
-            async for ev in generate_insights_stream(
-                dataset=request.dataset,
-                context=context,
-                original_question=request.question,
-                llm_service=agent.llm,
-            ):
-                kind = ev.get("type")
-                if kind == "open":
-                    yield _sse("open", {
-                        "prompt": ev.get("prompt", ""),
-                        "system_message": ev.get("system_message", ""),
-                    })
-                elif kind == "ttft":
-                    yield _sse("ttft", {"ms": ev.get("ms")})
-                elif kind == "delta":
-                    yield _sse("delta", {"text": ev.get("text", "")})
-                elif kind == "error":
-                    yield _sse("error", {"error": ev.get("error", "unknown error")})
-                    return
-                elif kind == "done":
-                    final_insights = ev.get("insights") or {}
-                    final_metrics = ev.get("metrics") or {}
-                    yield _sse("done", {
-                        "insights": final_insights,
-                        "metrics": final_metrics,
-                    })
-        except Exception as e:  # noqa: BLE001
-            logger.exception("Streaming insights failed")
-            yield _sse("error", {"error": str(e)})
-            return
+        # ── LangGraph eval path (preferred when SQL is available) ──────────
+        if request.sql and app_state.insights_eval_graph is not None:
+            logger.info("insights/stream: using LangGraph eval node")
+            try:
+                from src.agent.langgraph_agent import run_eval
+
+                columns  = request.dataset.get("columns", [])
+                rows_raw = request.dataset.get("rows") or request.dataset.get("data") or []
+                results  = [
+                    dict(zip(columns, row)) if isinstance(row, (list, tuple)) else row
+                    for row in rows_raw
+                ]
+
+                t0 = time.time()
+                state_out = await run_eval(
+                    app_state.insights_eval_graph,
+                    question  = request.question,
+                    sql       = request.sql,
+                    results   = results,
+                    row_count = len(results),
+                )
+                latency_ms = int((time.time() - t0) * 1000)
+
+                final_insights = {
+                    "summary":     state_out.get("summary", ""),
+                    "findings":    state_out.get("insights") or [],
+                    "suggestions": state_out.get("follow_up_questions") or [],
+                }
+                final_metrics = {"llm_latency_ms": latency_ms}
+                yield _sse("done", {"insights": final_insights, "metrics": final_metrics})
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("LangGraph eval node failed in stream endpoint")
+                yield _sse("error", {"error": str(exc)})
+                return
+
+        else:
+            # ── Legacy streaming path ──────────────────────────────────────
+            prompt_template = None
+            model_override   = None
+            if app_state.prompt_cache:
+                try:
+                    prompt_template = await app_state.prompt_cache.get_content("insights")
+                    model_override   = await app_state.prompt_cache.get_model_override("insights")
+                except Exception:
+                    pass
+
+            try:
+                async for ev in generate_insights_stream(
+                    dataset=request.dataset,
+                    context=context,
+                    original_question=request.question,
+                    llm_service=agent.llm,
+                    prompt_template=prompt_template,
+                    model_override=model_override,
+                ):
+                    kind = ev.get("type")
+                    if kind == "open":
+                        yield _sse("open", {
+                            "prompt": ev.get("prompt", ""),
+                            "system_message": ev.get("system_message", ""),
+                        })
+                    elif kind == "ttft":
+                        yield _sse("ttft", {"ms": ev.get("ms")})
+                    elif kind == "delta":
+                        yield _sse("delta", {"text": ev.get("text", "")})
+                    elif kind == "error":
+                        yield _sse("error", {"error": ev.get("error", "unknown error")})
+                        return
+                    elif kind == "done":
+                        final_insights = ev.get("insights") or {}
+                        final_metrics  = ev.get("metrics") or {}
+                        yield _sse("done", {
+                            "insights": final_insights,
+                            "metrics":  final_metrics,
+                        })
+            except Exception as e:  # noqa: BLE001
+                logger.exception("Streaming insights failed")
+                yield _sse("error", {"error": str(e)})
+                return
 
         # Best-effort: log the same insights to history (mirrors the
         # non-streaming endpoint). Done after streaming so the client

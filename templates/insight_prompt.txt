@@ -45,9 +45,18 @@ ALWAYS provide insights when clear patterns exist, even if they're moderate.
     "Finding 2 with specific numbers"
   ],
   "suggestions": [
-    "Actionable suggestion based on findings"
+    "Short follow-up question the user might want to ask next? (≤12 words)",
+    "Another follow-up question drilling deeper into the data?",
+    "Question comparing a segment or time period?",
+    "Question exploring an outlier or anomaly found above?"
   ]
 }}
+
+Rules for `suggestions`:
+- Write 3–5 short, clickable follow-up **questions** (not action statements)
+- Each question must be ≤ 15 words and end with "?"
+- Questions should naturally extend the analysis or drill into a finding
+- Examples: "Which product drove most of the growth?", "How does Q1 compare to last year?"
 
 If the dataset is too small or no meaningful insights exist, return:
 {{

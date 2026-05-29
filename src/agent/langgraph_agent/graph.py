@@ -75,7 +75,7 @@ from src.agent.langgraph_agent.nodes.sql_gen import (
 from src.agent.langgraph_agent.nodes.validation import make_dlp_check, make_sqlglot_validate
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
-from src.agent.llm_service import AzureOpenAILlmService
+from src.agent.llm_service import LangChainLlmService
 from src.metadata import MetadataLoader
 from src.tools.sql_tool import PostgresSqlRunner
 
@@ -138,8 +138,8 @@ def _timed(name: str, fn: Any) -> Any:
 
 def build_graph(
     *,
-    llm: AzureOpenAILlmService,
-    router_llm: AzureOpenAILlmService,
+    llm: LangChainLlmService,
+    router_llm: LangChainLlmService,
     sql_runner: PostgresSqlRunner,
     metadata_loader: MetadataLoader,
     history_service: ConversationHistoryService,
@@ -314,3 +314,49 @@ def _route_from_feedback(state: AgentState) -> str:
     if feedback == "missing_table":
         return "catalog_lookup"
     return "sql_generator"  # syntax | exec | semantic
+
+
+# ── Standalone insights eval subgraph ────────────────────────────────────────────
+# Single eval node wired as a small independent graph; called directly by the
+# insights API endpoint (/api/generate-insights) with question + SQL + results.
+
+from src.agent.langgraph_agent.nodes.eval import make_fused_eval_analytics_subgraph  # noqa: E402
+from src.agent.langgraph_agent.state import InsightsState  # noqa: E402
+
+
+def build_insights_eval_graph(llm_service: Any, prompt_cache: Any):
+    """Compile and return the insights eval ``StateGraph``.
+
+    Builds a single-node graph (eval) that evaluates SQL results and returns
+    a summary, key insights, and 3-5 follow-up questions.  Stored on
+    ``src.api.state.insights_eval_graph`` at startup.
+    """
+    eval_node = make_fused_eval_analytics_subgraph(llm_service, prompt_cache)
+    g: StateGraph = StateGraph(InsightsState)
+    g.add_node("eval", eval_node)
+    g.set_entry_point("eval")
+    g.add_edge("eval", END)
+    compiled = g.compile()
+    logging.getLogger(__name__).info(
+        "insights_eval_graph: compiled successfully (nodes: eval)"
+    )
+    return compiled
+
+
+async def run_eval(
+    graph,
+    *,
+    question: str,
+    sql: str,
+    results: list,
+    row_count: int,
+) -> dict:
+    """Invoke the eval graph and return the final InsightsState."""
+    return await graph.ainvoke(
+        InsightsState(
+            question=question,
+            sql=sql,
+            results=results,
+            row_count=row_count,
+        )
+    )

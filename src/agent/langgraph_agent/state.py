@@ -83,7 +83,7 @@ class AgentState(TypedDict, total=False):
 
     # ── Evaluation ────────────────────────────────────────────────────────
     is_trivial: bool
-    # {answers_intent: bool, summary: str, insights: [...], follow_up: str}
+    # {answers_intent: bool, summary: str, insights: [...], follow_up_questions: [str, ...]}
     eval_result: Optional[Dict[str, Any]]
 
     # ── Feedback ──────────────────────────────────────────────────────────
@@ -100,7 +100,30 @@ class AgentState(TypedDict, total=False):
     # concatenate lists rather than overwrite, so the full history is preserved.
     trace: Annotated[List[Dict[str, Any]], operator.add]
 
-    # ── Output ────────────────────────────────────────────────────────────────
+    # ── Output ────────────────────────────────────────────────────────────────────────
     answer: Optional[str]
     formatted_response: Dict[str, Any]
+    error: Optional[str]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Insights eval subgraph state (used by build_insights_eval_graph / run_eval)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class InsightsState(TypedDict, total=False):
+    """Lightweight state for the standalone insights eval subgraph.
+
+    Used by ``build_insights_eval_graph`` / ``run_eval`` when the insights
+    API endpoint calls the eval node directly (outside the full pipeline).
+    """
+    # inputs
+    question: str
+    sql: str
+    results: List[Any]
+    row_count: int
+    # eval outputs
+    answers_intent: bool
+    summary: str
+    insights: List[str]
+    follow_up_questions: List[str]
     error: Optional[str]

@@ -195,7 +195,18 @@ async def edit_chart(request: EditChartRequest):
     column_names_blob = json.dumps(request.column_names, ensure_ascii=False)
     recent_blob = _format_recent_messages(request.recent_messages)
 
-    template = _load_chart_editor_prompt()
+    from src.api import state as app_state
+    if app_state.prompt_cache:
+        try:
+            template        = await app_state.prompt_cache.get_content("chart_editor")
+            model_override  = await app_state.prompt_cache.get_model_override("chart_editor")
+        except Exception:
+            template       = _load_chart_editor_prompt()
+            model_override = None
+    else:
+        template       = _load_chart_editor_prompt()
+        model_override = None
+
     try:
         system_prompt = template.format(
             instruction=instruction,
@@ -217,6 +228,7 @@ async def edit_chart(request: EditChartRequest):
             ],
             temperature=EDIT_CHART_PARAMS.temperature,
             max_tokens=EDIT_CHART_PARAMS.max_tokens,
+            model_override=model_override,
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("Chart edit LLM call failed")

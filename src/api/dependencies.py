@@ -18,6 +18,7 @@ from src.connections import (
     ConnectionService,
     UnsupportedConnectionType,
 )
+from src.agent.prompt_cache import PromptCache
 from src.metadata import MetadataLoader
 
 
@@ -44,6 +45,10 @@ def get_connection_service() -> ConnectionService:
 
 def get_history_service() -> ConversationHistoryService:
     return _require(state.history_service, "History service")  # type: ignore[return-value]
+
+
+def get_prompt_cache() -> PromptCache:
+    return _require(state.prompt_cache, "PromptCache")  # type: ignore[return-value]
 
 
 async def resolve_agent(source_key: Optional[str]) -> JeenInsightsAgent:

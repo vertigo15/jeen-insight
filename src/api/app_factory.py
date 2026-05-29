@@ -21,6 +21,7 @@ from src.api.routes import (
     history,
     insights,
     query,
+    settings as settings_routes,
 )
 from src.config import settings
 
@@ -58,5 +59,6 @@ def create_app() -> FastAPI:
     app.include_router(autocomplete.router)
     app.include_router(insights.router)
     app.include_router(charts.router)
+    app.include_router(settings_routes.router)
 
     return app

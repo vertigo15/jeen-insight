@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <script>
+    (function () {
+      var stored = localStorage.getItem('theme');
+      document.documentElement.setAttribute('data-theme', stored || 'light');
+    })();
+  </script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in — Jeen Insights</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=41">
+  <style>
+    /* ── Login page layout ── */
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--color-bg);
+      font-family: var(--font-sans, 'Geist', system-ui, sans-serif);
+      min-height: 100vh;
+    }
+
+    .login-wrap {
+      width: 100%;
+      max-width: 400px;
+      padding: 24px 16px;
+    }
+
+    /* ── Card ── */
+    .login-card {
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: 16px;
+      padding: 40px 36px 36px;
+      box-shadow: 0 4px 24px rgba(0,0,0,.08);
+    }
+
+    /* ── Brand ── */
+    .login-brand {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+    .login-logo {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      background: oklch(52% 0.22 280);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      font-weight: 800;
+      color: #fff;
+      letter-spacing: -1px;
+      font-family: var(--font-sans, 'Geist', system-ui, sans-serif);
+      flex-shrink: 0;
+    }
+    .login-title {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--color-text);
+      margin: 0;
+      letter-spacing: -0.4px;
+      text-align: center;
+    }
+    .login-subtitle {
+      font-size: 13px;
+      color: var(--color-muted);
+      margin: 4px 0 0;
+      text-align: center;
+    }
+
+    /* ── Error banner ── */
+    .login-error {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--color-error-bg, #fff0f0);
+      border: 1px solid var(--color-error-border, #ffd5d5);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 20px;
+      font-size: 13px;
+      color: var(--color-error, #c0392b);
+    }
+    [data-theme="dark"] .login-error {
+      background: rgba(192,57,43,.15);
+      border-color: rgba(192,57,43,.35);
+      color: #ff7c7c;
+    }
+
+    /* ── Form ── */
+    .login-form { display: flex; flex-direction: column; gap: 16px; }
+
+    .login-field { display: flex; flex-direction: column; gap: 6px; }
+    .login-label {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--color-text);
+    }
+    .login-input {
+      width: 100%;
+      padding: 10px 12px;
+      font-size: 14px;
+      font-family: inherit;
+      border: 1px solid var(--color-border);
+      border-radius: 8px;
+      background: var(--color-input-bg, var(--color-bg));
+      color: var(--color-text);
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      box-sizing: border-box;
+    }
+    .login-input:focus {
+      border-color: oklch(52% 0.22 280);
+      box-shadow: 0 0 0 3px oklch(52% 0.22 280 / 0.15);
+    }
+    .login-input::placeholder { color: var(--color-faint); }
+
+    /* Password field with show/hide toggle */
+    .login-pw-wrap { position: relative; }
+    .login-pw-wrap .login-input { padding-right: 40px; }
+    .login-pw-toggle {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--color-muted);
+      padding: 4px;
+      display: flex;
+      align-items: center;
+    }
+    .login-pw-toggle:hover { color: var(--color-text); }
+
+    /* ── Submit ── */
+    .login-btn {
+      width: 100%;
+      padding: 11px;
+      border: none;
+      border-radius: 8px;
+      background: oklch(52% 0.22 280);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+      margin-top: 4px;
+    }
+    .login-btn:hover { background: oklch(46% 0.22 280); }
+    .login-btn:active { transform: scale(0.99); }
+    .login-btn:disabled {
+      background: var(--color-border);
+      color: var(--color-muted);
+      cursor: default;
+      transform: none;
+    }
+
+    /* spinner inside button */
+    .btn-spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .6s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+
+      <!-- Brand -->
+      <div class="login-brand">
+        <div class="login-logo">J</div>
+        <div>
+          <h1 class="login-title">Jeen Insights</h1>
+          <p class="login-subtitle">Sign in to your workspace</p>
+        </div>
+      </div>
+
+      <!-- Error banner (only shown on failed attempt) -->
+      {% if error %}
+      <div class="login-error" role="alert">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        {{ error }}
+      </div>
+      {% endif %}
+
+      <!-- Form -->
+      <form class="login-form" method="POST" action="/login" id="login-form">
+        <!-- Preserve redirect target -->
+        <input type="hidden" name="next" value="{{ request.args.get('next', '/') }}">
+
+        <div class="login-field">
+          <label class="login-label" for="email">Email / username</label>
+          <input
+            id="email"
+            name="email"
+            type="text"
+            class="login-input"
+            placeholder="admin"
+            autocomplete="username"
+            autofocus
+            required
+            value="{{ request.form.get('email', '') }}"
+          >
+        </div>
+
+        <div class="login-field">
+          <label class="login-label" for="password">Password</label>
+          <div class="login-pw-wrap">
+            <input
+              id="password"
+              name="password"
+              type="password"
+              class="login-input"
+              placeholder="••••••"
+              autocomplete="current-password"
+              required
+            >
+            <button type="button" class="login-pw-toggle" id="pw-toggle"
+                    aria-label="Toggle password visibility" tabindex="-1">
+              <svg id="pw-icon-show" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+              <svg id="pw-icon-hide" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                   style="display:none">
+                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+                <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+                <line x1="1" y1="1" x2="23" y2="23"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <button type="submit" class="login-btn" id="login-btn">Sign in</button>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    // Show/hide password toggle
+    const pwInput   = document.getElementById('password');
+    const toggle    = document.getElementById('pw-toggle');
+    const iconShow  = document.getElementById('pw-icon-show');
+    const iconHide  = document.getElementById('pw-icon-hide');
+    toggle.addEventListener('click', () => {
+      const show = pwInput.type === 'password';
+      pwInput.type = show ? 'text' : 'password';
+      iconShow.style.display = show ? 'none' : '';
+      iconHide.style.display = show ? '' : 'none';
+    });
+
+    // Show spinner on submit
+    document.getElementById('login-form').addEventListener('submit', () => {
+      const btn = document.getElementById('login-btn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="btn-spinner"></span>Signing in…';
+    });
+  </script>
+</body>
+</html>

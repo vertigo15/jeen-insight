@@ -143,6 +143,12 @@ function onConnectionChange(sourceKey) {
     // Auto-load tables for the new connection.
     loadTables();
     if (typeof displayHistory === 'function') displayHistory();
+    // Fire-and-forget: pre-warm the metadata cache on the API server so the
+    // first query after a connection switch doesn't pay the fetch penalty.
+    fetch(`/api/connections/${encodeURIComponent(newConnection)}/warm-cache`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+    }).catch(() => {}); // non-critical
 }
 
 function setPageTitle(text) {
@@ -314,7 +320,7 @@ function displayResults(data) {
         // and updates the Insights panel when each chunk arrives.
         const _aiAnalytics = (window.JeenPreferences && window.JeenPreferences.getAll().aiAnalytics) || 'on';
         if (_aiAnalytics === 'on') {
-            generateInsights(data.results, currentQuestion, currentQueryId);
+            generateInsights(data.results, currentQuestion, currentQueryId, currentSql);
         } else {
             // Hide the insights container when analytics is off.
             const ic = document.getElementById('insights-container');
@@ -1764,7 +1770,7 @@ async function initializeChartFeature(results) {
 }
 
 // Insights Feature
-function generateInsights(results, question, queryId = null) {
+function generateInsights(results, question, queryId = null, sql = null) {
     // Initialize insights manager if needed
     if (!insightsManager) {
         insightsManager = new window.InsightsManager();
@@ -1776,9 +1782,10 @@ function generateInsights(results, question, queryId = null) {
         insightsContainer.style.display = 'block';
     }
     
-    // Generate insights asynchronously (non-blocking) with query_id for history
+    // Generate insights asynchronously (non-blocking) with query_id + sql for
+    // the LangGraph eval node path.
     setTimeout(() => {
-        insightsManager.generateInsights(results, question, queryId);
+        insightsManager.generateInsights(results, question, queryId, sql);
     }, 0);
 }
 
@@ -2650,6 +2657,16 @@ function copyRowData(rowIdx) {
 
 // Make functions globally accessible for onclick handlers
 window.askQuestion = askQuestion;
+
+// Fill the question input from a follow-up chip and auto-submit
+window._fillFollowUp = function(question) {
+    const input = document.getElementById('question-input');
+    if (!input) return;
+    input.value = question;
+    input.focus();
+    // Small delay so the value is set before askQuestion reads it
+    setTimeout(() => askQuestion(), 50);
+};
 window.toggleSql = toggleSql;
 window.togglePrompt = togglePrompt;
 window.copySql = copySql;
@@ -3867,28 +3884,17 @@ document.addEventListener('DOMContentLoaded', () => {
         window._devDrawerClose = close;
     })();
 
-    // Settings panel + preferences. Loaded as ES modules so they're tree-
-    // shake-friendly and the rest of script.js stays import-free.
+    // Preferences module — load preferences and apply persisted theme.
+    // The settings button is now wired to SettingsPage (settingsPage.js module,
+    // loaded inline in index.html) so we only need to expose JeenPreferences here.
     (async () => {
         try {
             const prefsModule = await import('./settings/preferences.js');
             window.JeenPreferences = prefsModule.Preferences;
             // Apply persisted theme on page load (handles 'system' too).
             applyThemeFromPreference(prefsModule.Preferences.getAll().theme);
-
-            const panelModule = await import('./settings/settingsPanel.js');
-            const panel = new panelModule.SettingsPanel();
-            panel.mount({
-                onApplyTheme: (newTheme) => applyThemeFromPreference(newTheme),
-            });
-            window.JeenSettingsPanel = panel;
-
-            const settingsBtn = document.getElementById('settings-btn');
-            if (settingsBtn) {
-                settingsBtn.addEventListener('click', () => panel.toggle());
-            }
         } catch (e) {
-            console.warn('[Settings] Failed to initialise:', e);
+            console.warn('[Settings] Failed to initialise preferences:', e);
         }
     })();
 

@@ -16,11 +16,16 @@ class InsightsManager {
      * Streams the LLM response via SSE for real TTFT + progressive UX.
      * Falls back to the non-streaming endpoint on transport failure.
      *
+     * When `sql` is provided the server routes the request through the
+     * LangGraph eval node (fused_eval_analytics) which returns richer
+     * follow-up questions alongside the summary and findings.
+     *
      * @param {Object} results - Query results with rows and columns
      * @param {string} question - Original user question
-     * @param {string} queryId - Query ID for linking to history (optional)
+     * @param {string|null} queryId - Query ID for linking to history (optional)
+     * @param {string|null} sql - SQL that produced the results (optional)
      */
-    async generateInsights(results, question, queryId = null) {
+    async generateInsights(results, question, queryId = null, sql = null) {
         const container = document.getElementById('insights-container');
         if (!container) {
             console.error('[InsightsManager] Insights container not found');
@@ -39,6 +44,8 @@ class InsightsManager {
 
         const requestBody = { connection, dataset: cappedResults, question };
         if (queryId) requestBody.query_id = queryId;
+        // Forward the SQL so the server can use the LangGraph eval node.
+        if (sql) requestBody.sql = sql;
 
         this.showStreamingPlaceholder(container);
         this.state.isLoading = true;
@@ -263,17 +270,23 @@ class InsightsManager {
             html += `</ul></div>`;
         }
 
-        // Suggestions
+        // Follow-up questions chip grid
         if (insights.suggestions && insights.suggestions.length > 0) {
-            html += `<div class="insights-suggestions">
-                <strong>Suggestions:</strong>
-                <ul>`;
-            
-            insights.suggestions.forEach(suggestion => {
-                html += `<li>${this.escapeHtml(suggestion)}</li>`;
+            html += `<div class="follow-up-section">
+                <div class="follow-up-label">FOLLOW-UP QUESTIONS</div>
+                <div class="follow-up-grid">`;
+
+            insights.suggestions.forEach(q => {
+                const safe = this.escapeHtml(q);
+                // data-q carries the raw text so the onclick can prefill the input
+                html += `<button class="follow-up-chip" data-q="${safe}"
+                    onclick="window._fillFollowUp(this.dataset.q)">
+                    <span class="follow-up-chip-text">${safe}</span>
+                    <span class="follow-up-chip-arrow" aria-hidden="true">→</span>
+                </button>`;
             });
-            
-            html += `</ul></div>`;
+
+            html += `</div></div>`;
         }
 
         html += `</div></div>`;

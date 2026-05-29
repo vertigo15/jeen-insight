@@ -1,10 +1,16 @@
 """fused_eval_analytics node — evaluates results and generates summary + insights.
 
-A single large-model call that:
-  • checks whether the result set genuinely answers the user's intent,
-  • produces a human-readable summary,
-  • extracts 2-3 key insights,
-  • suggests an optional follow-up question.
+Two public factories:
+
+``make_fused_eval_analytics(llm, prompt_loader)``
+    For the full text-to-SQL pipeline (``build_graph``).  Reads from
+    ``AgentState`` and writes back ``eval_result`` containing
+    ``{answers_intent, summary, insights, follow_up_questions}``.
+
+``make_fused_eval_analytics_subgraph(llm_service, prompt_cache)``
+    Standalone variant called directly by the insights API endpoint
+    (``build_insights_eval_graph``).  Uses ``PromptCache`` (DB-backed)
+    and ``InsightsState`` instead of ``AgentState``.
 
 ``answers_intent=False`` triggers the feedback_classifier to attempt a retry.
 On JSON parse failure the node defaults to ``answers_intent=True`` so it never
@@ -16,11 +22,11 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Dict
+from typing import Any, Callable, Dict, List
 
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
-from src.agent.llm_service import AzureOpenAILlmService
+from src.agent.llm_service import LangChainLlmService
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +52,7 @@ def _extract_json(content: str) -> str:
     return content
 
 
-def make_fused_eval_analytics(llm: AzureOpenAILlmService, prompt_loader: PromptLoader):
+def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoader):
     """Return an async ``fused_eval_analytics`` node."""
 
     async def fused_eval_analytics(state: AgentState) -> Dict[str, Any]:
@@ -91,17 +97,25 @@ def make_fused_eval_analytics(llm: AzureOpenAILlmService, prompt_loader: PromptL
             "answers_intent": True,
             "summary": "",
             "insights": [],
-            "follow_up": "",
+            "follow_up_questions": [],
         }
 
         try:
             parsed = json.loads(_extract_json(content))
+            # Normalise follow-up: new format (list) or legacy (single string)
+            fq = parsed.get("follow_up_questions")
+            if isinstance(fq, list):
+                follow_ups: List[str] = [str(q) for q in fq if q]
+            elif parsed.get("follow_up"):
+                follow_ups = [str(parsed["follow_up"])]
+            else:
+                follow_ups = []
             eval_result.update(
                 {
                     "answers_intent": bool(parsed.get("answers_intent", True)),
                     "summary": str(parsed.get("summary", "")),
                     "insights": list(parsed.get("insights", [])),
-                    "follow_up": str(parsed.get("follow_up", "")),
+                    "follow_up_questions": follow_ups,
                 }
             )
         except (json.JSONDecodeError, TypeError, AttributeError) as exc:
@@ -126,3 +140,154 @@ def make_fused_eval_analytics(llm: AzureOpenAILlmService, prompt_loader: PromptL
         }
 
     return fused_eval_analytics
+
+
+# ── Standalone subgraph variant ────────────────────────────────────────────────
+# Used by ``build_insights_eval_graph`` when the insights API endpoint calls the
+# eval node directly (outside the full pipeline).  Uses PromptCache (DB-backed)
+# instead of PromptLoader and InsightsState instead of AgentState.
+
+_SYSTEM_MESSAGE = (
+    "You are a senior data analyst. "
+    "Respond with valid JSON only — no markdown, no prose before or after "
+    "the JSON object."
+)
+
+
+def make_fused_eval_analytics_subgraph(
+    llm_service: Any,
+    prompt_cache: Any,
+) -> Callable:
+    """Return an async LangGraph node for the standalone insights eval subgraph."""
+
+    async def _node(state: dict) -> dict:
+        question  = state.get("question", "")
+        sql       = state.get("sql", "")
+        results   = state.get("results") or []
+        row_count = state.get("row_count", len(results) if isinstance(results, list) else 0)
+
+        try:
+            template       = await prompt_cache.get_content("fused_eval_analytics")
+            model_override = await prompt_cache.get_model_override("fused_eval_analytics")
+        except (KeyError, Exception):  # noqa: BLE001
+            template       = _FALLBACK_PROMPT
+            model_override = None
+
+        sample = results[:5] if isinstance(results, list) else []
+        try:
+            sample_json = json.dumps(sample, ensure_ascii=False, default=str)
+        except Exception:  # noqa: BLE001
+            sample_json = str(sample)
+
+        try:
+            prompt_text = template.format(
+                question       = question,
+                sql            = sql or "N/A",
+                results_sample = sample_json,
+                row_count      = row_count,
+            )
+        except KeyError:
+            prompt_text = template
+
+        from src.api.llm_params import QUERY_PARAMS
+        try:
+            response = await llm_service.generate(
+                messages=[
+                    {"role": "system", "content": _SYSTEM_MESSAGE},
+                    {"role": "user",   "content": prompt_text},
+                ],
+                temperature    = 0.2,
+                max_tokens     = QUERY_PARAMS.max_tokens,
+                model_override = model_override,
+            )
+            raw = (response.get("content") or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("eval_subgraph: LLM call failed")
+            return {
+                "answers_intent":      True,
+                "summary":             "",
+                "insights":            [],
+                "follow_up_questions": [],
+                "error":               str(exc),
+            }
+
+        parsed = _parse_response(raw)
+        fq = parsed.get("follow_up_questions")
+        if isinstance(fq, list):
+            follow_ups = [str(q) for q in fq if q]
+        elif parsed.get("follow_up"):
+            follow_ups = [str(parsed["follow_up"])]
+        else:
+            follow_ups = []
+
+        return {
+            "answers_intent":      bool(parsed.get("answers_intent", True)),
+            "summary":             str(parsed.get("summary", "")),
+            "insights":            list(parsed.get("insights") or []),
+            "follow_up_questions": follow_ups,
+            "error":               None,
+        }
+
+    return _node
+
+
+def _parse_response(text: str) -> dict:
+    text = text.strip()
+    for fence in ("```json", "```"):
+        idx = text.find(fence)
+        if idx != -1:
+            after = text[idx + len(fence):]
+            close = after.find("```")
+            if close != -1:
+                text = after[:close].strip()
+                break
+    start = text.find("{")
+    end   = text.rfind("}") + 1
+    if start != -1 and end > start:
+        text = text[start:end]
+    try:
+        result = json.loads(text)
+        return result if isinstance(result, dict) else {}
+    except json.JSONDecodeError:
+        logger.debug("eval_subgraph: JSON decode failed for: %.200s", text)
+        return {}
+
+
+_FALLBACK_PROMPT = """\
+You are a senior data analyst reviewing a query result.
+
+**Original question:** {question}
+
+**SQL executed:**
+```sql
+{sql}
+```
+
+**Row count:** {row_count}
+
+**Sample results (first 5 rows):**
+```json
+{results_sample}
+```
+
+Tasks:
+1. Evaluate whether the result genuinely answers the original question.
+2. Summarize what the data shows in 1-2 sentences for a business user.
+3. Extract 2-3 key insights with specific numbers from the data.
+4. Generate 3-5 short follow-up questions the user might want to ask next.
+
+Rules:
+- `answers_intent` is false only when results are empty or clearly wrong.
+- `summary` must be ≤ 60 words.
+- Each `insights` item must be ≤ 30 words and include a specific number.
+- Each `follow_up_questions` item must be ≤ 15 words and end with "?".
+- Match the language of the original question.
+
+Respond with valid JSON only.
+
+{{
+  "answers_intent": true,
+  "summary": "...",
+  "insights": ["...", "..."],
+  "follow_up_questions": ["...?", "...?", "...?"]
+}}"""
