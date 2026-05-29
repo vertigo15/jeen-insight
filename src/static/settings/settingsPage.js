@@ -26,12 +26,15 @@ const ICONS = {
 };
 
 // ── Navigation definition ─────────────────────────────────────────────────────
+const ICONS_USERS = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`;
+
 const NAV = [
     {
         group: 'USER',
         items: [
-            { id: 'general',    label: 'General',   icon: ICONS.general, type: 'general' },
-            { id: 'ai-models',  label: 'AI Models', icon: ICONS.models,  type: 'ai-models' },
+            { id: 'general',    label: 'General',   icon: ICONS.general,   type: 'general' },
+            { id: 'ai-models',  label: 'AI Models', icon: ICONS.models,    type: 'ai-models' },
+            { id: 'users',      label: 'Users',     icon: ICONS_USERS,     type: 'users' },
         ],
     },
     {
@@ -189,6 +192,8 @@ export class SettingsPage {
             this._renderGeneral();
         } else if (id === 'ai-models') {
             this._renderModels();
+        } else if (id === 'users') {
+            this._renderUsers();
         } else if (id === 'about') {
             this._renderAbout();
         } else if (id.startsWith('prompt:')) {
@@ -627,7 +632,187 @@ export class SettingsPage {
         }
     }
 
-    // ── About ─────────────────────────────────────────────────────────────────
+    // ── Users management ───────────────────────────────────────────────────
+
+    async _renderUsers() {
+        const me = window._currentUser || {};
+
+        this._content.innerHTML = `
+            <div class="sp-section-header">
+                <h2 class="sp-section-title">Users</h2>
+                <p class="sp-section-desc">Manage workspace members and their roles.</p>
+            </div>
+            <div class="sp-card" style="padding:var(--space-4)">
+                <div id="sp-users-loading"><div class="skeleton" style="height:40px;border-radius:8px;margin-bottom:8px;"></div></div>
+                <div id="sp-users-body" style="display:none">
+                    <table class="sp-users-table">
+                        <thead><tr>
+                            <th>Member</th><th>Role</th><th style="width:40px"></th>
+                        </tr></thead>
+                        <tbody id="sp-users-rows"></tbody>
+                    </table>
+                    <!-- Add user form -->
+                    <div class="sp-add-user-form" id="sp-add-user-form">
+                        <input id="sp-add-name"     class="sp-add-user-input sp-add-full" type="text" placeholder="Full name" />
+                        <input id="sp-add-email"    class="sp-add-user-input" type="text" placeholder="Email / username" />
+                        <input id="sp-add-password" class="sp-add-user-input" type="password" placeholder="Password (min 4 chars)" />
+                        <select id="sp-add-role" class="sp-add-user-select">
+                            <option value="viewer">Viewer</option>
+                            <option value="editor" selected>Editor</option>
+                            <option value="admin">Admin</option>
+                        </select>
+                        <div class="sp-add-full" style="display:flex;align-items:center;gap:var(--space-3)">
+                            <button class="sp-add-user-submit" id="sp-add-submit">Add user</button>
+                            <span class="sp-users-error" id="sp-add-error"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+
+        await this._loadUsers();
+    }
+
+    async _loadUsers() {
+        try {
+            const res = await fetch('/api/users');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const users = await res.json();
+
+            document.getElementById('sp-users-loading').style.display = 'none';
+            document.getElementById('sp-users-body').style.display = 'block';
+
+            this._renderUserRows(users);
+            this._wireAddForm();
+        } catch (e) {
+            document.getElementById('sp-users-loading').innerHTML =
+                `<p style="color:var(--color-muted);font-size:13px">Could not load users: ${_esc(e.message)}</p>`;
+        }
+    }
+
+    _renderUserRows(users) {
+        const me = window._currentUser || {};
+        const ROLE_LABEL = { admin: 'Admin', editor: 'Editor', viewer: 'Viewer' };
+        const tbody = document.getElementById('sp-users-rows');
+        if (!tbody) return;
+
+        tbody.innerHTML = users.map(u => {
+            const isMe = u.id === me.id;
+            const initials = _initials(u.name || u.email);
+            const hueStyle = `background:hsl(${u.avatar_hue ?? 220},55%,52%);color:#fff`;
+            const youBadge = isMe ? `<span class="sp-user-you">(you)</span>` : '';
+
+            const roleSelect = `
+                <select class="sp-role-select" data-uid="${u.id}" ${isMe ? 'disabled' : ''}>
+                    <option value="admin"   ${u.role === 'admin'   ? 'selected' : ''}>Admin</option>
+                    <option value="editor"  ${u.role === 'editor'  ? 'selected' : ''}>Editor</option>
+                    <option value="viewer"  ${u.role === 'viewer'  ? 'selected' : ''}>Viewer</option>
+                </select>`;
+
+            const delBtn = isMe ? '' : `
+                <button class="sp-user-del-btn" data-uid="${u.id}" title="Remove user">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="3 6 5 6 21 6"/>
+                        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                        <path d="M10 11v6"/><path d="M14 11v6"/>
+                        <path d="M9 6V4h6v2"/>
+                    </svg>
+                </button>`;
+
+            return `<tr>
+                <td>
+                    <div class="sp-user-cell">
+                        <div class="sp-user-avatar" style="${hueStyle}">${_esc(initials)}</div>
+                        <div>
+                            <div class="sp-user-name">${_esc(u.name || u.email)}${youBadge}</div>
+                            <div class="sp-user-email">${_esc(u.email)}</div>
+                        </div>
+                    </div>
+                </td>
+                <td>${roleSelect}</td>
+                <td>${delBtn}</td>
+            </tr>`;
+        }).join('');
+
+        // Wire role changes
+        tbody.querySelectorAll('.sp-role-select').forEach(sel => {
+            sel.addEventListener('change', async () => {
+                const uid  = Number(sel.dataset.uid);
+                const role = sel.value;
+                try {
+                    const r = await fetch(`/api/users/${uid}/role`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ role }),
+                    });
+                    if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+                    _showToast(`Role updated to ${role}`, 'success');
+                } catch (e) {
+                    _showToast('Could not update role — ' + e.message, 'error');
+                    await this._loadUsers(); // revert UI
+                }
+            });
+        });
+
+        // Wire delete buttons
+        tbody.querySelectorAll('.sp-user-del-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const uid = Number(btn.dataset.uid);
+                const user = users.find(u => u.id === uid);
+                if (!confirm(`Remove ${user?.name || user?.email}? This cannot be undone.`)) return;
+                try {
+                    const r = await fetch(`/api/users/${uid}`, { method: 'DELETE' });
+                    if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+                    _showToast('User removed', 'info');
+                    await this._loadUsers();
+                } catch (e) {
+                    _showToast('Could not remove user — ' + e.message, 'error');
+                }
+            });
+        });
+    }
+
+    _wireAddForm() {
+        const btn = document.getElementById('sp-add-submit');
+        const err = document.getElementById('sp-add-error');
+        if (!btn) return;
+
+        btn.addEventListener('click', async () => {
+            err.textContent = '';
+            const name     = (document.getElementById('sp-add-name')?.value     || '').trim();
+            const email    = (document.getElementById('sp-add-email')?.value    || '').trim();
+            const password = (document.getElementById('sp-add-password')?.value || '');
+            const role     =  document.getElementById('sp-add-role')?.value     || 'viewer';
+
+            if (!name || !email || !password) { err.textContent = 'All fields are required.'; return; }
+            if (password.length < 4)           { err.textContent = 'Password must be at least 4 characters.'; return; }
+
+            btn.disabled = true; btn.textContent = 'Adding…';
+            try {
+                const r = await fetch('/api/users', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, email, password, role }),
+                });
+                const data = await r.json();
+                if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+
+                // Clear form
+                ['sp-add-name','sp-add-email','sp-add-password'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.value = '';
+                });
+                _showToast(`${name} added`, 'success');
+                await this._loadUsers();
+            } catch (e) {
+                err.textContent = e.message;
+            } finally {
+                btn.disabled = false; btn.textContent = 'Add user';
+            }
+        });
+    }
+
+    // ── About ─────────────────────────────────────────────────────────
 
     async _renderAbout() {
         this._content.innerHTML = `
@@ -704,6 +889,13 @@ function _aboutRow(label, value) {
         <span class="sp-about-label">${_esc(label)}</span>
         <span class="sp-about-value">${_esc(String(value || '—'))}</span>
     </div>`;
+}
+
+function _initials(name) {
+    if (!name) return '?';
+    const parts = name.trim().split(/\s+/);
+    if (parts.length === 1) return parts[0][0].toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 function _showToast(msg, type) {

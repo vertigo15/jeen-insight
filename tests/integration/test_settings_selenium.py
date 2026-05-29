@@ -44,6 +44,7 @@ SCREENSHOT_DIR = "tests/screenshots/settings"
 EXPECTED_NAV_IDS = [
     "general",
     "ai-models",
+    "users",
     "prompt:jeen_insights_system",
     "prompt:fused_router",
     "prompt:fused_eval_analytics",
@@ -96,6 +97,27 @@ def _wait(driver: webdriver.Chrome, timeout: int = SHORT_WAIT) -> WebDriverWait:
     return WebDriverWait(driver, timeout)
 
 
+def _login(
+    driver: webdriver.Chrome,
+    wait: WebDriverWait,
+    email: str = "admin",
+    password: str = "admin",
+) -> None:
+    """Fill and submit the login form; wait until the main app loads."""
+    # If we're already on the app page, skip.
+    if "login" not in driver.current_url:
+        return
+    email_input = wait.until(EC.presence_of_element_located((By.ID, "email")))
+    email_input.clear()
+    email_input.send_keys(email)
+    pw_input = driver.find_element(By.ID, "password")
+    pw_input.clear()
+    pw_input.send_keys(password)
+    driver.find_element(By.ID, "login-btn").click()
+    # Wait for the main app to render (question-input is only in index.html)
+    wait.until(EC.presence_of_element_located((By.ID, "question-input")))
+
+
 def _open_settings(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     """Click the gear icon and wait for the overlay to become visible."""
     btn = wait.until(EC.element_to_be_clickable((By.ID, "settings-btn")))
@@ -127,9 +149,11 @@ def test_settings_page():
     long  = _wait(driver, LONG_WAIT)
 
     try:
-        # ── 0. Navigate and wait for app to load ─────────────────────────────
+        # ── 0. Navigate, log in, and wait for app to load ────────────────────
         print("\n── 0. Page load ──")
         driver.get(APP_URL)
+        # The app now requires login; authenticate with the default admin creds.
+        _login(driver, long)
         short.until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "#question-input, textarea"))
         )

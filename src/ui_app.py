@@ -3,6 +3,10 @@
 Acts as a thin pass-through to the FastAPI backend. The browser sends a
 `connection` (source_key) along with every data-related request; this UI
 forwards it on without inspecting it.
+
+Authentication is handled here in the Flask layer using a signed session
+cookie.  The FastAPI backend runs internally and is not directly exposed to
+browser users; it has no auth of its own.
 """
 
 from __future__ import annotations
@@ -12,7 +16,17 @@ import os
 from typing import Any, Dict
 
 import requests
-from flask import Flask, Response, jsonify, render_template, request, stream_with_context
+from flask import (
+    Flask,
+    Response,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    stream_with_context,
+    url_for,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,8 +35,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "jeen-insights-change-me-in-production")
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["PERMANENT_SESSION_LIFETIME"] = 86_400  # 24 h
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://jeen-insights-api:8000")
+
+# Paths that never require a login check.
+_PUBLIC_PREFIXES = ("/static/", "/favicon")
+_PUBLIC_EXACT    = {"/login", "/logout", "/health"}
 
 
 # ----------------------------------------------------------------------
@@ -50,9 +72,172 @@ def _proxy_post(path: str, payload: Dict[str, Any], timeout: float = 60) -> Any:
     return jsonify({"error": response.text}), response.status_code
 
 
-# ----------------------------------------------------------------------
-# Pages
-# ----------------------------------------------------------------------
+# ── Auth guard ───────────────────────────────────────────────────────────────
+
+@app.before_request
+def _require_login():
+    """Block unauthenticated access.
+
+    * Static files and public paths are always permitted.
+    * API routes return 401 JSON (so the JS can react).
+    * All other routes redirect to /login.
+    """
+    path = request.path
+    if path in _PUBLIC_EXACT or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+        return None
+    if "user_id" in session:
+        return None
+    # Unauthenticated
+    if path.startswith("/api/"):
+        return jsonify({"error": "Authentication required", "code": "UNAUTHENTICATED"}), 401
+    return redirect(url_for("login", next=request.path))
+
+
+# ── Auth routes ───────────────────────────────────────────────────────────────
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """Render the login page (GET) or process credentials (POST)."""
+    if request.method == "GET":
+        # Already logged in — skip the login page.
+        if "user_id" in session:
+            return redirect(request.args.get("next") or "/")
+        return render_template("login.html", error=None)
+
+    # POST: validate credentials
+    from src.auth_db import get_user_by_email, verify_password, touch_last_active
+
+    email    = (request.form.get("email") or "").strip()
+    password = request.form.get("password") or ""
+
+    error = None
+    if not email or not password:
+        error = "Email and password are required."
+    else:
+        user = get_user_by_email(email)
+        if user is None or not verify_password(password, user["password_hash"]):
+            error = "Invalid email or password."
+        elif user["status"] != "active":
+            error = "This account is disabled. Contact your administrator."
+        else:
+            # —— Success: write session ——
+            session.permanent = True
+            session["user_id"]   = user["id"]
+            session["user_name"] = user["name"]
+            session["user_email"] = user["email"]
+            session["user_role"]  = user["role"]
+            session["avatar_hue"] = user["avatar_hue"]
+            touch_last_active(user["id"])
+            logger.info("login: %s (%s) authenticated", user["email"], user["role"])
+            return redirect(request.form.get("next") or "/")
+
+    return render_template("login.html", error=error), 401
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+@app.route("/api/auth/me", methods=["GET"])
+def auth_me():
+    """Return the current session user (200) or 401 if not logged in."""
+    if "user_id" not in session:
+        return jsonify({"error": "Not authenticated"}), 401
+    return jsonify({
+        "id":         session["user_id"],
+        "name":       session["user_name"],
+        "email":      session["user_email"],
+        "role":       session["user_role"],
+        "avatar_hue": session["avatar_hue"],
+    })
+
+
+# ── User management routes (— served by Flask, not proxied) ──────────────────
+
+@app.route("/api/users", methods=["GET"])
+def users_list():
+    from src.auth_db import list_users
+    try:
+        return jsonify(list_users())
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("users_list failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/users", methods=["POST"])
+def users_create():
+    from src.auth_db import create_user, email_exists
+    data = request.get_json() or {}
+    name     = (data.get("name") or "").strip()
+    email    = (data.get("email") or "").strip().lower()
+    password = data.get("password") or ""
+    role     = data.get("role") or "viewer"
+    if not name or not email or not password:
+        return jsonify({"error": "name, email, and password are required"}), 400
+    if len(password) < 4:
+        return jsonify({"error": "Password must be at least 4 characters"}), 400
+    if role not in ("admin", "editor", "viewer"):
+        return jsonify({"error": "role must be admin, editor, or viewer"}), 400
+    try:
+        if email_exists(email):
+            return jsonify({"error": "An account with this email already exists"}), 409
+        user = create_user(name, email, password, role)
+        logger.info("user created: %s (%s) by %s", email, role, session.get("user_email"))
+        return jsonify(user), 201
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("users_create failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/users/<int:user_id>/role", methods=["PATCH"])
+def users_update_role(user_id: int):
+    from src.auth_db import update_user_role
+    data = request.get_json() or {}
+    role = data.get("role") or ""
+    if role not in ("admin", "editor", "viewer"):
+        return jsonify({"error": "role must be admin, editor, or viewer"}), 400
+    try:
+        update_user_role(user_id, role)
+        logger.info("user %s role → %s by %s", user_id, role, session.get("user_email"))
+        return jsonify({"id": user_id, "role": role})
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("users_update_role failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/users/<int:user_id>", methods=["DELETE"])
+def users_delete(user_id: int):
+    from src.auth_db import delete_user
+    if user_id == session.get("user_id"):
+        return jsonify({"error": "You cannot delete your own account"}), 400
+    try:
+        delete_user(user_id)
+        logger.info("user %s deleted by %s", user_id, session.get("user_email"))
+        return jsonify({"id": user_id, "deleted": True})
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("users_delete failed")
+        return jsonify({"error": str(exc)}), 500
+
+
+# ── Settings prompts/model proxy (for per-prompt model assignment) ────────────
+
+@app.route("/api/settings/prompts/<name>/model", methods=["PUT"])
+def settings_set_prompt_model(name: str):
+    try:
+        resp = requests.put(
+            f"{API_BASE_URL}/api/settings/prompts/{name}/model",
+            json=request.get_json() or {},
+            timeout=10,
+        )
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+    return jsonify(resp.json()), resp.status_code
+
+
+# ── Pages ────────────────────────────────────────────────────────────────────
+
 @app.route("/")
 def index():
     return render_template("index.html")

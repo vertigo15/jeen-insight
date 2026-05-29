@@ -23,6 +23,8 @@ services:
     container_name: jeen-insights-ui
     ports:
       - "8501:8501"
+    env_file:
+      - .env
     environment:
       - API_BASE_URL=http://jeen-insights-api:8000
       - UI_PORT=8501
