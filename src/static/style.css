@@ -450,6 +450,13 @@ label {
 .results-display tbody tr:hover { background: var(--color-surface-3); }
 .results-display tbody td { padding: var(--space-3) var(--space-4); color: var(--color-text); vertical-align: middle; }
 .no-results { text-align: center; padding: var(--space-12) var(--space-6); color: var(--color-muted); font-style: italic; }
+.llm-text-answer {
+  padding: var(--space-4) var(--space-6);
+  color: var(--color-text); font-size: var(--text-base); line-height: 1.7;
+  background: var(--color-surface-2); border-radius: var(--radius-md);
+  border-left: 3px solid var(--color-accent);
+  white-space: pre-wrap; word-wrap: break-word;
+}
 .table-controls { margin-bottom: var(--space-3); }
 
 /* =============================================================

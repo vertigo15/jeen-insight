@@ -25,6 +25,15 @@ class Settings(BaseSettings):
     APP_PORT: int = 8000
     LOG_LEVEL: str = "INFO"
 
+    # LangGraph agent settings
+    LANGGRAPH_MAX_RETRIES: int = 3
+    LANGGRAPH_MAX_HISTORY_TOKENS: int = 3000
+    # Optional cheaper deployment for router/summarizer nodes.
+    # Defaults to AZURE_OPENAI_DEPLOYMENT_NAME when empty.
+    AZURE_OPENAI_ROUTER_DEPLOYMENT: str = ""
+    DLP_ENABLED: bool = True
+    SQLGLOT_VALIDATION_ENABLED: bool = True
+
     class Config:
         env_file = ".env"
         case_sensitive = True

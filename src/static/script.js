@@ -316,6 +316,19 @@ function displayResults(data) {
         if (typeof profilingManager !== 'undefined') {
             profilingManager.initialize(data.results);
         }
+    } else if (data.answer) {
+        // LLM returned a conversational text response (no SQL executed)
+        resultsDisplay.innerHTML = `<div class="llm-text-answer">${escapeHtml(data.answer).replace(/\n/g, '<br>')}</div>`;
+        showResultsToolbar(false);
+        exportBtn.style.display = 'none';
+        copyResultsBtn.style.display = 'none';
+        describeBtn.style.display = 'none';
+        currentResults = null;
+        window.currentResults = null;
+        if (typeof profilingManager !== 'undefined') {
+            profilingManager.hide();
+        }
+        setResultMeta(null, lastQueryDurationMs);
     } else {
         resultsDisplay.innerHTML = '<div class="no-results">No results to display</div>';
         showResultsToolbar(false);
@@ -536,7 +549,11 @@ function setResultMeta(rowCount, durationMs) {
     if (!el) return;
     const seconds = (durationMs / 1000);
     const durStr = seconds >= 0.1 ? seconds.toFixed(1) + 's' : Math.max(1, Math.round(durationMs)) + 'ms';
-    el.textContent = `${rowCount} row${rowCount !== 1 ? 's' : ''} \u00b7 ${durStr}`;
+    if (rowCount === null || rowCount === undefined) {
+        el.textContent = durStr;
+    } else {
+        el.textContent = `${rowCount} row${rowCount !== 1 ? 's' : ''} \u00b7 ${durStr}`;
+    }
 }
 function showResultsToolbar(visible) {
     const el = document.getElementById('results-toolbar');

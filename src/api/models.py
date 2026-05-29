@@ -33,6 +33,7 @@ class QueryResponse(BaseModel):
     session_id: Optional[UUID] = None
     sql: Optional[str]
     results: Optional[Dict[str, Any]]
+    answer: Optional[str] = None
     prompt: Optional[Dict[str, Any]] = None
     error: Optional[str]
     # Per-request metrics surfaced to the UI:
