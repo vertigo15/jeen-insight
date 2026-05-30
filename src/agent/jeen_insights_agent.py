@@ -21,7 +21,7 @@ from uuid import UUID, uuid4
 from src.agent.conversation_history import ConversationHistoryService
 from src.agent.langgraph_agent import PromptLoader, build_graph
 from src.agent.langgraph_agent.state import AgentState
-from src.agent.llm_service import AzureOpenAILlmService
+from src.agent.llm_service import LangChainLlmService
 from src.agent.user_resolver import SimpleUserResolver
 from src.config import settings
 from src.connections import Connection, ConnectionService
@@ -42,8 +42,8 @@ class JeenInsightsAgent:
         *,
         connection: Connection,
         sql_runner: PostgresSqlRunner,
-        llm_service: AzureOpenAILlmService,
-        router_llm_service: AzureOpenAILlmService,
+        llm_service: LangChainLlmService,
+        router_llm_service: LangChainLlmService,
         metadata_loader: MetadataLoader,
         history_service: ConversationHistoryService,
         user_resolver: SimpleUserResolver,
@@ -269,8 +269,8 @@ class AgentRegistry:
     def __init__(
         self,
         *,
-        llm_service: AzureOpenAILlmService,
-        router_llm_service: AzureOpenAILlmService,
+        llm_service: LangChainLlmService,
+        router_llm_service: LangChainLlmService,
         metadata_loader: MetadataLoader,
         connection_service: ConnectionService,
         history_service: ConversationHistoryService,

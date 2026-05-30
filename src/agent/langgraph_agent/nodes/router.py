@@ -22,7 +22,7 @@ from typing import Any, Dict
 
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
-from src.agent.llm_service import AzureOpenAILlmService
+from src.agent.llm_service import LangChainLlmService
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def _merge_usage(current: Dict[str, int], new: Dict[str, Any]) -> Dict[str, int]
     }
 
 
-def make_fused_router(router_llm: AzureOpenAILlmService, prompt_loader: PromptLoader):
+def make_fused_router(router_llm: LangChainLlmService, prompt_loader: PromptLoader):
     """Return an async ``fused_router`` node."""
 
     async def fused_router(state: AgentState) -> Dict[str, Any]:

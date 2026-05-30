@@ -15,7 +15,7 @@ from typing import Any, Dict
 
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
-from src.agent.llm_service import AzureOpenAILlmService
+from src.agent.llm_service import LangChainLlmService
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ def make_memory_shrink_check(max_history_tokens: int):
     return memory_shrink_check
 
 
-def make_memory_summarizer(llm: AzureOpenAILlmService, prompt_loader: PromptLoader):
+def make_memory_summarizer(llm: LangChainLlmService, prompt_loader: PromptLoader):
     """Return an async node that summarises conversation history with a small model call."""
 
     async def memory_summarizer(state: AgentState) -> Dict[str, Any]:
