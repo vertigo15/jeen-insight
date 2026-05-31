@@ -132,7 +132,10 @@ class GenerateInsightsRequest(BaseModel):
 
 
 class GenerateInsightsResponse(BaseModel):
-    summary: str
+    # summary may be a plain string OR a fragment array
+    # [{"t": "text", "hl": "accent|pos|neg|num"}, …] — rendered client-side by
+    # InsightsManager.renderText().  Do NOT coerce to str here.
+    summary: Any
     findings: List[str]
     suggestions: List[str]       # recommended actions (0-2)
     followups: Optional[List[str]] = None  # clickable follow-up questions
