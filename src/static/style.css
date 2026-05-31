@@ -442,7 +442,11 @@ label {
 .results-display thead th {
   position: sticky; top: 0; padding: var(--space-2) var(--space-4);
   background: var(--color-surface-2); border-bottom: 1px solid var(--color-border-2);
-  font-weight: var(--weight-medium); color: var(--color-muted);
+  /* Spec: uppercase + letter-spaced + muted, sticky */
+  font-weight: var(--weight-semibold); color: var(--color-muted);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   text-align: left; white-space: nowrap; cursor: pointer;
 }
 .results-display thead th:hover { background: var(--color-surface-3); }
@@ -451,6 +455,34 @@ label {
 .results-display tbody tr:hover { background: var(--color-surface-3); }
 .results-display tbody td { padding: var(--space-3) var(--space-4); color: var(--color-text); vertical-align: middle; }
 .no-results { text-align: center; padding: var(--space-12) var(--space-6); color: var(--color-muted); font-style: italic; }
+
+/* ── Table cell: null → faint em-dash ─────────────────────────────────────── */
+/* Aligned with the numeric rail so the grid stays calm. */
+.cell-null {
+  color: var(--color-faint);
+  font-style: normal;
+  user-select: none;
+}
+
+/* ── Table cell: ID columns → mono + faint ────────────────────────────────── */
+/* IDs are identity, not data. Keep them unobtrusive. */
+td.cell-id {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-faint);
+  letter-spacing: 0;
+}
+
+/* ── Table cell: signed delta columns → direction color ───────────────────── */
+/* The ONLY numeric cells that get color — change/YoY/variance columns only. */
+.cell-delta-pos {
+  color: var(--color-success);
+  font-weight: var(--weight-medium);
+}
+.cell-delta-neg {
+  color: var(--color-error);
+  font-weight: var(--weight-medium);
+}
 /* ── Trace panel ──────────────────────────────────────────────────────────── */
 .trace-panel {
     padding: 8px 0;

@@ -476,16 +476,15 @@ function renderTable(results, rows) {
                     derivedText = Number.isFinite(numVal) ? formatNumeric(runTotals[idx]) : '\u2014';
                 } else if (derived.type === 'delta') {
                     if (rowIdx === 0) {
-                        derivedText = '\u2014';
+                        derivedText = _EM_DASH;
                     } else {
                         const prev = Number(Array.isArray(rows[rowIdx-1]) ? rows[rowIdx-1][idx] : rows[rowIdx-1][column]);
                         if (Number.isFinite(numVal) && Number.isFinite(prev)) {
                             const d = numVal - prev;
-                            const sign = d >= 0 ? '+' : '';
-                            derivedText = sign + formatNumeric(d);
-                            derivedCls = d >= 0 ? 'derived-col derived-positive' : 'derived-col derived-negative';
+                            derivedText = _fmtSigned(d);
+                            derivedCls = d > 0 ? 'derived-col derived-positive' : d < 0 ? 'derived-col derived-negative' : 'derived-col';
                         } else {
-                            derivedText = '\u2014';
+                            derivedText = _EM_DASH;
                         }
                     }
                 } else {
@@ -505,42 +504,103 @@ function renderTable(results, rows) {
 // ----------------------------------------------------------------
 // Result-rendering helpers
 // ----------------------------------------------------------------
+
+// Real minus (U+2212) and em-dash for table cells.
+const _MINUS   = '\u2212';
+const _EM_DASH = '\u2014';
+
+/**
+ * Format a number for a standard data cell.
+ * Uses real minus \u2212 so decimal points form a clean vertical rail.
+ * Non-finite values become an em-dash.
+ */
+function formatNumeric(value) {
+    const n = (typeof value === 'number') ? value : Number(value);
+    if (!Number.isFinite(n)) return (typeof value === 'string' && value.trim() !== '') ? String(value) : _EM_DASH;
+    if (n < 0) return _MINUS + Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: 4 });
+    if (Number.isInteger(n)) return n.toLocaleString('en-US');
+    return n.toLocaleString('en-US', { maximumFractionDigits: 4 });
+}
+
+/**
+ * Format a signed delta/change value.
+ * Always shows + or \u2212 so the sign is visible even for positives.
+ */
+function _fmtSigned(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return _EM_DASH;
+    const sign = n > 0 ? '+' : n < 0 ? _MINUS : '';
+    const abs  = Math.abs(n);
+    if (Number.isInteger(n)) return sign + abs.toLocaleString('en-US');
+    return sign + abs.toLocaleString('en-US', { maximumFractionDigits: 4 });
+}
+
 function renderCellHtml(value, colIndex, profile) {
+    // NULL → faint em-dash aligned with the numeric rail.
     if (value === null || value === undefined || value === '') {
-        return '<td><em style="color: var(--color-faint);">NULL</em></td>';
+        const cls = profile.numericCols.has(colIndex) ? 'num-cell' : '';
+        return `<td${cls ? ` class="${cls}"` : ''}><span class="cell-null">${_EM_DASH}</span></td>`;
     }
     // Custom format override takes priority.
     if (_colFormats[colIndex]) {
         const fmt = applyColFormatValue(value, _colFormats[colIndex].type);
         if (fmt !== null) return `<td class="num-cell">${escapeHtml(fmt)}</td>`;
     }
+    // ID columns — mono, faint; don't badge or format numerically.
+    if (profile.idCols && profile.idCols.has(colIndex)) {
+        return `<td class="cell-id">${escapeHtml(String(value))}</td>`;
+    }
+    // Dimension badge — categorical identity (month, territory, category …).
     if (profile.dimCols.has(colIndex)) {
         return `<td><span class="dim-badge">${escapeHtml(String(value))}</span></td>`;
     }
     if (profile.numericCols.has(colIndex)) {
+        // Delta / change columns — the only cells that get green / red.
+        if (profile.deltaCols && profile.deltaCols.has(colIndex)) {
+            const n  = Number(value);
+            const cc = Number.isFinite(n)
+                ? (n > 0 ? ' cell-delta-pos' : n < 0 ? ' cell-delta-neg' : '')
+                : '';
+            return `<td class="num-cell${cc}">${escapeHtml(_fmtSigned(value))}</td>`;
+        }
         return `<td class="num-cell">${escapeHtml(formatNumeric(value))}</td>`;
     }
     return `<td>${escapeHtml(String(value))}</td>`;
 }
 
+/**
+ * Profile every column: numeric vs categorical, plus new column kinds
+ * that drive targeted rendering.
+ *
+ *   numericCols  — ≥70 % of non-null values parse as numbers
+ *   dimCols      — categorical: <20 distinct values, not numeric, not id
+ *   idCols       — id/key/pk-style: rendered mono+faint, no badge/format
+ *   deltaCols    — change/delta columns: rendered signed with direction color
+ */
 function profileColumns(results, rows) {
     const numericCols = new Set();
-    const dimCols = new Set();
+    const dimCols     = new Set();
+    const idCols      = new Set();   // NEW
+    const deltaCols   = new Set();   // NEW
 
-    const numCols = results.columns.length;
+    const numCols    = results.columns.length;
     const sampleSize = Math.min(rows.length, 200);
 
-    for (let i = 0; i < numCols; i++) {
-        const colName = results.columns[i];
-        const lowerName = String(colName).toLowerCase();
-        // Treat *id, *_key, *_pk-style columns as plain (no badge / no number formatting).
-        const isIdLike = /(^id$|_id$|^key$|_key$|_pk$|^pk$)/.test(lowerName);
+    // Column-name heuristics
+    const ID_RE    = /(^id$|_id$|^key$|_key$|_pk$|^pk$|^uuid$)/i;
+    const DELTA_RE = /(yoy|mom|wow|qoq|_change$|change_|delta|variance|_diff$|diff_|growth_rate|pct_change|_chg$|_var$|change_pct|_delta$|_delta_)/i;
 
-        let numCount = 0;
-        let nonNullCount = 0;
+    for (let i = 0; i < numCols; i++) {
+        const colName   = results.columns[i];
+        const lowerName = String(colName).toLowerCase();
+
+        const isIdLike = ID_RE.test(lowerName);
+        if (isIdLike) { idCols.add(i); continue; }  // IDs skip all other processing
+
+        let numCount = 0, nonNullCount = 0;
         const distinct = new Set();
         for (let r = 0; r < sampleSize; r++) {
-            const row = rows[r];
+            const row  = rows[r];
             const cell = Array.isArray(row) ? row[i] : row[colName];
             if (cell === null || cell === undefined || cell === '') continue;
             nonNullCount++;
@@ -548,27 +608,18 @@ function profileColumns(results, rows) {
             const num = Number(cell);
             if (Number.isFinite(num) && /^[-+]?\d/.test(String(cell).trim())) numCount++;
         }
-        const isNumeric = !isIdLike && nonNullCount > 0 && numCount / nonNullCount >= 0.7;
-        if (isNumeric) numericCols.add(i);
 
-        // Dim heuristic: <20 distinct values, not numeric, not id-like, more than one row.
-        if (!isNumeric && !isIdLike && nonNullCount > 0 && distinct.size > 0 && distinct.size < 20) {
+        const isNumeric = nonNullCount > 0 && numCount / nonNullCount >= 0.7;
+        if (isNumeric) {
+            numericCols.add(i);
+            if (DELTA_RE.test(lowerName)) deltaCols.add(i);
+        } else if (nonNullCount > 0 && distinct.size > 0 && distinct.size < 20) {
+            // Dim: categorical, few distinct values.
             dimCols.add(i);
         }
     }
 
-    return { numericCols, dimCols };
-}
-
-function formatNumeric(value) {
-    if (typeof value === 'number') {
-        if (Number.isInteger(value)) return value.toLocaleString('en-US');
-        return value.toLocaleString('en-US', { maximumFractionDigits: 4 });
-    }
-    const num = Number(value);
-    if (!Number.isFinite(num)) return String(value);
-    if (Number.isInteger(num)) return num.toLocaleString('en-US');
-    return num.toLocaleString('en-US', { maximumFractionDigits: 4 });
+    return { numericCols, dimCols, idCols, deltaCols };
 }
 
 // ----------------------------------------------------------------
