@@ -456,6 +456,59 @@ label {
 .results-display tbody td { padding: var(--space-3) var(--space-4); color: var(--color-text); vertical-align: middle; }
 .no-results { text-align: center; padding: var(--space-12) var(--space-6); color: var(--color-muted); font-style: italic; }
 
+/* ── Display-limit bar (row window control below the table) ──────────────── */
+/* Shows "Showing [25] of 487 rows · Show all · 5%" */
+.display-limit-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0 var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+  flex-wrap: wrap;
+}
+.dlb-label { white-space: nowrap; }
+/* Number input — hide spin arrows, keep it compact */
+.dlb-input {
+  width: 58px;
+  height: 26px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  text-align: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  -moz-appearance: textfield;
+}
+.dlb-input::-webkit-outer-spin-button,
+.dlb-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.dlb-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-focus);
+}
+/* "Show all" button */
+.dlb-show-all {
+  height: 26px; padding: 0 var(--space-3);
+  font-size: var(--text-xs); font-weight: var(--weight-medium);
+  background: transparent;
+  color: var(--color-accent);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dlb-show-all:hover { background: var(--color-dim-bg); }
+/* Percentage badge */
+.dlb-pct {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-faint);
+  user-select: none;
+}
+
 /* ── Table cell: null → faint em-dash ─────────────────────────────────────── */
 /* Aligned with the numeric rail so the grid stays calm. */
 .cell-null {
