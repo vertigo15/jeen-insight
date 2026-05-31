@@ -265,12 +265,45 @@ def _parse_insights_response(content: str) -> Dict[str, Any]:
         # Validate structure
         if not isinstance(insights, dict):
             return _empty_insights("Invalid response format")
-        
+
+        # ── Normalise new prompt schema → internal shape ─────────────────────
+        # New prompt produces: findings, anomalies, recommendations, suggestions
+        # Internal shape:      findings (list),  suggestions (actions), followups (questions)
+
+        # Merge anomalies into findings (they are just a specialised finding)
+        anomalies = insights.pop("anomalies", None) or []
+        if isinstance(anomalies, list) and anomalies:
+            insights.setdefault("findings", [])
+            insights["findings"] = list(insights["findings"]) + list(anomalies)
+
+        # recommendations → keep as "suggestions" (actionable decisions)
+        recommendations = insights.pop("recommendations", None)
+        if recommendations and not insights.get("suggestions"):
+            # Only use recommendations when there are no suggestions already
+            # (old-format prompts put follow-up questions in suggestions)
+            pass  # handled below
+
+        # Old format: "suggestions" = follow-up questions
+        # New format: "suggestions" = follow-up questions, "recommendations" = actions
+        # Detect which format we have by checking if suggestions look like questions
+        raw_suggestions = insights.get("suggestions") or []
+        first_sug = raw_suggestions[0] if raw_suggestions else ""
+        looks_like_questions = first_sug.strip().endswith("?")
+
+        if looks_like_questions:
+            # New format detected: suggestions = follow-up questions
+            insights["followups"] = raw_suggestions
+            insights["suggestions"] = [str(r) for r in (recommendations or []) if r]
+        else:
+            # Old format: suggestions = questions (already correct for followups path)
+            insights.setdefault("followups", raw_suggestions)
+
         # Ensure required fields
         insights.setdefault("summary", "Analysis complete")
         insights.setdefault("findings", [])
         insights.setdefault("suggestions", [])
-        
+        insights.setdefault("followups", [])
+
         return insights
         
     except json.JSONDecodeError:

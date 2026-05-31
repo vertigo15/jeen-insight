@@ -94,6 +94,7 @@ def make_memory_summarizer(llm: LangChainLlmService, prompt_loader: PromptLoader
             "llm_call_count": (state.get("llm_call_count") or 0) + 1,
             "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
             "token_usage": _merge_usage(state.get("token_usage") or {}, usage),
+            "node_prompts": {**(state.get("node_prompts") or {}), "memory_summarizer": system_msg},
         }
 
     return memory_summarizer

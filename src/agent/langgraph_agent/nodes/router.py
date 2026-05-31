@@ -133,6 +133,7 @@ def make_fused_router(router_llm: LangChainLlmService, prompt_loader: PromptLoad
             "llm_call_count": (state.get("llm_call_count") or 0) + 1,
             "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
             "token_usage": _merge_usage(state.get("token_usage") or {}, usage),
+            "node_prompts": {**(state.get("node_prompts") or {}), "fused_router": system_msg},
         }
 
     return fused_router

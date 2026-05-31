@@ -175,141 +175,329 @@ class InsightsManager {
         if (insights.prompt) this.displayInsightsPrompt(insights);
     }
 
+    // ── SVG constants ──────────────────────────────────────────────────────
+    static _SVG_SPARK = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/></svg>`;
+    static _SVG_CHECK = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>`;
+    static _SVG_ARROW = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>`;
+    static _SVG_ARROW_SM = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>`;
+
+    /**
+     * Render a content value as HTML.
+     *
+     * Accepts either a plain string or a fragment array
+     * [{t: "text", hl?: "accent|pos|neg|num"}, …].
+     * The fragment format gives the backend full control (backend-driven highlights
+     * win; auto-highlight is used only when content is a plain string).
+     *
+     * @param {string|Array} content
+     * @param {'summary'|'finding'} context
+     *   'summary'  — accent budget of 3 for headline figures; first bare $/$% get accent
+     *   'finding'  — direction rules only (pos/neg for %); $ always hl-num
+     */
+    renderText(content, context = 'finding') {
+        if (Array.isArray(content)) {
+            // Explicit fragment format — honour hl hints directly.
+            return content.map(frag => {
+                const text = this.escapeHtml(frag.t || '');
+                if (!frag.hl) return text;
+                return `<span class="hl-${this.escapeHtml(frag.hl)}">${text}</span>`;
+            }).join('');
+        }
+        return this._autoHighlight(this.escapeHtml(String(content || '')), context);
+    }
+
+    /**
+     * Auto-apply the 4-treatment color spec to an already HTML-escaped string.
+     *
+     * Four treatments (color = direction):
+     *   hl-accent — headline answer figures, summary only, max 3
+     *   hl-pos    — favorable direction, always signed  (+89.8%, +$2.48M)
+     *   hl-neg    — unfavorable direction, signed, sparingly (−2.4%, −$49.9K)
+     *   hl-num    — exact value for precision; $ amounts in findings
+     *
+     * Rules:
+     *   • % changes   → pos/neg based on sign; unsigned % in summary → accent
+     *   • $ amounts   → hl-num in findings; hl-accent (up to 3) in summary
+     *   • Comma counts → hl-num
+     *   • Neutral numbers ("12 rows", "7 territories") → no color
+     *   • Never stack accent with pos/neg
+     *
+     * Execution order matters — specific signed patterns before bare ones.
+     *
+     * @param {string} escaped  — HTML-escaped input text
+     * @param {'summary'|'finding'} context
+     */
+    _autoHighlight(escaped, context = 'finding') {
+        const isSummary = (context === 'summary');
+        let accentLeft  = isSummary ? 3 : 0;   // headline budget (summary only)
+
+        // ─ 1. Signed positive % (+89.8%, +56.3%) ─────────── hl-pos ──────
+        escaped = escaped.replace(
+            /\+(\d+(?:\.\d+)?%)/g,
+            '<span class="hl-pos">+$1</span>'
+        );
+
+        // ─ 2. Signed negative % (−2.4% or -2.4%, not a hyphen) ─ hl-neg ─
+        //     Real minus \u2212 is unambiguous.
+        //     ASCII - : guard with (?<!\w) so hyphens in words are safe.
+        escaped = escaped.replace(
+            /\u2212(\d+(?:\.\d+)?%)/g,
+            (_, pct) => `<span class="hl-neg">\u2212${pct}</span>`
+        );
+        escaped = escaped.replace(
+            /(?<!\w)-(\d+(?:\.\d+)?%)/g,
+            (_, pct) => `<span class="hl-neg">-${pct}</span>`
+        );
+
+        // ─ 3. Dollar amounts — all treated by precision, not direction ────
+        //
+        //   Findings : ALL $ → hl-num  (the $ shows the amount; the % shows the move)
+        //   Summary  : first 3 → hl-accent; remainder → hl-num
+        //
+        //   Lookbehind (?<![>]) prevents re-wrapping $ that's already inside a span.
+
+        // Signed positive +$ (e.g. +$2.48M)
+        escaped = escaped.replace(
+            /\+(\$[\d,]+(?:\.\d+)?[KMBb]?)/g,
+            (_, amount) => {
+                const cls = (isSummary && accentLeft > 0)
+                    ? (accentLeft--, 'hl-accent') : 'hl-num';
+                return `<span class="${cls}">+${amount}</span>`;
+            }
+        );
+
+        // Signed negative −$ / -$ (e.g. −$49.9K)
+        escaped = escaped.replace(
+            /\u2212(\$[\d,]+(?:\.\d+)?[KMBb]?)/g,
+            (_, amount) => {
+                const cls = (isSummary && accentLeft > 0)
+                    ? (accentLeft--, 'hl-accent') : 'hl-num';
+                return `<span class="${cls}">\u2212${amount}</span>`;
+            }
+        );
+        escaped = escaped.replace(
+            /(?<!\w)-(\$[\d,]+(?:\.\d+)?[KMBb]?)/g,
+            (_, amount) => {
+                const cls = (isSummary && accentLeft > 0)
+                    ? (accentLeft--, 'hl-accent') : 'hl-num';
+                return `<span class="${cls}">-${amount}</span>`;
+            }
+        );
+
+        // Bare (unsigned) $ — not already inside a span (not preceded by >)
+        escaped = escaped.replace(
+            /(?<![>+\u2212-])(\$[\d,]+(?:\.\d+)?[KMBb]?)/g,
+            (match) => {
+                const cls = (isSummary && accentLeft > 0)
+                    ? (accentLeft--, 'hl-accent') : 'hl-num';
+                return `<span class="${cls}">${match}</span>`;
+            }
+        );
+
+        // ─ 4. Unsigned % in SUMMARY (shares / total rates) ─── hl-accent ─
+        //     e.g. "36.9% growth" or "lifted revenue 36.9%"
+        //     In findings, unsigned % is a share and gets no color.
+        if (isSummary) {
+            escaped = escaped.replace(
+                /(?<![>+\u2212-])(\d+(?:\.\d+)?%)/g,
+                (match) => {
+                    if (accentLeft > 0) { accentLeft--; return `<span class="hl-accent">${match}</span>`; }
+                    return match;  // accent budget exhausted — leave plain
+                }
+            );
+        }
+        // Unsigned % in findings: spec says no color (it\'s a share, not a change).
+
+        // ─ 5. Comma-separated counts (≥1,000) ──────────────── hl-num ─────
+        //     Not already inside a tag (\$) or span (>), not followed by more digits.
+        escaped = escaped.replace(
+            /(?<![>$\d])(\d{1,3}(?:,\d{3})+)(?!\d)/g,
+            '<span class="hl-num">$1</span>'
+        );
+
+        return escaped;
+    }
+
+    /** Format milliseconds as a human-readable string. */
+    _fmtMs(ms) {
+        if (ms == null || !Number.isFinite(ms)) return null;
+        return ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms';
+    }
+
+    /** Format a token count as e.g. "21.9K" or "227". */
+    _fmtTok(n) {
+        if (n == null || !Number.isFinite(n)) return null;
+        if (n >= 10000) return (n / 1000).toFixed(1) + 'K';
+        return n.toLocaleString('en-US');
+    }
+
+    /**
+     * Header HTML — shows title, TTFT, and (when available) LLM latency +
+     * token counts from the metrics payload.
+     *
+     * @param {string|null}  ttftLabel  — formatted TTFT string or null
+     * @param {Object|null}  metrics    — { llm_latency_ms?, input_tokens?, output_tokens? }
+     */
+    _headerHtml(ttftLabel, metrics) {
+        const llmStr = metrics && this._fmtMs(metrics.llm_latency_ms);
+        const inTok  = metrics && this._fmtTok(metrics.input_tokens);
+        const outTok = metrics && this._fmtTok(metrics.output_tokens);
+
+        // Right-side badges: TTFT (streaming), then LLM time + tokens (once done)
+        let right = '';
+        if (llmStr || inTok || outTok) {
+            // Final render — show full metrics
+            if (llmStr)  right += `<span class="ins-meta-chip">LLM ${this.escapeHtml(llmStr)}</span>`;
+            if (inTok)   right += `<span class="ins-meta-chip">in ${this.escapeHtml(inTok)}</span>`;
+            if (outTok)  right += `<span class="ins-meta-chip">out ${this.escapeHtml(outTok)}</span>`;
+        } else if (ttftLabel) {
+            // During streaming — show TTFT
+            right = `<span class="ttft">TTFT ${this.escapeHtml(ttftLabel)}</span>`;
+        } else {
+            // Placeholder — live-updating TTFT element
+            right = '<span class="ttft" id="ins-ttft"></span>';
+        }
+
+        return `
+        <div class="ins-head">
+            <span class="ins-title">
+                <span class="ins-spark">${InsightsManager._SVG_SPARK}</span>
+                Insights
+            </span>
+            <span class="ins-meta-row">${right}</span>
+        </div>`;
+    }
+
     /**
      * Initial placeholder shown while waiting for the first byte from the LLM.
      */
     showStreamingPlaceholder(container) {
         container.innerHTML = `
-            <div class="insights-section">
-                <div class="insights-header">
-                    <h3>✨ Insights</h3>
-                    <span id="insights-stream-meta" class="insights-stream-meta"></span>
-                </div>
-                <div class="insights-loading" role="status" aria-label="Generating insights…">
-                    <div id="insights-stream-status" class="insights-stream-status">Thinking…</div>
-                    <div class="skeleton" style="height: 1rem; width: 80%;"></div>
-                    <div class="skeleton" style="height: 1rem; width: 60%;"></div>
-                    <div class="skeleton" style="height: 1rem; width: 72%;"></div>
-                </div>
+        <div class="ins-card">
+            ${this._headerHtml(null, null)}
+            <div class="ins-loading" role="status" aria-label="Generating insights…">
+                <p id="ins-stream-status" class="ins-stream-status">Thinking…</p>
+                <div class="skeleton" style="height:0.9rem;width:85%;border-radius:4px;"></div>
+                <div class="skeleton" style="height:0.9rem;width:68%;border-radius:4px;"></div>
+                <div class="skeleton" style="height:0.9rem;width:76%;border-radius:4px;"></div>
             </div>
-        `;
+        </div>`;
     }
 
     _setStreamingTtft(container, ttftMs) {
-        const el = container.querySelector('#insights-stream-meta');
+        const el = container.querySelector('#ins-ttft');
         if (!el || ttftMs == null) return;
         const txt = ttftMs >= 1000 ? (ttftMs / 1000).toFixed(1) + 's' : ttftMs + 'ms';
-        // textContent (not innerHTML) keeps this XSS-safe.
         el.textContent = `TTFT ${txt}`;
     }
 
     _setStreamingProgress(container, charsReceived) {
-        const el = container.querySelector('#insights-stream-status');
+        const el = container.querySelector('#ins-stream-status');
         if (!el) return;
-        el.textContent = `Generating… ${charsReceived.toLocaleString('en-US')} chars`;
+        el.textContent = `Generating\u2026 ${charsReceived.toLocaleString('en-US')} chars`;
     }
 
     /**
-     * Display insights in the container.
+     * Display insights in the container — new design (matches Insights Mockup.html).
+     *
+     * Data contract (all arrays may be empty — section is omitted if so):
+     *   insights.summary    string | fragment[]   — lead paragraph
+     *   insights.findings   string[] | fragment[][] — key findings with icons
+     *   insights.suggestions string[]             — recommended actions (0-2)
+     *   insights.followups  string[]              — clickable follow-up questions
+     *                       (falls back to insights.suggestions for old format)
+     *
      * @param {HTMLElement} container
-     * @param {Object} insights
-     * @param {{ttftMs?: number|null, metrics?: object|null}} [meta]
+     * @param {Object}      insights
+     * @param {{ttftMs?: number|null}} [meta]
      */
     displayInsights(container, insights, meta = {}) {
-        // Check if insights are empty
-        if (!insights.findings || insights.findings.length === 0) {
-            container.innerHTML = `
-                <div class="insights-section">
-                    <div class="insights-header">
-                        <h3>💡 Insights</h3>
-                    </div>
-                    <div class="insights-empty">
-                        <p>${insights.summary || 'No significant insights found for this dataset'}</p>
-                    </div>
-                </div>
-            `;
+        const summary    = insights.summary    || '';
+        const findings   = insights.findings   || [];
+        const suggestions = insights.suggestions || [];
+        // followups: new field; fall back to suggestions if it's the old format
+        // (old format had follow-up questions in .suggestions)
+        const followups  = insights.followups  != null
+            ? insights.followups
+            : (suggestions.length && !insights.followups ? suggestions : []);
+        // In the old format suggestions = follow-up questions; new format separates them.
+        // If followups came from fallback, clear suggestions to avoid duplicating.
+        const actionSuggestions = insights.followups != null ? suggestions : [];
+
+        const ttftMs  = meta && meta.ttftMs;
+        const metrics = meta && meta.metrics;   // { llm_latency_ms, input_tokens, output_tokens }
+        let ttftLabel = null;
+        if (ttftMs != null && Number.isFinite(ttftMs)) {
+            ttftLabel = ttftMs >= 1000 ? (ttftMs / 1000).toFixed(1) + 's' : ttftMs + 'ms';
+        }
+
+        const hasContent = summary || findings.length || actionSuggestions.length || followups.length;
+        if (!hasContent) {
+            container.innerHTML = `<div class="ins-card">${this._headerHtml(ttftLabel, metrics)}
+                <p class="ins-empty">No significant insights found for this result.</p>
+            </div>`;
             return;
         }
 
-        // Build HTML for insights
-        let metaTxt = '';
-        const ttftMs = meta && meta.ttftMs;
-        if (ttftMs != null && Number.isFinite(ttftMs)) {
-            const t = ttftMs >= 1000 ? (ttftMs / 1000).toFixed(1) + 's' : ttftMs + 'ms';
-            metaTxt = `TTFT ${t}`;
-        }
-        let html = `
-            <div class="insights-section">
-                <div class="insights-header">
-                    <h3>✨ Insights</h3>
-                    <span class="insights-stream-meta">${this.escapeHtml(metaTxt)}</span>
-                </div>
-                
-                <div class="insights-content">
-        `;
+        let html = `<div class="ins-card">${this._headerHtml(ttftLabel, metrics)}`;
 
-        // Summary
-        if (insights.summary) {
-            html += `
-                <div class="insights-summary">
-                    <strong>Summary:</strong> ${this.escapeHtml(insights.summary)}
-                </div>
-            `;
+        // ── Summary ──────────────────────────────────────────────────────────
+        if (summary) {
+            html += `<p class="ins-summary">${this.renderText(summary, 'summary')}</p>`;
         }
 
-        // Key Findings
-        if (insights.findings && insights.findings.length > 0) {
-            html += `<div class="insights-findings">
-                <strong>Key Findings:</strong>
-                <ul>`;
-            
-            insights.findings.forEach(finding => {
-                html += `<li>${this.escapeHtml(finding)}</li>`;
+        // ── Divider (only when there are sections below) ──────────────────────
+        const hasSections = findings.length || actionSuggestions.length || followups.length;
+        if (summary && hasSections) {
+            html += `<div class="ins-divider"></div>`;
+        }
+
+        // ── Key findings ─────────────────────────────────────────────────────
+        if (findings.length) {
+            html += `<div>`;
+            html += `<div class="ins-subhead">What we found</div>`;
+            html += `<div class="ins-list">`;
+            findings.forEach(f => {
+                html += `<div class="ins-item">
+                    <span class="ins-item-icon ins-item-icon--check">${InsightsManager._SVG_CHECK}</span>
+                    <span class="ins-item-body">${this.renderText(f, 'finding')}</span>
+                </div>`;
             });
-            
-            html += `</ul></div>`;
-        }
-
-        // Follow-up questions chip grid
-        if (insights.suggestions && insights.suggestions.length > 0) {
-            html += `<div class="follow-up-section">
-                <div class="follow-up-label">FOLLOW-UP QUESTIONS</div>
-                <div class="follow-up-grid">`;
-
-            insights.suggestions.forEach(q => {
-                const safe = this.escapeHtml(q);
-                // data-q carries the raw text so the onclick can prefill the input
-                html += `<button class="follow-up-chip" data-q="${safe}"
-                    onclick="window._fillFollowUp(this.dataset.q)">
-                    <span class="follow-up-chip-text">${safe}</span>
-                    <span class="follow-up-chip-arrow" aria-hidden="true">→</span>
-                </button>`;
-            });
-
             html += `</div></div>`;
         }
 
-        html += `</div></div>`;
+        // ── Recommended next (action suggestions) ────────────────────────────
+        if (actionSuggestions.length) {
+            html += `<div>`;
+            html += `<div class="ins-subhead">Recommended next</div>`;
+            html += `<div class="ins-list">`;
+            actionSuggestions.forEach(s => {
+                html += `<div class="ins-item ins-item--suggest">
+                    <span class="ins-item-icon ins-item-icon--arrow">${InsightsManager._SVG_ARROW}</span>
+                    <span class="ins-item-body">${this.renderText(s, 'finding')}</span>
+                </div>`;
+            });
+            html += `</div></div>`;
+        }
 
+        // ── Follow-up questions ──────────────────────────────────────────────
+        if (followups.length) {
+            html += `<div>`;
+            html += `<div class="ins-subhead">Follow-up questions</div>`;
+            html += `<div class="ins-followups">`;
+            followups.forEach(q => {
+                const safe = this.escapeHtml(q);
+                html += `<button class="ins-followup" data-q="${safe}"
+                    onclick="window._fillFollowUp(this.dataset.q)">
+                    <span class="ins-followup-q">${safe}</span>
+                    ${InsightsManager._SVG_ARROW_SM}
+                </button>`;
+            });
+            html += `</div></div>`;
+        }
+
+        html += `</div>`; // close ins-card
         container.innerHTML = html;
-    }
-
-    /**
-     * Show loading state
-     */
-    showLoading(container) {
-        container.innerHTML = `
-            <div class="insights-section">
-                <div class="insights-header">
-                    <h3>Insights</h3>
-                </div>
-                <div class="insights-loading" role="status" aria-label="Analyzing data...">
-                    <div class="skeleton" style="height: 1rem; width: 80%;"></div>
-                    <div class="skeleton" style="height: 1rem; width: 60%;"></div>
-                    <div class="skeleton" style="height: 1rem; width: 72%;"></div>
-                </div>
-            </div>
-        `;
     }
 
     /**
@@ -317,15 +505,11 @@ class InsightsManager {
      */
     showError(container, message) {
         container.innerHTML = `
-            <div class="insights-section">
-                <div class="insights-header">
-                    <h3>💡 Insights</h3>
-                </div>
-                <div class="insights-error">
-                    <p>⚠️ ${this.escapeHtml(message)}</p>
-                </div>
-            </div>
-        `;
+        <div class="ins-card">
+            ${this._headerHtml(null, null)}
+            <div class="ins-divider"></div>
+            <p class="ins-error">&#x26a0;&#xfe0f; ${this.escapeHtml(message)}</p>
+        </div>`;
     }
 
     /**

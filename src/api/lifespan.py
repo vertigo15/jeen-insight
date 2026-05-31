@@ -63,6 +63,11 @@ async def _ensure_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_insights_prompts_place
             ON insights_prompts(prompt_place)
     """)
+    # Additive column — safe to run repeatedly via IF NOT EXISTS.
+    await conn.execute("""
+        ALTER TABLE insights_conversation_sessions
+            ADD COLUMN IF NOT EXISTS graph_time_ms INT
+    """)
 
 
 async def _warm_caches(

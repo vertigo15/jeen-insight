@@ -18,7 +18,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=40">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=44">
     <!-- CodeMirror 6 via ESM — exposes window.CodeMirrorService -->
     <script type="module">
       import { EditorView, lineNumbers } from 'https://esm.sh/@codemirror/view@6';
@@ -296,15 +296,22 @@
         <button class="dev-drawer-close-btn" id="dev-drawer-close" aria-label="Close developer panel">×</button>
     </div>
     <div class="dev-drawer-body">
+        <!-- Run header: question + status + meta chips; populated after each query -->
+        <div id="dp-run-header" class="dp-run-header" hidden>
+            <p id="dp-run-question" class="dp-run-question"></p>
+            <div id="dp-run-meta" class="dp-run-meta"></div>
+        </div>
         <div class="prompt-tabs" role="tablist">
             <button class="prompt-tab active" onclick="switchPromptTab('sql')" id="tab-sql" role="tab" aria-selected="true" aria-controls="content-sql">Generated SQL</button>
             <button class="prompt-tab" onclick="switchPromptTab('query')" id="tab-query" role="tab" aria-selected="false" aria-controls="content-query">Query Prompt</button>
             <button class="prompt-tab" onclick="switchPromptTab('insights')" id="tab-insights" role="tab" aria-selected="false" aria-controls="content-insights">Insights Prompt</button>
             <button class="prompt-tab" onclick="switchPromptTab('chart')" id="tab-chart" role="tab" aria-selected="false" aria-controls="content-chart">Chart Prompt</button>
-            <button class="prompt-tab" onclick="switchPromptTab('trace')" id="tab-trace" role="tab" aria-selected="false" aria-controls="content-trace">⏱ Trace</button>
+            <button class="prompt-tab" onclick="switchPromptTab('trace')" id="tab-trace" role="tab" aria-selected="false" aria-controls="content-trace">⏱ Log</button>
         </div>
         <div class="prompt-tab-content" style="display: none;">
             <div id="content-sql" class="tab-pane active" role="tabpanel" aria-labelledby="tab-sql">
+                <!-- SQL execution stats: rows · exec · LLM time -->
+                <div id="dp-sql-stats" class="dp-sql-stats" hidden></div>
                 <div class="sql-editor-wrapper">
                     <div id="sql-editor" aria-label="Generated SQL"></div>
                     <button class="sql-copy-btn" onclick="copySql()" aria-label="Copy SQL to clipboard">
@@ -327,6 +334,8 @@
                 </div>
             </div>
             <div id="content-trace" class="tab-pane" style="display: none;" role="tabpanel" aria-labelledby="tab-trace">
+                <!-- Log filter toolbar: level chips + search; built by JS after trace renders -->
+                <div id="dp-log-toolbar" class="dp-log-toolbar" hidden></div>
                 <div id="trace-panel" class="trace-panel">
                     <p class="trace-empty">Run a query to see the execution trace.</p>
                 </div>
@@ -335,10 +344,10 @@
     </div>
 </aside>
 
-<script src="{{ url_for('static', filename='auth.js') }}?v=41"></script>
-<script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=40"></script>
-<script src="{{ url_for('static', filename='profiling/profilingManager.js') }}?v=40"></script>
-<script src="{{ url_for('static', filename='script.js') }}?v=40"></script>
+<script src="{{ url_for('static', filename='auth.js') }}?v=44"></script>
+<script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=44"></script>
+<script src="{{ url_for('static', filename='profiling/profilingManager.js') }}?v=44"></script>
+<script src="{{ url_for('static', filename='script.js') }}?v=44"></script>
 <!-- Settings page (full-screen) -->
 <script type="module">
   import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=40';

@@ -17,6 +17,12 @@ let filterText = '';
 let chartManager = null;
 let insightsManager = null;
 
+// ── Developer Panel state ───────────────────────────────────────────────────
+let _allTraceEvents   = [];   // full event list from most recent query
+let _traceMetrics     = {};   // metrics from most recent query
+let _activeTraceFilter = 'all'; // current log level filter
+let _traceSearchQ     = '';   // current log text search query
+
 // ── Connection (Jeen Insights) ──────────────────────────────
 const CONNECTION_STORAGE_KEY = 'jeen_insights_connection';
 const SIDEBAR_TAB_KEY        = 'jeen_sidebar_tab'; // 'tables' | 'recent'
@@ -173,6 +179,10 @@ async function askQuestion() {
         showError('Please enter a question');
         return;
     }
+
+    // Immediately dismiss any open autocomplete dropdown so it doesn't block
+    // the query submission or remain visible while loading.
+    if (typeof SuggestionController !== 'undefined') SuggestionController.close();
     
     // Save to history
     saveToHistory(question);
@@ -368,6 +378,10 @@ function displayResults(data) {
     if (data.trace) {
         renderTrace(data.trace, data.metrics);
     }
+
+    // ── Developer Panel: run header + SQL stats bar ──────────────────────
+    _updateDevRunHeader(data);
+    _updateSqlStats(data);
     
     // Display SQL in SQL tab
     // (Already handled above in the SQL display section)
@@ -462,16 +476,15 @@ function renderTable(results, rows) {
                     derivedText = Number.isFinite(numVal) ? formatNumeric(runTotals[idx]) : '\u2014';
                 } else if (derived.type === 'delta') {
                     if (rowIdx === 0) {
-                        derivedText = '\u2014';
+                        derivedText = _EM_DASH;
                     } else {
                         const prev = Number(Array.isArray(rows[rowIdx-1]) ? rows[rowIdx-1][idx] : rows[rowIdx-1][column]);
                         if (Number.isFinite(numVal) && Number.isFinite(prev)) {
                             const d = numVal - prev;
-                            const sign = d >= 0 ? '+' : '';
-                            derivedText = sign + formatNumeric(d);
-                            derivedCls = d >= 0 ? 'derived-col derived-positive' : 'derived-col derived-negative';
+                            derivedText = _fmtSigned(d);
+                            derivedCls = d > 0 ? 'derived-col derived-positive' : d < 0 ? 'derived-col derived-negative' : 'derived-col';
                         } else {
-                            derivedText = '\u2014';
+                            derivedText = _EM_DASH;
                         }
                     }
                 } else {
@@ -491,42 +504,103 @@ function renderTable(results, rows) {
 // ----------------------------------------------------------------
 // Result-rendering helpers
 // ----------------------------------------------------------------
+
+// Real minus (U+2212) and em-dash for table cells.
+const _MINUS   = '\u2212';
+const _EM_DASH = '\u2014';
+
+/**
+ * Format a number for a standard data cell.
+ * Uses real minus \u2212 so decimal points form a clean vertical rail.
+ * Non-finite values become an em-dash.
+ */
+function formatNumeric(value) {
+    const n = (typeof value === 'number') ? value : Number(value);
+    if (!Number.isFinite(n)) return (typeof value === 'string' && value.trim() !== '') ? String(value) : _EM_DASH;
+    if (n < 0) return _MINUS + Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: 4 });
+    if (Number.isInteger(n)) return n.toLocaleString('en-US');
+    return n.toLocaleString('en-US', { maximumFractionDigits: 4 });
+}
+
+/**
+ * Format a signed delta/change value.
+ * Always shows + or \u2212 so the sign is visible even for positives.
+ */
+function _fmtSigned(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return _EM_DASH;
+    const sign = n > 0 ? '+' : n < 0 ? _MINUS : '';
+    const abs  = Math.abs(n);
+    if (Number.isInteger(n)) return sign + abs.toLocaleString('en-US');
+    return sign + abs.toLocaleString('en-US', { maximumFractionDigits: 4 });
+}
+
 function renderCellHtml(value, colIndex, profile) {
+    // NULL → faint em-dash aligned with the numeric rail.
     if (value === null || value === undefined || value === '') {
-        return '<td><em style="color: var(--color-faint);">NULL</em></td>';
+        const cls = profile.numericCols.has(colIndex) ? 'num-cell' : '';
+        return `<td${cls ? ` class="${cls}"` : ''}><span class="cell-null">${_EM_DASH}</span></td>`;
     }
     // Custom format override takes priority.
     if (_colFormats[colIndex]) {
         const fmt = applyColFormatValue(value, _colFormats[colIndex].type);
         if (fmt !== null) return `<td class="num-cell">${escapeHtml(fmt)}</td>`;
     }
+    // ID columns — mono, faint; don't badge or format numerically.
+    if (profile.idCols && profile.idCols.has(colIndex)) {
+        return `<td class="cell-id">${escapeHtml(String(value))}</td>`;
+    }
+    // Dimension badge — categorical identity (month, territory, category …).
     if (profile.dimCols.has(colIndex)) {
         return `<td><span class="dim-badge">${escapeHtml(String(value))}</span></td>`;
     }
     if (profile.numericCols.has(colIndex)) {
+        // Delta / change columns — the only cells that get green / red.
+        if (profile.deltaCols && profile.deltaCols.has(colIndex)) {
+            const n  = Number(value);
+            const cc = Number.isFinite(n)
+                ? (n > 0 ? ' cell-delta-pos' : n < 0 ? ' cell-delta-neg' : '')
+                : '';
+            return `<td class="num-cell${cc}">${escapeHtml(_fmtSigned(value))}</td>`;
+        }
         return `<td class="num-cell">${escapeHtml(formatNumeric(value))}</td>`;
     }
     return `<td>${escapeHtml(String(value))}</td>`;
 }
 
+/**
+ * Profile every column: numeric vs categorical, plus new column kinds
+ * that drive targeted rendering.
+ *
+ *   numericCols  — ≥70 % of non-null values parse as numbers
+ *   dimCols      — categorical: <20 distinct values, not numeric, not id
+ *   idCols       — id/key/pk-style: rendered mono+faint, no badge/format
+ *   deltaCols    — change/delta columns: rendered signed with direction color
+ */
 function profileColumns(results, rows) {
     const numericCols = new Set();
-    const dimCols = new Set();
+    const dimCols     = new Set();
+    const idCols      = new Set();   // NEW
+    const deltaCols   = new Set();   // NEW
 
-    const numCols = results.columns.length;
+    const numCols    = results.columns.length;
     const sampleSize = Math.min(rows.length, 200);
 
-    for (let i = 0; i < numCols; i++) {
-        const colName = results.columns[i];
-        const lowerName = String(colName).toLowerCase();
-        // Treat *id, *_key, *_pk-style columns as plain (no badge / no number formatting).
-        const isIdLike = /(^id$|_id$|^key$|_key$|_pk$|^pk$)/.test(lowerName);
+    // Column-name heuristics
+    const ID_RE    = /(^id$|_id$|^key$|_key$|_pk$|^pk$|^uuid$)/i;
+    const DELTA_RE = /(yoy|mom|wow|qoq|_change$|change_|delta|variance|_diff$|diff_|growth_rate|pct_change|_chg$|_var$|change_pct|_delta$|_delta_)/i;
 
-        let numCount = 0;
-        let nonNullCount = 0;
+    for (let i = 0; i < numCols; i++) {
+        const colName   = results.columns[i];
+        const lowerName = String(colName).toLowerCase();
+
+        const isIdLike = ID_RE.test(lowerName);
+        if (isIdLike) { idCols.add(i); continue; }  // IDs skip all other processing
+
+        let numCount = 0, nonNullCount = 0;
         const distinct = new Set();
         for (let r = 0; r < sampleSize; r++) {
-            const row = rows[r];
+            const row  = rows[r];
             const cell = Array.isArray(row) ? row[i] : row[colName];
             if (cell === null || cell === undefined || cell === '') continue;
             nonNullCount++;
@@ -534,27 +608,18 @@ function profileColumns(results, rows) {
             const num = Number(cell);
             if (Number.isFinite(num) && /^[-+]?\d/.test(String(cell).trim())) numCount++;
         }
-        const isNumeric = !isIdLike && nonNullCount > 0 && numCount / nonNullCount >= 0.7;
-        if (isNumeric) numericCols.add(i);
 
-        // Dim heuristic: <20 distinct values, not numeric, not id-like, more than one row.
-        if (!isNumeric && !isIdLike && nonNullCount > 0 && distinct.size > 0 && distinct.size < 20) {
+        const isNumeric = nonNullCount > 0 && numCount / nonNullCount >= 0.7;
+        if (isNumeric) {
+            numericCols.add(i);
+            if (DELTA_RE.test(lowerName)) deltaCols.add(i);
+        } else if (nonNullCount > 0 && distinct.size > 0 && distinct.size < 20) {
+            // Dim: categorical, few distinct values.
             dimCols.add(i);
         }
     }
 
-    return { numericCols, dimCols };
-}
-
-function formatNumeric(value) {
-    if (typeof value === 'number') {
-        if (Number.isInteger(value)) return value.toLocaleString('en-US');
-        return value.toLocaleString('en-US', { maximumFractionDigits: 4 });
-    }
-    const num = Number(value);
-    if (!Number.isFinite(num)) return String(value);
-    if (Number.isInteger(num)) return num.toLocaleString('en-US');
-    return num.toLocaleString('en-US', { maximumFractionDigits: 4 });
+    return { numericCols, dimCols, idCols, deltaCols };
 }
 
 // ----------------------------------------------------------------
@@ -1268,8 +1333,21 @@ function escapeHtml(text) {
 // Display structured prompt with collapsible sections
 function displayStructuredPrompt(promptData) {
     const promptContent = document.getElementById('prompt-content');
-    
-    let html = '<div class="structured-prompt">';
+
+    // ── Estimate token count + build copy-all header ─────────────────────
+    const rawText = promptData.full_text ||
+        [promptData.system_instructions, promptData.tables, promptData.columns,
+         promptData.knowledge_pairs, promptData.business_terms,
+         promptData.current_question].filter(Boolean).join('\n');
+    window._lastPromptRawText = rawText;
+    const estTokens = Math.round((rawText || '').length / 4);
+    const tokenLabel = estTokens > 0 ? `~${_formatTokens(estTokens)} tok` : '';
+
+    let html = '<div class="dp-prompt-hdr">';
+    if (tokenLabel) html += `<span class="dp-token-est">${tokenLabel}</span>`;
+    html += `<button class="dp-copy-all" onclick="_copyAllPrompt()" title="Copy full prompt">&#10697; Copy all</button>`;
+    html += '</div>';
+    html += '<div class="structured-prompt">';
     
     // Section 1: System Instructions
     if (promptData.system_instructions) {
@@ -1619,14 +1697,19 @@ function _renderHistoryEntries(entries) {
         const statusLabel = e.status || 'unknown';
         const time  = _relTime(e.asked_at);
         const parts = [];
-        if (e.tokens)   parts.push(`${e.tokens} tok`);
-        if (e.llm_ms)   parts.push(`LLM ${e.llm_ms}ms`);
-        if (e.exec_ms)  parts.push(`exec ${e.exec_ms}ms`);
+        if (e.tokens)   parts.push(`${_formatTokens(e.tokens)} tok`);
+        if (e.llm_ms)   parts.push(`LLM ${_fmtMs(e.llm_ms)}`);
+        if (e.exec_ms)  parts.push(`DB ${_fmtMs(e.exec_ms)}`);
+        // net+proxy = graph_time_ms - llm_ms - exec_ms (only when graph_ms is stored)
+        if (e.graph_ms && e.graph_ms > 0) {
+            const netMs = Math.max(0, e.graph_ms - (e.llm_ms || 0) - (e.exec_ms || 0));
+            if (netMs > 50) parts.push(`net ${_fmtMs(netMs)}`);
+        }
         if (e.row_count !== null && e.row_count !== undefined) parts.push(`${e.row_count} rows`);
         const metaStr = [time, ...parts].filter(Boolean).join('<span class="history-log-dot">&nbsp;·&nbsp;</span>');
         const question = escapeHtml(e.question || '(empty)');
         const safeQ = (e.question || '').replace(/'/g, "\\'");
-        return `<div class="history-log-entry" onclick="fillQuestion('${escapeHtml(safeQ)}')">
+        return `<div class="history-log-entry" onclick="if(window._historyDrawerClose)window._historyDrawerClose();fillQuestion('${escapeHtml(safeQ)}')">
   <div class="history-log-entry-question">${question}</div>
   <div class="history-log-meta">
     <span class="history-log-status" data-status="${statusLabel}">${statusLabel}</span>
@@ -1676,30 +1759,160 @@ function filterHistoryLog() {
  * @param {Object} metrics     - The metrics dict from the API response.
  */
 function renderTrace(traceEvents, metrics) {
-    const panel = document.getElementById('trace-panel');
+    const panel   = document.getElementById('trace-panel');
+    const toolbar = document.getElementById('dp-log-toolbar');
     if (!panel) return;
+
+    // Store for filtering
+    _allTraceEvents  = traceEvents || [];
+    _traceMetrics    = metrics || {};
+    _activeTraceFilter = 'all';
+    _traceSearchQ    = '';
+
     if (!traceEvents || traceEvents.length === 0) {
         panel.innerHTML = '<p class="trace-empty">No trace data for this query.</p>';
+        if (toolbar) toolbar.hidden = true;
         return;
     }
 
-    const totalMs   = traceEvents.reduce((s, e) => s + (e.elapsed_ms || 0), 0);
-    const maxMs     = Math.max(...traceEvents.map(e => e.elapsed_ms || 0), 1);
-    const llmMs     = metrics && metrics.llm_latency_ms ? metrics.llm_latency_ms : 0;
-    const retries   = metrics && metrics.retry_count   ? metrics.retry_count   : 0;
-    const route     = metrics && metrics.route         ? metrics.route         : '?';
+    // Build the filter toolbar
+    if (toolbar) {
+        _buildTraceToolbar(toolbar, traceEvents);
+        toolbar.hidden = false;
+    }
+
+    // Render the timeline + summary chips
+    _renderTraceEvents();
+
+    // Show the trace badge on the dev-panel button
+    const badge = document.getElementById('dev-panel-badge');
+    if (badge) badge.hidden = false;
+}
+
+/**
+ * Determine a log level for a trace event.
+ * Returns 'error' | 'warn' | 'llm' | 'db' | 'info'
+ */
+function _traceEventLevel(ev) {
+    if (ev.status === 'error') return 'error';
+    if (ev.feedback_type || ev.status === 'blocked' || ev.status === 'retry') return 'warn';
+    if ((ev.type || '').toLowerCase() === 'llm') return 'llm';
+    if ((ev.type || '').toLowerCase() === 'db')  return 'db';
+    return 'info';
+}
+
+/**
+ * Build (or rebuild) the filter toolbar element.
+ */
+function _buildTraceToolbar(toolbar, events) {
+    const counts = { all: events.length, llm: 0, db: 0, warn: 0, error: 0 };
+    events.forEach(ev => {
+        const lv = _traceEventLevel(ev);
+        if (counts[lv] !== undefined) counts[lv]++;
+    });
+
+    const LEVELS  = ['all', 'llm', 'db', 'warn', 'error'];
+    const LABELS  = { all: 'All', llm: 'LLM', db: 'DB', warn: 'Warn', error: 'Error' };
+
+    let html = '<div class="dp-log-filters">';
+    LEVELS.forEach(lv => {
+        const c = counts[lv] || 0;
+        if (lv !== 'all' && c === 0) return;
+        const active = _activeTraceFilter === lv ? ' active' : '';
+        html += `<button class="dp-log-filter${active}" data-level="${lv}" onclick="_switchTraceFilter('${lv}')">`
+            + `${LABELS[lv]} <span class="dp-lf-count">${c}</span></button>`;
+    });
+    html += '</div>';
+    html += `<input type="text" class="dp-log-search" id="dp-log-search" `
+        + `placeholder="Search log…" value="${escapeHtml(_traceSearchQ)}" `
+        + `oninput="_traceSearchInput(this.value)" aria-label="Search execution log" />`;
+
+    toolbar.innerHTML = html;
+}
+
+/**
+ * Switch the active level filter and re-render events.
+ */
+function _switchTraceFilter(level) {
+    _activeTraceFilter = level;
+    document.querySelectorAll('.dp-log-filter').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.level === level);
+    });
+    _renderTraceEvents();
+}
+window._switchTraceFilter = _switchTraceFilter;
+
+/**
+ * Handle search input in the log toolbar.
+ */
+function _traceSearchInput(val) {
+    _traceSearchQ = (val || '').trim();
+    _renderTraceEvents();
+}
+window._traceSearchInput = _traceSearchInput;
+
+/**
+ * Render the trace event timeline into #trace-panel,
+ * respecting the current filter + search query.
+ */
+function _renderTraceEvents() {
+    const panel = document.getElementById('trace-panel');
+    if (!panel || !_allTraceEvents.length) return;
+
+    const events  = _allTraceEvents;
+    const metrics = _traceMetrics;
+
+    // ── Filter ────────────────────────────────────────────────────────────
+    let filtered = events;
+    if (_activeTraceFilter !== 'all') {
+        filtered = filtered.filter(ev => _traceEventLevel(ev) === _activeTraceFilter);
+    }
+    const sq = _traceSearchQ.toLowerCase();
+    if (sq) {
+        filtered = filtered.filter(ev =>
+            (ev.node   || '').toLowerCase().includes(sq) ||
+            (ev.detail || '').toLowerCase().includes(sq) ||
+            (ev.prompt || '').toLowerCase().includes(sq) ||
+            (ev.sql    || '').toLowerCase().includes(sq)
+        );
+    }
+
+    const graphMs  = events.reduce((s, e) => s + (e.elapsed_ms || 0), 0);
+    const totalMs  = graphMs;  // alias kept for bar scaling below
+    const maxMs    = Math.max(...events.map(e => e.elapsed_ms || 0), 1);
+    const llmMs    = metrics.llm_latency_ms || 0;
+    const dbMs     = metrics.execution_time_ms;   // actual DB execution time
+    const retries  = metrics.retry_count    || 0;
+    const route    = metrics.route          || '?';
+    const wallMs   = lastQueryDurationMs;          // client wall time
+    const netMs    = (Number.isFinite(wallMs) && wallMs > 0 && graphMs > 0)
+        ? Math.max(0, wallMs - graphMs) : null;
 
     // ── Summary chips ─────────────────────────────────────────────────────
     let html = '<div class="trace-summary">';
     html += `<span class="trace-summary-chip">route: <strong>${escapeHtml(route)}</strong></span>`;
-    html += `<span class="trace-summary-chip">nodes: <strong>${traceEvents.length}</strong></span>`;
-    html += `<span class="trace-summary-chip">total: <strong>${_fmtMs(totalMs)}</strong></span>`;
-    html += `<span class="trace-summary-chip">LLM: <strong>${_fmtMs(llmMs)}</strong></span>`;
+    html += `<span class="trace-summary-chip">nodes: <strong>${events.length}</strong></span>`;
+    if (Number.isFinite(wallMs) && wallMs > 0)
+        html += `<span class="trace-summary-chip trace-chip-wall" title="${_TIMING_TIPS.wall}">wall: <strong>${_fmtMs(wallMs)}</strong></span>`;
+    html += `<span class="trace-summary-chip" title="${_TIMING_TIPS.graph}">graph: <strong>${_fmtMs(graphMs)}</strong></span>`;
+    html += `<span class="trace-summary-chip" title="${_TIMING_TIPS.llm}">LLM: <strong>${_fmtMs(llmMs)}</strong></span>`;
+    if (Number.isFinite(dbMs) && dbMs > 0)
+        html += `<span class="trace-summary-chip trace-chip-db" title="${_TIMING_TIPS.db}">DB: <strong>${_fmtMs(dbMs)}</strong></span>`;
+    if (netMs !== null)
+        html += `<span class="trace-summary-chip trace-chip-net" title="${_TIMING_TIPS.net}">net: <strong>${_fmtMs(netMs)}</strong></span>`;
     if (retries > 0) html += `<span class="trace-summary-chip">retries: <strong>${retries}</strong></span>`;
     html += '</div>';
 
+    if (filtered.length === 0) {
+        html += '<p class="trace-empty">No events match the current filter.</p>';
+        panel.innerHTML = html;
+        return;
+    }
+
     // ── Node timeline ─────────────────────────────────────────────────────
-    traceEvents.forEach((ev, idx) => {
+    filtered.forEach((ev, idx) => {
+        // Use the original index for copy operations
+        const origIdx = events.indexOf(ev);
         const ms      = ev.elapsed_ms || 0;
         const barPct  = Math.max(2, Math.round((ms / maxMs) * 100));
         const icon    = escapeHtml(ev.icon  || '●');
@@ -1707,38 +1920,185 @@ function renderTrace(traceEvents, metrics) {
         const name    = escapeHtml(ev.node  || '?');
         const detail  = ev.detail ? escapeHtml(ev.detail) : '';
         const status  = ev.status || '';
+        const lv      = _traceEventLevel(ev);
 
         html += `<div class="trace-event" data-idx="${idx}" onclick="_toggleTraceEvent(this)">`;
+        html += `  <span class="trace-lv-dot trace-lv-${lv}" title="${lv}"></span>`;
         html += `  <span class="trace-event-icon">${icon}</span>`;
         html += `  <span class="trace-event-name">${name}</span>`;
         html += `  <div class="trace-event-bar-wrap">`;
         html += `    <div class="trace-event-bar" data-ntype="${ntype}" style="width:${barPct}%"></div>`;
         if (detail) {
-            const detailClass = status ? `trace-event-detail trace-event-status" data-status="${escapeHtml(status)}` : 'trace-event-detail';
+            const detailClass = status
+                ? `trace-event-detail trace-event-status" data-status="${escapeHtml(status)}`
+                : 'trace-event-detail';
             html += `    <span class="${detailClass}">${detail}</span>`;
         }
         html += `  </div>`;
         html += `  <span class="trace-event-ms">${_fmtMs(ms)}</span>`;
 
-        // Expandable extra detail (SQL preview, full detail)
+        // Expandable extra detail (SQL preview, full detail, prompt)
         const expandParts = [];
         if (ev.sql)             expandParts.push(`SQL: ${ev.sql}`);
         if (ev.route)           expandParts.push(`route: ${ev.route}`);
         if (ev.feedback_type)   expandParts.push(`feedback: ${ev.feedback_type}`);
         if (ev.answers_intent !== undefined) expandParts.push(`answers_intent: ${ev.answers_intent}`);
-        if (expandParts.length) {
-            html += `  <div class="trace-event-expanded">${escapeHtml(expandParts.join('\n'))}</div>`;
+
+        const hasExpand = expandParts.length > 0 || ev.prompt;
+        if (hasExpand) {
+            html += `  <div class="trace-event-expanded">`;
+            if (expandParts.length) {
+                html += escapeHtml(expandParts.join('\n'));
+            }
+            if (ev.prompt) {
+                if (expandParts.length) html += '\n';
+                html += `<div class="trace-prompt-label">\uD83D\uDCC4 Prompt sent to LLM`
+                    + ` <button class="trace-prompt-copy" onclick="event.stopPropagation();_copyTracePrompt(${origIdx})" title="Copy prompt">&#10697; Copy</button></div>`;
+                html += `<pre class="trace-prompt-pre">${escapeHtml(ev.prompt)}</pre>`;
+            }
+            html += `  </div>`;
         }
 
         html += `</div>`;
     });
 
-    panel.innerHTML = html;
+    // ── Synthetic net+proxy overhead row ──────────────────────────────────
+    // Only show if overhead is non-trivial (>50 ms) to avoid noise.
+    if (netMs !== null && netMs > 50) {
+        const barPct = Math.max(2, Math.round((netMs / maxMs) * 100));
+        html += `<div class="trace-event trace-event-synthetic" title="Client wall time minus graph total: Flask proxy + FastAPI routing + network round-trip">`;
+        html += `  <span class="trace-lv-dot trace-lv-info" title="overhead"></span>`;
+        html += `  <span class="trace-event-icon">\uD83C\uDF10</span>`;
+        html += `  <span class="trace-event-name">flask + network</span>`;
+        html += `  <div class="trace-event-bar-wrap">`;
+        html += `    <div class="trace-event-bar" data-ntype="overhead" style="width:${barPct}%"></div>`;
+        html += `    <span class="trace-event-detail">proxy + routing + round-trip overhead</span>`;
+        html += `  </div>`;
+        html += `  <span class="trace-event-ms">${_fmtMs(netMs)}</span>`;
+        html += `</div>`;
+    }
 
-    // Show the trace badge on the dev-panel button
-    const badge = document.getElementById('dev-panel-badge');
-    if (badge) badge.hidden = false;
+    panel.innerHTML = html;
 }
+
+/**
+ * Copy the prompt text from a specific trace event to the clipboard.
+ */
+function _copyTracePrompt(origIdx) {
+    const ev = _allTraceEvents[origIdx];
+    if (!ev || !ev.prompt) return;
+    navigator.clipboard.writeText(ev.prompt).then(() => {
+        showToast('Prompt copied', 'info');
+    }).catch(() => showToast('Copy failed', 'error'));
+}
+window._copyTracePrompt = _copyTracePrompt;
+
+// ── Developer Panel: Run Header ──────────────────────────────────────────────
+
+/**
+ * Populate the #dp-run-header block with question + status + meta chips
+ * drawn from the full query API response.
+ */
+function _updateDevRunHeader(data) {
+    const header = document.getElementById('dp-run-header');
+    const qEl    = document.getElementById('dp-run-question');
+    const metaEl = document.getElementById('dp-run-meta');
+    if (!header || !qEl || !metaEl) return;
+
+    qEl.textContent = data.question || '—';
+
+    const hasError    = !!(data.error);
+    const statusClass = hasError ? 'dp-status-error' : 'dp-status-ok';
+    const statusText  = hasError ? 'error' : 'success';
+
+    const m        = data.metrics || {};
+    const route    = m.route || '—';
+    const graphMs  = (_allTraceEvents || []).reduce((s, e) => s + (e.elapsed_ms || 0), 0);
+    const llmMs    = m.llm_latency_ms;
+    const dbMs     = m.execution_time_ms;
+    const inTok    = m.input_tokens;
+    const outTok   = m.output_tokens;
+    const rows     = data.results ? (data.results.data || data.results.rows || []).length : null;
+    const wallMs   = lastQueryDurationMs;
+    const netMs    = (Number.isFinite(wallMs) && wallMs > 0 && graphMs > 0)
+        ? Math.max(0, wallMs - graphMs) : null;
+
+    const chips = [];
+    chips.push(`<span class="dp-chip dp-chip-status ${statusClass}">${statusText}</span>`);
+    chips.push(`<span class="dp-chip">route: <strong>${escapeHtml(String(route))}</strong></span>`);
+    if (Number.isFinite(wallMs) && wallMs > 0)
+        chips.push(`<span class="dp-chip dp-chip-wall" title="${_TIMING_TIPS.wall}">wall: <strong>${_fmtMs(wallMs)}</strong></span>`);
+    if (Number.isFinite(graphMs) && graphMs > 0)
+        chips.push(`<span class="dp-chip" title="${_TIMING_TIPS.graph}">graph: <strong>${_fmtMs(graphMs)}</strong></span>`);
+    if (Number.isFinite(llmMs))
+        chips.push(`<span class="dp-chip" title="${_TIMING_TIPS.llm}">LLM: <strong>${_fmtMs(llmMs)}</strong></span>`);
+    if (Number.isFinite(dbMs) && dbMs > 0)
+        chips.push(`<span class="dp-chip dp-chip-db" title="${_TIMING_TIPS.db}">DB: <strong>${_fmtMs(dbMs)}</strong></span>`);
+    if (netMs !== null && netMs > 50)
+        chips.push(`<span class="dp-chip dp-chip-net" title="${_TIMING_TIPS.net}">net: <strong>${_fmtMs(netMs)}</strong></span>`);
+    if (inTok)  chips.push(`<span class="dp-chip">in: <strong>${_formatTokens(inTok)}</strong></span>`);
+    if (outTok) chips.push(`<span class="dp-chip">out: <strong>${_formatTokens(outTok)}</strong></span>`);
+    if (rows !== null) chips.push(`<span class="dp-chip">rows: <strong>${rows}</strong></span>`);
+
+    metaEl.innerHTML = chips.join('');
+    header.hidden = false;
+}
+
+// ── Developer Panel: SQL Stats Bar ───────────────────────────────────────────
+
+/**
+ * Populate the #dp-sql-stats bar above the CodeMirror editor.
+ */
+function _updateSqlStats(data) {
+    const bar = document.getElementById('dp-sql-stats');
+    if (!bar) return;
+
+    const m     = data.metrics || {};
+    const llmMs = m.llm_latency_ms;
+    const dbMs  = m.execution_time_ms;  // actual DB query execution time
+    const rows  = data.results
+        ? (data.results.data || data.results.rows || []).length
+        : null;
+
+    const parts = [];
+    if (rows !== null)
+        parts.push(`<span class="dp-stat-chip"><strong>${rows}</strong> row${rows !== 1 ? 's' : ''}</span>`);
+    if (Number.isFinite(dbMs) && dbMs > 0)
+        parts.push(`<span class="dp-stat-chip" title="${_TIMING_TIPS.db}">DB <strong>${_fmtMs(dbMs)}</strong></span>`);
+    if (Number.isFinite(llmMs))
+        parts.push(`<span class="dp-stat-chip" title="${_TIMING_TIPS.llm}">LLM <strong>${_fmtMs(llmMs)}</strong></span>`);
+    if (m.retry_count > 0)
+        parts.push(`<span class="dp-stat-chip dp-stat-warn">retries <strong>${m.retry_count}</strong></span>`);
+
+    if (parts.length) {
+        bar.innerHTML = parts.join('');
+        bar.hidden = false;
+    } else {
+        bar.hidden = true;
+    }
+}
+
+// ── Timing chip tooltip explanations ──────────────────────────────────────────
+// Used as HTML title= attributes on all timing chips so developers can
+// hover any number to understand exactly how it was computed.
+const _TIMING_TIPS = {
+    wall:  'wall — Client wall time: measured in the browser from the moment '
+         + '"Ask" was clicked to the last byte of the API response. '
+         + 'Covers: network round-trip + Flask proxy + FastAPI routing + full graph pipeline.',
+    graph: 'graph — LangGraph pipeline time: sum of elapsed_ms across every '
+         + 'node in the trace. Pure server-side processing inside the agent '
+         + 'graph (router, SQL gen, DB exec, eval, formatter, …).',
+    llm:   'LLM — Cumulative LLM latency: total time waiting for the language '
+         + 'model (Azure OpenAI) to respond across all LLM calls in this query. '
+         + 'Comes directly from the llm_latency_ms metric.',
+    db:    'DB — Database execution time: time taken to run the generated SQL '
+         + 'query against the data warehouse. '
+         + 'Comes from execution_time_ms stored in the LangGraph state.',
+    net:   'net — Flask + network overhead: wall time minus graph time. '
+         + 'Covers HTTP request/response transit, Flask proxy routing, '
+         + 'FastAPI middleware, and serialisation overhead. '
+         + 'Formula: net = wall − graph.',
+};
 
 function _fmtMs(ms) {
     if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—';
@@ -2654,6 +3014,19 @@ function copyRowData(rowIdx) {
         showToast('Row copied', 'info');
     });
 }
+
+/**
+ * Copy the full raw prompt text (from window._lastPromptRawText) to clipboard.
+ * Called by the "Copy all" button in the Query Prompt tab header.
+ */
+function _copyAllPrompt() {
+    const text = window._lastPromptRawText || '';
+    if (!text) { showToast('No prompt to copy', 'info'); return; }
+    navigator.clipboard.writeText(text).then(() => {
+        showToast('Prompt copied', 'info');
+    }).catch(() => showToast('Copy failed', 'error'));
+}
+window._copyAllPrompt = _copyAllPrompt;
 
 // Make functions globally accessible for onclick handlers
 window.askQuestion = askQuestion;
@@ -3828,6 +4201,9 @@ document.addEventListener('DOMContentLoaded', () => {
         document.addEventListener('keydown', (e) => {
             if (isOpen && e.key === 'Escape') { e.preventDefault(); close(); }
         });
+
+        // Expose so history-entry onclick can close the drawer before fillQuestion.
+        window._historyDrawerClose = close;
     })();
 
     // ── Dev Drawer (Prompts & SQL) ──────────────────────────────────────
@@ -3849,9 +4225,20 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.classList.add('is-active');
             drawer.setAttribute('aria-hidden', 'false');
             overlay.setAttribute('aria-hidden', 'false');
-            // Auto-reveal tab content so the first tab is immediately visible.
+            // Ensure tab content container is visible.
             const tabContent = drawer.querySelector('.prompt-tab-content');
             if (tabContent && tabContent.style.display === 'none') {
+                tabContent.style.display = 'block';
+            }
+            // Always auto-switch to the Log tab when trace data is present.
+            // This means every time the drawer opens after a query the user
+            // immediately sees the execution log rather than the empty SQL tab.
+            const tracePanel = document.getElementById('trace-panel');
+            const hasTrace = tracePanel && !tracePanel.querySelector('.trace-empty');
+            if (hasTrace) {
+                switchPromptTab('trace');
+            } else if (tabContent && tabContent.style.display === 'block' && !document.getElementById('tab-sql')?.classList.contains('active')) {
+                // First open and no trace yet — default to SQL tab
                 switchPromptTab('sql');
             }
         }
