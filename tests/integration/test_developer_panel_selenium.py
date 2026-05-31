@@ -319,17 +319,21 @@ def test_developer_panel():
             # Must have at least one stat (LLM is always present after an LLM call)
             assert stats_html.strip(), "SQL stats bar is visible but has no content"
 
-            # KEY regression: must NOT say bare 'exec' (the old label was replaced with 'DB')
-            assert "exec" not in stats_html.lower(), \
-                f"SQL stats bar should use 'DB' label, not 'exec'. Got: {stats_html[:200]!r}"
+            # KEY regression: visible text must NOT say 'exec' — use 'DB' instead.
+            # We check textContent (not innerHTML) so title= tooltips don't interfere.
+            stats_text = driver.execute_script(
+                "return document.getElementById('dp-sql-stats').textContent;"
+            ) or ""
+            assert "exec" not in stats_text.lower(), \
+                f"SQL stats bar visible text should use 'DB' label, not 'exec'. Got: {stats_text!r}"
 
             # Determine which stats are present and print them
-            has_rows = "row" in stats_html.lower()
-            has_db   = "db " in stats_html.lower() or ">db<" in stats_html.lower()
-            has_llm  = "llm" in stats_html.lower()
-            print(f"   ✓ SQL stats bar visible — rows:{has_rows} DB:{has_db} LLM:{has_llm}: {stats_html[:150]!r}")
+            has_rows = "row" in stats_text.lower()
+            has_db   = "db" in stats_text.lower()
+            has_llm  = "llm" in stats_text.lower()
+            print(f"   \u2713 SQL stats bar visible \u2014 rows:{has_rows} DB:{has_db} LLM:{has_llm}: {stats_text[:120]!r}")
         else:
-            print("   ℹ SQL stats bar is hidden (conversational query with no SQL)")
+            print("   \u2139 SQL stats bar is hidden (conversational query with no SQL)")
 
         # ── 8. Query Prompt tab shows content ─────────────────────────────
         print("\n── 8. Query Prompt tab ──")
