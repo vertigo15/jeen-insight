@@ -127,13 +127,19 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
     if eval_result.get("follow_up"):
         formatted["follow_up"] = eval_result["follow_up"]
 
-    # ── Execution trace ────────────────────────────────────────────────
+    # ── Execution trace ───────────────────────────────────────────────────────────────────
     # Enrich each raw timing event with node-specific context drawn from the
     # final state, so the Trace panel shows what actually happened.
     raw_trace = list(state.get("trace") or [])
     if raw_trace:
         _enrich_trace(raw_trace, state)
         formatted["trace"] = raw_trace
+
+    # ── Node prompts ──────────────────────────────────────────────────────────────
+    # Collected prompts for each LLM node, surfaced to the developer panel.
+    node_prompts = state.get("node_prompts") or {}
+    if node_prompts:
+        formatted["node_prompts"] = node_prompts
 
     return {"formatted_response": formatted}
 
@@ -142,6 +148,7 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
     """Mutate each event in-place with human-readable detail from state."""
     result = state.get("query_result") or {}
     eval_result = state.get("eval_result") or {}
+    node_prompts = state.get("node_prompts") or {}
 
     for ev in events:
         node = ev.get("node", "")
@@ -241,6 +248,10 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
         elif node == "observability_log":
             ev["detail"] = "QUERY_EVENT logged"
 
+        # Attach captured prompt for LLM nodes so the UI can show full text
+        if node in node_prompts:
+            ev["prompt"] = node_prompts[node]
+
 
 # ── save_to_memory ────────────────────────────────────────────────────────────
 
@@ -259,6 +270,8 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
         exec_error = state.get("exec_error")
         token_usage = state.get("token_usage") or {}
         llm_latency_ms = state.get("llm_latency_ms") or 0
+        start_time = state.get("start_time")
+        graph_time_ms = int((time.monotonic() - start_time) * 1000) if start_time else None
 
         try:
             if sql:
@@ -278,6 +291,7 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
                     row_count=0,
                     result_preview=None,
                     error_message=exec_error,
+                    graph_time_ms=graph_time_ms,
                 )
             elif sql:
                 rows = query_result.get("rows") or []
@@ -291,6 +305,7 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
                     row_count=len(rows),
                     result_preview=safe_preview,
                     error_message=None,
+                    graph_time_ms=graph_time_ms,
                 )
 
         except Exception:  # noqa: BLE001

@@ -134,7 +134,8 @@ class GenerateInsightsRequest(BaseModel):
 class GenerateInsightsResponse(BaseModel):
     summary: str
     findings: List[str]
-    suggestions: List[str]
+    suggestions: List[str]       # recommended actions (0-2)
+    followups: Optional[List[str]] = None  # clickable follow-up questions
     prompt: Optional[str] = None
     system_message: Optional[str] = None
 

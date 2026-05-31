@@ -55,35 +55,26 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
             )
             exec_time_ms = int((time.time() - start) * 1000)
 
-            summary  = state_out.get("summary", "")
-            findings = state_out.get("insights") or []
-            suggestions = state_out.get("follow_up_questions") or []
+            summary     = state_out.get("summary", "")
+            findings    = state_out.get("insights") or []
+            suggestions = state_out.get("suggestions") or []
+            followups   = state_out.get("follow_up_questions") or []
+            prompt_used = state_out.get("prompt_text")
 
             history = get_history_service() if request.query_id else None
             if history and request.query_id:
                 try:
                     await history.add_insight(
-                        query_id=request.query_id,
-                        insight_type="summary",
+                        query_id=request.query_id, insight_type="summary",
                         content=summary or "Analysis complete",
                         llm_model=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
                         llm_execution_time_ms=exec_time_ms,
-                        tokens_input=0,
-                        tokens_output=0,
+                        tokens_input=0, tokens_output=0,
                     )
                     for finding in findings:
                         await history.add_insight(
-                            query_id=request.query_id,
-                            insight_type="finding",
-                            content=finding,
-                            llm_model=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
-                        )
-                    for suggestion in suggestions:
-                        await history.add_insight(
-                            query_id=request.query_id,
-                            insight_type="suggestion",
-                            content=suggestion,
-                            llm_model=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
+                            query_id=request.query_id, insight_type="finding",
+                            content=finding, llm_model=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
                         )
                 except Exception:  # noqa: BLE001
                     logger.exception("Failed to log eval insights to history")
@@ -92,6 +83,8 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
                 summary=summary or "Analysis complete",
                 findings=findings,
                 suggestions=suggestions,
+                followups=followups,
+                prompt=prompt_used,
             )
 
         # ── Legacy insight_service path (no SQL, or graph unavailable) ──────
@@ -125,8 +118,7 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
         if history and request.query_id:
             try:
                 await history.add_insight(
-                    query_id=request.query_id,
-                    insight_type="summary",
+                    query_id=request.query_id, insight_type="summary",
                     content=insights.get("summary", "Analysis complete"),
                     llm_model=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
                     llm_execution_time_ms=exec_time_ms,
@@ -135,17 +127,8 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
                 )
                 for finding in insights.get("findings", []):
                     await history.add_insight(
-                        query_id=request.query_id,
-                        insight_type="finding",
-                        content=finding,
-                        llm_model=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
-                    )
-                for suggestion in insights.get("suggestions", []):
-                    await history.add_insight(
-                        query_id=request.query_id,
-                        insight_type="suggestion",
-                        content=suggestion,
-                        llm_model=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
+                        query_id=request.query_id, insight_type="finding",
+                        content=finding, llm_model=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
                     )
             except Exception:  # noqa: BLE001
                 logger.exception("Failed to log insights to history")
@@ -154,6 +137,7 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
             summary=insights.get("summary", "Analysis complete"),
             findings=insights.get("findings", []),
             suggestions=insights.get("suggestions", []),
+            followups=insights.get("followups") or insights.get("suggestions", []),
             prompt=insights.get("prompt"),
             system_message=insights.get("system_message"),
         )
@@ -218,9 +202,17 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
                 final_insights = {
                     "summary":     state_out.get("summary", ""),
                     "findings":    state_out.get("insights") or [],
-                    "suggestions": state_out.get("follow_up_questions") or [],
+                    "suggestions": state_out.get("suggestions") or [],
+                    "followups":   state_out.get("follow_up_questions") or [],
+                    # Include the rendered prompt so the dev panel can show it
+                    "prompt":      state_out.get("prompt_text") or state_out.get("prompt") or "",
                 }
-                final_metrics = {"llm_latency_ms": latency_ms}
+                # Include token usage if the eval state captured it
+                final_metrics = {
+                    "llm_latency_ms":  latency_ms,
+                    "input_tokens":    state_out.get("input_tokens"),
+                    "output_tokens":   state_out.get("output_tokens"),
+                }
                 yield _sse("done", {"insights": final_insights, "metrics": final_metrics})
             except Exception as exc:  # noqa: BLE001
                 logger.exception("LangGraph eval node failed in stream endpoint")
@@ -239,6 +231,7 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
                     pass
 
             try:
+                legacy_prompt = ""
                 async for ev in generate_insights_stream(
                     dataset=request.dataset,
                     context=context,
@@ -249,8 +242,10 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
                 ):
                     kind = ev.get("type")
                     if kind == "open":
+                        # Capture the prompt so we can forward it in the done event
+                        legacy_prompt = ev.get("prompt", "")
                         yield _sse("open", {
-                            "prompt": ev.get("prompt", ""),
+                            "prompt": legacy_prompt,
                             "system_message": ev.get("system_message", ""),
                         })
                     elif kind == "ttft":
@@ -263,6 +258,10 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
                     elif kind == "done":
                         final_insights = ev.get("insights") or {}
                         final_metrics  = ev.get("metrics") or {}
+                        # Attach the prompt captured from the open event so the
+                        # dev panel Insights Prompt tab can display it.
+                        if legacy_prompt and not final_insights.get("prompt"):
+                            final_insights = {**final_insights, "prompt": legacy_prompt}
                         yield _sse("done", {
                             "insights": final_insights,
                             "metrics":  final_metrics,

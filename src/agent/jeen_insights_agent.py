@@ -28,6 +28,9 @@ from src.connections import Connection, ConnectionService
 from src.metadata import MetadataLoader
 from src.tools.sql_tool import PostgresSqlRunner
 
+# Type alias — avoids a hard import of PromptCache at module level
+_PromptCache = Any
+
 logger = logging.getLogger(__name__)
 
 
@@ -192,7 +195,9 @@ class JeenInsightsAgent:
                 "llm_timeout_seconds": llm_timeout,
                 # Empty list — operator.add in AgentState accumulates across nodes
                 "trace": [],
-                # ── Output ──────────────────────────────────────────────
+                # Empty dict — each LLM node adds its rendered prompt here
+                "node_prompts": {},
+                # ── Output ─────────────────────────────────────────────────────────────────
                 "answer": None,
                 # Surface pre-graph errors (e.g. audit log failure) in the UI
                 # response without stopping the query flow.
@@ -264,26 +269,40 @@ class JeenInsightsAgent:
 # Registry
 # ----------------------------------------------------------------------
 class AgentRegistry:
-    """Lazily builds one ``JeenInsightsAgent`` per ``source_key``."""
+    """Lazily builds one ``JeenInsightsAgent`` per ``source_key``.
+
+    Accepts either:
+      - ``prompt_loader`` (legacy: reads from disk .md files), OR
+      - ``prompt_cache``  (new: DB-backed, used by lifespan.py)
+    When ``prompt_cache`` is supplied a fresh ``PromptLoader`` is created
+    internally so the graph nodes (which still use ``prompt_loader.render()``)
+    continue to work unchanged.
+
+    ``router_llm_service`` is optional; when omitted the main ``llm_service``
+    is used for routing as well (simpler single-model setups).
+    """
 
     def __init__(
         self,
         *,
         llm_service: LangChainLlmService,
-        router_llm_service: LangChainLlmService,
+        router_llm_service: Optional[LangChainLlmService] = None,
         metadata_loader: MetadataLoader,
         connection_service: ConnectionService,
         history_service: ConversationHistoryService,
         user_resolver: SimpleUserResolver,
-        prompt_loader: PromptLoader,
+        prompt_loader: Optional[PromptLoader] = None,
+        prompt_cache: Optional[Any] = None,   # PromptCache — avoids circular import
     ):
         self.llm = llm_service
-        self.router_llm = router_llm_service
+        self.router_llm = router_llm_service or llm_service
         self.metadata_loader = metadata_loader
         self.connection_service = connection_service
         self.history = history_service
         self.user_resolver = user_resolver
-        self.prompt_loader = prompt_loader
+        # Prefer an explicitly supplied PromptLoader; otherwise build one from disk.
+        # The graph nodes call prompt_loader.render() so they always need this.
+        self.prompt_loader = prompt_loader or PromptLoader()
         self._agents: Dict[str, JeenInsightsAgent] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
 

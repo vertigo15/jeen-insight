@@ -95,6 +95,12 @@ class AgentState(TypedDict, total=False):
     eval_analytics_override: Optional[bool]   # overrides EVAL_ANALYTICS_ENABLED
     llm_timeout_seconds: Optional[int]        # overrides LLM_TIMEOUT_SECONDS per call
 
+    # ── Node prompts (captured for developer inspection) ──────────────────
+    # Each LLM node stores its rendered prompt here so the dev panel can
+    # surface the full prompt used at every stage.
+    # node_name → rendered prompt text
+    node_prompts: Dict[str, str]
+
     # ── Execution trace (accumulates across every node) ────────────────────
     # Each node appends one event dict.  ``operator.add`` tells LangGraph to
     # concatenate lists rather than overwrite, so the full history is preserved.
@@ -127,3 +133,7 @@ class InsightsState(TypedDict, total=False):
     insights: List[str]
     follow_up_questions: List[str]
     error: Optional[str]
+    # recommended actions from the eval node (0-2 actionable suggestions)
+    suggestions: List[str]
+    # prompt used by the eval node (returned for developer inspection)
+    prompt_text: Optional[str]

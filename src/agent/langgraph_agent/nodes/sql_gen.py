@@ -206,6 +206,13 @@ def make_sql_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
             updates["generated_sql"] = None
             logger.warning("sql_generator: empty response (retry=%d)", retry_count)
 
+        # Save the user-facing part of the prompt (system prompt is already in
+        # structured_prompt / Query Prompt tab; save the user message here).
+        updates["node_prompts"] = {
+            **(state.get("node_prompts") or {}),
+            "sql_generator": user_msg,
+        }
+
         return updates
 
     return sql_generator
@@ -286,6 +293,7 @@ def make_memory_answer_generator(llm: LangChainLlmService, prompt_loader: Prompt
             "llm_call_count": (state.get("llm_call_count") or 0) + 1,
             "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
             "token_usage": _merge_usage(state.get("token_usage") or {}, usage),
+            "node_prompts": {**(state.get("node_prompts") or {}), "memory_answer_generator": prompt},
         }
 
     return memory_answer_generator

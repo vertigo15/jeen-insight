@@ -137,6 +137,7 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
             "llm_call_count": (state.get("llm_call_count") or 0) + 1,
             "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
             "token_usage": _merge_usage(state.get("token_usage") or {}, usage),
+            "node_prompts": {**(state.get("node_prompts") or {}), "fused_eval_analytics": prompt},
         }
 
     return fused_eval_analytics
@@ -220,12 +221,17 @@ def make_fused_eval_analytics_subgraph(
         else:
             follow_ups = []
 
+        sug = parsed.get("suggestions")
+        action_suggestions = [str(s) for s in sug if s] if isinstance(sug, list) else []
+
         return {
             "answers_intent":      bool(parsed.get("answers_intent", True)),
             "summary":             str(parsed.get("summary", "")),
             "insights":            list(parsed.get("insights") or []),
+            "suggestions":         action_suggestions,
             "follow_up_questions": follow_ups,
             "error":               None,
+            "prompt_text":         prompt_text,   # exposed for the developer panel
         }
 
     return _node

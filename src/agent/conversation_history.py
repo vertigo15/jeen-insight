@@ -139,6 +139,7 @@ class ConversationHistoryService:
         row_count: Optional[int] = None,
         result_preview: Optional[List[Dict[str, Any]]] = None,
         error_message: Optional[str] = None,
+        graph_time_ms: Optional[int] = None,
     ) -> None:
         try:
             if result_preview and len(result_preview) > 10:
@@ -151,14 +152,16 @@ class ConversationHistoryService:
                         execution_time_ms = $2,
                         row_count = $3,
                         result_preview = $4,
-                        error_message = $5
-                    WHERE id = $6
+                        error_message = $5,
+                        graph_time_ms = $6
+                    WHERE id = $7
                     """,
                     execution_status,
                     execution_time_ms,
                     row_count,
                     json.dumps(result_preview) if result_preview else None,
                     error_message,
+                    graph_time_ms,
                     query_id,
                 )
         except Exception:
@@ -386,6 +389,7 @@ class ConversationHistoryService:
                         llm_latency_ms,
                         tokens_used,
                         execution_time_ms,
+                        graph_time_ms,
                         row_count,
                         error_message,
                         created_at
@@ -405,6 +409,7 @@ class ConversationHistoryService:
                     "tokens":     r["tokens_used"],
                     "llm_ms":     r["llm_latency_ms"],
                     "exec_ms":    r["execution_time_ms"],
+                    "graph_ms":   r["graph_time_ms"],
                     "row_count":  r["row_count"],
                     "error":      r["error_message"],
                     "asked_at":   r["created_at"].isoformat() if r["created_at"] else None,

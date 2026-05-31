@@ -119,7 +119,16 @@ export class SettingsPage {
 
         const sidebarHeader = document.createElement('div');
         sidebarHeader.className = 'sp-sidebar-header';
-        sidebarHeader.innerHTML = `<span class="sp-sidebar-title">SETTINGS</span>`;
+        sidebarHeader.innerHTML = `
+            <button class="sp-header-back-btn" aria-label="Close settings" title="Back">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M15 18l-6-6 6-6"/>
+                </svg>
+            </button>
+            <span class="sp-sidebar-title">SETTINGS</span>
+        `;
+        sidebarHeader.querySelector('.sp-header-back-btn').addEventListener('click', () => this.close());
         sidebar.appendChild(sidebarHeader);
 
         const navBody = document.createElement('div');
@@ -549,6 +558,17 @@ export class SettingsPage {
                     }
                 </div>
             </div>
+
+            ${meta.version > 1 ? `
+            <details class="sp-version-history" id="sp-vh-${name}">
+                <summary class="sp-vh-summary">
+                    <span>Version history</span>
+                    <span class="sp-vh-count">${meta.version} versions saved</span>
+                </summary>
+                <div class="sp-vh-body" id="sp-vh-body-${name}">
+                    <p class="sp-vh-loading">Loading&#8230;</p>
+                </div>
+            </details>` : ''}
         `;
 
         // Textarea live-dirty tracking
@@ -593,6 +613,14 @@ export class SettingsPage {
             if (!confirm('Reset this prompt to its original default? Your custom changes will be lost.')) return;
             await this._resetPrompt(name);
         });
+
+        // Version history — lazy-load on first open
+        const vhDetails = this._content.querySelector(`#sp-vh-${name}`);
+        if (vhDetails) {
+            vhDetails.addEventListener('toggle', () => {
+                if (vhDetails.open) this._loadVersionHistory(name);
+            }, { once: true });
+        }
     }
 
     async _savePrompt(name, content) {
@@ -629,6 +657,119 @@ export class SettingsPage {
         } catch (e) {
             console.error('[SettingsPage] reset failed:', e);
             _showToast('Reset failed — ' + e.message, 'error');
+        }
+    }
+
+    // ── Version history ─────────────────────────────────────────────────────
+
+    async _loadVersionHistory(name) {
+        const body = this._content.querySelector(`#sp-vh-body-${name}`);
+        if (!body) return;
+        body.innerHTML = '<p class="sp-vh-loading">Loading&#8230;</p>';
+        try {
+            const res = await fetch(`/api/settings/prompts/${name}/versions`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const versions = await res.json();
+            this._renderVersionRows(name, versions);
+        } catch (e) {
+            body.innerHTML = `<p class="sp-vh-loading">Failed to load: ${_esc(e.message)}</p>`;
+        }
+    }
+
+    _renderVersionRows(name, versions) {
+        const body = this._content.querySelector(`#sp-vh-body-${name}`);
+        if (!body) return;
+        if (!versions.length) {
+            body.innerHTML = '<p class="sp-vh-loading">No history available.</p>';
+            return;
+        }
+        body.innerHTML = versions.map(v => {
+            const dt = v.created_at ? new Date(v.created_at) : null;
+            const dateStr = dt
+                ? dt.toLocaleDateString(undefined, { year:'numeric', month:'short', day:'numeric' })
+                  + ' ' + dt.toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit' })
+                : '';
+            const activeBadge = v.is_active
+                ? '<span class="sp-badge sp-badge-active">Active</span>' : '';
+            const customBadge = v.is_custom
+                ? '<span class="sp-badge sp-badge-custom">Custom</span>'
+                : '<span class="sp-badge sp-badge-default">Default</span>';
+            const restoreBtn = !v.is_active
+                ? `<button class="sp-vh-btn sp-vh-restore" data-vid="${v.id}">Restore</button>` : '';
+            return `<div class="sp-vh-row">
+                <div class="sp-vh-row-header">
+                    <div class="sp-vh-meta">
+                        <span class="sp-vh-ver">v${v.version}</span>
+                        <span class="sp-vh-date">${_esc(dateStr)}</span>
+                        ${activeBadge}${customBadge}
+                    </div>
+                    <div class="sp-vh-actions">
+                        <button class="sp-vh-btn sp-vh-preview" data-vid="${v.id}">Preview</button>
+                        ${restoreBtn}
+                    </div>
+                </div>
+                <div class="sp-vh-preview-area" id="sp-vh-pa-${v.id}" style="display:none"></div>
+            </div>`;
+        }).join('');
+
+        body.querySelectorAll('.sp-vh-preview').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                await this._previewVersion(name, Number(btn.dataset.vid), btn);
+            });
+        });
+        body.querySelectorAll('.sp-vh-restore').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                if (!confirm('Restore this version? It will become the new active version.')) return;
+                await this._restoreVersion(name, Number(btn.dataset.vid));
+            });
+        });
+    }
+
+    async _previewVersion(name, versionId, btnEl) {
+        const area = this._content.querySelector(`#sp-vh-pa-${versionId}`);
+        if (!area) return;
+        // Toggle off if already visible
+        if (area.style.display !== 'none') {
+            area.style.display = 'none';
+            btnEl.textContent = 'Preview';
+            return;
+        }
+        // Lazy-load content on first open
+        if (!area.dataset.loaded) {
+            const origText = btnEl.textContent;
+            btnEl.disabled = true;
+            btnEl.textContent = 'Loading…';
+            try {
+                const res = await fetch(`/api/settings/prompts/${name}/versions/${versionId}`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                area.innerHTML = `<pre class="sp-vh-pre">${_esc(data.content)}</pre>`;
+                area.dataset.loaded = '1';
+            } catch (e) {
+                area.innerHTML = `<p class="sp-vh-loading" style="color:var(--color-error)">${_esc(e.message)}</p>`;
+            } finally {
+                btnEl.disabled = false;
+                btnEl.textContent = origText;
+            }
+        }
+        area.style.display = '';
+        btnEl.textContent = 'Hide';
+    }
+
+    async _restoreVersion(name, versionId) {
+        try {
+            const res = await fetch(`/api/settings/prompts/${name}/restore/${versionId}`, {
+                method: 'POST',
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            this._prompts[name] = { meta: data, content: data.content, dirty: false, editing: false };
+            this._updateDot(name, true);
+            this._renderPrompt(name);
+            _showToast(`Restored to v${data.version - 1} (now saved as v${data.version})`, 'success');
+        } catch (e) {
+            console.error('[SettingsPage] restore failed:', e);
+            _showToast('Restore failed — ' + e.message, 'error');
         }
     }
 

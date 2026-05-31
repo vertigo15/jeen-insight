@@ -469,6 +469,126 @@ async def set_prompt_model(name: str, body: SetPromptModelRequest):
     return {"name": name, "model_id": model_id, "model_name": body.model_name}
 
 
+# ── Prompt version history endpoints ─────────────────────────────────────────
+
+class PromptVersionMeta(BaseModel):
+    id: int
+    version: int
+    is_active: bool
+    is_custom: bool
+    model_name: Optional[str] = None
+    created_at: str  # ISO 8601
+
+
+class PromptVersionDetail(PromptVersionMeta):
+    content: str
+
+
+@router.get("/prompts/{name}/versions", response_model=List[PromptVersionMeta])
+async def list_prompt_versions(name: str):
+    """Return all saved version rows for *name*, newest first."""
+    if not _entry_for(name):
+        raise HTTPException(status_code=404, detail=f"Prompt '{name}' not found")
+    from src.metadata import get_metadata_pool
+    pool = await get_metadata_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT ip.id, ip.version, ip.is_active, ip.is_custom,
+                   am.name AS model_name, ip.created_at
+            FROM insights_prompts ip
+            LEFT JOIN admin_models am ON am.id = ip.model_id
+            WHERE ip.prompt_place = $1
+            ORDER BY ip.version DESC
+            """,
+            name,
+        )
+    return [
+        PromptVersionMeta(
+            id=r["id"],
+            version=r["version"],
+            is_active=r["is_active"],
+            is_custom=r["is_custom"],
+            model_name=r["model_name"],
+            created_at=r["created_at"].isoformat() if r["created_at"] else "",
+        )
+        for r in rows
+    ]
+
+
+@router.get("/prompts/{name}/versions/{version_id}", response_model=PromptVersionDetail)
+async def get_prompt_version(name: str, version_id: int):
+    """Return full content for a specific version row by its DB id."""
+    if not _entry_for(name):
+        raise HTTPException(status_code=404, detail=f"Prompt '{name}' not found")
+    from src.metadata import get_metadata_pool
+    pool = await get_metadata_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT ip.id, ip.version, ip.is_active, ip.is_custom,
+                   am.name AS model_name, ip.created_at, ip.content
+            FROM insights_prompts ip
+            LEFT JOIN admin_models am ON am.id = ip.model_id
+            WHERE ip.prompt_place = $1 AND ip.id = $2
+            """,
+            name, version_id,
+        )
+    if not row:
+        raise HTTPException(
+            status_code=404, detail=f"Version id={version_id} not found for '{name}'"
+        )
+    return PromptVersionDetail(
+        id=row["id"],
+        version=row["version"],
+        is_active=row["is_active"],
+        is_custom=row["is_custom"],
+        model_name=row["model_name"],
+        created_at=row["created_at"].isoformat() if row["created_at"] else "",
+        content=row["content"],
+    )
+
+
+@router.post("/prompts/{name}/restore/{version_id}", response_model=PromptDetail)
+async def restore_prompt_version(name: str, version_id: int):
+    """Restore a past version as a new active version row."""
+    entry = _entry_for(name)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Prompt '{name}' not found")
+    from src.metadata import get_metadata_pool
+    pool = await get_metadata_pool()
+    async with pool.acquire() as conn:
+        src = await conn.fetchrow(
+            "SELECT content FROM insights_prompts WHERE prompt_place = $1 AND id = $2",
+            name, version_id,
+        )
+    if not src:
+        raise HTTPException(
+            status_code=404, detail=f"Version id={version_id} not found for '{name}'"
+        )
+
+    new_version = await _db_save_prompt(name, src["content"])
+    _invalidate_cache(name)
+    logger.info(
+        "settings: restored prompt '%s' from version_id=%d → new v%d",
+        name, version_id, new_version,
+    )
+
+    active_row = await _db_get_prompt(name)
+    return PromptDetail(
+        name=name,
+        label=entry["label"],
+        group=entry["group"],
+        description=entry["description"],
+        is_custom=True,
+        placeholders=_extract_placeholders(src["content"]),
+        content=src["content"],
+        version=new_version,
+        model_id=active_row["model_id"] if active_row else None,
+        model_name=active_row["model_name"] if active_row else None,
+    )
+
+
 # ── AI Model endpoints ───────────────────────────────────────────────────────
 
 class ModelInfo(BaseModel):
