@@ -1842,13 +1842,13 @@ function _renderTraceEvents() {
     html += `<span class="trace-summary-chip">route: <strong>${escapeHtml(route)}</strong></span>`;
     html += `<span class="trace-summary-chip">nodes: <strong>${events.length}</strong></span>`;
     if (Number.isFinite(wallMs) && wallMs > 0)
-        html += `<span class="trace-summary-chip trace-chip-wall">wall: <strong>${_fmtMs(wallMs)}</strong></span>`;
-    html += `<span class="trace-summary-chip">graph: <strong>${_fmtMs(graphMs)}</strong></span>`;
-    html += `<span class="trace-summary-chip">LLM: <strong>${_fmtMs(llmMs)}</strong></span>`;
+        html += `<span class="trace-summary-chip trace-chip-wall" title="${_TIMING_TIPS.wall}">wall: <strong>${_fmtMs(wallMs)}</strong></span>`;
+    html += `<span class="trace-summary-chip" title="${_TIMING_TIPS.graph}">graph: <strong>${_fmtMs(graphMs)}</strong></span>`;
+    html += `<span class="trace-summary-chip" title="${_TIMING_TIPS.llm}">LLM: <strong>${_fmtMs(llmMs)}</strong></span>`;
     if (Number.isFinite(dbMs) && dbMs > 0)
-        html += `<span class="trace-summary-chip trace-chip-db">DB: <strong>${_fmtMs(dbMs)}</strong></span>`;
+        html += `<span class="trace-summary-chip trace-chip-db" title="${_TIMING_TIPS.db}">DB: <strong>${_fmtMs(dbMs)}</strong></span>`;
     if (netMs !== null)
-        html += `<span class="trace-summary-chip trace-chip-net">net: <strong>${_fmtMs(netMs)}</strong></span>`;
+        html += `<span class="trace-summary-chip trace-chip-net" title="${_TIMING_TIPS.net}">net: <strong>${_fmtMs(netMs)}</strong></span>`;
     if (retries > 0) html += `<span class="trace-summary-chip">retries: <strong>${retries}</strong></span>`;
     html += '</div>';
 
@@ -1976,15 +1976,15 @@ function _updateDevRunHeader(data) {
     chips.push(`<span class="dp-chip dp-chip-status ${statusClass}">${statusText}</span>`);
     chips.push(`<span class="dp-chip">route: <strong>${escapeHtml(String(route))}</strong></span>`);
     if (Number.isFinite(wallMs) && wallMs > 0)
-        chips.push(`<span class="dp-chip dp-chip-wall">wall: <strong>${_fmtMs(wallMs)}</strong></span>`);
+        chips.push(`<span class="dp-chip dp-chip-wall" title="${_TIMING_TIPS.wall}">wall: <strong>${_fmtMs(wallMs)}</strong></span>`);
     if (Number.isFinite(graphMs) && graphMs > 0)
-        chips.push(`<span class="dp-chip">graph: <strong>${_fmtMs(graphMs)}</strong></span>`);
+        chips.push(`<span class="dp-chip" title="${_TIMING_TIPS.graph}">graph: <strong>${_fmtMs(graphMs)}</strong></span>`);
     if (Number.isFinite(llmMs))
-        chips.push(`<span class="dp-chip">LLM: <strong>${_fmtMs(llmMs)}</strong></span>`);
+        chips.push(`<span class="dp-chip" title="${_TIMING_TIPS.llm}">LLM: <strong>${_fmtMs(llmMs)}</strong></span>`);
     if (Number.isFinite(dbMs) && dbMs > 0)
-        chips.push(`<span class="dp-chip dp-chip-db">DB: <strong>${_fmtMs(dbMs)}</strong></span>`);
+        chips.push(`<span class="dp-chip dp-chip-db" title="${_TIMING_TIPS.db}">DB: <strong>${_fmtMs(dbMs)}</strong></span>`);
     if (netMs !== null && netMs > 50)
-        chips.push(`<span class="dp-chip dp-chip-net">net: <strong>${_fmtMs(netMs)}</strong></span>`);
+        chips.push(`<span class="dp-chip dp-chip-net" title="${_TIMING_TIPS.net}">net: <strong>${_fmtMs(netMs)}</strong></span>`);
     if (inTok)  chips.push(`<span class="dp-chip">in: <strong>${_formatTokens(inTok)}</strong></span>`);
     if (outTok) chips.push(`<span class="dp-chip">out: <strong>${_formatTokens(outTok)}</strong></span>`);
     if (rows !== null) chips.push(`<span class="dp-chip">rows: <strong>${rows}</strong></span>`);
@@ -2013,9 +2013,9 @@ function _updateSqlStats(data) {
     if (rows !== null)
         parts.push(`<span class="dp-stat-chip"><strong>${rows}</strong> row${rows !== 1 ? 's' : ''}</span>`);
     if (Number.isFinite(dbMs) && dbMs > 0)
-        parts.push(`<span class="dp-stat-chip">DB <strong>${_fmtMs(dbMs)}</strong></span>`);
+        parts.push(`<span class="dp-stat-chip" title="${_TIMING_TIPS.db}">DB <strong>${_fmtMs(dbMs)}</strong></span>`);
     if (Number.isFinite(llmMs))
-        parts.push(`<span class="dp-stat-chip">LLM <strong>${_fmtMs(llmMs)}</strong></span>`);
+        parts.push(`<span class="dp-stat-chip" title="${_TIMING_TIPS.llm}">LLM <strong>${_fmtMs(llmMs)}</strong></span>`);
     if (m.retry_count > 0)
         parts.push(`<span class="dp-stat-chip dp-stat-warn">retries <strong>${m.retry_count}</strong></span>`);
 
@@ -2026,6 +2026,28 @@ function _updateSqlStats(data) {
         bar.hidden = true;
     }
 }
+
+// ── Timing chip tooltip explanations ──────────────────────────────────────────
+// Used as HTML title= attributes on all timing chips so developers can
+// hover any number to understand exactly how it was computed.
+const _TIMING_TIPS = {
+    wall:  'wall — Client wall time: measured in the browser from the moment '
+         + '"Ask" was clicked to the last byte of the API response. '
+         + 'Covers: network round-trip + Flask proxy + FastAPI routing + full graph pipeline.',
+    graph: 'graph — LangGraph pipeline time: sum of elapsed_ms across every '
+         + 'node in the trace. Pure server-side processing inside the agent '
+         + 'graph (router, SQL gen, DB exec, eval, formatter, …).',
+    llm:   'LLM — Cumulative LLM latency: total time waiting for the language '
+         + 'model (Azure OpenAI) to respond across all LLM calls in this query. '
+         + 'Comes directly from the llm_latency_ms metric.',
+    db:    'DB — Database execution time: time taken to run the generated SQL '
+         + 'query against the data warehouse. '
+         + 'Comes from execution_time_ms stored in the LangGraph state.',
+    net:   'net — Flask + network overhead: wall time minus graph time. '
+         + 'Covers HTTP request/response transit, Flask proxy routing, '
+         + 'FastAPI middleware, and serialisation overhead. '
+         + 'Formula: net = wall − graph.',
+};
 
 function _fmtMs(ms) {
     if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—';

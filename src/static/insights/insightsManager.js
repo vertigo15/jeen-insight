@@ -183,54 +183,138 @@ class InsightsManager {
 
     /**
      * Render a content value as HTML.
-     * Accepts either a plain string or a fragment array
-     * [{t: "text", hl?: "accent|pos|neg|num"}, …] as specified in the design spec.
-     * The fragment format is forward-compatible — the backend can move to it
-     * without any frontend changes.
      *
-     * For plain strings we auto-detect signed numbers and apply colour:
-     *   +X%  / +X.X%          → .hl-pos  (green)
-     *   −X%  / -X.X%          → .hl-neg  (red)
-     *   $X.XM / +$X / -$X etc → .hl-num  (mono)
-     * This gives the coloured numbers shown in the mockup even before the
-     * backend switches to the full fragment format.
+     * Accepts either a plain string or a fragment array
+     * [{t: "text", hl?: "accent|pos|neg|num"}, …].
+     * The fragment format gives the backend full control (backend-driven highlights
+     * win; auto-highlight is used only when content is a plain string).
+     *
+     * @param {string|Array} content
+     * @param {'summary'|'finding'} context
+     *   'summary'  — accent budget of 3 for headline figures; first bare $/$% get accent
+     *   'finding'  — direction rules only (pos/neg for %); $ always hl-num
      */
-    renderText(content) {
+    renderText(content, context = 'finding') {
         if (Array.isArray(content)) {
+            // Explicit fragment format — honour hl hints directly.
             return content.map(frag => {
                 const text = this.escapeHtml(frag.t || '');
                 if (!frag.hl) return text;
-                const cls = this.escapeHtml(frag.hl);
-                return `<span class="hl-${cls}">${text}</span>`;
+                return `<span class="hl-${this.escapeHtml(frag.hl)}">${text}</span>`;
             }).join('');
         }
-        // Plain string: HTML-escape first, then apply number auto-highlighting.
-        return this._autoHighlight(this.escapeHtml(String(content || '')));
+        return this._autoHighlight(this.escapeHtml(String(content || '')), context);
     }
 
     /**
-     * Auto-apply emphasis classes to signed numbers inside an already-escaped
-     * HTML string.  Applied in order so dollar amounts don't collide with %:
-     *  1. Dollar amounts  (+$2.48M, -$49.9K, $42.0M)   → .hl-num
-     *  2. Positive % changes (+89.8%, +56.3%)           → .hl-pos
-     *  3. Negative % changes (-2.4%, −2.4%)             → .hl-neg
+     * Auto-apply the 4-treatment color spec to an already HTML-escaped string.
+     *
+     * Four treatments (color = direction):
+     *   hl-accent — headline answer figures, summary only, max 3
+     *   hl-pos    — favorable direction, always signed  (+89.8%, +$2.48M)
+     *   hl-neg    — unfavorable direction, signed, sparingly (−2.4%, −$49.9K)
+     *   hl-num    — exact value for precision; $ amounts in findings
+     *
+     * Rules:
+     *   • % changes   → pos/neg based on sign; unsigned % in summary → accent
+     *   • $ amounts   → hl-num in findings; hl-accent (up to 3) in summary
+     *   • Comma counts → hl-num
+     *   • Neutral numbers ("12 rows", "7 territories") → no color
+     *   • Never stack accent with pos/neg
+     *
+     * Execution order matters — specific signed patterns before bare ones.
+     *
+     * @param {string} escaped  — HTML-escaped input text
+     * @param {'summary'|'finding'} context
      */
-    _autoHighlight(escaped) {
-        // Dollar / currency amounts (signed or bare)
+    _autoHighlight(escaped, context = 'finding') {
+        const isSummary = (context === 'summary');
+        let accentLeft  = isSummary ? 3 : 0;   // headline budget (summary only)
+
+        // ─ 1. Signed positive % (+89.8%, +56.3%) ─────────── hl-pos ──────
         escaped = escaped.replace(
-            /([+\-−]?\$[\d,]+(?:\.[\d]+)?[KMBbn]?)/g,
+            /\+(\d+(?:\.\d+)?%)/g,
+            '<span class="hl-pos">+$1</span>'
+        );
+
+        // ─ 2. Signed negative % (−2.4% or -2.4%, not a hyphen) ─ hl-neg ─
+        //     Real minus \u2212 is unambiguous.
+        //     ASCII - : guard with (?<!\w) so hyphens in words are safe.
+        escaped = escaped.replace(
+            /\u2212(\d+(?:\.\d+)?%)/g,
+            (_, pct) => `<span class="hl-neg">\u2212${pct}</span>`
+        );
+        escaped = escaped.replace(
+            /(?<!\w)-(\d+(?:\.\d+)?%)/g,
+            (_, pct) => `<span class="hl-neg">-${pct}</span>`
+        );
+
+        // ─ 3. Dollar amounts — all treated by precision, not direction ────
+        //
+        //   Findings : ALL $ → hl-num  (the $ shows the amount; the % shows the move)
+        //   Summary  : first 3 → hl-accent; remainder → hl-num
+        //
+        //   Lookbehind (?<![>]) prevents re-wrapping $ that's already inside a span.
+
+        // Signed positive +$ (e.g. +$2.48M)
+        escaped = escaped.replace(
+            /\+(\$[\d,]+(?:\.\d+)?[KMBb]?)/g,
+            (_, amount) => {
+                const cls = (isSummary && accentLeft > 0)
+                    ? (accentLeft--, 'hl-accent') : 'hl-num';
+                return `<span class="${cls}">+${amount}</span>`;
+            }
+        );
+
+        // Signed negative −$ / -$ (e.g. −$49.9K)
+        escaped = escaped.replace(
+            /\u2212(\$[\d,]+(?:\.\d+)?[KMBb]?)/g,
+            (_, amount) => {
+                const cls = (isSummary && accentLeft > 0)
+                    ? (accentLeft--, 'hl-accent') : 'hl-num';
+                return `<span class="${cls}">\u2212${amount}</span>`;
+            }
+        );
+        escaped = escaped.replace(
+            /(?<!\w)-(\$[\d,]+(?:\.\d+)?[KMBb]?)/g,
+            (_, amount) => {
+                const cls = (isSummary && accentLeft > 0)
+                    ? (accentLeft--, 'hl-accent') : 'hl-num';
+                return `<span class="${cls}">-${amount}</span>`;
+            }
+        );
+
+        // Bare (unsigned) $ — not already inside a span (not preceded by >)
+        escaped = escaped.replace(
+            /(?<![>+\u2212-])(\$[\d,]+(?:\.\d+)?[KMBb]?)/g,
+            (match) => {
+                const cls = (isSummary && accentLeft > 0)
+                    ? (accentLeft--, 'hl-accent') : 'hl-num';
+                return `<span class="${cls}">${match}</span>`;
+            }
+        );
+
+        // ─ 4. Unsigned % in SUMMARY (shares / total rates) ─── hl-accent ─
+        //     e.g. "36.9% growth" or "lifted revenue 36.9%"
+        //     In findings, unsigned % is a share and gets no color.
+        if (isSummary) {
+            escaped = escaped.replace(
+                /(?<![>+\u2212-])(\d+(?:\.\d+)?%)/g,
+                (match) => {
+                    if (accentLeft > 0) { accentLeft--; return `<span class="hl-accent">${match}</span>`; }
+                    return match;  // accent budget exhausted — leave plain
+                }
+            );
+        }
+        // Unsigned % in findings: spec says no color (it\'s a share, not a change).
+
+        // ─ 5. Comma-separated counts (≥1,000) ──────────────── hl-num ─────
+        //     Not already inside a tag (\$) or span (>), not followed by more digits.
+        escaped = escaped.replace(
+            /(?<![>$\d])(\d{1,3}(?:,\d{3})+)(?!\d)/g,
             '<span class="hl-num">$1</span>'
         );
-        // Positive percentage changes
-        escaped = escaped.replace(
-            /(\+[\d]+(?:\.[\d]+)?%)/g,
-            '<span class="hl-pos">$1</span>'
-        );
-        // Negative percentage changes (− or ASCII -)
-        escaped = escaped.replace(
-            /([-−][\d]+(?:\.[\d]+)?%)/g,
-            '<span class="hl-neg">$1</span>'
-        );
+
         return escaped;
     }
 
@@ -359,7 +443,7 @@ class InsightsManager {
 
         // ── Summary ──────────────────────────────────────────────────────────
         if (summary) {
-            html += `<p class="ins-summary">${this.renderText(summary)}</p>`;
+            html += `<p class="ins-summary">${this.renderText(summary, 'summary')}</p>`;
         }
 
         // ── Divider (only when there are sections below) ──────────────────────
@@ -376,7 +460,7 @@ class InsightsManager {
             findings.forEach(f => {
                 html += `<div class="ins-item">
                     <span class="ins-item-icon ins-item-icon--check">${InsightsManager._SVG_CHECK}</span>
-                    <span class="ins-item-body">${this.renderText(f)}</span>
+                    <span class="ins-item-body">${this.renderText(f, 'finding')}</span>
                 </div>`;
             });
             html += `</div></div>`;
@@ -390,7 +474,7 @@ class InsightsManager {
             actionSuggestions.forEach(s => {
                 html += `<div class="ins-item ins-item--suggest">
                     <span class="ins-item-icon ins-item-icon--arrow">${InsightsManager._SVG_ARROW}</span>
-                    <span class="ins-item-body">${this.renderText(s)}</span>
+                    <span class="ins-item-body">${this.renderText(s, 'finding')}</span>
                 </div>`;
             });
             html += `</div></div>`;
