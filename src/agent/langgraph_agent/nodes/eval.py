@@ -113,7 +113,11 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
             eval_result.update(
                 {
                     "answers_intent": bool(parsed.get("answers_intent", True)),
-                    "summary": str(parsed.get("summary", "")),
+                    # Keep summary as-is: may be a plain string OR a fragment array
+                    # [{"t": "...", "hl": "accent|pos|neg|num"}, …].  Calling str()
+                    # would turn a list into a Python repr string with single quotes,
+                    # which is not valid JSON and breaks the JS renderText() renderer.
+                    "summary": parsed.get("summary", ""),
                     "insights": list(parsed.get("insights", [])),
                     "follow_up_questions": follow_ups,
                 }
@@ -226,7 +230,8 @@ def make_fused_eval_analytics_subgraph(
 
         return {
             "answers_intent":      bool(parsed.get("answers_intent", True)),
-            "summary":             str(parsed.get("summary", "")),
+            # Preserve list (fragment array) or plain string — do NOT coerce to str().
+            "summary":             parsed.get("summary", ""),
             "insights":            list(parsed.get("insights") or []),
             "suggestions":         action_suggestions,
             "follow_up_questions": follow_ups,
