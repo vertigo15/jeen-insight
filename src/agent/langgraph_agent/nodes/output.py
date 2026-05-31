@@ -168,7 +168,12 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
 
         elif node == "memory_answer_generator":
             ans = state.get("answer")
-            ev["detail"] = ans[:80] + "…" if (ans and len(ans) > 80) else (ans or "escape hatch → needs_query")
+            if isinstance(ans, list):
+                # Fragment array — render as plain text for the trace detail line
+                plain = "".join(f.get("t", "") for f in ans)
+                ev["detail"] = plain[:80] + "\u2026" if len(plain) > 80 else plain
+            else:
+                ev["detail"] = ans[:80] + "\u2026" if (ans and len(ans) > 80) else (ans or "escape hatch \u2192 needs_query")
 
         elif node == "catalog_lookup":
             known = state.get("known_tables") or []
@@ -226,6 +231,9 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
         elif node == "fused_eval_analytics":
             intent = eval_result.get("answers_intent", "?")
             summary = eval_result.get("summary", "")
+            # summary may be a fragment list — flatten to plain text for the trace
+            if isinstance(summary, list):
+                summary = "".join(f.get("t", "") for f in summary)
             ev["detail"] = f"answers_intent={intent}" + (f" — {summary[:60]}" if summary else "")
             ev["answers_intent"] = intent
 

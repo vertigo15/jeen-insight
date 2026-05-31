@@ -42,7 +42,9 @@ class QueryResponse(BaseModel):
     session_id: Optional[UUID] = None
     sql: Optional[str]
     results: Optional[Dict[str, Any]]
-    answer: Optional[str] = None
+    # answer may be a plain string OR a fragment array [{"t": "...", "hl": "..."}, …]
+    # — same format as insights.summary. Do NOT coerce to str.
+    answer: Any = None
     prompt: Optional[Dict[str, Any]] = None
     error: Optional[str]
     # Per-request metrics surfaced to the UI:
