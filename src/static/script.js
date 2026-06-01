@@ -23,6 +23,11 @@ let _traceMetrics     = {};   // metrics from most recent query
 let _activeTraceFilter = 'all'; // current log level filter
 let _traceSearchQ     = '';   // current log text search query
 
+// ── Table display window ──────────────────────────────────────────────────────
+// Number of rows rendered at once. User can change it via the footer input.
+// Kept across queries so the user's preference sticks for the session.
+let _displayLimit = 25;
+
 // ── Connection (Jeen Insights) ──────────────────────────────
 const CONNECTION_STORAGE_KEY = 'jeen_insights_connection';
 const SIDEBAR_TAB_KEY        = 'jeen_sidebar_tab'; // 'tables' | 'recent'
@@ -407,9 +412,14 @@ function formatResultsAsTable(results) {
     const externalFilter = document.getElementById('result-filter');
     if (externalFilter) externalFilter.value = '';
 
+    // Apply display window — user can change this via the footer input.
+    const totalRows   = rows.length;
+    const visibleRows = rows.slice(0, _displayLimit);
+
     let html = '<div id="table-container">';
-    html += renderTable(results, rows);
+    html += renderTable(results, visibleRows);
     html += '</div>';
+    html += _buildDisplayLimitBar(totalRows, _displayLimit);
     return html;
 }
 
@@ -497,7 +507,6 @@ function renderTable(results, rows) {
     });
 
     html += '</tbody></table>';
-    html += `<p style="margin-top:12px;color:var(--color-muted);font-size:var(--text-xs);" id="row-count">${rows.length} row${rows.length !== 1 ? 's' : ''}</p>`;
     return html;
 }
 
@@ -738,15 +747,10 @@ function sortTable(columnIndex) {
         });
     }
     
-    // Update display
-    document.getElementById('table-container').innerHTML = renderTable(currentResults, rows);
-    
-    // Update row count
-    const allRows = currentResults.data || currentResults.rows;
-    if (filterValue) {
-        document.getElementById('row-count').textContent = 
-            `${rows.length} of ${allRows.length} row${allRows.length !== 1 ? 's' : ''}`;
-    }
+    // Apply display limit and update footer bar
+    const totalSorted = rows.length;
+    document.getElementById('table-container').innerHTML = renderTable(currentResults, rows.slice(0, _displayLimit));
+    _updateDisplayLimitBar(totalSorted, _displayLimit);
 }
 
 // Filter results
@@ -800,37 +804,31 @@ function filterResults() {
     }
     
     if (!filterText) {
-        // No filter, show all (with current sort)
-        document.getElementById('table-container').innerHTML = renderTable(currentResults, rows);
-        document.getElementById('row-count').textContent = 
-            `${rows.length} row${rows.length !== 1 ? 's' : ''} returned`;
+        // No filter, show all (with current sort) — apply display limit
+        document.getElementById('table-container').innerHTML = renderTable(currentResults, rows.slice(0, _displayLimit));
+        _updateDisplayLimitBar(rows.length, _displayLimit);
         return;
     }
-    
+
     // Filter rows
     const filtered = rows.filter(row => {
-        // Check if any cell matches the filter
         if (Array.isArray(row)) {
-            return row.some(cell => 
-                cell !== null && cell !== undefined && 
+            return row.some(cell =>
+                cell !== null && cell !== undefined &&
                 String(cell).toLowerCase().includes(filterText)
             );
         } else {
             return currentResults.columns.some(col => {
                 const cell = row[col];
-                return cell !== null && cell !== undefined && 
+                return cell !== null && cell !== undefined &&
                     String(cell).toLowerCase().includes(filterText);
             });
         }
     });
-    
-    // Update display
-    document.getElementById('table-container').innerHTML = renderTable(currentResults, filtered);
-    
-    // Update count
-    const allRows = currentResults.data || currentResults.rows;
-    document.getElementById('row-count').textContent = 
-        `${filtered.length} of ${allRows.length} row${allRows.length !== 1 ? 's' : ''}`;
+
+    // Apply display limit and update footer bar
+    document.getElementById('table-container').innerHTML = renderTable(currentResults, filtered.slice(0, _displayLimit));
+    _updateDisplayLimitBar(filtered.length, _displayLimit);
 }
 
 // Copy SQL to clipboard
@@ -2106,6 +2104,75 @@ function _fmtMs(ms) {
     return Math.max(1, Math.round(ms)) + 'ms';
 }
 
+// ── Table row display limit ───────────────────────────────────────────────────
+
+/**
+ * Build the footer bar HTML that lets the user control how many rows are shown.
+ *
+ *   Showing [25] of 487 rows   [Show all]   37%
+ *
+ * The input accepts any integer; pressing Enter or blurring applies it.
+ */
+function _buildDisplayLimitBar(totalRows, currentLimit) {
+    const showing    = Math.min(currentLimit, totalRows);
+    const overLimit  = showing < totalRows;
+    const pct        = totalRows > 0 ? Math.round((showing / totalRows) * 100) : 100;
+    const showAllBtn = overLimit
+        ? `<button class="dlb-show-all" onclick="_showAllRows()">Show all</button>`
+        : '';
+    const pctBadge = overLimit
+        ? `<span class="dlb-pct">${pct}%</span>`
+        : '';
+    return `<div class="display-limit-bar" id="display-limit-bar">
+        <span class="dlb-label">Showing</span>
+        <input class="dlb-input" id="dlb-input" type="number" min="1"
+               value="${currentLimit}"
+               onchange="_changeDisplayLimit(this.value)"
+               onkeydown="if(event.key==='Enter')this.blur()"
+               title="Rows to display \u2014 press Enter or Tab to apply"
+               aria-label="Rows to display">
+        <span class="dlb-label">of <strong>${totalRows.toLocaleString('en-US')}</strong> row${totalRows !== 1 ? 's' : ''}</span>
+        ${showAllBtn}${pctBadge}
+    </div>`;
+}
+
+/** Update the footer bar in place without replacing the whole table. */
+function _updateDisplayLimitBar(totalRows, currentLimit) {
+    const bar = document.getElementById('display-limit-bar');
+    if (!bar) return;
+    const showing    = Math.min(currentLimit, totalRows);
+    const overLimit  = showing < totalRows;
+    const pct        = totalRows > 0 ? Math.round((showing / totalRows) * 100) : 100;
+    bar.innerHTML = `
+        <span class="dlb-label">Showing</span>
+        <input class="dlb-input" id="dlb-input" type="number" min="1"
+               value="${currentLimit}"
+               onchange="_changeDisplayLimit(this.value)"
+               onkeydown="if(event.key==='Enter')this.blur()"
+               title="Rows to display \u2014 press Enter or Tab to apply"
+               aria-label="Rows to display">
+        <span class="dlb-label">of <strong>${totalRows.toLocaleString('en-US')}</strong> row${totalRows !== 1 ? 's' : ''}</span>
+        ${overLimit ? `<button class="dlb-show-all" onclick="_showAllRows()">Show all</button>` : ''}
+        ${overLimit ? `<span class="dlb-pct">${pct}%</span>` : ''}
+    `;
+}
+
+/** User typed a new limit into the input. */
+function _changeDisplayLimit(n) {
+    const num = Math.max(1, Math.min(1000000, Math.round(Number(n) || 25)));
+    _displayLimit = num;
+    reRenderTable();
+}
+window._changeDisplayLimit = _changeDisplayLimit;
+
+/** One-click button to render all rows. */
+function _showAllRows() {
+    if (!currentResults) return;
+    _displayLimit = (currentResults.data || currentResults.rows || []).length;
+    reRenderTable();
+}
+window._showAllRows = _showAllRows;
+
 function _toggleTraceEvent(el) {
     el.classList.toggle('is-open');
 }
@@ -2777,9 +2844,8 @@ function filterColNonNull(colIndex) {
         return v !== null && v !== undefined && v !== '';
     });
     const container = document.getElementById('table-container');
-    if (container) container.innerHTML = renderTable(currentResults, filtered);
-    const rc = document.getElementById('row-count');
-    if (rc) rc.textContent = filtered.length + ' of ' + rows.length + ' rows';
+    if (container) container.innerHTML = renderTable(currentResults, filtered.slice(0, _displayLimit));
+    _updateDisplayLimitBar(filtered.length, _displayLimit);
 }
 
 function copyColValues(colIndex) {
@@ -2845,10 +2911,11 @@ function reRenderTable() {
         );
     }
 
+    // Apply display limit and update footer bar
+    const totalAfterFilter = rows.length;
     const container = document.getElementById('table-container');
-    if (container) container.innerHTML = renderTable(currentResults, rows);
-    const rc = document.getElementById('row-count');
-    if (rc) rc.textContent = rows.length + ' row' + (rows.length !== 1 ? 's' : '');
+    if (container) container.innerHTML = renderTable(currentResults, rows.slice(0, _displayLimit));
+    _updateDisplayLimitBar(totalAfterFilter, _displayLimit);
 }
 
 // ======================================================
