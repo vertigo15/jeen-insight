@@ -21,7 +21,10 @@ from src.agent.user_resolver import SimpleUserResolver
 from src.api import state
 from src.config import settings
 from src.connections import ConnectionService
-from src.metadata import MetadataLoader, close_metadata_pool, get_metadata_pool
+from src.metadata import (
+    MetadataLoader, close_metadata_pool, get_metadata_pool,
+    McpServerService, McpCacheService, McpCatalogClient,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +70,55 @@ async def _ensure_schema(conn) -> None:
     await conn.execute("""
         ALTER TABLE insights_conversation_sessions
             ADD COLUMN IF NOT EXISTS graph_time_ms INT
+    """)
+
+    # ── MCP tables ────────────────────────────────────────────────────────────
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS insights_mcp_servers (
+            id                  SERIAL PRIMARY KEY,
+            is_active           BOOLEAN     NOT NULL DEFAULT false,
+            server_name         TEXT        NOT NULL DEFAULT '',
+            endpoint            TEXT        NOT NULL DEFAULT '',
+            transport           VARCHAR(10) NOT NULL DEFAULT 'http'
+                                    CHECK (transport IN ('stdio', 'sse', 'http')),
+            auth_type           VARCHAR(20) NOT NULL DEFAULT 'none'
+                                    CHECK (auth_type IN ('none', 'bearer', 'oauth')),
+            bearer_token        TEXT,
+            cache_ttl_seconds   INT  NOT NULL DEFAULT 900
+                                    CHECK (cache_ttl_seconds IN (0,300,900,3600,86400)),
+            health              JSONB,
+            last_checked_at     TIMESTAMPTZ,
+            created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    """)
+    await conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_insights_mcp_servers_active
+            ON insights_mcp_servers(is_active)
+            WHERE is_active = true
+    """)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS insights_mcp_cache (
+            id              SERIAL PRIMARY KEY,
+            mcp_server_id   INT          NOT NULL
+                                REFERENCES insights_mcp_servers(id) ON DELETE CASCADE,
+            source_key      VARCHAR(255) NOT NULL,
+            cache_key       VARCHAR(50)  NOT NULL
+                                CHECK (cache_key IN (
+                                    'connections','tables','columns',
+                                    'relationships','business_terms','knowledge_pairs'
+                                )),
+            payload         JSONB        NOT NULL,
+            fetched_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            expires_at      TIMESTAMPTZ  NOT NULL,
+            is_stale        BOOLEAN      NOT NULL DEFAULT false,
+            CONSTRAINT uq_mcp_cache_entry UNIQUE (mcp_server_id, source_key, cache_key)
+        )
+    """)
+    await conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_mcp_cache_valid
+            ON insights_mcp_cache(mcp_server_id, source_key, cache_key)
+            WHERE is_stale = false
     """)
 
 
@@ -157,9 +209,14 @@ async def lifespan(_app: FastAPI):
     logger.info("🚀 Starting Jeen Insights...")
     pool = await get_metadata_pool()
 
-    state.metadata_loader = MetadataLoader(pool)
-    state.connection_service = ConnectionService(pool)
-    state.history_service = ConversationHistoryService(pool)
+    state.metadata_loader    = MetadataLoader(pool)
+    state.connection_service  = ConnectionService(pool)
+    state.history_service     = ConversationHistoryService(pool)
+    state.mcp_server_service  = McpServerService(pool)
+    state.mcp_cache_service   = McpCacheService(pool)
+    state.mcp_catalog_client  = McpCatalogClient(
+        state.mcp_server_service, state.mcp_cache_service
+    )
 
     # ── Schema + prompt seeding ─────────────────────────────────────────────
     async with pool.acquire() as conn:
@@ -212,6 +269,21 @@ async def lifespan(_app: FastAPI):
         logger.warning("startup: insights_eval_graph build failed: %s", exc)
         state.insights_eval_graph = None
 
+    # ── Pre-warm MCP L1 cache from DB (if MCP mode is active) ────────────────
+    try:
+        catalog_src = await state.mcp_server_service.get_catalog_source()
+        if catalog_src == "mcp":
+            active_srv = await state.mcp_server_service.get_active()
+            if active_srv:
+                warmed = await state.mcp_cache_service.warm_from_db(active_srv.id)
+                logger.info("startup: MCP mode active (%s) — warmed %d cache entries", active_srv.server_name, warmed)
+            else:
+                logger.warning("startup: catalog_source=mcp but no active server; falling back to DB")
+        else:
+            logger.info("startup: DB catalog mode")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("startup: MCP cache warm-up skipped: %s", exc)
+
     # ── Pre-warm caches (metadata + system prompt) for all connections ────
     await _warm_caches(state.metadata_loader, state.connection_service, state.prompt_cache)
 
@@ -224,10 +296,13 @@ async def lifespan(_app: FastAPI):
             await state.agent_registry.close()
         await close_metadata_pool()
         # Reset handles so a hot-reload cycle doesn't leave stale references.
-        state.agent_registry = None
-        state.metadata_loader  = None
-        state.connection_service = None
-        state.history_service  = None
-        state.llm_service          = None
-        state.prompt_cache         = None
-        state.insights_eval_graph  = None
+        state.agent_registry       = None
+        state.metadata_loader       = None
+        state.connection_service    = None
+        state.history_service       = None
+        state.llm_service           = None
+        state.prompt_cache          = None
+        state.insights_eval_graph   = None
+        state.mcp_server_service    = None
+        state.mcp_cache_service     = None
+        state.mcp_catalog_client    = None
