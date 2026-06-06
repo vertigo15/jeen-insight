@@ -18,7 +18,7 @@ from src.agent.conversation_history import ConversationHistoryService
 from src.agent.llm_service import LangChainLlmService
 from src.agent.prompt_cache import PromptCache
 from src.connections import ConnectionService
-from src.metadata import MetadataLoader
+from src.metadata import MetadataLoader, McpServerService, McpCacheService, McpCatalogClient
 
 # Populated on startup by `src.api.lifespan.lifespan`.
 agent_registry: Optional[AgentRegistry] = None
@@ -29,3 +29,7 @@ llm_service: Optional[LangChainLlmService] = None
 prompt_cache: Optional[PromptCache] = None
 # Compiled LangGraph eval subgraph; None when langgraph is not installed.
 insights_eval_graph: Optional[object] = None
+# MCP catalog services (always initialised; active when catalog_source = 'mcp').
+mcp_server_service: Optional[McpServerService] = None
+mcp_cache_service: Optional[McpCacheService] = None
+mcp_catalog_client: Optional[McpCatalogClient] = None
