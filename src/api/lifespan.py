@@ -120,6 +120,17 @@ async def _ensure_schema(conn) -> None:
             ON insights_mcp_cache(mcp_server_id, source_key, cache_key)
             WHERE is_stale = false
     """)
+    # Per-connection catalog source config.
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS insights_catalog_config (
+            source_key           VARCHAR(255) PRIMARY KEY,
+            catalog_source       VARCHAR(10)  NOT NULL DEFAULT 'db'
+                                     CHECK (catalog_source IN ('db', 'mcp')),
+            cache_ttl_seconds    INT          NOT NULL DEFAULT 900
+                                     CHECK (cache_ttl_seconds IN (0, 300, 900, 3600, 86400)),
+            updated_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        )
+    """)
 
 
 async def _warm_caches(

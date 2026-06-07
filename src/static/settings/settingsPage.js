@@ -18,23 +18,25 @@ import { Preferences } from './preferences.js';
 
 // ── Icons (inline SVG snippets, 18×18) ────────────────────────────────────────
 const ICONS = {
-    models:     `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="oklch(52% 0.22 280)"/><text x="50%" y="55%" font-family="system-ui,-apple-system,sans-serif" font-weight="800" font-size="18" fill="#FFFFFF" dominant-baseline="middle" text-anchor="middle">J</text></svg>`,
-    general:    `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
-    prompt:     `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>`,
-    about:      `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
-    close:      `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`,
+    models:   `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="oklch(52% 0.22 280)"/><text x="50%" y="55%" font-family="system-ui,-apple-system,sans-serif" font-weight="800" font-size="18" fill="#FFFFFF" dominant-baseline="middle" text-anchor="middle">J</text></svg>`,
+    general:  `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
+    prompt:   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>`,
+    about:    `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
+    close:    `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`,
+    catalog:  `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>`,
 };
 
 // ── Navigation definition ─────────────────────────────────────────────────────
 const ICONS_USERS = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`;
 
 const NAV = [
-    {
+        {
         group: 'USER',
         items: [
-            { id: 'general',    label: 'General',   icon: ICONS.general,   type: 'general' },
-            { id: 'ai-models',  label: 'AI Models', icon: ICONS.models,    type: 'ai-models' },
-            { id: 'users',      label: 'Users',     icon: ICONS_USERS,     type: 'users' },
+            { id: 'general',           label: 'General',              icon: ICONS.general,  type: 'general' },
+            { id: 'metadata-catalog',  label: 'Metadata & Catalog',   icon: ICONS.catalog,  type: 'metadata-catalog' },
+            { id: 'ai-models',         label: 'AI Models',            icon: ICONS.models,   type: 'ai-models' },
+            { id: 'users',             label: 'Users',                icon: ICONS_USERS,    type: 'users' },
         ],
     },
     {
@@ -74,6 +76,12 @@ export class SettingsPage {
         this._prompts    = {};      // name → {meta, content, dirty, editing}
         this._models     = null;    // cached model list (Array)
         this._onApplyTheme = null;
+        // Metadata & Catalog state
+        this._mcpStatus   = null;   // last /api/mcp/status response
+        this._mcpConn     = null;   // currently viewed connection
+        this._mcpEditing  = null;   // server id being edited, or 'new'
+        this._mcpDraft    = null;   // form draft object
+        this._mcpTesting  = false;  // health check in progress
     }
 
     mount(hooks = {}) {
@@ -199,6 +207,8 @@ export class SettingsPage {
         // Render content
         if (id === 'general') {
             this._renderGeneral();
+        } else if (id === 'metadata-catalog') {
+            this._renderMetadataCatalog();
         } else if (id === 'ai-models') {
             this._renderModels();
         } else if (id === 'users') {
@@ -348,6 +358,538 @@ export class SettingsPage {
             _showToast('Could not switch model — ' + e.message, 'error');
             // Reload to restore true state
             await this._renderModels();
+        }
+    }
+
+    // ── Metadata & Catalog ───────────────────────────────────────────────────
+
+    async _renderMetadataCatalog() {
+        // Use the active connection from the main app (localStorage) first,
+        // then fall back to whatever was last viewed, then first available.
+        if (!this._mcpConn) {
+            this._mcpConn =
+                (typeof getActiveConnection === 'function' && getActiveConnection()) || null;
+        }
+
+        // Show skeleton while loading
+        this._content.innerHTML = `
+            <div class="sp-section-header">
+                <h2 class="sp-section-title">Metadata &amp; Catalog</h2>
+                <p class="sp-section-desc">Where the text-to-SQL agent loads this connection's curated catalog — tables, columns, relationships and business terms — for prompt context.${
+                    this._mcpConn ? ` Connection: <strong>${_esc(this._mcpConn)}</strong>.` : ''}</p>
+            </div>
+            <div class="sp-card" style="padding:24px">
+                <div class="skeleton" style="height:180px;border-radius:8px;"></div>
+            </div>`;
+
+        // If we still don't have a connection, fetch the list once to get the first.
+        if (!this._mcpConn) {
+            try {
+                const r = await fetch('/api/connections');
+                if (r.ok) {
+                    const d = await r.json();
+                    const conns = d.connections || [];
+                    if (conns.length) this._mcpConn = conns[0].source_key;
+                }
+            } catch (e) { /* ignore */ }
+        }
+
+        // Load status
+        await this._mcpLoadStatus();
+        this._mcpRender();
+    }
+
+    async _mcpLoadStatus() {
+        try {
+            const qs = this._mcpConn ? `?connection=${encodeURIComponent(this._mcpConn)}` : '';
+            const r  = await fetch(`/api/mcp/status${qs}`);
+            if (r.ok) this._mcpStatus = await r.json();
+        } catch (e) {
+            console.warn('[MCP] status load failed:', e);
+        }
+    }
+
+    _mcpRender() {
+        const S   = this._mcpStatus || {};
+        const src = S.catalog_source || 'db';
+
+        this._content.innerHTML = `
+            <div class="sp-section-header">
+                <h2 class="sp-section-title">Metadata &amp; Catalog</h2>
+                <p class="sp-section-desc">Where the text-to-SQL agent loads this connection's curated catalog — tables, columns, relationships and business terms — for prompt context.${
+                    this._mcpConn ? ` Connection: <strong>${_esc(this._mcpConn)}</strong>.` : ''}</p>
+            </div>
+
+            <div class="sp-card" id="mc-src-card">
+                <div class="sp-row" style="padding-bottom:0">
+                    <div>
+                        <div class="sp-row-label">Catalog source</div>
+                        <div class="sp-row-help">Per-connection. Switching takes effect on the next query.</div>
+                    </div>
+                    <div class="mc-seg" id="mc-seg">
+                        <button data-src="db" class="${src==='db'?'is-active':''}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg> Metadata DB</button>
+                        <button data-src="mcp" class="${src==='mcp'?'is-active':''}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/><line x1="6" y1="7" x2="6.01" y2="7"/><line x1="6" y1="17" x2="6.01" y2="17"/></svg> MCP Server</button>
+                    </div>
+                </div>
+
+                <!-- DB source panel -->
+                <div id="mc-db-panel" class="mc-panel${src!=='db'?' mc-hidden':''}">
+                    ${this._mcpDbPanel(S.db || {})}
+                </div>
+
+                <!-- MCP source panel -->
+                <div id="mc-mcp-panel" class="mc-panel${src!=='mcp'?' mc-hidden':''}">
+                    ${this._mcpMcpPanel(S)}
+                </div>
+            </div>
+
+            <!-- Cache TTL -->
+            ${this._mcpCacheCard(S)}
+        `;
+
+        this._mcpWireEvents(src, S);
+    }
+
+    _mcpDbPanel(db) {
+        const hit    = db.cache_status?.hit;
+        const expiry = db.cache_status?.expires_in_s;
+        const statusLabel = hit
+            ? `<span class="mc-status mc-status-ok"><span class="mc-dot"></span> Synced · cache HIT${expiry ? ` · ${_humanTime(expiry)} remaining` : ''}</span>`
+            : `<span class="mc-status mc-status-muted"><span class="mc-dot"></span> Cache MISS — will fetch on next query</span>`;
+
+        return `
+            <div class="mc-info-grid">
+                <div><span class="mc-info-k">Provider</span><span class="mc-info-v">Schema Modeler</span></div>
+                <div><span class="mc-info-k">Metadata database</span><span class="mc-info-v mc-mono">${_esc(db.database || '—')}</span></div>
+                <div><span class="mc-info-k">Tables · columns</span><span class="mc-info-v">${db.tables ?? '—'} · ${db.columns ?? '—'}</span></div>
+                <div><span class="mc-info-k">Business terms · pairs</span><span class="mc-info-v">${db.business_terms ?? '—'} · ${db.knowledge_pairs ?? '—'}</span></div>
+            </div>
+            <div class="mc-info-foot">
+                ${statusLabel}
+                <span style="flex:1"></span>
+                <button class="sp-btn-ghost" id="mc-refresh-btn">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><polyline points="21 3 21 8 16 8"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><polyline points="3 21 3 16 8 16"/></svg>
+                    Refresh metadata
+                </button>
+            </div>`;
+    }
+
+    _mcpMcpPanel(S) {
+        const servers    = S.servers || [];
+        const activeId   = S.active_server_id;
+        const activeServ = servers.find(s => s.id === activeId) || null;
+
+        const listRows = servers.length ? servers.map(s => {
+            const hStatus = s.health?.status;
+            const dotCls  = hStatus === 'healthy' ? 'mc-srv-dot-ok'
+                          : hStatus === 'degraded' ? 'mc-srv-dot-warn'
+                          : hStatus === 'down'     ? 'mc-srv-dot-err'
+                          : '';
+            const isAct   = s.id === activeId;
+            // cursor: pointer indicates clickable; active row has accent highlight
+            return `<div class="mc-srv-row${isAct ? ' mc-srv-row-active' : ''}" data-srv-id="${s.id}" style="cursor:pointer">
+                <span class="mc-srv-dot ${dotCls}" title="${_esc(hStatus||'not checked')}"></span>
+                <div class="mc-srv-main">
+                    <div class="mc-srv-name">${_esc(s.server_name)}${isAct?'<span class="mc-srv-tag">active</span>':''}</div>
+                    <div class="mc-srv-ep">${_esc(s.endpoint)}</div>
+                </div>
+                <span class="mc-srv-badge">${_esc((s.transport||'').toUpperCase())}</span>
+                <div class="mc-srv-actions">
+                    <button class="mc-srv-ico" data-edit="${s.id}" title="Edit"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg></button>
+                    <button class="mc-srv-ico mc-srv-del" data-del="${s.id}" title="Delete" ${servers.length<=1?'disabled':''}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
+                </div>
+            </div>`;
+        }).join('') : '<div class="mc-empty">No MCP servers yet. Add one to source this catalog.</div>';
+
+        const formHtml = this._mcpEditing ? this._mcpFormHtml() : '';
+        const healthHtml = (!this._mcpEditing && activeServ) ? this._mcpHealthSection(activeServ) : '';
+
+        return `
+            <div class="mc-srv-listhead">
+                <span class="mc-srv-listtitle">MCP servers <span class="mc-srv-count">${servers.length}</span></span>
+                <button class="sp-btn-ghost sp-btn-ghost-sm" id="mc-add-btn">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add server
+                </button>
+            </div>
+            <div class="mc-srv-list">${listRows}</div>
+            ${formHtml}
+            ${healthHtml}
+            <div class="mc-callout">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                <p>MCP delivers live, federated metadata — but bypasses Schema Modeler's curation layer. The DLP / governance scan and SELECT-only execution still apply. Results are cached per the TTL below.</p>
+            </div>`;
+    }
+
+    _mcpFormHtml() {
+        const d      = this._mcpDraft || {};
+        const isNew  = this._mcpEditing === 'new';
+        const bearer = d.auth_type === 'bearer';
+        const saveOk = (d.server_name||'').trim() && (d.endpoint||'').trim();
+        return `
+        <div class="mc-form">
+            <div class="mc-form-head">${isNew ? 'Add MCP server' : 'Edit MCP server'}</div>
+            <div class="mc-field">
+                <label class="mc-field-label">Server name <span class="mc-req">*</span></label>
+                <input id="mc-f-name" class="mc-input" value="${_esc(d.server_name||'')}" placeholder="jeen-catalog-mcp" />
+            </div>
+            <div class="mc-field">
+                <label class="mc-field-label">Endpoint <span class="mc-req">*</span></label>
+                <input id="mc-f-ep" class="mc-input" value="${_esc(d.endpoint||'')}" placeholder="https://mcp.jeen.internal/catalog" />
+                <div class="mc-field-help">For stdio transport, give the launch command (e.g. <code>npx @jeen/catalog-mcp</code>).</div>
+            </div>
+            <div class="mc-field-row">
+                <div class="mc-field">
+                    <label class="mc-field-label">Transport</label>
+                    <div class="mc-mini-seg" id="mc-f-transport">
+                        ${['stdio','sse','http'].map(t=>`<button data-t="${t}" class="${(d.transport||'http')===t?'is-active':''}">${t.toUpperCase()}</button>`).join('')}
+                    </div>
+                </div>
+                <div class="mc-field">
+                    <label class="mc-field-label">Authentication</label>
+                    <select id="mc-f-auth" class="settings-select" style="width:100%;min-width:0">
+                        <option value="none"${(d.auth_type||'none')==='none'?' selected':''}>None</option>
+                        <option value="bearer"${d.auth_type==='bearer'?' selected':''}>Bearer token</option>
+                        <option value="oauth"${d.auth_type==='oauth'?' selected':''}>OAuth 2.1</option>
+                    </select>
+                </div>
+            </div>
+            ${bearer ? `<div class="mc-field">
+                <label class="mc-field-label">Bearer token</label>
+                <input id="mc-f-token" class="mc-input" type="password" value="" placeholder="••••••••••••••••" />
+                <div class="mc-field-help">Stored encrypted at rest, never sent to the LLM.</div>
+            </div>` : ''}
+            <div class="mc-form-foot">
+                <button class="sp-btn-ghost" id="mc-f-cancel">Cancel</button>
+                <button class="sp-btn-primary-sm" id="mc-f-save" ${saveOk?'':'disabled'}>${isNew ? 'Add server' : 'Save changes'}</button>
+            </div>
+        </div>`;
+    }
+
+    _mcpHealthSection(server) {
+        const h       = server.health;
+        const testing = this._mcpTesting;
+        const btnLabel = testing
+            ? `<svg class="mc-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><polyline points="21 3 21 8 16 8"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><polyline points="3 21 3 16 8 16"/></svg> Checking…`
+            : h ? 'Re-run health check' : 'Test &amp; health check';
+
+        const statusText = testing
+            ? `<span class="mc-status mc-status-checking"><span class="mc-dot mc-dot-pulse"></span> Handshaking with ${_esc(server.server_name)}…</span>`
+            : h?.status === 'healthy' || h?.status === 'degraded'
+                ? `<span class="mc-status mc-status-ok"><span class="mc-dot"></span> ${_esc(h.status)} · ${h.latency_ms||0}ms · checked ${_relativeTime(h.checked_at)}</span>`
+            : h?.status === 'down'
+                ? `<span class="mc-status mc-status-err"><span class="mc-dot"></span> Unreachable · checked ${_relativeTime(h.checked_at)}</span>`
+            : `<span class="mc-status mc-status-muted"><span class="mc-dot"></span> ${_esc(server.server_name)} not checked</span>`;
+
+        // ─ Health diagnostics card (only when health data exists) ────────────────
+        let diagnosticsHtml = '';
+        if (h && h.status !== 'down') {
+            const cells = [
+                ['Protocol',  h.protocol || '—'],
+                ['SDK',       h.sdk || '—'],
+                ['Handshake', (h.latency_ms||0) + 'ms'],
+                ['Ping',      (h.ping_ms||0) + 'ms'],
+                ['Uptime',    h.uptime || '—'],
+                ['Transport', `${(server.transport||'').toUpperCase()}${h.tls ? ' · ' + h.tls : ''}`],
+            ];
+            const tools   = h.tools || [];
+            const resCnt  = typeof h.resources === 'number' ? h.resources : null;
+            const prmCnt  = typeof h.prompts   === 'number' ? h.prompts   : null;
+            const capsMeta = (resCnt !== null || prmCnt !== null)
+                ? `<span class="mc-cap-meta">${[resCnt !== null ? `${resCnt} resources` : '', prmCnt !== null ? `${prmCnt} prompts` : ''].filter(Boolean).join(' · ')}</span>`
+                : '';
+            const caps = (h.capabilities||[]).map(c =>
+                `<span class="mc-cap-chip"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> ${_esc(c)}</span>`
+            ).join('');
+            const toolRows = tools.map(t =>
+                `<div class="mc-tool-row">
+                    <svg class="mc-tool-ico" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+                    <div class="mc-tool-main">
+                        <div class="mc-tool-name">${_esc(t.name)}</div>
+                        <div class="mc-tool-desc">${_esc(t.description||'')}</div>
+                    </div>
+                    ${t.need
+                        ? `<span class="mc-tool-need">↳ ${_esc(t.need)}</span>`
+                        : '<span class="mc-tool-need mc-map-muted">unmapped</span>'}
+                </div>`
+            ).join('');
+
+            diagnosticsHtml = `
+            <div class="mc-health">
+                <div class="mc-health-head">
+                    <span class="mc-health-badge mc-health-${h.status}">
+                        <span class="mc-dot"></span> ${_esc(h.status)}
+                    </span>
+                    <span class="mc-health-impl">${_esc(h.sdk||'')} · v${_esc(h.server_version||'')}</span>
+                    <span class="mc-health-when">checked ${_relativeTime(h.checked_at)}</span>
+                </div>
+                <div class="mc-health-grid">${cells.map(([k,v]) =>
+                    `<div class="mc-health-cell"><span class="mc-hk">${k}</span><span class="mc-hv">${_esc(String(v))}</span></div>`
+                ).join('')}</div>
+                ${caps ? `<div class="mc-health-sub">Capabilities${capsMeta ? ' <span class="mc-cap-meta-inline"></span>' : ''}</div>
+                    <div class="mc-cap-row">${caps}${capsMeta}</div>` : ''}
+                <div class="mc-health-sub">Tools exposed <span class="mc-srv-count">${tools.length}</span></div>
+                <div class="mc-tools">${toolRows || '<div style="padding:14px;color:var(--color-faint);font-size:.8rem">No tools discovered.</div>'}</div>
+            </div>`;
+        } else if (h?.status === 'down') {
+            diagnosticsHtml = `<div class="mc-err-box">${_esc(h.error || 'Health check failed')}</div>`;
+        }
+
+        // ─ Catalog tool mapping ─ ALWAYS VISIBLE ──────────────────────────────────
+        const NEEDS = [
+            { key: 'list_tables',          label: 'List tables',              req: true  },
+            { key: 'describe_table',       label: 'Describe table / columns', req: true  },
+            { key: 'list_relationships',   label: 'Relationships',            req: false },
+            { key: 'business_glossary',    label: 'Business terms &amp; glossary', req: false },
+        ];
+        const tools = h?.tools || [];
+        const mapRows = NEEDS.map(n => {
+            const t = tools.find(x => x.need === n.key);
+            return `<div class="mc-map-row">
+                <span class="mc-map-need">
+                    ${n.label}${n.req ? '<span class="mc-req"> *</span>' : ''}
+                </span>
+                ${t
+                    ? `<span class="mc-map-tool">${_esc(t.name)}</span>`
+                    : `<span class="mc-map-tool mc-map-muted">awaiting health check</span>`}
+            </div>`;
+        }).join('');
+
+        return `
+        <div class="mc-active-srv">
+            <div class="mc-test-bar">
+                <button class="sp-btn-ghost" id="mc-test-btn" ${testing ? 'disabled' : ''}>${btnLabel}</button>
+                ${statusText}
+            </div>
+            ${diagnosticsHtml}
+            <div class="mc-field" style="margin-top:14px">
+                <label class="mc-field-label">Catalog tool mapping</label>
+                <div class="mc-map">${mapRows}</div>
+                <div class="mc-field-help">Tools are auto-discovered from the server's <code>tools/list</code> and mapped to each catalog need.</div>
+            </div>
+        </div>`;
+    }
+
+    _mcpCacheCard(S) {
+        const src     = S.catalog_source || 'db';
+        const ttl     = S.cache_ttl_seconds ?? 900;  // per-connection TTL from API
+        const ttlOpts = [
+            [0,     'No cache (live)'],
+            [300,   '5 minutes'],
+            [900,   '15 minutes'],
+            [3600,  '1 hour'],
+            [86400, '24 hours'],
+        ];
+        const badgeLabel = src === 'mcp' ? 'MCP' : 'DB';
+        const isLive     = ttl === 0;
+        const cacheHit   = src === 'db'
+            ? (S.db?.cache_status?.hit ?? false)
+            : (S.mcp_cache?.cache_hit ?? false);
+        const pillHtml = isLive
+            ? `<span class="mc-cache-pill mc-cache-live"><span class="mc-cache-dot"></span> next run · <b>live fetch</b></span>
+               <span class="mc-cache-pill">TTL <b>none</b></span>
+               <span class="mc-cache-pill">re-fetches every query · freshest, slower</span>`
+            : `<span class="mc-cache-pill ${cacheHit ? 'mc-cache-hit' : ''}"><span class="mc-cache-dot"></span> next run · <b>${cacheHit ? 'cache HIT' : 'cache MISS'}</b></span>
+               <span class="mc-cache-pill">TTL <b>${_formatTtl(ttl)}</b></span>
+               <span class="mc-cache-pill">invalidate → <b>Refresh metadata</b></span>`;
+        return `
+        <div class="mc-cache-card">
+            <div class="sp-row" style="border:none;padding-bottom:0">
+                <div>
+                    <div class="sp-row-label">Catalog cache TTL <span class="mc-badge">${badgeLabel}</span></div>
+                    <div class="sp-row-help">How long the catalog is held before re-fetching. The pipeline's <code>catalog.load</code> step reports HIT / MISS each run.</div>
+                </div>
+                <select class="settings-select" id="mc-ttl-sel">
+                    ${ttlOpts.map(([v,l])=>`<option value="${v}"${ttl===v?' selected':''}>${_esc(l)}</option>`).join('')}
+                </select>
+            </div>
+            <div class="mc-cache-state" id="mc-cache-pills">${pillHtml}</div>
+        </div>`;
+    }
+
+    // ── MCP event wiring ─────────────────────────────────────────────────────
+
+    _mcpWireEvents(src, S) {
+        const $ = id => this._content.querySelector(id);
+
+        // Source segment switch — per-connection
+        this._content.querySelectorAll('#mc-seg button').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const newSrc = btn.dataset.src;
+                if (newSrc === src) return;
+                try {
+                    const qs = this._mcpConn ? `?connection=${encodeURIComponent(this._mcpConn)}` : '';
+                    const r = await fetch(`/api/mcp/catalog-source${qs}`, {
+                        method: 'PUT',
+                        headers: {'Content-Type':'application/json'},
+                        body: JSON.stringify({catalog_source: newSrc}),
+                    });
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    this._mcpStatus = null;
+                    await this._mcpLoadStatus();
+                    this._mcpRender();
+                } catch (e) { _showToast('Could not switch source — ' + e.message, 'error'); }
+            });
+        });
+
+        // Refresh metadata button (DB panel)
+        const refreshBtn = $('#mc-refresh-btn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', async () => {
+                const orig = refreshBtn.innerHTML;
+                refreshBtn.disabled = true;
+                refreshBtn.textContent = 'Refreshing…';
+                try {
+                    const qs = this._mcpConn ? `?connection=${encodeURIComponent(this._mcpConn)}` : '';
+                    await fetch(`/api/mcp/refresh${qs}`, {method:'POST'});
+                    await this._mcpLoadStatus();
+                    this._mcpRender();
+                    _showToast('Cache cleared', 'success');
+                } catch (e) { _showToast('Refresh failed — ' + e.message, 'error'); }
+                finally { refreshBtn.disabled = false; refreshBtn.innerHTML = orig; }
+            });
+        }
+
+        // Add server button
+        const addBtn = $('#mc-add-btn');
+        if (addBtn) {
+            addBtn.addEventListener('click', () => {
+                this._mcpEditing = 'new';
+                this._mcpDraft   = {server_name:'', endpoint:'', transport:'http', auth_type:'none'};
+                this._mcpRender();
+            });
+        }
+
+        // Server list row click = ACTIVATE server
+        this._content.querySelectorAll('.mc-srv-row').forEach(row => {
+            row.addEventListener('click', async e => {
+                if (e.target.closest('[data-edit],[data-del]') || this._mcpEditing) return;
+                const id = Number(row.dataset.srvId);
+                if (!id || (S.active_server_id === id)) return;
+                try {
+                    const r = await fetch(`/api/mcp/servers/${id}/activate`, {method:'POST'});
+                    if (!r.ok) { const err = await r.json().catch(()=>({})); throw new Error(err.detail||`HTTP ${r.status}`); }
+                    this._mcpStatus = null;
+                    await this._mcpLoadStatus();
+                    this._mcpRender();
+                } catch (e2) { _showToast('Could not select server — ' + e2.message, 'error'); }
+            });
+        });
+
+        // Edit buttons
+        this._content.querySelectorAll('[data-edit]').forEach(btn => {
+            btn.addEventListener('click', e => {
+                e.stopPropagation();
+                const srv = (S.servers||[]).find(s => s.id === Number(btn.dataset.edit));
+                if (!srv) return;
+                this._mcpEditing = srv.id;
+                this._mcpDraft   = {server_name: srv.server_name, endpoint: srv.endpoint,
+                                    transport: srv.transport, auth_type: srv.auth_type};
+                this._mcpRender();
+            });
+        });
+
+        // Delete buttons
+        this._content.querySelectorAll('[data-del]').forEach(btn => {
+            btn.addEventListener('click', async e => {
+                e.stopPropagation();
+                const id = Number(btn.dataset.del);
+                if (!confirm('Delete this server? This cannot be undone.')) return;
+                try {
+                    const r = await fetch(`/api/mcp/servers/${id}`, {method:'DELETE'});
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    this._mcpStatus = null;
+                    await this._mcpLoadStatus();
+                    this._mcpRender();
+                    _showToast('Server deleted', 'info');
+                } catch (e2) { _showToast('Delete failed — ' + e2.message, 'error'); }
+            });
+        });
+
+        // Form: cancel
+        const cancelBtn = $('#mc-f-cancel');
+        if (cancelBtn) {
+            cancelBtn.addEventListener('click', () => {
+                this._mcpEditing = null; this._mcpDraft = null; this._mcpRender();
+            });
+        }
+
+        // Form: transport mini-seg
+        this._content.querySelectorAll('#mc-f-transport button').forEach(btn => {
+            btn.addEventListener('click', () => { this._mcpDraft.transport = btn.dataset.t; this._mcpRender(); });
+        });
+
+        // Form: live-validate Save button
+        ['#mc-f-name', '#mc-f-ep'].forEach(sel => {
+            const el = $(sel);
+            if (el) el.addEventListener('input', () => {
+                if (sel === '#mc-f-name') this._mcpDraft.server_name = el.value;
+                else                      this._mcpDraft.endpoint     = el.value;
+                const saveBtn = $('#mc-f-save');
+                if (saveBtn) saveBtn.disabled = !(this._mcpDraft.server_name?.trim() && this._mcpDraft.endpoint?.trim());
+            });
+        });
+        const authSel = $('#mc-f-auth');
+        if (authSel) authSel.addEventListener('change', () => { this._mcpDraft.auth_type = authSel.value; this._mcpRender(); });
+
+        // Form: save
+        const saveBtn = $('#mc-f-save');
+        if (saveBtn) {
+            saveBtn.addEventListener('click', async () => {
+                const d = this._mcpDraft;
+                if (!d.server_name?.trim() || !d.endpoint?.trim()) return;
+                const token = $('#mc-f-token')?.value || null;
+                const body  = {...d};
+                if (token) body.bearer_token = token;
+                try {
+                    const isNew = this._mcpEditing === 'new';
+                    const url   = isNew ? '/api/mcp/servers' : `/api/mcp/servers/${this._mcpEditing}`;
+                    const r = await fetch(url, {
+                        method: isNew ? 'POST' : 'PUT',
+                        headers: {'Content-Type':'application/json'},
+                        body: JSON.stringify(body),
+                    });
+                    if (!r.ok) { const err = await r.json().catch(()=>({})); throw new Error(err.detail||`HTTP ${r.status}`); }
+                    this._mcpEditing = null; this._mcpDraft = null;
+                    this._mcpStatus  = null;
+                    await this._mcpLoadStatus();
+                    this._mcpRender();
+                    _showToast(isNew ? 'Server added' : 'Server updated', 'success');
+                } catch (e2) { _showToast('Save failed — ' + e2.message, 'error'); }
+            });
+        }
+
+        // Health check button
+        const testBtn = $('#mc-test-btn');
+        if (testBtn) {
+            testBtn.addEventListener('click', async () => {
+                const activeServ = (S.servers||[]).find(s => s.is_active);
+                if (!activeServ) return;
+                this._mcpTesting = true;
+                this._mcpRender();
+                try {
+                    const r    = await fetch(`/api/mcp/servers/${activeServ.id}/health-check`, {method:'POST'});
+                    const data = await r.json();
+                    if (!r.ok && !data.ok) throw new Error(data.error || data.detail || `HTTP ${r.status}`);
+                    this._mcpStatus = null;
+                    await this._mcpLoadStatus();
+                } catch (e2) { _showToast('Health check failed — ' + e2.message, 'error'); }
+                finally { this._mcpTesting = false; this._mcpRender(); }
+            });
+        }
+
+        // Cache TTL — per-connection
+        const ttlSel = $('#mc-ttl-sel');
+        if (ttlSel) {
+            ttlSel.addEventListener('change', async () => {
+                if (!this._mcpConn) return;
+                try {
+                    const qs = `?connection=${encodeURIComponent(this._mcpConn)}&cache_ttl_seconds=${ttlSel.value}`;
+                    await fetch(`/api/mcp/connection-ttl${qs}`, {method: 'PUT'});
+                    this._mcpStatus = null;
+                    await this._mcpLoadStatus();
+                    this._mcpRender();
+                } catch (e2) { _showToast('Could not save TTL — ' + e2.message, 'error'); }
+            });
         }
     }
 
@@ -1043,4 +1585,28 @@ function _showToast(msg, type) {
     if (typeof window.showToast === 'function') {
         window.showToast(msg, type);
     }
+}
+
+function _humanTime(seconds) {
+    if (seconds < 60)  return `${seconds}s`;
+    if (seconds < 3600) return `${Math.round(seconds/60)}m`;
+    return `${Math.round(seconds/3600)}h`;
+}
+
+function _formatTtl(seconds) {
+    if (seconds === 0)     return 'No cache';
+    if (seconds < 3600)   return `${Math.round(seconds/60)} min`;
+    if (seconds < 86400)  return `${Math.round(seconds/3600)} h`;
+    return '24 h';
+}
+
+function _relativeTime(isoStr) {
+    if (!isoStr) return 'never';
+    try {
+        const diff = Math.round((Date.now() - new Date(isoStr).getTime()) / 1000);
+        if (diff < 60)   return 'just now';
+        if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+        if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+        return `${Math.floor(diff/86400)}d ago`;
+    } catch { return ''; }
 }
