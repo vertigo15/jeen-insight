@@ -126,11 +126,32 @@ def _row_to_server(row: Any) -> McpServer:
         auth_type=row["auth_type"],
         bearer_token=row["bearer_token"],
         cache_ttl_seconds=row["cache_ttl_seconds"],
-        health=dict(row["health"]) if row["health"] else None,
+        health=_decode_health(row["health"]),
         last_checked_at=row["last_checked_at"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+def _decode_health(raw: Any) -> Optional[Dict[str, Any]]:
+    """Decode the JSONB health column regardless of whether asyncpg returns
+    it as a Python dict/list (native codec) or as a JSON string."""
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        import json as _json
+        try:
+            decoded = _json.loads(raw)
+            return decoded if isinstance(decoded, dict) else None
+        except Exception:
+            return None
+    # asyncpg Record or other mapping type
+    try:
+        return dict(raw)
+    except Exception:
+        return None
 
 
 # ── Service ───────────────────────────────────────────────────────────────────
@@ -141,31 +162,94 @@ class McpServerService:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self.pool = pool
 
-    # ── Catalog source (global toggle) ────────────────────────────────────────
+    # ── Catalog source (per-connection) ───────────────────────────────────────────
 
-    async def get_catalog_source(self) -> str:
-        """Return 'db' or 'mcp'. Defaults to 'db' when no row exists."""
+    async def get_catalog_source(self, source_key: Optional[str] = None) -> str:
+        """
+        Return 'db' or 'mcp' for *source_key*.
+        Falls back to global app_settings when no per-connection row exists.
+        """
+        if source_key:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT catalog_source FROM insights_catalog_config"
+                    " WHERE source_key = $1",
+                    source_key,
+                )
+            if row:
+                return row["catalog_source"]
+        # Global fallback.
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT value FROM app_settings WHERE key = 'catalog_source'"
             )
         return (row["value"] if row else None) or "db"
 
-    async def set_catalog_source(self, source: str) -> None:
-        """Set global catalog source.  source must be 'db' or 'mcp'."""
+    async def get_connection_config(self, source_key: str) -> dict:
+        """Return {catalog_source, cache_ttl_seconds} for *source_key*."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT catalog_source, cache_ttl_seconds"
+                " FROM insights_catalog_config WHERE source_key = $1",
+                source_key,
+            )
+        if row:
+            return {"catalog_source": row["catalog_source"],
+                    "cache_ttl_seconds": row["cache_ttl_seconds"]}
+        # Return defaults when no row exists yet.
+        return {"catalog_source": "db", "cache_ttl_seconds": 900}
+
+    async def set_catalog_source(
+        self, source: str, source_key: Optional[str] = None
+    ) -> None:
+        """
+        Set catalog source for *source_key* (per-connection).
+        When source_key is None the global app_settings fallback is updated.
+        """
         if source not in ("db", "mcp"):
             raise ValueError(f"catalog_source must be 'db' or 'mcp', got {source!r}")
+        if source_key:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO insights_catalog_config
+                        (source_key, catalog_source, updated_at)
+                    VALUES ($1, $2, NOW())
+                    ON CONFLICT (source_key) DO UPDATE
+                        SET catalog_source = EXCLUDED.catalog_source,
+                            updated_at     = NOW()
+                    """,
+                    source_key, source,
+                )
+        else:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO app_settings (key, value, updated_at)
+                        VALUES ('catalog_source', $1, NOW())
+                    ON CONFLICT (key) DO UPDATE
+                        SET value = EXCLUDED.value, updated_at = NOW()
+                    """,
+                    source,
+                )
+        logger.info("catalog_source → %s (source_key=%s)", source, source_key)
+
+    async def set_connection_ttl(
+        self, source_key: str, cache_ttl_seconds: int
+    ) -> None:
+        """Upsert the per-connection cache TTL."""
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO app_settings (key, value, updated_at)
-                    VALUES ('catalog_source', $1, NOW())
-                ON CONFLICT (key) DO UPDATE
-                    SET value = EXCLUDED.value, updated_at = NOW()
+                INSERT INTO insights_catalog_config
+                    (source_key, cache_ttl_seconds, updated_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (source_key) DO UPDATE
+                    SET cache_ttl_seconds = EXCLUDED.cache_ttl_seconds,
+                        updated_at        = NOW()
                 """,
-                source,
+                source_key, cache_ttl_seconds,
             )
-        logger.info("catalog_source → %s", source)
 
     # ── Server CRUD ───────────────────────────────────────────────────────────
 
@@ -345,4 +429,23 @@ class McpServerService:
                 "SET health = NULL, last_checked_at = NULL, updated_at = NOW() "
                 "WHERE id = $1",
                 server_id,
+            )
+
+    async def save_test_result(
+        self, server_id: int, *, ok: bool, message: str
+    ) -> None:
+        """Persist a failed test result without overwriting the full health blob."""
+        import json as _json
+        fail_health = {"status": "down", "error": message}
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE insights_mcp_servers
+                   SET health          = $2::jsonb,
+                       last_checked_at = NOW(),
+                       updated_at      = NOW()
+                 WHERE id = $1
+                """,
+                server_id,
+                _json.dumps(fail_health),
             )

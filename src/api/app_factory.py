@@ -20,6 +20,7 @@ from src.api.routes import (
     health,
     history,
     insights,
+    mcp as mcp_routes,
     query,
     settings as settings_routes,
 )
@@ -60,5 +61,6 @@ def create_app() -> FastAPI:
     app.include_router(insights.router)
     app.include_router(charts.router)
     app.include_router(settings_routes.router)
+    app.include_router(mcp_routes.router)
 
     return app

@@ -99,6 +99,17 @@ function setConnectionPillName(name) {
     if (el) el.textContent = name;
 }
 
+async function _updateMcpBadge(sourceKey) {
+    const badge = document.getElementById('connection-mcp-badge');
+    if (!badge || !sourceKey) return;
+    try {
+        const r = await fetch(`/api/mcp/status?connection=${encodeURIComponent(sourceKey)}`);
+        if (!r.ok) return;
+        const d = await r.json();
+        badge.hidden = (d.catalog_source !== 'mcp');
+    } catch { badge.hidden = true; }
+}
+
 async function loadConnections() {
     setConnectionStatus('connecting');
     setConnectionPillName('Loading\u2026');
@@ -116,8 +127,9 @@ async function loadConnections() {
         const validStored = availableConnections.find(c => c.source_key === stored);
         const active = validStored ? validStored.source_key : availableConnections[0].source_key;
         setActiveConnection(active);
-        const activeRow = availableConnections.find(c => c.source_key === active);
+    const activeRow = availableConnections.find(c => c.source_key === active);
         setConnectionPillName(activeRow ? activeRow.display_name : active);
+        _updateMcpBadge(active);
         // Pill stays in 'connecting' until tables come back — set in loadTables.
     } catch (e) {
         console.error('Failed to load connections', e);
@@ -146,6 +158,7 @@ function onConnectionChange(sourceKey) {
     if (searchInput) { searchInput.style.display = 'none'; searchInput.value = ''; }
     const activeRow = availableConnections.find(c => c.source_key === newConnection);
     setConnectionPillName(activeRow ? activeRow.display_name : newConnection);
+    _updateMcpBadge(newConnection);
     setConnectionStatus('connecting');
         // Reset autocomplete caches, rich table data, and table expand state.
         _tableExpandedSet.clear();
