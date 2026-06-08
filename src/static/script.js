@@ -22,6 +22,7 @@ let _allTraceEvents   = [];   // full event list from most recent query
 let _traceMetrics     = {};   // metrics from most recent query
 let _activeTraceFilter = 'all'; // current log level filter
 let _traceSearchQ     = '';   // current log text search query
+let _traceLegendOpen  = false; // whether the log legend is expanded
 
 // ── Table display window ──────────────────────────────────────────────────────
 // Number of rows rendered at once. User can change it via the footer input.
@@ -1837,8 +1838,47 @@ function _buildTraceToolbar(toolbar, events) {
     html += `<input type="text" class="dp-log-search" id="dp-log-search" `
         + `placeholder="Search log…" value="${escapeHtml(_traceSearchQ)}" `
         + `oninput="_traceSearchInput(this.value)" aria-label="Search execution log" />`;
+    html += `<button class="dp-log-legend-btn${_traceLegendOpen ? ' active' : ''}" id="dp-log-legend-btn" `
+        + `title="What does each row and number mean?" aria-label="Toggle log legend" `
+        + `onclick="_toggleTraceLegend()">?</button>`;
 
     toolbar.innerHTML = html;
+}
+
+/**
+ * Toggle the explanatory legend that documents the log rows and timings.
+ */
+function _toggleTraceLegend() {
+    _traceLegendOpen = !_traceLegendOpen;
+    const b = document.getElementById('dp-log-legend-btn');
+    if (b) b.classList.toggle('active', _traceLegendOpen);
+    _renderTraceEvents();
+}
+window._toggleTraceLegend = _toggleTraceLegend;
+
+/**
+ * Build the legend HTML explaining what each row / number in the log means.
+ */
+function _buildTraceLegendHtml() {
+    return '<div class="trace-legend">'
+        + '<div class="trace-legend-title">How to read this log</div>'
+        + '<ul class="trace-legend-list">'
+        + '<li>Each row is one step (node) in the LangGraph pipeline, in execution order. '
+        + '<strong>Hover a step name</strong> to see what it does.</li>'
+        + '<li>The coloured dot is severity: '
+        + '<span class="trace-lg-dot trace-lv-info"></span> info · '
+        + '<span class="trace-lg-dot trace-lv-llm"></span> LLM call · '
+        + '<span class="trace-lg-dot trace-lv-db"></span> database · '
+        + '<span class="trace-lg-dot trace-lv-warn"></span> warning/retry · '
+        + '<span class="trace-lg-dot trace-lv-error"></span> error.</li>'
+        + '<li>The text after the bar is the step\u2019s result detail. '
+        + '<strong>catalog_lookup</strong> shows where the metadata came from (MCP or metadata DB), cache HIT/MISS and load time.</li>'
+        + `<li>The number on the right is per-step time. ${escapeHtml(_TIMING_TIPS.nodeMs)}</li>`
+        + '<li>Summary chips at the top: '
+        + `<strong>wall</strong> = total time in the browser; <strong>graph</strong> = sum of all step times; `
+        + `<strong>LLM</strong> = time waiting on the model; <strong>DB</strong> = SQL execution time; `
+        + `<strong>net</strong> = wall − graph (HTTP + proxy overhead). Hover any chip for the exact formula.</li>`
+        + '</ul></div>';
 }
 
 /**
@@ -1914,6 +1954,8 @@ function _renderTraceEvents() {
     if (retries > 0) html += `<span class="trace-summary-chip">retries: <strong>${retries}</strong></span>`;
     html += '</div>';
 
+    if (_traceLegendOpen) html += _buildTraceLegendHtml();
+
     if (filtered.length === 0) {
         html += '<p class="trace-empty">No events match the current filter.</p>';
         panel.innerHTML = html;
@@ -1933,10 +1975,11 @@ function _renderTraceEvents() {
         const status  = ev.status || '';
         const lv      = _traceEventLevel(ev);
 
+        const nodeTip = escapeHtml(_NODE_INFO[ev.node] || 'Pipeline step.');
         html += `<div class="trace-event" data-idx="${idx}" onclick="_toggleTraceEvent(this)">`;
-        html += `  <span class="trace-lv-dot trace-lv-${lv}" title="${lv}"></span>`;
+        html += `  <span class="trace-lv-dot trace-lv-${lv}" title="severity: ${lv}"></span>`;
         html += `  <span class="trace-event-icon">${icon}</span>`;
-        html += `  <span class="trace-event-name">${name}</span>`;
+        html += `  <span class="trace-event-name" title="${nodeTip}">${name}</span>`;
         html += `  <div class="trace-event-bar-wrap">`;
         html += `    <div class="trace-event-bar" data-ntype="${ntype}" style="width:${barPct}%"></div>`;
         if (detail) {
@@ -1946,7 +1989,7 @@ function _renderTraceEvents() {
             html += `    <span class="${detailClass}">${detail}</span>`;
         }
         html += `  </div>`;
-        html += `  <span class="trace-event-ms">${_fmtMs(ms)}</span>`;
+        html += `  <span class="trace-event-ms" title="${_TIMING_TIPS.nodeMs}">${_fmtMs(ms)}</span>`;
 
         // Expandable extra detail (SQL preview, full detail, prompt)
         const expandParts = [];
@@ -2109,6 +2152,31 @@ const _TIMING_TIPS = {
          + 'Covers HTTP request/response transit, Flask proxy routing, '
          + 'FastAPI middleware, and serialisation overhead. '
          + 'Formula: net = wall − graph.',
+    nodeMs: 'Wall time spent inside this pipeline step, measured server-side '
+         + 'around the node function — it includes any LLM, database, or MCP '
+         + 'call that step makes.',
+};
+
+// ── Per-node explanations ─────────────────────────────────────────────────────
+// Hovering a node name in the log shows what that pipeline step does, so the
+// log is self-documenting. Keep in sync with the LangGraph nodes in graph.py.
+const _NODE_INFO = {
+    memory_shrink_check:     'Checks whether the conversation history exceeds the token budget and needs summarising.',
+    memory_summarizer:       'LLM call that compresses older conversation turns into a short summary to stay within the token budget.',
+    fused_router:            'LLM router that classifies the question (needs_query / from_memory / greeting / out_of_scope / unsafe) and picks the path.',
+    memory_answer_generator: 'Answers directly from conversation memory when no new SQL is required.',
+    catalog_lookup:          'Loads the metadata catalog (tables, columns, relationships) from the MCP server or the metadata DB. Detail shows the source, cache HIT/MISS and load time.',
+    prompt_builder:          'Assembles the system prompt and the structured prompt shown in the Prompt tab.',
+    sql_generator:           'LLM call that writes the SQL for the question (and repairs it on retries).',
+    sqlglot_validate:        'Parses the SQL with sqlglot and checks table names before anything runs.',
+    dlp_check:               'Data-loss-prevention / governance check that can block queries touching governed data.',
+    execute_query:           'Runs the read-only SQL against the data warehouse. Detail shows rows × columns; ms is the DB execution time.',
+    trivial_result_check:    'Decides whether the result is trivial enough to skip the analytics/eval LLM call.',
+    fused_eval_analytics:    'LLM call that evaluates the result against the question and writes the answer, insights and follow-ups.',
+    feedback_classifier:     'Classifies failures and decides whether to retry SQL generation.',
+    response_formatter:      'Pure-Python step that assembles the final API response object.',
+    save_to_memory:          'Persists the SQL, token usage and execution result to the conversation history.',
+    observability_log:       'Emits the structured QUERY_EVENT log line at the end of every run.',
 };
 
 function _fmtMs(ms) {

@@ -48,6 +48,22 @@ NEED_KNOWLEDGE_PAIRS   = "knowledge_pairs"
 # NEED_LIST_TABLES  → get_catalog_prompt (all catalog data in one call)
 REQUIRED_NEEDS = {NEED_LIST_SOURCES, NEED_LIST_TABLES}
 
+# Canonical catalog-need definitions surfaced to the API/UI. Keeping the
+# labels + required flags here gives the activation gate (REQUIRED_NEEDS),
+# the API and the settings UI a single source of truth instead of three
+# independent copies.
+CATALOG_NEEDS = [
+    {"key": NEED_LIST_SOURCES,       "label": "List connections",                 "required": True},
+    {"key": NEED_LIST_TABLES,        "label": "Catalog prompt (tables, columns)", "required": True},
+    {"key": NEED_LIST_RELATIONSHIPS, "label": "Relationships",                    "required": False},
+    {"key": NEED_BUSINESS_GLOSSARY,  "label": "Business terms & glossary",        "required": False},
+]
+
+# Human-readable labels for required needs, used in error messages.
+REQUIRED_NEED_LABELS = {
+    n["key"]: n["label"] for n in CATALOG_NEEDS if n["required"]
+}
+
 
 # ── Data model ────────────────────────────────────────────────────────────────
 
@@ -166,90 +182,39 @@ class McpServerService:
 
     async def get_catalog_source(self, source_key: Optional[str] = None) -> str:
         """
-        Return 'db' or 'mcp' for *source_key*.
-        Falls back to global app_settings when no per-connection row exists.
+        Return the **global** catalog source, ``'db'`` or ``'mcp'``.
+
+        The application uses a single source at a time for every connection.
+        ``source_key`` is accepted for backward compatibility but ignored.
         """
-        if source_key:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT catalog_source FROM insights_catalog_config"
-                    " WHERE source_key = $1",
-                    source_key,
-                )
-            if row:
-                return row["catalog_source"]
-        # Global fallback.
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT value FROM app_settings WHERE key = 'catalog_source'"
             )
         return (row["value"] if row else None) or "db"
 
-    async def get_connection_config(self, source_key: str) -> dict:
-        """Return {catalog_source, cache_ttl_seconds} for *source_key*."""
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT catalog_source, cache_ttl_seconds"
-                " FROM insights_catalog_config WHERE source_key = $1",
-                source_key,
-            )
-        if row:
-            return {"catalog_source": row["catalog_source"],
-                    "cache_ttl_seconds": row["cache_ttl_seconds"]}
-        # Return defaults when no row exists yet.
-        return {"catalog_source": "db", "cache_ttl_seconds": 900}
-
     async def set_catalog_source(
         self, source: str, source_key: Optional[str] = None
     ) -> None:
         """
-        Set catalog source for *source_key* (per-connection).
-        When source_key is None the global app_settings fallback is updated.
+        Set the **global** catalog source (``'db'`` | ``'mcp'``).
+
+        ``source_key`` is accepted for backward compatibility but ignored —
+        the source is one global setting for the whole application.
         """
         if source not in ("db", "mcp"):
             raise ValueError(f"catalog_source must be 'db' or 'mcp', got {source!r}")
-        if source_key:
-            async with self.pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO insights_catalog_config
-                        (source_key, catalog_source, updated_at)
-                    VALUES ($1, $2, NOW())
-                    ON CONFLICT (source_key) DO UPDATE
-                        SET catalog_source = EXCLUDED.catalog_source,
-                            updated_at     = NOW()
-                    """,
-                    source_key, source,
-                )
-        else:
-            async with self.pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO app_settings (key, value, updated_at)
-                        VALUES ('catalog_source', $1, NOW())
-                    ON CONFLICT (key) DO UPDATE
-                        SET value = EXCLUDED.value, updated_at = NOW()
-                    """,
-                    source,
-                )
-        logger.info("catalog_source → %s (source_key=%s)", source, source_key)
-
-    async def set_connection_ttl(
-        self, source_key: str, cache_ttl_seconds: int
-    ) -> None:
-        """Upsert the per-connection cache TTL."""
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO insights_catalog_config
-                    (source_key, cache_ttl_seconds, updated_at)
-                VALUES ($1, $2, NOW())
-                ON CONFLICT (source_key) DO UPDATE
-                    SET cache_ttl_seconds = EXCLUDED.cache_ttl_seconds,
-                        updated_at        = NOW()
+                INSERT INTO app_settings (key, value, updated_at)
+                    VALUES ('catalog_source', $1, NOW())
+                ON CONFLICT (key) DO UPDATE
+                    SET value = EXCLUDED.value, updated_at = NOW()
                 """,
-                source_key, cache_ttl_seconds,
+                source,
             )
+        logger.info("catalog_source → %s (global)", source)
 
     # ── Server CRUD ───────────────────────────────────────────────────────────
 
@@ -323,6 +288,27 @@ class McpServerService:
         )
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(sql, server_id, *clean_with_health.values())
+        return _row_to_server(row) if row else None
+
+    async def set_server_ttl(
+        self, server_id: int, cache_ttl_seconds: int
+    ) -> Optional[McpServer]:
+        """Update only a server's cache TTL.
+
+        Unlike :meth:`update`, this deliberately does **not** clear the stored
+        health blob — changing the cache window is not a connection/auth change
+        and must not force a re-test.
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""
+                UPDATE insights_mcp_servers
+                   SET cache_ttl_seconds = $2, updated_at = NOW()
+                 WHERE id = $1
+                RETURNING {_COLS}
+                """,
+                server_id, cache_ttl_seconds,
+            )
         return _row_to_server(row) if row else None
 
     async def activate(self, server_id: int) -> Optional[McpServer]:

@@ -1,8 +1,8 @@
 """Catalog and prompt-building nodes.
 
 catalog_lookup   Fetches the metadata bundle and extracts known table names.
-                 Routes to MCP or DB depending on the per-connection
-                 ``catalog_source`` setting in ``insights_catalog_config``.
+                 Routes to MCP or DB depending on the single global
+                 ``catalog_source`` setting in ``app_settings``.
 prompt_builder   Assembles the system prompt and the ``structured_prompt`` dict
                  (used by the UI's "Show Prompt" panel).
 
@@ -12,7 +12,8 @@ Both are factory functions that close over their dependencies.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+import time
+from typing import Any, Dict, List, Tuple
 
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
@@ -27,28 +28,51 @@ logger = logging.getLogger(__name__)
 async def _load_catalog_bundle(
     source_key: str,
     metadata_loader: MetadataLoader,
-) -> Dict[str, str]:
+) -> Tuple[Dict[str, str], Dict[str, Any]]:
     """
     Load the catalog bundle for *source_key*, routing to MCP or DB depending
-    on the per-connection ``insights_catalog_config.catalog_source`` setting.
+    on the global ``app_settings.catalog_source`` setting.
+
+    Returns ``(bundle, meta)`` where ``meta`` records which provider served the
+    catalog and, for MCP, whether it was a cache hit or miss — so the developer
+    trace can show where the metadata came from.
 
     Falls back silently to the metadata DB on any MCP error.
     """
+    meta: Dict[str, Any] = {"source": "db", "cache": None}
     # Lazy import avoids a circular dependency at module load time.
     try:
         from src.api import state as _state  # noqa: PLC0415
         if _state.mcp_server_service and _state.mcp_catalog_client:
             catalog_source = await _state.mcp_server_service.get_catalog_source(source_key)
             if catalog_source == "mcp":
+                meta["source"] = "mcp"
+                # Probe cache state before loading so the trace can report HIT/MISS.
+                try:
+                    active = await _state.mcp_server_service.get_active()
+                    if active:
+                        status = await _state.mcp_catalog_client.get_cache_status(
+                            active.id, source_key
+                        )
+                        meta["cache"] = (
+                            "hit"
+                            if status.get("cache_hit") and not status.get("is_stale")
+                            else "miss"
+                        )
+                    else:
+                        meta["cache"] = "miss"
+                except Exception:  # noqa: BLE001
+                    meta["cache"] = "miss"
                 logger.info(
                     "catalog_lookup: using MCP provider for source_key=%s", source_key
                 )
-                return await _state.mcp_catalog_client.load_all(source_key)
+                return await _state.mcp_catalog_client.load_all(source_key), meta
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "catalog_lookup: MCP routing failed (%s) — falling back to metadata DB", exc
         )
-    return await metadata_loader.load_all(source_key)
+        meta = {"source": "db", "cache": None}
+    return await metadata_loader.load_all(source_key), meta
 
 
 # ── catalog_lookup ───────────────────────────────────────────────────────────────────────
@@ -60,12 +84,20 @@ def make_catalog_lookup(metadata_loader: MetadataLoader):
     async def catalog_lookup(state: AgentState) -> Dict[str, Any]:
         source_key = state["source_key"]
         logger.info("catalog_lookup: loading metadata for source_key=%s", source_key)
-        bundle = await _load_catalog_bundle(source_key, metadata_loader)
+        t0 = time.monotonic()
+        bundle, meta = await _load_catalog_bundle(source_key, metadata_loader)
+        load_ms = round((time.monotonic() - t0) * 1000)
         known_tables = _extract_table_names(bundle.get("tables", ""))
-        logger.info("catalog_lookup: %d known tables", len(known_tables))
+        logger.info(
+            "catalog_lookup: %d known tables via %s (cache=%s, %dms)",
+            len(known_tables), meta["source"], meta["cache"], load_ms,
+        )
         return {
             "metadata_bundle": bundle,
             "known_tables": known_tables,
+            "catalog_source_used": meta["source"],
+            "catalog_cache": meta["cache"],
+            "catalog_load_ms": load_ms,
         }
 
     return catalog_lookup

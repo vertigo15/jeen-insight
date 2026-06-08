@@ -376,8 +376,8 @@ export class SettingsPage {
         this._content.innerHTML = `
             <div class="sp-section-header">
                 <h2 class="sp-section-title">Metadata &amp; Catalog</h2>
-                <p class="sp-section-desc">Where the text-to-SQL agent loads this connection's curated catalog — tables, columns, relationships and business terms — for prompt context.${
-                    this._mcpConn ? ` Connection: <strong>${_esc(this._mcpConn)}</strong>.` : ''}</p>
+                <p class="sp-section-desc">Where the text-to-SQL agent loads every connection's curated catalog — tables, columns, relationships and business terms — for prompt context. A single, application-wide source.${
+                    this._mcpConn ? ` Showing stats for <strong>${_esc(this._mcpConn)}</strong>.` : ''}</p>
             </div>
             <div class="sp-card" style="padding:24px">
                 <div class="skeleton" style="height:180px;border-radius:8px;"></div>
@@ -428,15 +428,15 @@ export class SettingsPage {
         this._content.innerHTML = `
             <div class="sp-section-header">
                 <h2 class="sp-section-title">Metadata &amp; Catalog</h2>
-                <p class="sp-section-desc">Where the text-to-SQL agent loads this connection's curated catalog — tables, columns, relationships and business terms — for prompt context.${
-                    this._mcpConn ? ` Connection: <strong>${_esc(this._mcpConn)}</strong>.` : ''}</p>
+                <p class="sp-section-desc">Where the text-to-SQL agent loads every connection's curated catalog — tables, columns, relationships and business terms — for prompt context. A single, application-wide source.${
+                    this._mcpConn ? ` Showing stats for <strong>${_esc(this._mcpConn)}</strong>.` : ''}</p>
             </div>
 
             <div class="sp-card" id="mc-src-card">
                 <div class="sp-row" style="padding-bottom:0">
                     <div>
                         <div class="sp-row-label">Catalog source</div>
-                        <div class="sp-row-help">Per-connection. Switching takes effect on the next query.</div>
+                        <div class="sp-row-help">Applies to the whole application. Switching takes effect on the next query.</div>
                     </div>
                     <div class="mc-seg" id="mc-seg">
                         <button data-src="db" class="${src==='db'?'is-active':''}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg> Metadata DB</button>
@@ -502,7 +502,7 @@ export class SettingsPage {
             return `<div class="mc-srv-row${isAct ? ' mc-srv-row-active' : ''}" data-srv-id="${s.id}" style="cursor:pointer">
                 <span class="mc-srv-dot ${dotCls}" title="${_esc(hStatus||'not checked')}"></span>
                 <div class="mc-srv-main">
-                    <div class="mc-srv-name">${_esc(s.server_name)}${isAct?'<span class="mc-srv-tag">active</span>':''}</div>
+                    <div class="mc-srv-name"><span class="mc-srv-name-txt">${_esc(s.server_name)}</span>${isAct?'<span class="mc-srv-tag">active</span>':''}</div>
                     <div class="mc-srv-ep">${_esc(s.endpoint)}</div>
                 </div>
                 <span class="mc-srv-badge">${_esc((s.transport||'').toUpperCase())}</span>
@@ -567,14 +567,33 @@ export class SettingsPage {
             </div>
             ${bearer ? `<div class="mc-field">
                 <label class="mc-field-label">Bearer token</label>
-                <input id="mc-f-token" class="mc-input" type="password" value="" placeholder="••••••••••••••••" />
-                <div class="mc-field-help">Stored encrypted at rest, never sent to the LLM.</div>
+                <div class="mc-input-wrap">
+                    <input id="mc-f-token" class="mc-input" type="password" value="" placeholder="${d.has_token ? '•••••••• (saved — leave blank to keep)' : '••••••••••••••••'}" data-has-token="${d.has_token ? '1' : '0'}" data-srv-id="${d.id || ''}" autocomplete="off" />
+                    <button type="button" class="mc-pw-toggle" id="mc-f-token-eye" aria-label="Show or hide token" title="Show / hide token" tabindex="-1">
+                        <svg id="mc-eye-show" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        <svg id="mc-eye-hide" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                    </button>
+                </div>
+                <div class="mc-field-help">${d.has_token ? 'A token is saved. Type to replace it, or click the eye to reveal the saved value.' : 'Stored server-side; never sent to the LLM.'}</div>
             </div>` : ''}
             <div class="mc-form-foot">
                 <button class="sp-btn-ghost" id="mc-f-cancel">Cancel</button>
                 <button class="sp-btn-primary-sm" id="mc-f-save" ${saveOk?'':'disabled'}>${isNew ? 'Add server' : 'Save changes'}</button>
             </div>
         </div>`;
+    }
+
+    _catalogNeeds() {
+        // Single source of truth: the backend's canonical needs (from /status).
+        // Fall back to a local default so the panel still renders if absent.
+        const fromApi = this._mcpStatus && this._mcpStatus.catalog_needs;
+        const list = (Array.isArray(fromApi) && fromApi.length) ? fromApi : [
+            { key: 'list_sources',       label: 'List connections',                 required: true  },
+            { key: 'list_tables',        label: 'Catalog prompt (tables, columns)', required: true  },
+            { key: 'list_relationships', label: 'Relationships',                    required: false },
+            { key: 'business_glossary',  label: 'Business terms &amp; glossary',    required: false },
+        ];
+        return list.map(n => ({ key: n.key, label: n.label, req: !!n.required }));
     }
 
     _mcpHealthSection(server) {
@@ -684,12 +703,9 @@ export class SettingsPage {
         }
 
         // ─ Catalog tool mapping ─ ALWAYS VISIBLE ──────────────────────────────────
-        const NEEDS = [
-            { key: 'list_tables',          label: 'List tables',                   req: true  },
-            { key: 'describe_table',       label: 'Describe table / columns',      req: true  },
-            { key: 'list_relationships',   label: 'Relationships',                 req: false },
-            { key: 'business_glossary',    label: 'Business terms &amp; glossary', req: false },
-        ];
+        // Needs come from the backend (single source of truth) so the required
+        // gate here always matches what activation actually enforces.
+        const NEEDS = this._catalogNeeds();
         const tools = h?.tools || [];
         const mapRows = NEEDS.map(n => {
             const t = tools.find(x => x.need === n.key);
@@ -737,6 +753,8 @@ export class SettingsPage {
             [86400, '24 hours'],
         ];
         const badgeLabel = src === 'mcp' ? 'MCP' : 'DB';
+        const hasActive  = !!S.active_server_id;
+        const ttlDisabled = !hasActive;  // caching is MCP-only; needs an active server
         const isLive     = ttl === 0;
         const cacheHit   = src === 'db'
             ? (S.db?.cache_status?.hit ?? false)
@@ -755,11 +773,11 @@ export class SettingsPage {
                     <div class="sp-row-label">Catalog cache TTL <span class="mc-badge">${badgeLabel}</span></div>
                     <div class="sp-row-help">How long the catalog is held before re-fetching. The pipeline's <code>catalog.load</code> step reports HIT / MISS each run.</div>
                 </div>
-                <select class="settings-select" id="mc-ttl-sel">
+                <select class="settings-select" id="mc-ttl-sel"${ttlDisabled ? ' disabled' : ''}>
                     ${ttlOpts.map(([v,l])=>`<option value="${v}"${ttl===v?' selected':''}>${_esc(l)}</option>`).join('')}
                 </select>
             </div>
-            <div class="mc-cache-state" id="mc-cache-pills">${pillHtml}</div>
+            ${ttlDisabled ? '<div class="mc-cache-state"><span class="mc-cache-pill">Caching applies to MCP sources · activate a server to configure</span></div>' : `<div class="mc-cache-state" id="mc-cache-pills">${pillHtml}</div>`}
         </div>`;
     }
 
@@ -768,14 +786,13 @@ export class SettingsPage {
     _mcpWireEvents(src, S) {
         const $ = id => this._content.querySelector(id);
 
-        // Source segment switch — per-connection
+        // Source segment switch — global (one source for the whole app)
         this._content.querySelectorAll('#mc-seg button').forEach(btn => {
             btn.addEventListener('click', async () => {
                 const newSrc = btn.dataset.src;
                 if (newSrc === src) return;
                 try {
-                    const qs = this._mcpConn ? `?connection=${encodeURIComponent(this._mcpConn)}` : '';
-                    const r = await fetch(`/api/mcp/catalog-source${qs}`, {
+                    const r = await fetch('/api/mcp/catalog-source', {
                         method: 'PUT',
                         headers: {'Content-Type':'application/json'},
                         body: JSON.stringify({catalog_source: newSrc}),
@@ -839,7 +856,8 @@ export class SettingsPage {
                 const srv = (S.servers||[]).find(s => s.id === Number(btn.dataset.edit));
                 if (!srv) return;
                 this._mcpEditing = srv.id;
-                this._mcpDraft   = {server_name: srv.server_name, endpoint: srv.endpoint,
+                this._mcpDraft   = {id: srv.id, has_token: !!srv.has_token,
+                                    server_name: srv.server_name, endpoint: srv.endpoint,
                                     transport: srv.transport, auth_type: srv.auth_type};
                 this._mcpRender();
             });
@@ -888,6 +906,34 @@ export class SettingsPage {
         const authSel = $('#mc-f-auth');
         if (authSel) authSel.addEventListener('change', () => { this._mcpDraft.auth_type = authSel.value; this._mcpRender(); });
 
+        // Form: bearer-token reveal (eye). Reveals what's typed, and for an
+        // existing server with a saved token, fetches the stored value on demand.
+        const tokenEye = $('#mc-f-token-eye');
+        if (tokenEye) {
+            tokenEye.addEventListener('click', async () => {
+                const input   = $('#mc-f-token');
+                const showIco = $('#mc-eye-show');
+                const hideIco = $('#mc-eye-hide');
+                if (!input) return;
+                if (input.type === 'password') {
+                    if (!input.value && input.dataset.hasToken === '1' && input.dataset.srvId) {
+                        try {
+                            const r = await fetch(`/api/mcp/servers/${input.dataset.srvId}/token`);
+                            if (r.ok) { const j = await r.json(); input.value = j.bearer_token || ''; }
+                            else throw new Error(`HTTP ${r.status}`);
+                        } catch (e2) { _showToast('Could not load saved token — ' + e2.message, 'error'); return; }
+                    }
+                    input.type = 'text';
+                    if (showIco) showIco.style.display = 'none';
+                    if (hideIco) hideIco.style.display = '';
+                } else {
+                    input.type = 'password';
+                    if (showIco) showIco.style.display = '';
+                    if (hideIco) hideIco.style.display = 'none';
+                }
+            });
+        }
+
         // Form: save
         const saveBtn = $('#mc-f-save');
         if (saveBtn) {
@@ -896,6 +942,8 @@ export class SettingsPage {
                 if (!d.server_name?.trim() || !d.endpoint?.trim()) return;
                 const token = $('#mc-f-token')?.value || null;
                 const body  = {...d};
+                delete body.id;          // UI-only fields, not part of the API contract
+                delete body.has_token;
                 if (token) body.bearer_token = token;
                 try {
                     const isNew = this._mcpEditing === 'new';
@@ -934,14 +982,13 @@ export class SettingsPage {
             });
         }
 
-        // Cache TTL — per-connection
+        // Cache TTL — applies to the active MCP server (caching is MCP-only)
         const ttlSel = $('#mc-ttl-sel');
         if (ttlSel) {
             ttlSel.addEventListener('change', async () => {
-                if (!this._mcpConn) return;
                 try {
-                    const qs = `?connection=${encodeURIComponent(this._mcpConn)}&cache_ttl_seconds=${ttlSel.value}`;
-                    await fetch(`/api/mcp/connection-ttl${qs}`, {method: 'PUT'});
+                    const r = await fetch(`/api/mcp/cache-ttl?cache_ttl_seconds=${ttlSel.value}`, {method: 'PUT'});
+                    if (!r.ok) { const err = await r.json().catch(()=>({})); throw new Error(err.detail || `HTTP ${r.status}`); }
                     this._mcpStatus = null;
                     await this._mcpLoadStatus();
                     this._mcpRender();

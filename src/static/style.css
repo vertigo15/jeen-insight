@@ -3622,6 +3622,40 @@ td.cell-id {
 }
 .dp-log-search:focus { outline: none; border-color: var(--color-accent); box-shadow: var(--shadow-focus); }
 
+.dp-log-legend-btn {
+  flex-shrink: 0;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-muted);
+  border: 1px solid var(--color-border);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  cursor: pointer;
+  display: inline-grid; place-items: center;
+  transition: background 100ms ease, color 100ms ease, border-color 100ms ease;
+}
+.dp-log-legend-btn:hover { background: var(--color-surface-2); color: var(--color-text); }
+.dp-log-legend-btn.active { background: var(--color-accent); color: var(--color-accent-fg); border-color: var(--color-accent); }
+
+.trace-legend {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  color: var(--color-muted);
+}
+.trace-legend-title { font-weight: var(--weight-bold); color: var(--color-text); margin-bottom: 6px; }
+.trace-legend-list { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 5px; }
+.trace-legend-list strong { color: var(--color-text); }
+.trace-lg-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  vertical-align: middle; margin: 0 1px;
+}
+
 /* ─ Level dot on trace events ────────────────────────────────── */
 .trace-lv-dot {
   width: 6px; height: 6px;
@@ -3767,8 +3801,11 @@ td.cell-id {
 .mc-srv-dot-err  { background: var(--color-error);  box-shadow: 0 0 0 3px var(--color-error-bg); }
 
 .mc-srv-main { flex: 1; min-width: 0; overflow: hidden; }
-.mc-srv-name { font-size: 0.8125rem; font-weight: 600; display: flex; align-items: center; gap: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mc-srv-tag  { font-size: 0.54rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-accent-fg); background: var(--color-accent); padding: 1px 6px; border-radius: 5px; }
+.mc-srv-name { font-size: 0.8125rem; font-weight: 600; display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* text-overflow:ellipsis does not apply to flex containers, so the name text
+   must truncate on an inner block element while the "active" tag stays put. */
+.mc-srv-name-txt { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mc-srv-tag  { flex-shrink: 0; font-size: 0.54rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-accent-fg); background: var(--color-accent); padding: 1px 6px; border-radius: 5px; }
 .mc-srv-ep   { font-family: var(--font-mono); font-size: 0.68rem; color: var(--color-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
 .mc-srv-badge { font-family: var(--font-mono); font-size: 0.62rem; font-weight: 600; color: var(--color-muted); background: var(--color-surface-2); border: 1px solid var(--color-border); padding: 2px 7px; border-radius: 6px; flex-shrink: 0; }
 .mc-srv-actions { display: flex; gap: 3px; flex-shrink: 0; }
@@ -3786,6 +3823,16 @@ td.cell-id {
 .mc-req { color: var(--color-accent); }
 .mc-input { width: 100%; height: 36px; padding: 0 12px; font-size: 0.8125rem; font-family: var(--font-mono); color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 8px; }
 .mc-input:focus { outline: none; border-color: var(--color-accent); box-shadow: var(--shadow-focus); }
+/* Token field with a reveal (eye) button on the right. */
+.mc-input-wrap { position: relative; display: flex; align-items: center; }
+.mc-input-wrap .mc-input { padding-right: 38px; }
+.mc-pw-toggle {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 26px; height: 26px; display: grid; place-items: center;
+  border: none; background: transparent; color: var(--color-faint);
+  cursor: pointer; border-radius: 6px; padding: 0;
+}
+.mc-pw-toggle:hover { color: var(--color-text); background: var(--color-surface-3); }
 .mc-field-help { font-size: 0.68rem; color: var(--color-faint); margin-top: 5px; line-height: 1.5; }
 .mc-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .mc-mini-seg { display: inline-flex; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 8px; padding: 3px; gap: 2px; width: 100%; }

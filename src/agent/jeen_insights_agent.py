@@ -20,6 +20,7 @@ from uuid import UUID, uuid4
 
 from src.agent.conversation_history import ConversationHistoryService
 from src.agent.langgraph_agent import PromptLoader, build_graph
+from src.agent.langgraph_agent.nodes.output import _enrich_trace
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
 from src.agent.user_resolver import SimpleUserResolver
@@ -205,7 +206,18 @@ class JeenInsightsAgent:
             }
 
             final_state = await self.graph.ainvoke(initial_state)
-            return final_state.get("formatted_response") or {}
+            formatted = final_state.get("formatted_response") or {}
+
+            # Attach the COMPLETE execution trace from the final state. This must
+            # happen here (not in response_formatter) so the tail nodes that run
+            # after the formatter — response_formatter, save_to_memory and
+            # observability_log — are included in the developer log.
+            raw_trace = list(final_state.get("trace") or [])
+            if raw_trace:
+                _enrich_trace(raw_trace, final_state)
+                formatted["trace"] = raw_trace
+
+            return formatted
 
         except Exception as e:  # noqa: BLE001
             logger.exception("Error processing question via LangGraph")
@@ -227,7 +239,7 @@ class JeenInsightsAgent:
     async def _load_catalog(self, source_key: str) -> Dict[str, str]:
         """
         Load the catalog bundle, routing to MCP or the metadata DB depending
-        on the per-connection ``insights_catalog_config.catalog_source`` setting.
+        on the global ``app_settings.catalog_source`` setting.
         Falls back silently to the metadata DB on any error.
         """
         try:

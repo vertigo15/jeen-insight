@@ -128,12 +128,11 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
         formatted["follow_up"] = eval_result["follow_up"]
 
     # ── Execution trace ───────────────────────────────────────────────────────────────────
-    # Enrich each raw timing event with node-specific context drawn from the
-    # final state, so the Trace panel shows what actually happened.
-    raw_trace = list(state.get("trace") or [])
-    if raw_trace:
-        _enrich_trace(raw_trace, state)
-        formatted["trace"] = raw_trace
+    # NOTE: the trace is intentionally NOT attached here. response_formatter
+    # runs before the tail nodes (save_to_memory, observability_log), so the
+    # trace at this point is incomplete. The agent attaches the COMPLETE,
+    # enriched trace from the final graph state once every node has executed
+    # (see JeenInsightsAgent.process_question → _enrich_trace).
 
     # ── Node prompts ──────────────────────────────────────────────────────────────
     # Collected prompts for each LLM node, surfaced to the developer panel.
@@ -177,7 +176,16 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
 
         elif node == "catalog_lookup":
             known = state.get("known_tables") or []
-            ev["detail"] = f"{len(known)} tables in catalog"
+            src = state.get("catalog_source_used") or "db"
+            src_label = "MCP" if src == "mcp" else "metadata DB"
+            detail = f"{len(known)} tables · via {src_label}"
+            cache = state.get("catalog_cache")
+            if cache:
+                detail += f" (cache {cache.upper()})"
+            load_ms = state.get("catalog_load_ms")
+            if isinstance(load_ms, int):
+                detail += f" · {load_ms}ms"
+            ev["detail"] = detail
 
         elif node == "prompt_builder":
             sp = state.get("structured_prompt") or {}

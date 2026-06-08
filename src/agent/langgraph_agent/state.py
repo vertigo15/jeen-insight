@@ -64,6 +64,9 @@ class AgentState(TypedDict, total=False):
     system_prompt: str
     structured_prompt: Dict[str, Any]   # forwarded as-is to the UI
     known_tables: List[str]             # lower-cased table names from catalog
+    catalog_source_used: str            # 'mcp' | 'db' — provider that served the catalog
+    catalog_cache: Optional[str]        # 'hit' | 'miss' | None (DB path has no MCP cache)
+    catalog_load_ms: int                # wall time spent loading the catalog bundle
 
     # ── SQL generation loop ───────────────────────────────────────────────
     retry_count: int
