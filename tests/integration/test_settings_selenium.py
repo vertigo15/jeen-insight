@@ -43,6 +43,7 @@ SCREENSHOT_DIR = "tests/screenshots/settings"
 # Nav item data-id values we expect in the sidebar
 EXPECTED_NAV_IDS = [
     "general",
+    "metadata-catalog",
     "ai-models",
     "users",
     "prompt:jeen_insights_system",
