@@ -572,13 +572,27 @@ export class SettingsPage {
             ? `<svg class="mc-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><polyline points="21 3 21 8 16 8"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><polyline points="3 21 3 16 8 16"/></svg> Checking…`
             : h ? 'Re-run health check' : 'Test &amp; health check';
 
+        // ─ Status labels: Healthy / Degraded / Unreachable (never raw lowercase) ──
+        const _statusLabel = { healthy: 'Healthy', degraded: 'Degraded', down: 'Unreachable' };
         const statusText = testing
             ? `<span class="mc-status mc-status-checking"><span class="mc-dot mc-dot-pulse"></span> Handshaking with ${_esc(server.server_name)}…</span>`
-            : h?.status === 'healthy' || h?.status === 'degraded'
-                ? `<span class="mc-status mc-status-ok"><span class="mc-dot"></span> ${_esc(h.status)} · ${h.latency_ms||0}ms · checked ${_relativeTime(h.checked_at)}</span>`
+            : h?.status === 'healthy'
+                ? `<span class="mc-status mc-status-ok"><span class="mc-dot"></span> Healthy · ${h.latency_ms||0}ms · checked ${_relativeTime(h.checked_at)}</span>`
+            : h?.status === 'degraded'
+                ? `<span class="mc-status mc-status-warn"><span class="mc-dot"></span> Degraded · ${h.latency_ms||0}ms · checked ${_relativeTime(h.checked_at)}</span>`
             : h?.status === 'down'
                 ? `<span class="mc-status mc-status-err"><span class="mc-dot"></span> Unreachable · checked ${_relativeTime(h.checked_at)}</span>`
             : `<span class="mc-status mc-status-muted"><span class="mc-dot"></span> ${_esc(server.server_name)} not checked</span>`;
+
+        // ─ Friendly labels for tool→need chips ─────────────────────────────────
+        const _NEED_LABEL = {
+            list_sources:         'List sources',
+            list_tables:          'List tables',
+            describe_table:       'Describe table / columns',
+            list_relationships:   'Relationships',
+            business_glossary:    'Business terms',
+            knowledge_pairs:      'Knowledge pairs',
+        };
 
         // ─ Health diagnostics card (only when health data exists) ────────────────
         let diagnosticsHtml = '';
@@ -597,9 +611,16 @@ export class SettingsPage {
             const capsMeta = (resCnt !== null || prmCnt !== null)
                 ? `<span class="mc-cap-meta">${[resCnt !== null ? `${resCnt} resources` : '', prmCnt !== null ? `${prmCnt} prompts` : ''].filter(Boolean).join(' · ')}</span>`
                 : '';
-            const caps = (h.capabilities||[]).map(c =>
-                `<span class="mc-cap-chip"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> ${_esc(c)}</span>`
-            ).join('');
+
+            // Capabilities: always show all four — on (✓) or off (×)
+            const CHECK = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+            const CROSS = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+            const caps = ['tools','resources','prompts','logging'].map(c => {
+                const on = (h.capabilities||[]).includes(c);
+                return `<span class="mc-cap-chip ${on ? '' : 'mc-cap-off'}">${on ? CHECK : CROSS} ${_esc(c)}</span>`;
+            }).join('');
+
+            // Tool rows with friendly need labels
             const toolRows = tools.map(t =>
                 `<div class="mc-tool-row">
                     <svg class="mc-tool-ico" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
@@ -608,51 +629,74 @@ export class SettingsPage {
                         <div class="mc-tool-desc">${_esc(t.description||'')}</div>
                     </div>
                     ${t.need
-                        ? `<span class="mc-tool-need">↳ ${_esc(t.need)}</span>`
+                        ? `<span class="mc-tool-need">↳ ${_esc(_NEED_LABEL[t.need] || t.need)}</span>`
                         : '<span class="mc-tool-need mc-map-muted">unmapped</span>'}
                 </div>`
             ).join('');
+
+            // Degraded warning banner (shown above diagnostics grid)
+            const noteHtml = (h.status === 'degraded' && h.note)
+                ? `<div class="mc-note">⚠ ${_esc(h.note)}</div>`
+                : '';
 
             diagnosticsHtml = `
             <div class="mc-health">
                 <div class="mc-health-head">
                     <span class="mc-health-badge mc-health-${h.status}">
-                        <span class="mc-dot"></span> ${_esc(h.status)}
+                        <span class="mc-dot"></span> ${_statusLabel[h.status] || _esc(h.status)}
                     </span>
-                    <span class="mc-health-impl">${_esc(h.sdk||'')} · v${_esc(h.server_version||'')}</span>
+                    <span class="mc-health-impl">${_esc(server.server_name)} · v${_esc(h.server_version||'')}</span>
                     <span class="mc-health-when">checked ${_relativeTime(h.checked_at)}</span>
                 </div>
+                ${noteHtml}
                 <div class="mc-health-grid">${cells.map(([k,v]) =>
                     `<div class="mc-health-cell"><span class="mc-hk">${k}</span><span class="mc-hv">${_esc(String(v))}</span></div>`
                 ).join('')}</div>
-                ${caps ? `<div class="mc-health-sub">Capabilities${capsMeta ? ' <span class="mc-cap-meta-inline"></span>' : ''}</div>
-                    <div class="mc-cap-row">${caps}${capsMeta}</div>` : ''}
+                <div class="mc-health-sub">Capabilities</div>
+                <div class="mc-cap-row">${caps}${capsMeta}</div>
                 <div class="mc-health-sub">Tools exposed <span class="mc-srv-count">${tools.length}</span></div>
                 <div class="mc-tools">${toolRows || '<div style="padding:14px;color:var(--color-faint);font-size:.8rem">No tools discovered.</div>'}</div>
             </div>`;
+
         } else if (h?.status === 'down') {
-            diagnosticsHtml = `<div class="mc-err-box">${_esc(h.error || 'Health check failed')}</div>`;
+            // Unreachable: proper card with header, not a bare error box
+            diagnosticsHtml = `
+            <div class="mc-health">
+                <div class="mc-health-head">
+                    <span class="mc-health-badge mc-health-down"><span class="mc-dot"></span> Unreachable</span>
+                    <span class="mc-health-impl">${_esc(server.endpoint)}</span>
+                    <span class="mc-health-when">checked ${_relativeTime(h.checked_at)}</span>
+                </div>
+                <div class="mc-err-box" style="margin:12px 14px 14px">${_esc(h.error || 'Health check failed')}</div>
+            </div>`;
         }
 
         // ─ Catalog tool mapping ─ ALWAYS VISIBLE ──────────────────────────────────
         const NEEDS = [
-            { key: 'list_tables',          label: 'List tables',              req: true  },
-            { key: 'describe_table',       label: 'Describe table / columns', req: true  },
-            { key: 'list_relationships',   label: 'Relationships',            req: false },
+            { key: 'list_tables',          label: 'List tables',                   req: true  },
+            { key: 'describe_table',       label: 'Describe table / columns',      req: true  },
+            { key: 'list_relationships',   label: 'Relationships',                 req: false },
             { key: 'business_glossary',    label: 'Business terms &amp; glossary', req: false },
         ];
         const tools = h?.tools || [];
         const mapRows = NEEDS.map(n => {
             const t = tools.find(x => x.need === n.key);
             return `<div class="mc-map-row">
-                <span class="mc-map-need">
-                    ${n.label}${n.req ? '<span class="mc-req"> *</span>' : ''}
-                </span>
+                <span class="mc-map-need">${n.label}${n.req ? '<span class="mc-req"> *</span>' : ''}</span>
                 ${t
                     ? `<span class="mc-map-tool">${_esc(t.name)}</span>`
                     : `<span class="mc-map-tool mc-map-muted">awaiting health check</span>`}
             </div>`;
         }).join('');
+
+        // Required-need unmapped warning (only after a health check)
+        const missingReq = h ? NEEDS.filter(n => n.req && !tools.find(t => t.need === n.key)) : [];
+        const missingWarn = missingReq.length
+            ? `<div class="mc-err-box" style="margin-top:8px">
+                <b>${missingReq.map(n => n.label).join(', ')}</b> — required but unmapped.
+                This server cannot be the active catalog source until satisfied.
+               </div>`
+            : '';
 
         return `
         <div class="mc-active-srv">
@@ -664,6 +708,7 @@ export class SettingsPage {
             <div class="mc-field" style="margin-top:14px">
                 <label class="mc-field-label">Catalog tool mapping</label>
                 <div class="mc-map">${mapRows}</div>
+                ${missingWarn}
                 <div class="mc-field-help">Tools are auto-discovered from the server's <code>tools/list</code> and mapped to each catalog need.</div>
             </div>
         </div>`;

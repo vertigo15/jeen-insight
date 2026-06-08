@@ -221,16 +221,38 @@ async def delete_server(server_id: int):
 
 # ── Activation ────────────────────────────────────────────────────────────────
 
+# Required catalog need keys that must be mapped before a server can go live.
+_REQUIRED_NEEDS = {"list_tables", "describe_table"}
+
+
 @router.post("/servers/{server_id}/activate")
 async def activate_server(
     server_id: int,
     connection: Optional[str] = Query(None, description="source_key to switch to mcp (optional)"),
 ):
-    """Activate this server as the global active MCP server."""
+    """Activate this server as the global active MCP server.
+
+    If the server has been health-checked and required catalog needs are still
+    unmapped, returns 422 so the client can surface the error via toast.
+    Untested servers (health=None) may still be activated.
+    """
     svc    = _srv_svc()
     server = await svc.get_by_id(server_id)
     if not server:
         raise HTTPException(404, f"Server {server_id} not found")
+
+    # Guard: reject if the server was checked but required needs are still unmapped.
+    if server.health and server.health.get("status") in ("healthy", "degraded"):
+        mapped = {t.get("need") for t in server.health.get("tools", []) if t.get("need")}
+        missing = _REQUIRED_NEEDS - mapped
+        if missing:
+            labels = {"list_tables": "List tables", "describe_table": "Describe table / columns"}
+            raise HTTPException(
+                422,
+                f"{', '.join(labels.get(n, n) for n in sorted(missing))} "
+                "required but unmapped — run a health check that satisfies these needs first.",
+            )
+
     activated = await svc.activate(server_id)
     if not activated:
         raise HTTPException(500, "Activation failed")

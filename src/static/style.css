@@ -3922,3 +3922,32 @@ td.cell-id {
   flex-shrink: 0;
   line-height: 1.6;
 }
+
+/* ── Delta improvements: degraded/unreachable/capabilities/needs ─────────── */
+
+/* Degraded status — amber (reuse warning colour) */
+.mc-status-warn { color: var(--color-warning); }
+.mc-status-warn .mc-dot {
+  background: var(--color-warning);
+  box-shadow: 0 0 0 3px var(--color-warning-bg);
+}
+
+/* Degraded badge in health card header */
+.mc-health-degraded { background: var(--color-warning-bg); color: var(--color-warning); }
+
+/* Degraded note banner — amber strip above diagnostics grid */
+.mc-note {
+  margin: 0 14px 12px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+/* Off-capability chip — faint surface, greyed out */
+.mc-cap-off {
+  background: var(--color-surface-2);
+  color: var(--color-faint);
+}
