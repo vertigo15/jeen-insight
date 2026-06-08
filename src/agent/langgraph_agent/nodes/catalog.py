@@ -1,6 +1,8 @@
 """Catalog and prompt-building nodes.
 
 catalog_lookup   Fetches the metadata bundle and extracts known table names.
+                 Routes to MCP or DB depending on the per-connection
+                 ``catalog_source`` setting in ``insights_catalog_config``.
 prompt_builder   Assembles the system prompt and the ``structured_prompt`` dict
                  (used by the UI's "Show Prompt" panel).
 
@@ -19,7 +21,37 @@ from src.metadata import MetadataLoader
 logger = logging.getLogger(__name__)
 
 
-# ── catalog_lookup ────────────────────────────────────────────────────────────
+# ── Catalog router ───────────────────────────────────────────────────────────────────
+
+
+async def _load_catalog_bundle(
+    source_key: str,
+    metadata_loader: MetadataLoader,
+) -> Dict[str, str]:
+    """
+    Load the catalog bundle for *source_key*, routing to MCP or DB depending
+    on the per-connection ``insights_catalog_config.catalog_source`` setting.
+
+    Falls back silently to the metadata DB on any MCP error.
+    """
+    # Lazy import avoids a circular dependency at module load time.
+    try:
+        from src.api import state as _state  # noqa: PLC0415
+        if _state.mcp_server_service and _state.mcp_catalog_client:
+            catalog_source = await _state.mcp_server_service.get_catalog_source(source_key)
+            if catalog_source == "mcp":
+                logger.info(
+                    "catalog_lookup: using MCP provider for source_key=%s", source_key
+                )
+                return await _state.mcp_catalog_client.load_all(source_key)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "catalog_lookup: MCP routing failed (%s) — falling back to metadata DB", exc
+        )
+    return await metadata_loader.load_all(source_key)
+
+
+# ── catalog_lookup ───────────────────────────────────────────────────────────────────────
 
 
 def make_catalog_lookup(metadata_loader: MetadataLoader):
@@ -28,7 +60,7 @@ def make_catalog_lookup(metadata_loader: MetadataLoader):
     async def catalog_lookup(state: AgentState) -> Dict[str, Any]:
         source_key = state["source_key"]
         logger.info("catalog_lookup: loading metadata for source_key=%s", source_key)
-        bundle = await metadata_loader.load_all(source_key)
+        bundle = await _load_catalog_bundle(source_key, metadata_loader)
         known_tables = _extract_table_names(bundle.get("tables", ""))
         logger.info("catalog_lookup: %d known tables", len(known_tables))
         return {

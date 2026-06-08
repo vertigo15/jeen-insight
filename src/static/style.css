@@ -2946,14 +2946,14 @@ td.cell-id {
   border-radius: var(--radius-lg);
   padding: var(--space-6);
   margin-bottom: var(--space-4);
-  max-width: 720px;
+  max-width: 800px;
 }
 .sp-card-title {
   font-size: var(--text-sm); font-weight: var(--weight-semibold);
   color: var(--color-text); margin-bottom: var(--space-4);
 }
 .sp-card-footer {
-  max-width: 720px; padding-top: var(--space-2);
+  max-width: 800px; padding-top: var(--space-2);
 }
 
 /* Settings row (label + control) */
@@ -3766,8 +3766,8 @@ td.cell-id {
 .mc-srv-dot-warn { background: var(--color-warning); box-shadow: 0 0 0 3px var(--color-warning-bg); }
 .mc-srv-dot-err  { background: var(--color-error);  box-shadow: 0 0 0 3px var(--color-error-bg); }
 
-.mc-srv-main { flex: 1; min-width: 0; }
-.mc-srv-name { font-size: 0.8125rem; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.mc-srv-main { flex: 1; min-width: 0; overflow: hidden; }
+.mc-srv-name { font-size: 0.8125rem; font-weight: 600; display: flex; align-items: center; gap: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mc-srv-tag  { font-size: 0.54rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-accent-fg); background: var(--color-accent); padding: 1px 6px; border-radius: 5px; }
 .mc-srv-ep   { font-family: var(--font-mono); font-size: 0.68rem; color: var(--color-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
 .mc-srv-badge { font-family: var(--font-mono); font-size: 0.62rem; font-weight: 600; color: var(--color-muted); background: var(--color-surface-2); border: 1px solid var(--color-border); padding: 2px 7px; border-radius: 6px; flex-shrink: 0; }
@@ -3820,7 +3820,11 @@ td.cell-id {
 .mc-health-healthy { background: var(--color-success-bg); color: var(--color-success); }
 .mc-health-degraded { background: var(--color-warning-bg); color: var(--color-warning); }
 .mc-health-down { background: var(--color-error-bg); color: var(--color-error); }
-.mc-health-impl { font-family: var(--font-mono); font-size: 0.68rem; color: var(--color-muted); }
+/* Truncate long server endpoint in health card header */
+.mc-health-impl {
+  font-family: var(--font-mono); font-size: 0.68rem; color: var(--color-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1;
+}
 .mc-health-when { font-size: 0.68rem; color: var(--color-faint); margin-left: auto; }
 .mc-health-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; background: var(--color-border); }
 .mc-health-cell { background: var(--color-surface); padding: 11px 14px; display: flex; flex-direction: column; gap: 3px; }
@@ -3888,6 +3892,7 @@ td.cell-id {
   padding: 4px 16px;
   margin-bottom: 16px;
   box-shadow: var(--shadow-xs);
+  max-width: 800px;
 }
 .mc-cache-state {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;

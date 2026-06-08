@@ -112,7 +112,7 @@ class JeenInsightsAgent:
             # hiccup) the flow continues with query_id=None and the error is
             # surfaced in the UI via formatted_response["error"].
             results = await asyncio.gather(
-                self.metadata_loader.load_all(self.source_key),
+                self._load_catalog(self.source_key),
                 self._fetch_conversation_context(session_id),
                 self._safe_log_query(
                     user_id=user.id,
@@ -223,6 +223,26 @@ class JeenInsightsAgent:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    async def _load_catalog(self, source_key: str) -> Dict[str, str]:
+        """
+        Load the catalog bundle, routing to MCP or the metadata DB depending
+        on the per-connection ``insights_catalog_config.catalog_source`` setting.
+        Falls back silently to the metadata DB on any error.
+        """
+        try:
+            from src.api import state as _state  # noqa: PLC0415 (lazy import avoids circular)
+            if _state.mcp_server_service and _state.mcp_catalog_client:
+                catalog_source = await _state.mcp_server_service.get_catalog_source(source_key)
+                if catalog_source == "mcp":
+                    logger.info("agent: catalog pre-fetch via MCP for source_key=%s", source_key)
+                    return await _state.mcp_catalog_client.load_all(source_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "agent: MCP catalog pre-fetch failed (%s) — falling back to metadata DB", exc
+            )
+        return await self.metadata_loader.load_all(source_key)
+
     async def _safe_log_query(
         self,
         *,
