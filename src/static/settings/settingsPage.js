@@ -82,6 +82,7 @@ export class SettingsPage {
         this._mcpEditing  = null;   // server id being edited, or 'new'
         this._mcpDraft    = null;   // form draft object
         this._mcpTesting  = false;  // health check in progress
+        this._mcpReloading= false;  // background status reload in progress
     }
 
     mount(hooks = {}) {
@@ -412,6 +413,17 @@ export class SettingsPage {
     _mcpRender() {
         const S   = this._mcpStatus || {};
         const src = S.catalog_source || 'db';
+
+        // If we have a connection but no DB stats yet, trigger a background reload.
+        if (this._mcpConn && S.connection !== this._mcpConn && !this._mcpReloading) {
+            this._mcpReloading = true;
+            this._mcpLoadStatus().then(() => {
+                this._mcpReloading = false;
+                this._mcpRender();
+            });
+        } else {
+            this._mcpReloading = false;
+        }
 
         this._content.innerHTML = `
             <div class="sp-section-header">

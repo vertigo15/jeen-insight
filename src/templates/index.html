@@ -18,7 +18,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=45">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=50">
     <!-- CodeMirror 6 via ESM — exposes window.CodeMirrorService -->
     <script type="module">
       import { EditorView, lineNumbers } from 'https://esm.sh/@codemirror/view@6';
@@ -342,13 +342,13 @@
     </div>
 </aside>
 
-<script src="{{ url_for('static', filename='auth.js') }}?v=46"></script>
-<script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=46"></script>
-<script src="{{ url_for('static', filename='profiling/profilingManager.js') }}?v=46"></script>
-<script src="{{ url_for('static', filename='script.js') }}?v=46"></script>
+<script src="{{ url_for('static', filename='auth.js') }}?v=50"></script>
+<script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=50"></script>
+<script src="{{ url_for('static', filename='profiling/profilingManager.js') }}?v=50"></script>
+<script src="{{ url_for('static', filename='script.js') }}?v=50"></script>
 <!-- Settings page (full-screen) -->
 <script type="module">
-  import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=40';
+  import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=50';
   const _sp = new SettingsPage();
   _sp.mount({
       onApplyTheme: (t) => {
