@@ -241,9 +241,16 @@ async def activate_server(
     if not server:
         raise HTTPException(404, f"Server {server_id} not found")
 
-    # Guard: reject if the server was checked but required needs are still unmapped.
-    if server.health and server.health.get("status") in ("healthy", "degraded"):
-        mapped = {t.get("need") for t in server.health.get("tools", []) if t.get("need")}
+    # Guard: reject if the server was health-checked but required needs are unmapped.
+    # Covers healthy/degraded (checked but missing tools) and down (unreachable).
+    # Untested servers (health=None) are always allowed through.
+    if server.health:
+        if server.health.get("status") == "down":
+            raise HTTPException(
+                422,
+                "Server is unreachable — fix the endpoint and re-run the health check.",
+            )
+        mapped  = {t.get("need") for t in server.health.get("tools", []) if t.get("need")}
         missing = _REQUIRED_NEEDS - mapped
         if missing:
             labels = {"list_tables": "List tables", "describe_table": "Describe table / columns"}
