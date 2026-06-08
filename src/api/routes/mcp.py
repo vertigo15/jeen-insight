@@ -4,8 +4,8 @@ Provides the API surface for the Metadata & Catalog settings panel.
 
 Endpoints
 ---------
-GET  /api/mcp/status               — catalog_source + DB stats + server list
-PUT  /api/mcp/catalog-source       — switch catalog_source ('db' | 'mcp')
+GET  /api/mcp/status               — global catalog_source + DB stats + server list
+PUT  /api/mcp/catalog-source       — switch the global catalog_source ('db' | 'mcp')
 GET  /api/mcp/servers              — list saved MCP servers
 POST /api/mcp/servers              — create a server
 PUT  /api/mcp/servers/{id}         — update server config (clears health)
@@ -25,6 +25,11 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from src.api import state
+from src.metadata.mcp_server_service import (
+    CATALOG_NEEDS,
+    REQUIRED_NEEDS,
+    REQUIRED_NEED_LABELS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,19 +91,19 @@ async def get_mcp_status(
 ):
     """
     Return the full Metadata & Catalog panel state:
-      - catalog_source ('db' | 'mcp')  — per-connection when connection is provided
+      - catalog_source ('db' | 'mcp')  — single global setting
       - DB stats for the requested connection (table/column/term counts)
       - List of saved MCP servers
-      - Active server summary
+      - Active server summary + its cache TTL
+      - Canonical catalog needs (single source of truth for the UI)
     """
     svc = _srv_svc()
 
-    # Per-connection catalog source + TTL.
-    conn_cfg       = await svc.get_connection_config(connection) if connection else {}
-    catalog_source = conn_cfg.get("catalog_source", "db")
-    conn_ttl       = conn_cfg.get("cache_ttl_seconds", 900)
+    # Global catalog source. The active MCP server owns the cache TTL.
+    catalog_source = await svc.get_catalog_source()
     servers        = await svc.list_all()
     active_server  = next((s for s in servers if s.is_active), None)
+    conn_ttl       = active_server.cache_ttl_seconds if active_server else 900
 
     # DB stats
     db_info: Dict[str, Any] = {}
@@ -135,33 +140,37 @@ async def get_mcp_status(
         "mcp_cache":         mcp_cache_status,
         "active_server_id":  active_server.id if active_server else None,
         "servers":           [s.to_dict() for s in servers],
+        "catalog_needs":     CATALOG_NEEDS,
     }
 
 
 @router.put("/catalog-source")
 async def set_catalog_source(
     body: SetCatalogSourceRequest,
-    connection: Optional[str] = Query(None, description="source_key to update (per-connection)"),
+    connection: Optional[str] = Query(None, description="ignored — source is global"),
 ):
-    """Switch catalog source for a connection ('db' | 'mcp')."""
+    """Switch the single global catalog source ('db' | 'mcp').
+
+    ``connection`` is accepted for backward compatibility but ignored.
+    """
     if body.catalog_source not in ("db", "mcp"):
         raise HTTPException(400, "catalog_source must be 'db' or 'mcp'")
 
     svc = _srv_svc()
     try:
-        await svc.set_catalog_source(body.catalog_source, source_key=connection)
+        await svc.set_catalog_source(body.catalog_source)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    # Invalidate catalog cache for this connection when switching sources.
+    # Switching sources invalidates the catalog cache so the next query reloads.
     if state.mcp_cache_service:
         active = await svc.get_active()
         if active:
-            await state.mcp_cache_service.invalidate(active.id, source_key=connection)
+            await state.mcp_cache_service.invalidate(active.id)
     if state.metadata_loader:
         state.metadata_loader.invalidate(connection)
 
-    return {"catalog_source": body.catalog_source, "connection": connection}
+    return {"catalog_source": body.catalog_source}
 
 
 # ── Server CRUD ───────────────────────────────────────────────────────────────
@@ -219,21 +228,65 @@ async def delete_server(server_id: int):
     return {"ok": True, "deleted_id": server_id}
 
 
+@router.get("/servers/{server_id}/token")
+async def get_server_token(server_id: int):
+    """Return a server's stored bearer token so the settings UI can reveal it.
+
+    The token is stored server-side (plain text in v1) and is never sent to the
+    LLM. This endpoint exists only to back the "show token" control in settings.
+    """
+    svc    = _srv_svc()
+    server = await svc.get_by_id(server_id)
+    if not server:
+        raise HTTPException(404, f"Server {server_id} not found")
+    return {"server_id": server_id, "bearer_token": server.bearer_token}
+
+
 # ── Activation ────────────────────────────────────────────────────────────────
+
 
 @router.post("/servers/{server_id}/activate")
 async def activate_server(
     server_id: int,
     connection: Optional[str] = Query(None, description="source_key to switch to mcp (optional)"),
 ):
-    """Activate this server as the global active MCP server."""
+    """Activate this server as the global active MCP server.
+
+    If the server has been health-checked and required catalog needs are still
+    unmapped, returns 422 so the client can surface the error via toast.
+    Untested servers (health=None) may still be activated.
+    """
     svc    = _srv_svc()
     server = await svc.get_by_id(server_id)
     if not server:
         raise HTTPException(404, f"Server {server_id} not found")
+
+    # Guard: reject if the server was health-checked but required needs are unmapped.
+    # Covers healthy/degraded (checked but missing tools) and down (unreachable).
+    # Untested servers (health=None) are always allowed through.
+    if server.health:
+        if server.health.get("status") == "down":
+            raise HTTPException(
+                422,
+                "Server is unreachable — fix the endpoint and re-run the health check.",
+            )
+        mapped  = {t.get("need") for t in server.health.get("tools", []) if t.get("need")}
+        missing = REQUIRED_NEEDS - mapped
+        if missing:
+            raise HTTPException(
+                422,
+                f"{', '.join(REQUIRED_NEED_LABELS.get(n, n) for n in sorted(missing))} "
+                "required but unmapped — run a health check that satisfies these needs first.",
+            )
+
     activated = await svc.activate(server_id)
     if not activated:
         raise HTTPException(500, "Activation failed")
+
+    # Selecting a different active server starts a fresh cache.
+    if state.mcp_cache_service:
+        await state.mcp_cache_service.invalidate(server_id)
+
     return activated.to_dict()
 
 
@@ -278,17 +331,45 @@ async def run_health_check(server_id: int):
 
 # ── Cache refresh ─────────────────────────────────────────────────────────────
 
-@router.put("/connection-ttl")
-async def set_connection_ttl(
-    connection: str = Query(..., description="source_key to update"),
+_VALID_TTLS = (0, 300, 900, 3600, 86400)
+
+
+async def _set_active_server_ttl(cache_ttl_seconds: int) -> Dict[str, Any]:
+    """Set the cache TTL on the active MCP server (caching is MCP-only).
+
+    Changing the TTL invalidates that server's cache so the new window applies
+    cleanly, but does not clear the stored health.
+    """
+    if cache_ttl_seconds not in _VALID_TTLS:
+        raise HTTPException(400, "cache_ttl_seconds must be 0, 300, 900, 3600, or 86400")
+    svc    = _srv_svc()
+    active = await svc.get_active()
+    if not active:
+        raise HTTPException(409, "No active MCP server — activate a server before setting its cache TTL.")
+    await svc.set_server_ttl(active.id, cache_ttl_seconds)
+    if state.mcp_cache_service:
+        await state.mcp_cache_service.invalidate(active.id)
+    return {"server_id": active.id, "cache_ttl_seconds": cache_ttl_seconds}
+
+
+@router.put("/cache-ttl")
+async def set_cache_ttl(
     cache_ttl_seconds: int = Query(..., description="TTL in seconds: 0|300|900|3600|86400"),
 ):
-    """Update the per-connection catalog cache TTL."""
-    if cache_ttl_seconds not in (0, 300, 900, 3600, 86400):
-        raise HTTPException(400, "cache_ttl_seconds must be 0, 300, 900, 3600, or 86400")
-    svc = _srv_svc()
-    await svc.set_connection_ttl(connection, cache_ttl_seconds)
-    return {"connection": connection, "cache_ttl_seconds": cache_ttl_seconds}
+    """Update the active MCP server's catalog cache TTL (MCP-only caching)."""
+    return await _set_active_server_ttl(cache_ttl_seconds)
+
+
+@router.put("/connection-ttl", deprecated=True)
+async def set_connection_ttl(
+    cache_ttl_seconds: int = Query(..., description="TTL in seconds: 0|300|900|3600|86400"),
+    connection: Optional[str] = Query(None, description="ignored — TTL is per active server"),
+):
+    """Deprecated alias for ``PUT /cache-ttl``.
+
+    Kept so existing clients don't 404 mid-deploy; ``connection`` is ignored.
+    """
+    return await _set_active_server_ttl(cache_ttl_seconds)
 
 
 @router.post("/refresh")

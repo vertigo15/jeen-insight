@@ -595,6 +595,35 @@ def settings_app_info():
 
 
 # ----------------------------------------------------------------------
+# MCP catalog management (generic catch-all proxy)
+# Forwards all /api/mcp/* requests verbatim to the FastAPI backend.
+# ----------------------------------------------------------------------
+
+@app.route("/api/mcp/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE"])
+def mcp_proxy(subpath: str):
+    """Generic proxy for all /api/mcp/* routes."""
+    target = f"{API_BASE_URL}/api/mcp/{subpath}"
+    qs     = request.query_string.decode()
+    if qs:
+        target = f"{target}?{qs}"
+    try:
+        resp = requests.request(
+            method  = request.method,
+            url     = target,
+            json    = request.get_json(silent=True),
+            timeout = 30,
+        )
+    except requests.exceptions.RequestException as e:
+        logger.error("MCP proxy %s %s failed: %s", request.method, target, e)
+        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+    try:
+        return jsonify(resp.json()), resp.status_code
+    except Exception:  # noqa: BLE001
+        return Response(resp.content, status=resp.status_code,
+                        content_type=resp.headers.get("Content-Type", "application/json"))
+
+
+# ----------------------------------------------------------------------
 # Feedback / history
 # ----------------------------------------------------------------------
 @app.route("/api/feedback", methods=["POST"])

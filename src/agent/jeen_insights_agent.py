@@ -20,6 +20,7 @@ from uuid import UUID, uuid4
 
 from src.agent.conversation_history import ConversationHistoryService
 from src.agent.langgraph_agent import PromptLoader, build_graph
+from src.agent.langgraph_agent.nodes.output import _enrich_trace
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
 from src.agent.user_resolver import SimpleUserResolver
@@ -112,7 +113,7 @@ class JeenInsightsAgent:
             # hiccup) the flow continues with query_id=None and the error is
             # surfaced in the UI via formatted_response["error"].
             results = await asyncio.gather(
-                self.metadata_loader.load_all(self.source_key),
+                self._load_catalog(self.source_key),
                 self._fetch_conversation_context(session_id),
                 self._safe_log_query(
                     user_id=user.id,
@@ -205,7 +206,18 @@ class JeenInsightsAgent:
             }
 
             final_state = await self.graph.ainvoke(initial_state)
-            return final_state.get("formatted_response") or {}
+            formatted = final_state.get("formatted_response") or {}
+
+            # Attach the COMPLETE execution trace from the final state. This must
+            # happen here (not in response_formatter) so the tail nodes that run
+            # after the formatter — response_formatter, save_to_memory and
+            # observability_log — are included in the developer log.
+            raw_trace = list(final_state.get("trace") or [])
+            if raw_trace:
+                _enrich_trace(raw_trace, final_state)
+                formatted["trace"] = raw_trace
+
+            return formatted
 
         except Exception as e:  # noqa: BLE001
             logger.exception("Error processing question via LangGraph")
@@ -223,6 +235,26 @@ class JeenInsightsAgent:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    async def _load_catalog(self, source_key: str) -> Dict[str, str]:
+        """
+        Load the catalog bundle, routing to MCP or the metadata DB depending
+        on the global ``app_settings.catalog_source`` setting.
+        Falls back silently to the metadata DB on any error.
+        """
+        try:
+            from src.api import state as _state  # noqa: PLC0415 (lazy import avoids circular)
+            if _state.mcp_server_service and _state.mcp_catalog_client:
+                catalog_source = await _state.mcp_server_service.get_catalog_source(source_key)
+                if catalog_source == "mcp":
+                    logger.info("agent: catalog pre-fetch via MCP for source_key=%s", source_key)
+                    return await _state.mcp_catalog_client.load_all(source_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "agent: MCP catalog pre-fetch failed (%s) — falling back to metadata DB", exc
+            )
+        return await self.metadata_loader.load_all(source_key)
+
     async def _safe_log_query(
         self,
         *,
