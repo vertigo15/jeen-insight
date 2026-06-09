@@ -182,6 +182,53 @@
       margin-right: 6px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── SSO divider ── */
+    .login-divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 4px 0;
+      color: var(--color-muted);
+      font-size: 12px;
+    }
+    .login-divider::before,
+    .login-divider::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: var(--color-border);
+    }
+
+    /* ── Microsoft SSO ── */
+    .login-ms-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--color-border);
+      border-radius: 8px;
+      background: var(--color-surface);
+      color: var(--color-text);
+      font-size: 14px;
+      font-weight: 600;
+      font-family: inherit;
+      text-decoration: none;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+      box-sizing: border-box;
+    }
+    .login-ms-btn:hover {
+      background: var(--color-bg);
+      border-color: var(--color-muted);
+    }
+    .login-ms-mark {
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0;
+    }
   </style>
 </head>
 <body>
@@ -210,6 +257,24 @@
       {% endif %}
 
       <!-- Form -->
+      {% if entra_sso_enabled %}
+      <a
+        class="login-ms-btn"
+        href="{{ url_for('microsoft_login', next=request.args.get('next', '/')) }}"
+        id="microsoft-login-btn"
+      >
+        <svg class="login-ms-mark" viewBox="0 0 21 21" aria-hidden="true">
+          <rect x="1" y="1" width="9" height="9" fill="#f25022"/>
+          <rect x="11" y="1" width="9" height="9" fill="#7fba00"/>
+          <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
+          <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
+        </svg>
+        Sign in with Microsoft
+      </a>
+
+      <div class="login-divider" aria-hidden="true">or</div>
+      {% endif %}
+
       <form class="login-form" method="POST" action="/login" id="login-form">
         <!-- Preserve redirect target -->
         <input type="hidden" name="next" value="{{ request.args.get('next', '/') }}">
@@ -259,7 +324,7 @@
           </div>
         </div>
 
-        <button type="submit" class="login-btn" id="login-btn">Sign in</button>
+        <button type="submit" class="login-btn" id="login-btn">Sign in with password</button>
       </form>
     </div>
   </div>

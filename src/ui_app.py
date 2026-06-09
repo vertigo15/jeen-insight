@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from typing import Any, Dict
 
 import requests
@@ -35,7 +36,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "jeen-insights-change-me-in-production")
+app.secret_key = (
+    os.getenv("FLASK_SECRET_KEY")
+    or os.getenv("AUTH_SECRET")
+    or "jeen-insights-change-me-in-production"
+)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["PERMANENT_SESSION_LIFETIME"] = 86_400  # 24 h
@@ -44,7 +49,13 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://jeen-insights-api:8000")
 
 # Paths that never require a login check.
 _PUBLIC_PREFIXES = ("/static/", "/favicon")
-_PUBLIC_EXACT    = {"/login", "/logout", "/health"}
+_PUBLIC_EXACT    = {
+    "/login",
+    "/logout",
+    "/health",
+    "/auth/microsoft",
+    "/auth/microsoft/callback",
+}
 
 
 # ----------------------------------------------------------------------
@@ -70,6 +81,30 @@ def _proxy_post(path: str, payload: Dict[str, Any], timeout: float = 60) -> Any:
     if response.status_code == 200:
         return jsonify(response.json())
     return jsonify({"error": response.text}), response.status_code
+
+
+def _entra_sso_enabled() -> bool:
+    from src import entra_auth
+
+    return entra_auth.is_configured()
+
+
+def _public_base_url() -> str:
+    """Public URL of the UI (for OAuth redirect). Prefer PUBLIC_APP_URL behind proxies."""
+    explicit = os.getenv("PUBLIC_APP_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    return request.url_root.rstrip("/")
+
+
+def _write_user_session(user: Dict[str, Any], *, provider: str) -> None:
+    session.permanent = True
+    session["user_id"] = user["id"]
+    session["user_name"] = user["name"]
+    session["user_email"] = user["email"]
+    session["user_role"] = user["role"]
+    session["avatar_hue"] = user["avatar_hue"]
+    session["auth_provider"] = provider
 
 
 # ── Auth guard ───────────────────────────────────────────────────────────────
@@ -102,7 +137,11 @@ def login():
         # Already logged in — skip the login page.
         if "user_id" in session:
             return redirect(request.args.get("next") or "/")
-        return render_template("login.html", error=None)
+        return render_template(
+            "login.html",
+            error=None,
+            entra_sso_enabled=_entra_sso_enabled(),
+        )
 
     # POST: validate credentials
     from src.auth_db import get_user_by_email, verify_password, touch_last_active
@@ -130,19 +169,111 @@ def login():
             elif user["status"] != "active":
                 error = "This account is disabled. Contact your administrator."
             else:
-                # —— Success: write session ——
-                session.permanent = True
-                session["user_id"]   = user["id"]
-                session["user_name"] = user["name"]
-                session["user_email"] = user["email"]
-                session["user_role"]  = user["role"]
-                session["avatar_hue"] = user["avatar_hue"]
+                _write_user_session(user, provider="local")
                 touch_last_active(user["id"])
                 logger.info("login: %s (%s) authenticated", user["email"], user["role"])
                 return redirect(request.form.get("next") or "/")
 
     status = 503 if error and "unavailable" in error else 401
-    return render_template("login.html", error=error), status
+    return render_template(
+        "login.html",
+        error=error,
+        entra_sso_enabled=_entra_sso_enabled(),
+    ), status
+
+
+@app.route("/auth/microsoft")
+def microsoft_login():
+    """Start Microsoft Entra ID OAuth authorization-code flow."""
+    from src import entra_auth
+
+    if not entra_auth.is_configured():
+        return redirect(url_for("login"))
+
+    state = secrets.token_urlsafe(32)
+    session["oauth_state"] = state
+    session["oauth_next"] = request.args.get("next") or "/"
+    callback_uri = entra_auth.redirect_uri(_public_base_url())
+    auth_url = entra_auth.build_auth_url(redirect_uri=callback_uri, state=state)
+    return redirect(auth_url)
+
+
+@app.route("/auth/microsoft/callback")
+def microsoft_callback():
+    """Complete Microsoft Entra ID sign-in and establish a Flask session."""
+    from src import entra_auth
+    from src.auth_db import get_or_create_sso_user, touch_last_active
+
+    if not entra_auth.is_configured():
+        return redirect(url_for("login"))
+
+    ms_error = request.args.get("error_description") or request.args.get("error")
+    if ms_error:
+        return render_template(
+            "login.html",
+            error=f"Microsoft sign-in failed: {ms_error}",
+            entra_sso_enabled=True,
+        ), 401
+
+    state = request.args.get("state")
+    expected = session.pop("oauth_state", None)
+    if not state or state != expected:
+        return render_template(
+            "login.html",
+            error="Invalid sign-in state. Please try again.",
+            entra_sso_enabled=True,
+        ), 401
+
+    code = request.args.get("code")
+    if not code:
+        return render_template(
+            "login.html",
+            error="Microsoft sign-in was cancelled.",
+            entra_sso_enabled=True,
+        ), 401
+
+    next_url = session.pop("oauth_next", "/")
+    callback_uri = entra_auth.redirect_uri(_public_base_url())
+    result, err = entra_auth.exchange_code(code, redirect_uri=callback_uri)
+    if err or not result:
+        return render_template(
+            "login.html",
+            error=f"Microsoft sign-in failed: {err or 'unknown error'}",
+            entra_sso_enabled=True,
+        ), 401
+
+    profile = entra_auth.profile_from_token_result(result)
+    if not profile["email"]:
+        return render_template(
+            "login.html",
+            error="Your Microsoft account has no email address.",
+            entra_sso_enabled=True,
+        ), 401
+
+    try:
+        user = get_or_create_sso_user(profile["email"], profile["name"])
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("microsoft login: user provision failed for %s", profile["email"])
+        error = "Sign-in is temporarily unavailable (database error)."
+        if os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG":
+            error = f"{error} ({exc})"
+        return render_template(
+            "login.html",
+            error=error,
+            entra_sso_enabled=True,
+        ), 503
+
+    if user["status"] != "active":
+        return render_template(
+            "login.html",
+            error="This account is disabled. Contact your administrator.",
+            entra_sso_enabled=True,
+        ), 401
+
+    _write_user_session(user, provider="microsoft")
+    touch_last_active(user["id"])
+    logger.info("microsoft login: %s (%s) authenticated", user["email"], user["role"])
+    return redirect(next_url)
 
 
 @app.route("/logout")

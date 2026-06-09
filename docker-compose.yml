@@ -28,6 +28,7 @@ services:
     environment:
       - API_BASE_URL=http://jeen-insights-api:8000
       - UI_PORT=8501
+      - PUBLIC_APP_URL=http://localhost:8501
     depends_on:
       - jeen-insights-api
     volumes:

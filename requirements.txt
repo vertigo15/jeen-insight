@@ -14,6 +14,7 @@ psycopg[binary]>=3.1.0
 
 # Auth
 bcrypt>=4.0.0
+msal>=1.28.0
 
 # Web framework
 fastapi>=0.109.0

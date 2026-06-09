@@ -9,6 +9,7 @@ is fine for the relatively low request rate of a settings/admin UI.
 from __future__ import annotations
 
 import os
+import secrets
 from typing import Any, Dict, List, Optional
 
 import bcrypt
@@ -155,6 +156,16 @@ def create_user(
         "avatar_hue": row[5],
         "created_at": row[6].isoformat() if row[6] else None,
     }
+
+
+def get_or_create_sso_user(email: str, name: str, *, role: str = "viewer") -> Dict[str, Any]:
+    """Return an existing user or JIT-provision one for Microsoft SSO."""
+    normalized = email.strip().lower()
+    existing = get_user_by_email(normalized)
+    if existing:
+        return existing
+    # Unusable local password — SSO users sign in via Entra only.
+    return create_user(name, normalized, secrets.token_urlsafe(32), role=role)
 
 
 def update_user_role(user_id: int, role: str) -> None:
