@@ -19,6 +19,21 @@ import psycopg
 
 def _connect():
     """Open a psycopg3 sync connection using the standard metadata-DB env vars."""
+    missing = [
+        key for key in (
+            "METADATA_DB_HOST",
+            "METADATA_DB_NAME",
+            "METADATA_DB_USER",
+            "METADATA_DB_PASSWORD",
+        )
+        if not os.environ.get(key)
+    ]
+    if missing:
+        raise RuntimeError(
+            "Missing metadata DB env vars for UI auth: "
+            + ", ".join(missing)
+        )
+
     ssl = os.environ.get("METADATA_DB_SSL", "true").strip().lower() in ("1", "true", "yes")
     return psycopg.connect(
         host=os.environ["METADATA_DB_HOST"],
@@ -28,6 +43,16 @@ def _connect():
         password=os.environ["METADATA_DB_PASSWORD"],
         sslmode="require" if ssl else "prefer",
     )
+
+
+def check_connection() -> tuple[bool, str | None]:
+    """Return (ok, error_message) for auth DB connectivity."""
+    try:
+        with _connect() as conn:
+            conn.execute("SELECT 1")
+        return True, None
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
 
 
 # ── Queries ───────────────────────────────────────────────────────────────────

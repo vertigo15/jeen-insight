@@ -114,24 +114,35 @@ def login():
     if not email or not password:
         error = "Email and password are required."
     else:
-        user = get_user_by_email(email)
-        if user is None or not verify_password(password, user["password_hash"]):
-            error = "Invalid email or password."
-        elif user["status"] != "active":
-            error = "This account is disabled. Contact your administrator."
+        try:
+            user = get_user_by_email(email)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("login: auth DB lookup failed for %s", email)
+            error = (
+                "Sign-in is temporarily unavailable (database error). "
+                "Contact your administrator."
+            )
+            if os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG":
+                error = f"{error} ({exc})"
         else:
-            # —— Success: write session ——
-            session.permanent = True
-            session["user_id"]   = user["id"]
-            session["user_name"] = user["name"]
-            session["user_email"] = user["email"]
-            session["user_role"]  = user["role"]
-            session["avatar_hue"] = user["avatar_hue"]
-            touch_last_active(user["id"])
-            logger.info("login: %s (%s) authenticated", user["email"], user["role"])
-            return redirect(request.form.get("next") or "/")
+            if user is None or not verify_password(password, user["password_hash"]):
+                error = "Invalid email or password."
+            elif user["status"] != "active":
+                error = "This account is disabled. Contact your administrator."
+            else:
+                # —— Success: write session ——
+                session.permanent = True
+                session["user_id"]   = user["id"]
+                session["user_name"] = user["name"]
+                session["user_email"] = user["email"]
+                session["user_role"]  = user["role"]
+                session["avatar_hue"] = user["avatar_hue"]
+                touch_last_active(user["id"])
+                logger.info("login: %s (%s) authenticated", user["email"], user["role"])
+                return redirect(request.form.get("next") or "/")
 
-    return render_template("login.html", error=error), 401
+    status = 503 if error and "unavailable" in error else 401
+    return render_template("login.html", error=error), status
 
 
 @app.route("/logout")
@@ -245,12 +256,25 @@ def index():
 
 @app.route("/health")
 def health():
+    from src.auth_db import check_connection
+
     try:
         response = requests.get(f"{API_BASE_URL}/health", timeout=5)
         backend_status = response.json() if response.status_code == 200 else {"status": "unhealthy"}
     except Exception as e:  # noqa: BLE001
         backend_status = {"status": "unhealthy", "error": str(e)}
-    return jsonify({"ui_status": "healthy", "backend_status": backend_status})
+
+    auth_ok, auth_error = check_connection()
+    auth_status = {"status": "healthy" if auth_ok else "unhealthy"}
+    if auth_error:
+        auth_status["error"] = auth_error
+
+    ui_ok = backend_status.get("status") == "healthy" and auth_ok
+    return jsonify({
+        "ui_status": "healthy" if ui_ok else "degraded",
+        "backend_status": backend_status,
+        "auth_db_status": auth_status,
+    })
 
 
 # ----------------------------------------------------------------------
