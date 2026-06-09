@@ -29,6 +29,8 @@ const SUGGESTIONS = [
     'Format Y axis as currency',
     'Sort highest to lowest',
     'Add a trend line',
+    'Make it a stacked bar chart',
+    'Turn this into a donut chart',
 ];
 
 const MAX_INSTRUCTION_LEN = 500;

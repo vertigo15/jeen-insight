@@ -375,14 +375,16 @@ class ConversationHistoryService:
         """Return all queries for a user+connection, newest first.
 
         Each entry includes the question text, execution status, token usage,
-        LLM and execution latency, row count, and ISO timestamp so the UI can
-        render a full audit / activity log.
+        LLM and execution latency, row count, session/conversation id, and ISO
+        timestamp so the UI can render a full audit / activity log.
         """
         try:
             async with self.pool.acquire() as conn:
                 rows = await conn.fetch(
                     """
                     SELECT
+                        id,
+                        session_id,
                         natural_language_query,
                         generated_sql,
                         execution_status,
@@ -404,6 +406,8 @@ class ConversationHistoryService:
                 )
             return [
                 {
+                    "query_id":   str(r["id"]),
+                    "session_id": str(r["session_id"]) if r["session_id"] else None,
                     "question":   r["natural_language_query"],
                     "status":     r["execution_status"],
                     "tokens":     r["tokens_used"],

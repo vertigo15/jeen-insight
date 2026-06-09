@@ -38,7 +38,10 @@
             <button class="sidebar-toggle-btn" id="sidebar-toggle" aria-label="Toggle sidebar">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="18" y2="18"/></svg>
             </button>
-            <span class="topbar-title">JEEN Insights</span>
+            <span class="topbar-title-wrap">
+                <img src="{{ url_for('static', filename='images/favicon.svg') }}" alt="" class="topbar-logo" width="24" height="24" aria-hidden="true">
+                <span class="topbar-title">JEEN Insights</span>
+            </span>
         </div>
         <div class="topbar-actions">
             <button class="topbar-icon-btn" id="dev-panel-btn" aria-label="Prompts &amp; SQL" title="Prompts &amp; SQL">
@@ -233,6 +236,7 @@
                         <!-- Chart View -->
                         <div id="chart-view-container" class="chart-view-container" style="display: none;">
                             <div id="chart-type-selector-container" class="chart-type-selector-container" style="display: none;"></div>
+                            <div id="chart-options-panel-container" class="chart-options-panel-container" style="display: none;"></div>
                             <!-- Chart actions: Save PNG / Copy. Built dynamically by ChartManager. -->
                             <div id="chart-actions-toolbar" class="chart-actions-toolbar" style="display: none;"></div>
                             <div id="chart-display-container" class="chart-display"></div>

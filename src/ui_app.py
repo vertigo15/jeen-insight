@@ -83,6 +83,20 @@ def _proxy_post(path: str, payload: Dict[str, Any], timeout: float = 60) -> Any:
     return jsonify({"error": response.text}), response.status_code
 
 
+def _session_user_id() -> str:
+    """Return the logged-in user id as a string for history/audit APIs."""
+    return str(session["user_id"])
+
+
+def _session_user_context() -> Dict[str, str]:
+    """User context forwarded to the API for query audit logging."""
+    return {
+        "user_id": _session_user_id(),
+        "user_name": session.get("user_name") or "",
+        "user_email": session.get("user_email") or "",
+    }
+
+
 def _entra_sso_enabled() -> bool:
     from src import entra_auth
 
@@ -446,7 +460,11 @@ def ask_question():
     if not connection:
         return jsonify({"error": "No connection selected"}), 400
 
-    payload: Dict[str, Any] = {"question": question, "connection": connection}
+    payload: Dict[str, Any] = {
+        "question": question,
+        "connection": connection,
+        "user_context": _session_user_context(),
+    }
     if session_id:
         payload["session_id"] = session_id
     # Optional user-preferences overrides. The API enforces bounds; we just
@@ -494,7 +512,7 @@ def get_recent_questions():
         "/api/user/recent-questions",
         params={
             "connection": connection,
-            "user_id": request.args.get("user_id", "default"),
+            "user_id": _session_user_id(),
             "limit": request.args.get("limit", "15"),
         },
     )
@@ -509,7 +527,7 @@ def get_pinned_questions():
         "/api/user/pinned-questions",
         params={
             "connection": connection,
-            "user_id": request.args.get("user_id", "default"),
+            "user_id": _session_user_id(),
         },
     )
 
@@ -519,6 +537,7 @@ def pin_question():
     data = request.get_json() or {}
     if not data.get("connection"):
         return jsonify({"error": "No connection selected"}), 400
+    data["user_id"] = _session_user_id()
     return _proxy_post("/api/user/pin-question", data)
 
 
@@ -527,6 +546,7 @@ def unpin_question():
     data = request.get_json() or {}
     if not data.get("connection"):
         return jsonify({"error": "No connection selected"}), 400
+    data["user_id"] = _session_user_id()
     return _proxy_post("/api/user/unpin-question", data)
 
 
@@ -539,7 +559,7 @@ def get_history_log():
         "/api/user/history-log",
         params={
             "connection": connection,
-            "user_id": request.args.get("user_id", "default"),
+            "user_id": _session_user_id(),
             "limit": request.args.get("limit", "100"),
         },
     )

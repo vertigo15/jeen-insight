@@ -71,6 +71,9 @@ class GenerateChartRequest(BaseModel):
     sample_data: List[List[Any]]
     all_data: Optional[List[List[Any]]] = None
     chart_type: Optional[str] = "auto"
+    x_column: Optional[str] = None
+    y_column: Optional[str] = None
+    series_column: Optional[str] = None
 
 
 class GenerateChartResponse(BaseModel):

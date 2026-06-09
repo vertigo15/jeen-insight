@@ -38,7 +38,8 @@ You MUST return a single JSON object with this shape:
 - Series colors, color palette, series item styling
 - Show/hide data labels (label.show)
 - Chart type: switch between bar, line, area (line + areaStyle), scatter,
-  pie, horizontal bar
+  pie, donut (pie + radius), horizontal bar, stacked bar/area (stack: 'total'),
+  combo (bar + line, dual axis when needed), heatmap, gauge
 - Sort order of category axis (asc / desc / by value)
 - Smoothing on line series, stacking, opacity
 - Symbol size, line width, bar gap

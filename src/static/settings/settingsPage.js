@@ -15,6 +15,7 @@
  */
 
 import { Preferences } from './preferences.js';
+import { CHART_TYPE_OPTIONS } from '../chart-feature/chartTypes.js';
 
 // ── Icons (inline SVG snippets, 18×18) ────────────────────────────────────────
 const ICONS = {
@@ -1076,13 +1077,9 @@ export class SettingsPage {
                 <div class="sp-card-title">Chart &amp; Insights</div>
                 ${this._row('Default chart type', 'Used when switching to chart view. Auto lets the LLM choose.', `
                     <select class="settings-select" id="sp-charttype">
-                        <option value="auto"${prefs.chartType==='auto'?' selected':''}>🤖 Auto (LLM picks)</option>
-                        <option value="bar"${prefs.chartType==='bar'?' selected':''}>📊 Bar</option>
-                        <option value="line"${prefs.chartType==='line'?' selected':''}>📈 Line</option>
-                        <option value="pie"${prefs.chartType==='pie'?' selected':''}>🥧 Pie</option>
-                        <option value="area"${prefs.chartType==='area'?' selected':''}>📉 Area</option>
-                        <option value="scatter"${prefs.chartType==='scatter'?' selected':''}>⚫ Scatter</option>
-                        <option value="horizontal_bar"${prefs.chartType==='horizontal_bar'?' selected':''}>📊 Horizontal bar</option>
+                        ${CHART_TYPE_OPTIONS.map(t =>
+                            `<option value="${t.value}"${prefs.chartType === t.value ? ' selected' : ''}>${t.label}</option>`
+                        ).join('')}
                     </select>`)}
                 ${this._row('Auto-insights', 'Automatically generate AI insights after every result set.', `
                     <select class="settings-select" id="sp-insights">

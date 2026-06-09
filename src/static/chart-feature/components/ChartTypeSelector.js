@@ -7,18 +7,12 @@
 
 /// <reference path="../types/chart.types.js" />
 
+import { CHART_TYPE_OPTIONS } from '../chartTypes.js';
+
 /**
- * Available chart types
+ * Available chart types (shared with settings + preferences)
  */
-const CHART_TYPES = [
-    { value: 'auto', label: '🤖 Auto (LLM Recommended)' },
-    { value: 'bar', label: '📊 Bar Chart' },
-    { value: 'line', label: '📈 Line Chart' },
-    { value: 'pie', label: '🥧 Pie Chart' },
-    { value: 'area', label: '📉 Area Chart' },
-    { value: 'scatter', label: '⚫ Scatter Plot' },
-    { value: 'horizontal_bar', label: '📊 Horizontal Bar' },
-];
+const CHART_TYPES = CHART_TYPE_OPTIONS;
 
 /**
  * Creates a dropdown selector for chart types

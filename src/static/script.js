@@ -1526,7 +1526,7 @@ async function displayHistory() {
 
     try {
         // Fetch both pinned and recent questions for the active connection
-        const qs = `?user_id=default&connection=${encodeURIComponent(connection)}`;
+        const qs = `?connection=${encodeURIComponent(connection)}`;
         const [pinnedResponse, recentResponse] = await Promise.all([
             fetch(`/api/user/pinned-questions${qs}`),
             fetch(`/api/user/recent-questions${qs}&limit=15`)
@@ -1600,7 +1600,7 @@ async function pinQuestion(event, question) {
         const response = await fetch('/api/user/pin-question', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({user_id: 'default', connection, question: question})
+            body: JSON.stringify({ connection, question: question })
         });
         
         if (response.ok) {
@@ -1623,7 +1623,7 @@ async function unpinQuestion(event, question) {
         const response = await fetch('/api/user/unpin-question', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({user_id: 'default', connection, question: question})
+            body: JSON.stringify({ connection, question: question })
         });
         
         if (response.ok) {
@@ -1698,6 +1698,12 @@ function _relTime(isoStr) {
     return `${d}d ago`;
 }
 
+function _shortSessionId(sessionId) {
+    if (!sessionId) return '';
+    const s = String(sessionId).replace(/-/g, '');
+    return s.length > 8 ? `${s.slice(0, 8)}…` : s;
+}
+
 function _renderHistoryEntries(entries) {
     const body = document.getElementById('history-drawer-body');
     if (!body) return;
@@ -1709,6 +1715,11 @@ function _renderHistoryEntries(entries) {
         const statusLabel = e.status || 'unknown';
         const time  = _relTime(e.asked_at);
         const parts = [];
+        if (e.session_id) {
+            parts.push(
+                `<span class="history-log-session" title="Session ${escapeHtml(e.session_id)}">sess ${_shortSessionId(e.session_id)}</span>`
+            );
+        }
         if (e.tokens)   parts.push(`${_formatTokens(e.tokens)} tok`);
         if (e.llm_ms)   parts.push(`LLM ${_fmtMs(e.llm_ms)}`);
         if (e.exec_ms)  parts.push(`DB ${_fmtMs(e.exec_ms)}`);
@@ -1758,6 +1769,8 @@ function filterHistoryLog() {
     }
     _renderHistoryEntries(_historyLogEntries.filter(e =>
         (e.question || '').toLowerCase().includes(q)
+        || (e.session_id || '').toLowerCase().includes(q)
+        || (e.query_id || '').toLowerCase().includes(q)
     ));
 }
 

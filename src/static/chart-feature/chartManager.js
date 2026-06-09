@@ -11,6 +11,7 @@ import { analyzeData } from './utils/dataAnalyzer.js';
 import { ChartContainer } from './components/ChartContainer.js';
 import { ChartToggle } from './components/ChartToggle.js';
 import { ChartTypeSelector } from './components/ChartTypeSelector.js';
+import { ChartOptionsPanel } from './components/ChartOptionsPanel.js';
 import { ChartChat } from './components/ChartChat.js';
 import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js';
 
@@ -33,6 +34,7 @@ export class ChartManager {
         this.chartContainer = null;
         this.chartToggle = null;
         this.chartTypeSelector = null;
+        this.chartOptionsPanel = null;
         this.chartChat = null;
         this.llmRecommendedType = null;
         // Baseline (LLM-generated) config — Reset reverts to this.
@@ -87,6 +89,26 @@ export class ChartManager {
             this.handleChartTypeChange(chartType);
         });
         this.chartTypeSelector.render();
+
+        // Column mapping + quick visual toggles
+        if (document.getElementById('chart-options-panel-container')) {
+            this.chartOptionsPanel = new ChartOptionsPanel('chart-options-panel-container', {
+                onColumnsChange: () => {
+                    if (this.state.currentView === 'chart') {
+                        const selectedType = this.chartTypeSelector.getSelectedType();
+                        this.handleChartTypeChange(selectedType);
+                    }
+                },
+                onQuickToggle: () => this._reapplyQuickToggles(),
+            });
+            if (this.dataAnalysis?.columns) {
+                this.chartOptionsPanel.setColumns(
+                    this.dataAnalysis.columns.map((col) => ({ name: col.name, type: col.type })),
+                    this.dataAnalysis
+                );
+            }
+            this.chartOptionsPanel.render();
+        }
         
         // Chart container
         this.chartContainer = new ChartContainer('chart-display-container');
@@ -134,14 +156,16 @@ export class ChartManager {
             // Hide chart type selector
             const selectorContainer = document.getElementById('chart-type-selector-container');
             if (selectorContainer) selectorContainer.style.display = 'none';
+            if (this.chartOptionsPanel) this.chartOptionsPanel.hide();
         } else {
             // Show chart, hide table
             if (tableContainer) tableContainer.style.display = 'none';
             if (chartViewContainer) chartViewContainer.style.display = 'flex';
             
-            // Show chart type selector
+            // Show chart type selector + options panel
             const selectorContainer = document.getElementById('chart-type-selector-container');
             if (selectorContainer) selectorContainer.style.display = 'block';
+            if (this.chartOptionsPanel) this.chartOptionsPanel.show();
             
             // Load ECharts if not loaded
             if (!this.state.isEChartsLoaded) {
@@ -234,17 +258,23 @@ export class ChartManager {
             
             // Call LLM API
             const connection = (typeof getActiveConnection === 'function') ? getActiveConnection() : '';
+            const mapping = this.chartOptionsPanel ? this.chartOptionsPanel.getMapping() : {};
+            const payload = {
+                connection,
+                columns: columns,
+                column_names: this.state.currentData.columns,
+                sample_data: sampleData,
+                all_data: allData,
+                chart_type: chartType,
+            };
+            if (mapping.xColumn) payload.x_column = mapping.xColumn;
+            if (mapping.yColumn) payload.y_column = mapping.yColumn;
+            if (mapping.seriesColumn) payload.series_column = mapping.seriesColumn;
+
             const response = await fetch('/api/generate-chart', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    connection,
-                    columns: columns,
-                    column_names: this.state.currentData.columns,
-                    sample_data: sampleData,
-                    all_data: allData,
-                    chart_type: chartType // Include chart type parameter
-                }),
+                body: JSON.stringify(payload),
                 signal: AbortSignal.timeout(120000) // 2 minute timeout
             });
             
@@ -309,14 +339,16 @@ export class ChartManager {
             this.originalConfig = echartsConfig;
         }
 
+        const displayConfig = this._withQuickToggles(echartsConfig);
+
         const chartConfig = {
-            type: echartsConfig.series?.[0]?.type || 'bar',
-            options: echartsConfig,
+            type: displayConfig.series?.[0]?.type || 'bar',
+            options: displayConfig,
             isEnhanced: true
         };
 
         this.state.currentConfig = chartConfig;
-        this.currentEchartsOptions = echartsConfig;
+        this.currentEchartsOptions = displayConfig;
 
         try {
             await this.chartContainer.init();
@@ -354,16 +386,17 @@ export class ChartManager {
             derivedSpecs || [],
             this.state.currentData
         );
+        const displayConfig = this._withQuickToggles(withDerived);
 
         const chartConfig = {
-            type: withDerived.series?.[0]?.type || 'bar',
-            options: withDerived,
+            type: displayConfig.series?.[0]?.type || 'bar',
+            options: displayConfig,
             isEnhanced: true,
         };
 
         try {
             this.chartContainer.render(chartConfig);
-            this.currentEchartsOptions = withDerived;
+            this.currentEchartsOptions = displayConfig;
             this.state.currentConfig = chartConfig;
         } catch (error) {
             console.error('[ChartManager] Failed to apply edited config:', error);
@@ -396,12 +429,12 @@ export class ChartManager {
         }
         const chartConfig = {
             type: baseline.series?.[0]?.type || 'bar',
-            options: baseline,
+            options: this._withQuickToggles(baseline),
             isEnhanced: true,
         };
         try {
             this.chartContainer.render(chartConfig);
-            this.currentEchartsOptions = baseline;
+            this.currentEchartsOptions = chartConfig.options;
             this.state.currentConfig = chartConfig;
         } catch (error) {
             console.error('[ChartManager] Failed to reset chart:', error);
@@ -770,10 +803,38 @@ export class ChartManager {
     }
     
     getLLMCacheKey(chartType = 'auto') {
-        // Cache key for LLM-generated charts (include chart type)
-        // Use stringified data as cache key since we don't have access to SQL here
         const dataHash = this.simpleHash(JSON.stringify(this.state.currentData));
-        return `chart_llm_${dataHash}_${chartType}`;
+        const mapping = this.chartOptionsPanel ? this.chartOptionsPanel.getMapping() : {};
+        const mapKey = [mapping.xColumn, mapping.yColumn, mapping.seriesColumn].join('|');
+        return `chart_llm_${dataHash}_${chartType}_${mapKey}`;
+    }
+
+    _withQuickToggles(config) {
+        if (!this.chartOptionsPanel || !config) return config;
+        return this.chartOptionsPanel.applyTogglesTo(config, this.originalConfig);
+    }
+
+    _reapplyQuickToggles() {
+        if (!this.originalConfig || !this.chartContainer) return;
+        let baseline;
+        try {
+            baseline = JSON.parse(JSON.stringify(this.originalConfig));
+        } catch (_) {
+            baseline = this.originalConfig;
+        }
+        const displayConfig = this._withQuickToggles(baseline);
+        const chartConfig = {
+            type: displayConfig.series?.[0]?.type || 'bar',
+            options: displayConfig,
+            isEnhanced: true,
+        };
+        try {
+            this.chartContainer.render(chartConfig);
+            this.currentEchartsOptions = displayConfig;
+            this.state.currentConfig = chartConfig;
+        } catch (error) {
+            console.error('[ChartManager] Failed to apply quick toggles:', error);
+        }
     }
     
     simpleHash(str) {

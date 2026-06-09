@@ -14,8 +14,10 @@ class User:
 
 class SimpleUserResolver:
     """
-    Simple user resolver that returns a default user.
-    In production, this would resolve users from session/auth tokens.
+    Resolve the active user from ``user_context`` on each query request.
+
+    The Flask UI forwards ``user_id`` (and optional name/email) from the signed
+    session cookie; direct API callers without context fall back to ``default``.
     """
     
     def __init__(self, default_user_id: str = "default"):

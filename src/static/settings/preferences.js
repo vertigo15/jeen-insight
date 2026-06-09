@@ -8,7 +8,7 @@
  * Keys (kept stable; renaming would silently reset users' choices):
  *   - 'theme'                  string  'light' | 'dark' | 'system'
  *   - 'rowLimit'               number  in {25, 100, 500, 1000}
- *   - 'chartTypePreference'    string  'auto' | 'bar' | 'line' | 'pie' | 'area' | 'scatter' | 'horizontal_bar'
+   *   - 'chartTypePreference'    string  'auto' | 'bar' | … | 'gauge'
  *   - 'autoInsights'           string  'on' | 'off'
  *   - 'temperature'            number  in [0, 1] OR null/undefined for "auto"
  *
@@ -43,6 +43,7 @@ const ALLOWED_THEMES = new Set(['light', 'dark', 'system']);
 const ALLOWED_ROW_LIMITS = new Set([25, 100, 500, 1000]);
 const ALLOWED_CHART_TYPES = new Set([
     'auto', 'bar', 'line', 'pie', 'area', 'scatter', 'horizontal_bar',
+    'stacked_bar', 'stacked_area', 'donut', 'combo', 'heatmap', 'gauge',
 ]);
 const ALLOWED_AUTO_INSIGHTS = new Set(['on', 'off']);
 const ALLOWED_AI_ANALYTICS  = new Set(['on', 'off']);

@@ -74,6 +74,54 @@ def _format_recent_messages(messages: Optional[List[ChatMessage]]) -> str:
 
 
 # ----------------------------------------------------------------------
+# Chart-type hints for explicit user selections
+# ----------------------------------------------------------------------
+_CHART_TYPE_GUIDANCE: dict[str, str] = {
+    "bar": "Use series type 'bar' with a category xAxis and value yAxis.",
+    "line": "Use series type 'line'; set smooth: true for time series when appropriate.",
+    "pie": "Use series type 'pie' with data as [{name, value}, ...] from category + metric.",
+    "area": "Use series type 'line' with areaStyle filled under the line.",
+    "scatter": "Use series type 'scatter' with numeric x and y (value axes or scatter data pairs).",
+    "horizontal_bar": "Use series type 'bar' with category on yAxis and value on xAxis.",
+    "stacked_bar": (
+        "Use multiple bar series sharing stack: 'total'. Split by the series column "
+        "when provided, otherwise use a single stack group."
+    ),
+    "stacked_area": (
+        "Use multiple line series with stack: 'total' and areaStyle on each series."
+    ),
+    "donut": (
+        "Use series type 'pie' with radius: ['40%', '70%'] for a donut hole."
+    ),
+    "combo": (
+        "Combine bar and line series on shared categories. Use yAxisIndex: 1 for the "
+        "line when scales differ; add a second value yAxis if needed."
+    ),
+    "heatmap": (
+        "Use series type 'heatmap' with xAxis/yAxis categories and data as "
+        "[xIndex, yIndex, value] tuples. Include visualMap."
+    ),
+    "gauge": (
+        "Use series type 'gauge' for a single KPI (first row / aggregate). "
+        "Show the primary metric with min/max when inferable."
+    ),
+}
+
+
+def _column_mapping_blob(request: GenerateChartRequest) -> str:
+    parts: list[str] = []
+    if request.x_column:
+        parts.append(f"- X-axis / categories: {request.x_column}")
+    if request.y_column:
+        parts.append(f"- Y-axis / primary metric: {request.y_column}")
+    if request.series_column:
+        parts.append(f"- Series / color breakdown: {request.series_column}")
+    if not parts:
+        return ""
+    return "\n\nUser-selected column mapping (MUST follow):\n" + "\n".join(parts)
+
+
+# ----------------------------------------------------------------------
 # Initial chart generation
 # ----------------------------------------------------------------------
 @router.post("/generate-chart", response_model=GenerateChartResponse)
@@ -99,18 +147,23 @@ async def generate_chart(request: GenerateChartRequest):
         "- Apply smart number formatting (K/M/B abbreviations) via template strings.\n"
         "- Add a meaningful title and clear axis labels.\n"
         "- Include polished tooltips using template strings.\n"
-        "- Ensure title and legend never overlap."
+        "- Ensure title and legend never overlap.\n"
+        "- Supported explicit types include: bar, line, pie, area, scatter, horizontal_bar, "
+        "stacked_bar, stacked_area, donut, combo, heatmap, gauge."
     )
-    chart_type_instruction = (
-        ""
-        if chart_type_param == "auto"
-        else (
+    if chart_type_param == "auto":
+        chart_type_instruction = ""
+    else:
+        guidance = _CHART_TYPE_GUIDANCE.get(chart_type_param, "")
+        chart_type_instruction = (
             f"\n\nThe user has explicitly selected: {chart_type_param.upper()} CHART. "
             "You MUST return that chart type."
         )
-    )
+        if guidance:
+            chart_type_instruction += f"\nImplementation hint: {guidance}"
+    column_mapping = _column_mapping_blob(request)
     user_prompt = (
-        f"Create a chart visualization for this data.{chart_type_instruction}\n\n"
+        f"Create a chart visualization for this data.{chart_type_instruction}{column_mapping}\n\n"
         f"Column Names:\n{json.dumps(request.column_names)}\n\n"
         "Column Information (with detected types):\n"
         + "\n".join(f"- {c.name} ({c.type})" for c in request.columns)
