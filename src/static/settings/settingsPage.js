@@ -9,7 +9,7 @@
  * -----------------
  *   USER        General (runtime preferences)
  *   AI AGENT    9 LangGraph prompts
- *   OTHER       At the bottom — About + Close
+ *   OTHER       At the bottom — About · Logout · Close
  *
  * @module settingsPage
  */
@@ -22,7 +22,8 @@ const ICONS = {
     general:  `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
     prompt:   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>`,
     about:    `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
-    close:    `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`,
+    close:    `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
+    logout:   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`,
     catalog:  `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>`,
 };
 
@@ -157,18 +158,30 @@ export class SettingsPage {
 
         sidebar.appendChild(navBody);
 
-        // Bottom nav
+        // Bottom nav — pinned under scrollable groups
         const navBottom = document.createElement('div');
         navBottom.className = 'sp-nav-bottom';
+
+        const bottomGroup = document.createElement('div');
+        bottomGroup.className = 'sp-nav-group sp-nav-group-bottom';
+        bottomGroup.textContent = 'OTHER';
+        navBottom.appendChild(bottomGroup);
 
         BOTTOM_NAV.forEach(item => {
             navBottom.appendChild(this._buildNavItem(item));
         });
 
-        // Close button
+        const logoutBtn = document.createElement('a');
+        logoutBtn.href = '/logout';
+        logoutBtn.className = 'sp-nav-item sp-logout-btn';
+        logoutBtn.innerHTML = `${ICONS.logout}<span class="sp-nav-label">Logout</span>`;
+        logoutBtn.addEventListener('click', () => this.close());
+        navBottom.appendChild(logoutBtn);
+
         const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
         closeBtn.className = 'sp-nav-item sp-close-btn';
-        closeBtn.innerHTML = `${ICONS.close}<span>Close</span>`;
+        closeBtn.innerHTML = `${ICONS.close}<span class="sp-nav-label">Close</span>`;
         closeBtn.addEventListener('click', () => this.close());
         navBottom.appendChild(closeBtn);
 
@@ -403,11 +416,19 @@ export class SettingsPage {
     async _mcpLoadStatus() {
         try {
             const qs = this._mcpConn ? `?connection=${encodeURIComponent(this._mcpConn)}` : '';
-            const r  = await fetch(`/api/mcp/status${qs}`);
+            const r  = await fetch(`/api/mcp/status${qs}`, { credentials: 'same-origin' });
             if (r.ok) this._mcpStatus = await r.json();
         } catch (e) {
             console.warn('[MCP] status load failed:', e);
         }
+    }
+
+    /** Merge a health-check API response into cached status before reload. */
+    _applyMcpHealthResponse(serverId, data) {
+        if (!data?.server || !this._mcpStatus?.servers) return;
+        const idx = this._mcpStatus.servers.findIndex(s => s.id === serverId);
+        if (idx === -1) return;
+        this._mcpStatus.servers[idx] = { ...this._mcpStatus.servers[idx], ...data.server };
     }
 
     _mcpRender() {
@@ -433,7 +454,7 @@ export class SettingsPage {
             </div>
 
             <div class="sp-card" id="mc-src-card">
-                <div class="sp-row" style="padding-bottom:0">
+                <div class="sp-row sp-row--seg" style="padding-bottom:0">
                     <div>
                         <div class="sp-row-label">Catalog source</div>
                         <div class="sp-row-help">Applies to the whole application. Switching takes effect on the next query.</div>
@@ -627,7 +648,16 @@ export class SettingsPage {
 
         // ─ Health diagnostics card (only when health data exists) ────────────────
         let diagnosticsHtml = '';
-        if (h && h.status !== 'down') {
+        if (testing) {
+            diagnosticsHtml = `
+            <div class="mc-health mc-health-pending">
+                <div class="mc-health-head">
+                    <span class="mc-health-badge mc-health-checking"><span class="mc-dot mc-dot-pulse"></span> Checking…</span>
+                    <span class="mc-health-impl">${_esc(server.server_name)}</span>
+                </div>
+                <p class="mc-health-pending-msg">Running handshake and tool discovery. Previous results are hidden until this check completes.</p>
+            </div>`;
+        } else if (h && h.status !== 'down') {
             const cells = [
                 ['Protocol',  h.protocol || '—'],
                 ['SDK',       h.sdk || '—'],
@@ -971,14 +1001,34 @@ export class SettingsPage {
                 if (!activeServ) return;
                 this._mcpTesting = true;
                 this._mcpRender();
+                let toastMsg = null;
+                let toastType = 'error';
                 try {
-                    const r    = await fetch(`/api/mcp/servers/${activeServ.id}/health-check`, {method:'POST'});
-                    const data = await r.json();
-                    if (!r.ok && !data.ok) throw new Error(data.error || data.detail || `HTTP ${r.status}`);
+                    const r = await fetch(
+                        `/api/mcp/servers/${activeServ.id}/health-check`,
+                        { method: 'POST', credentials: 'same-origin' },
+                    );
+                    const data = await r.json().catch(() => ({}));
+                    this._applyMcpHealthResponse(activeServ.id, data);
+                    await this._mcpLoadStatus();
+
+                    if (data.ok === false) {
+                        toastMsg = data.error || 'Health check failed';
+                    } else if (!r.ok) {
+                        toastMsg = data.error || data.detail || `HTTP ${r.status}`;
+                    } else {
+                        toastType = 'success';
+                        toastMsg = 'Health check complete';
+                    }
+                } catch (e2) {
+                    toastMsg = e2.message || 'Health check failed';
                     this._mcpStatus = null;
                     await this._mcpLoadStatus();
-                } catch (e2) { _showToast('Health check failed — ' + e2.message, 'error'); }
-                finally { this._mcpTesting = false; this._mcpRender(); }
+                } finally {
+                    this._mcpTesting = false;
+                    this._mcpRender();
+                    if (toastMsg) _showToast(toastMsg, toastType);
+                }
             });
         }
 

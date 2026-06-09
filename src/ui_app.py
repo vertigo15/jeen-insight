@@ -157,10 +157,9 @@ def login():
             user = get_user_by_email(email)
         except Exception as exc:  # noqa: BLE001
             logger.exception("login: auth DB lookup failed for %s", email)
-            error = (
-                "Sign-in is temporarily unavailable (database error). "
-                "Contact your administrator."
-            )
+            from src.auth_db import friendly_db_error
+
+            error = friendly_db_error(exc)
             if os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG":
                 error = f"{error} ({exc})"
         else:

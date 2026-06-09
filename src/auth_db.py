@@ -46,6 +46,36 @@ def _connect():
     )
 
 
+def friendly_db_error(exc: Exception) -> str:
+    """Map a DB exception to a user-facing login/health message."""
+    msg = str(exc).lower()
+    if any(
+        token in msg
+        for token in (
+            "timeout",
+            "timed out",
+            "connection refused",
+            "could not connect",
+            "closed the connection",
+            "server closed the connection",
+            "network is unreachable",
+        )
+    ):
+        return (
+            "Cannot reach the metadata database. "
+            "Check your network or VPN, and ensure your IP is allowed in "
+            "Azure Postgres firewall rules."
+        )
+    if "password authentication failed" in msg:
+        return "Database authentication failed. Check METADATA_DB_USER / METADATA_DB_PASSWORD."
+    if "auth_users" in msg and "does not exist" in msg:
+        return (
+            "Login tables are missing. Run: "
+            "python scripts/run_insights_migrations.py"
+        )
+    return "Sign-in is temporarily unavailable (database error)."
+
+
 def check_connection() -> tuple[bool, str | None]:
     """Return (ok, error_message) for auth DB connectivity."""
     try:
@@ -53,7 +83,7 @@ def check_connection() -> tuple[bool, str | None]:
             conn.execute("SELECT 1")
         return True, None
     except Exception as exc:  # noqa: BLE001
-        return False, str(exc)
+        return False, friendly_db_error(exc)
 
 
 # ── Queries ───────────────────────────────────────────────────────────────────

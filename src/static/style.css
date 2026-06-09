@@ -2888,14 +2888,48 @@ td.cell-id {
 
 /* Bottom nav: pinned to bottom */
 .sp-nav-bottom {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   padding: var(--space-2);
   border-top: 1px solid var(--color-border);
   flex-shrink: 0;
+  margin-top: auto;
 }
 
-/* Close button (same style, slightly muted) */
-.sp-close-btn { color: var(--color-muted); }
-.sp-close-btn:hover { color: var(--color-text); background: var(--color-surface-2); }
+.sp-nav-group-bottom {
+  margin-top: 0;
+  padding-top: var(--space-1);
+}
+
+a.sp-nav-item {
+  text-decoration: none;
+  box-sizing: border-box;
+}
+
+/* MCP health check — in-progress placeholder (hides stale Healthy card) */
+.mc-health-pending {
+  border: 1px dashed var(--color-border);
+  background: var(--color-surface-2);
+}
+.mc-health-pending-msg {
+  margin: 0 14px 14px;
+  font-size: 0.8rem;
+  color: var(--color-muted);
+  line-height: 1.45;
+}
+.mc-health-badge.mc-health-checking {
+  background: var(--color-surface);
+  color: var(--color-muted);
+  border: 1px solid var(--color-border);
+}
+
+/* Close / logout actions (slightly muted) */
+.sp-close-btn,
+.sp-logout-btn { color: var(--color-muted); }
+.sp-close-btn:hover,
+.sp-logout-btn:hover { color: var(--color-text); background: var(--color-surface-2); }
+.sp-logout-btn:hover { color: var(--color-error); }
 
 /* ── Content area ────────────────────────────────────────── */
 .sp-content {
@@ -2967,6 +3001,17 @@ td.cell-id {
 .sp-row-label { font-size: var(--text-sm); font-weight: var(--weight-medium); color: var(--color-text); }
 .sp-row-help  { font-size: var(--text-xs); color: var(--color-faint); margin-top: 2px; line-height: 1.4; }
 .sp-row-control { justify-self: end; width: 100%; }
+/* Catalog source toggle — needs room for icon + "MCP Server" label */
+.sp-row--seg {
+  grid-template-columns: 1fr auto;
+  align-items: start;
+}
+.sp-row--seg .mc-seg {
+  justify-self: end;
+  flex-shrink: 0;
+  width: max-content;
+  max-width: 100%;
+}
 
 /* ── Placeholder chips ───────────────────────────────────── */
 .sp-placeholder-row {
@@ -3744,10 +3789,11 @@ td.cell-id {
   padding: 3px; gap: 3px;
 }
 .mc-seg button {
-  display: inline-flex; align-items: center; gap: 7px;
-  height: 32px; padding: 0 14px; border-radius: 7px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  height: 32px; padding: 0 12px; border-radius: 7px;
   font-size: 0.8125rem; font-weight: 500; color: var(--color-muted);
   background: transparent; border: none; cursor: pointer;
+  white-space: nowrap; flex-shrink: 0; line-height: 1;
 }
 .mc-seg button:hover { color: var(--color-text); }
 .mc-seg button.is-active {

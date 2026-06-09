@@ -420,9 +420,15 @@ class McpServerService:
     async def save_test_result(
         self, server_id: int, *, ok: bool, message: str
     ) -> None:
-        """Persist a failed test result without overwriting the full health blob."""
+        """Persist a failed health-check result (status=down + error message)."""
         import json as _json
-        fail_health = {"status": "down", "error": message}
+        from datetime import datetime, timezone
+
+        fail_health = {
+            "status":     "down",
+            "error":      message,
+            "checked_at": datetime.now(tz=timezone.utc).isoformat(),
+        }
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """

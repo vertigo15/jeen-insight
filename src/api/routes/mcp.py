@@ -314,11 +314,16 @@ async def run_health_check(server_id: int):
     result = await client.run_health_check(server)
 
     if not result.get("ok"):
-        # Persist the failure status so the UI dot shows red
+        # Persist the failure status so the UI shows Unreachable (not stale Healthy).
         await svc.save_test_result(
             server_id, ok=False, message=result.get("error", "Unknown error")
         )
-        return result   # ok=False with error message — not a 500
+        updated = await svc.get_by_id(server_id)
+        return {
+            "ok":     False,
+            "error":  result.get("error", "Unknown error"),
+            "server": updated.to_dict() if updated else None,
+        }
 
     # Re-read from DB to return the updated health blob
     updated = await svc.get_by_id(server_id)
