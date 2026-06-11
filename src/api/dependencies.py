@@ -39,6 +39,25 @@ def get_metadata_loader() -> MetadataLoader:
     return _require(state.metadata_loader, "MetadataLoader")  # type: ignore[return-value]
 
 
+async def get_catalog_provider(source_key: Optional[str] = None) -> object:
+    """Return the active catalog data provider for autocomplete/picker data.
+
+    When the global ``catalog_source`` setting is ``mcp`` (and the MCP services
+    are wired), returns the ``McpCatalogClient``; otherwise the DB-backed
+    ``MetadataLoader``. Both expose ``load_tables_rich``, ``load_columns``,
+    ``load_knowledge_questions`` and ``load_all`` with identical signatures and
+    return shapes, so callers can use either transparently. Falls back to the
+    DB loader on any error.
+    """
+    if state.mcp_server_service and state.mcp_catalog_client:
+        try:
+            if await state.mcp_server_service.get_catalog_source(source_key) == "mcp":
+                return state.mcp_catalog_client
+        except Exception:  # noqa: BLE001
+            pass
+    return get_metadata_loader()
+
+
 def get_connection_service() -> ConnectionService:
     return _require(state.connection_service, "ConnectionService")  # type: ignore[return-value]
 

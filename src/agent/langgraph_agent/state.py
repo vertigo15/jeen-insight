@@ -64,6 +64,8 @@ class AgentState(TypedDict, total=False):
     system_prompt: str
     structured_prompt: Dict[str, Any]   # forwarded as-is to the UI
     known_tables: List[str]             # lower-cased table names from catalog
+    known_columns: List[str]            # lower-cased column names from catalog (flat)
+    table_columns: Dict[str, List[str]] # lower-cased {table: [columns]} from catalog
     catalog_source_used: str            # 'mcp' | 'db' — provider that served the catalog
     catalog_cache: Optional[str]        # 'hit' | 'miss' | None (DB path has no MCP cache)
     catalog_load_ms: int                # wall time spent loading the catalog bundle
@@ -97,6 +99,8 @@ class AgentState(TypedDict, total=False):
     # None = use compiled graph / server defaults.
     eval_analytics_override: Optional[bool]   # overrides EVAL_ANALYTICS_ENABLED
     llm_timeout_seconds: Optional[int]        # overrides LLM_TIMEOUT_SECONDS per call
+    max_result_rows: Optional[int]            # hard row cap passed to run_sql
+    statement_timeout_ms: Optional[int]       # per-statement DB timeout for run_sql
 
     # ── Node prompts (captured for developer inspection) ──────────────────
     # Each LLM node stores its rendered prompt here so the dev panel can

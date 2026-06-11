@@ -53,6 +53,7 @@ from .mcp_server_service import (
     McpServer, McpServerService,
     NEED_LIST_SOURCES, NEED_LIST_TABLES, NEED_DESCRIBE_TABLE,
     NEED_LIST_RELATIONSHIPS, NEED_BUSINESS_GLOSSARY, NEED_KNOWLEDGE_PAIRS,
+    NEED_TABLES_RICH, NEED_LIST_COLUMNS, NEED_KNOWLEDGE_QUESTIONS,
 )
 from .mcp_cache_service import (
     McpCacheService,
@@ -62,6 +63,9 @@ from .mcp_cache_service import (
     KEY_RELATIONSHIPS,
     KEY_BUSINESS_TERMS,
     KEY_KNOWLEDGE_PAIRS,
+    KEY_TABLES_RICH,
+    KEY_KNOWLEDGE_QUESTIONS,
+    KEY_COLUMNS_STRUCT,
     SOURCE_GLOBAL,
 )
 
@@ -143,6 +147,81 @@ class McpCatalogClient:
         # Second attempt from cache (now populated).
         result = await self._bundle_from_cache(server, source_key)
         return result if result is not None else _empty_bundle()
+
+    # ── Structured autocomplete datasets (`/`, `#`, `@`) ──────────────────────
+
+    async def _load_list_dataset(
+        self,
+        source_key: str,
+        need: str,
+        cache_key: str,
+        arguments: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Fetch a structured JSON-array tool result, cached per (server, source).
+
+        Returns ``[]`` (never raises) so the autocomplete routes degrade
+        gracefully when the server lacks the tool or is unreachable.
+        """
+        server = await self._srv_svc.get_active()
+        if not server:
+            return []
+
+        ttl = server.cache_ttl_seconds
+        cached = await self._cache_svc.get(server.id, source_key, cache_key, ttl)
+        if cached and not cached.is_stale:
+            return cached.payload if isinstance(cached.payload, list) else []
+
+        tool = server.get_tool_for_need(need)
+        if not tool:
+            logger.warning("mcp: no tool mapped for need=%s", need)
+            return cached.payload if (cached and isinstance(cached.payload, list)) else []
+
+        conn_id = await self._resolve_connection_id(server, source_key)
+        if conn_id is None:
+            return cached.payload if (cached and isinstance(cached.payload, list)) else []
+
+        args = {"connection_id": conn_id, **arguments}
+        try:
+            raw = await self._call_tool(server, tool, args)
+            items = _normalise_list(raw)
+            await self._cache_svc.set(server.id, source_key, cache_key, items, ttl)
+            return items
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mcp: %s failed: %s", tool, exc)
+            return cached.payload if (cached and isinstance(cached.payload, list)) else []
+
+    async def load_tables_rich(self, source_key: str) -> List[Dict[str, Any]]:
+        """Mirror of MetadataLoader.load_tables_rich for the `@` table picker.
+
+        Shape: ``[{name, description, col_count}]``.
+        """
+        return await self._load_list_dataset(
+            source_key, NEED_TABLES_RICH, KEY_TABLES_RICH, {}
+        )
+
+    async def load_knowledge_questions(self, source_key: str) -> List[Dict[str, Any]]:
+        """Mirror of MetadataLoader.load_knowledge_questions for `/` templates.
+
+        Shape: ``[{question, category, tags}]``.
+        """
+        return await self._load_list_dataset(
+            source_key, NEED_KNOWLEDGE_QUESTIONS, KEY_KNOWLEDGE_QUESTIONS, {}
+        )
+
+    async def load_columns(
+        self, source_key: str, table_name: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Mirror of MetadataLoader.load_columns for `#` column autocomplete.
+
+        Shape: ``[{table, column, data_type, description, is_pk, is_nullable}]``.
+        Cached per scope (``ALL`` or a specific table).
+        """
+        scope = (table_name or "").strip() or "ALL"
+        cache_key = f"{KEY_COLUMNS_STRUCT}:{scope.lower()}"
+        arguments = {"table": table_name} if table_name else {}
+        return await self._load_list_dataset(
+            source_key, NEED_LIST_COLUMNS, cache_key, arguments
+        )
 
     async def get_cache_status(
         self, mcp_server_id: int, source_key: str
@@ -544,13 +623,20 @@ def _extract_text(raw: Any) -> str:
 
 # ── Need-mapping heuristics ───────────────────────────────────────────────────
 
+# Order matters: _map_tool_to_need returns the FIRST need whose keyword is a
+# substring of the tool name. The specific autocomplete needs are listed
+# before the generic ones so e.g. ``list_tables_rich`` maps to
+# NEED_TABLES_RICH rather than NEED_LIST_TABLES (which also matches "tables").
 _NEED_KEYWORDS: Dict[str, List[str]] = {
-    NEED_LIST_SOURCES:       ["list_connections",   "connections",    "list_sources"],
-    NEED_LIST_TABLES:        ["get_catalog_prompt", "catalog_prompt", "list_tables",    "tables"],
-    NEED_DESCRIBE_TABLE:     ["get_filtered_prompt","filtered_prompt","describe_table", "describe", "columns"],
-    NEED_LIST_RELATIONSHIPS: ["relationships",      "list_relations"],
-    NEED_BUSINESS_GLOSSARY:  ["business_terms",     "glossary",       "terms"],
-    NEED_KNOWLEDGE_PAIRS:    ["knowledge_pairs",    "knowledge",      "examples"],
+    NEED_LIST_SOURCES:        ["list_connections",   "connections",    "list_sources"],
+    NEED_TABLES_RICH:         ["tables_rich",        "list_tables_rich"],
+    NEED_LIST_COLUMNS:        ["list_columns"],
+    NEED_KNOWLEDGE_QUESTIONS: ["knowledge_questions", "list_knowledge_questions"],
+    NEED_LIST_TABLES:         ["get_catalog_prompt", "catalog_prompt", "list_tables",    "tables"],
+    NEED_DESCRIBE_TABLE:      ["get_filtered_prompt","filtered_prompt","describe_table", "describe", "columns"],
+    NEED_LIST_RELATIONSHIPS:  ["relationships",      "list_relations"],
+    NEED_BUSINESS_GLOSSARY:   ["business_terms",     "glossary",       "terms"],
+    NEED_KNOWLEDGE_PAIRS:     ["knowledge_pairs",    "knowledge",      "examples"],
 }
 
 

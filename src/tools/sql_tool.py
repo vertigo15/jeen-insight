@@ -80,18 +80,27 @@ class PostgresSqlRunner:
         self,
         sql: str,
         limit: Optional[int] = 100,
+        max_rows: int = 10000,
+        statement_timeout_ms: int = 30000,
     ) -> Dict[str, Any]:
         """Execute a read-only SQL query and return its result rows.
 
-        Two layers of safety:
+        Three layers of safety:
 
         1. **Pre-check**: only SQL whose leading keyword (after stripping
            comments) is ``SELECT`` or ``WITH`` is allowed through. Anything
            else is rejected without ever touching the connection pool.
-        2. **Read-only transaction**: the query runs inside a Postgres
-           ``READ ONLY`` transaction. If a function call or anything the
-           pre-check missed tries to mutate state, Postgres raises an error
-           and the transaction rolls back automatically.
+        2. **Hard row cap**: the query is wrapped in an outer
+           ``SELECT * FROM (<query>) LIMIT n`` where ``n`` never exceeds
+           ``max_rows``. This caps results even when the inner SQL already
+           has its own (possibly huge) LIMIT, and is robust against the
+           comment/casing tricks a plain string check would miss.
+        3. **Read-only transaction + statement timeout**: the query runs
+           inside a Postgres ``READ ONLY`` transaction with a per-statement
+           ``statement_timeout`` so a runaway query can't exhaust the pool.
+           If a function call or anything the pre-check missed tries to
+           mutate state, Postgres raises an error and the transaction rolls
+           back automatically.
 
         Note: for the strongest possible guarantee, also connect with a
         Postgres role whose only privilege on the schema is ``SELECT``.
@@ -111,14 +120,26 @@ class PostgresSqlRunner:
                 "row_count": 0,
             }
 
-        # Add LIMIT if not present (only safe to do for the SELECT/WITH
-        # statements this runner accepts).
-        if limit and "LIMIT" not in sql.upper():
-            sql = f"{sql.rstrip().rstrip(';')} LIMIT {limit}"
+        # Enforce a hard row cap. The requested ``limit`` is honoured but can
+        # never exceed ``max_rows``. Wrapping the query in an outer LIMIT means
+        # the cap holds even if the model emitted its own LIMIT or none at all.
+        effective_limit = max_rows if max_rows and max_rows > 0 else (limit or 0)
+        if limit and limit > 0:
+            effective_limit = min(limit, effective_limit) if effective_limit else limit
+        inner = sql.rstrip().rstrip(";").rstrip()
+        if effective_limit and effective_limit > 0:
+            sql = f"SELECT * FROM (\n{inner}\n) AS _jeen_capped LIMIT {int(effective_limit)}"
+        else:
+            sql = inner
 
         try:
             async with self.pool.acquire() as conn:
                 async with conn.transaction(readonly=True):
+                    if statement_timeout_ms and statement_timeout_ms > 0:
+                        # SET LOCAL scopes the timeout to this transaction only.
+                        await conn.execute(
+                            f"SET LOCAL statement_timeout = {int(statement_timeout_ms)}"
+                        )
                     rows = await conn.fetch(sql)
 
             if not rows:
@@ -130,6 +151,19 @@ class PostgresSqlRunner:
                 "columns": columns,
                 "rows": result_rows,
                 "row_count": len(result_rows),
+            }
+        except asyncpg.exceptions.QueryCanceledError as e:
+            # statement_timeout fired before the query finished.
+            logger.warning("run_sql: query cancelled by statement_timeout: %s", e)
+            return {
+                "error": (
+                    "The query took too long and was cancelled. Try narrowing "
+                    "it (add filters or a smaller date range) or contact an "
+                    "admin to raise the statement timeout."
+                ),
+                "columns": [],
+                "rows": [],
+                "row_count": 0,
             }
         except asyncpg.exceptions.ReadOnlySQLTransactionError as e:
             # The READ ONLY transaction rejected something the pre-check

@@ -48,6 +48,32 @@ _GREETING_ANSWER = (
     "Ask me anything about your data and I'll query it for you."
 )
 
+# How many recent turns to surface to the router when no summary exists.
+_ROUTER_HISTORY_TURNS = 3
+
+
+def _format_recent_history(history: Any) -> str:
+    """Build a compact ``Q: … / SQL: …`` block from the last few turns.
+
+    Used as a fallback for the router's {conversation_summary} placeholder when
+    no condensed memory summary exists yet, so the router can still detect
+    follow-up questions ("and for last month?") that depend on prior context.
+    """
+    if not history:
+        return ""
+    recent = list(history)[-_ROUTER_HISTORY_TURNS:]
+    lines = []
+    for qa in recent:
+        q = (qa.get("natural_language_query") or "").strip()
+        sql = (qa.get("generated_sql") or "").strip()
+        if not q:
+            continue
+        line = f"Q: {q}"
+        if sql:
+            line += f"\nSQL: {sql}"
+        lines.append(line)
+    return "\n".join(lines)
+
 
 def _merge_usage(current: Dict[str, int], new: Dict[str, Any]) -> Dict[str, int]:
     return {
@@ -73,7 +99,12 @@ def make_fused_router(router_llm: LangChainLlmService, prompt_loader: PromptLoad
             }
 
         # ── LLM classification ────────────────────────────────────────────
-        summary = state.get("memory_summary") or "No prior conversation."
+        # Prefer the condensed memory summary; otherwise fall back to a compact
+        # block of the most recent turns so follow-ups still have context.
+        summary = state.get("memory_summary")
+        if not summary:
+            summary = _format_recent_history(state.get("conversation_history"))
+        summary = summary or "No prior conversation."
         source = state.get("connection_display_name") or "the database"
 
         system_msg = prompt_loader.render(

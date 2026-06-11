@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from src.api.dependencies import get_metadata_loader, resolve_agent
+from src.api.dependencies import get_catalog_provider, resolve_agent
 from src.api.llm_json import extract_json_object, normalise_corrections
 from src.api.llm_params import AUTOCOMPLETE_PARAMS
 from src.api.models import SuggestQuestionsRequest
@@ -44,8 +44,8 @@ def _load_autocomplete_prompt() -> str:
 async def get_knowledge_questions(
     connection: str = Query(..., description="source_key of the active connection"),
 ):
-    loader = get_metadata_loader()
-    items = await loader.load_knowledge_questions(connection)
+    provider = await get_catalog_provider(connection)
+    items = await provider.load_knowledge_questions(connection)
     return {
         "connection": connection,
         "questions": items,
@@ -61,8 +61,8 @@ async def get_knowledge_columns(
     connection: str = Query(..., description="source_key of the active connection"),
     table: Optional[str] = Query(None, description="Optional: scope to one table"),
 ):
-    loader = get_metadata_loader()
-    items = await loader.load_columns(connection, table)
+    provider = await get_catalog_provider(connection)
+    items = await provider.load_columns(connection, table)
     return {
         "connection": connection,
         "table": table,
@@ -94,7 +94,8 @@ async def suggest_questions(request: SuggestQuestionsRequest):
     # bundle we cache for the system prompt.
     table_names: List[str] = list(request.table_names or [])
     if not table_names:
-        bundle = await agent.metadata_loader.load_all(agent.source_key)
+        provider = await get_catalog_provider(request.connection)
+        bundle = await provider.load_all(request.connection)
         for line in bundle.get("tables", "").splitlines():
             line = line.strip()
             if line.startswith("- "):

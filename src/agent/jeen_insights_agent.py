@@ -104,6 +104,11 @@ class JeenInsightsAgent:
         try:
             user = await self.user_resolver.resolve_user(user_context or {})
 
+            # Live-editable global guardrails (DB statement timeout, row cap,
+            # conversation-context window). Cached briefly inside the service.
+            from src.metadata.runtime_settings import get_runtime_settings
+            runtime = await get_runtime_settings()
+
             # ── Parallel DB round-trips ──────────────────────────────────────
             # metadata_loader, conversation history, and query audit log are
             # all independent — run them concurrently to save ~1-2s of Azure
@@ -114,7 +119,9 @@ class JeenInsightsAgent:
             # surfaced in the UI via formatted_response["error"].
             results = await asyncio.gather(
                 self._load_catalog(self.source_key),
-                self._fetch_conversation_context(session_id),
+                self._fetch_conversation_context(
+                    session_id, limit=runtime.conversation_context_turns
+                ),
                 self._safe_log_query(
                     user_id=user.id,
                     session_id=session_id,
@@ -173,6 +180,8 @@ class JeenInsightsAgent:
                 # ── Catalog ─────────────────────────────────────────────
                 "metadata_bundle": metadata_bundle,
                 "known_tables": [],
+                "known_columns": [],
+                "table_columns": {},
                 # ── SQL loop ────────────────────────────────────────────
                 "retry_count": 0,
                 "generated_sql": None,
@@ -194,6 +203,8 @@ class JeenInsightsAgent:
                 # ── Per-request overrides ──────────────────────────────────────
                 "eval_analytics_override": eval_analytics,
                 "llm_timeout_seconds": llm_timeout,
+                "max_result_rows": runtime.max_result_rows,
+                "statement_timeout_ms": runtime.db_statement_timeout_ms,
                 # Empty list — operator.add in AgentState accumulates across nodes
                 "trace": [],
                 # Empty dict — each LLM node adds its rendered prompt here
@@ -273,10 +284,12 @@ class JeenInsightsAgent:
             rag_context={},  # metadata not yet available; parallel fetch
         )
 
-    async def _fetch_conversation_context(self, session_id: UUID) -> List[Dict[str, Any]]:
+    async def _fetch_conversation_context(
+        self, session_id: UUID, limit: int = 5
+    ) -> List[Dict[str, Any]]:
         try:
             ctx = await self.history.get_conversation_context(
-                session_id=session_id, limit=2
+                session_id=session_id, limit=limit
             )
             ctx.reverse()  # chronological order, oldest first
             if ctx:

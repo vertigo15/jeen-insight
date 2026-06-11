@@ -768,6 +768,24 @@ def settings_app_info():
     return _proxy_get("/api/settings/app-info", timeout=10)
 
 
+@app.route("/api/settings/runtime", methods=["GET"])
+def settings_get_runtime():
+    return _proxy_get("/api/settings/runtime", timeout=10)
+
+
+@app.route("/api/settings/runtime", methods=["PUT"])
+def settings_update_runtime():
+    try:
+        resp = requests.put(
+            f"{API_BASE_URL}/api/settings/runtime",
+            json=request.get_json() or {},
+            timeout=10,
+        )
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+    return jsonify(resp.json()), resp.status_code
+
+
 # ----------------------------------------------------------------------
 # MCP catalog management (generic catch-all proxy)
 # Forwards all /api/mcp/* requests verbatim to the FastAPI backend.

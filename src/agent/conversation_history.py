@@ -249,7 +249,7 @@ class ConversationHistoryService:
                 rows = await conn.fetch(
                     """
                     SELECT sequence_number, natural_language_query, generated_sql,
-                           execution_status, created_at
+                           execution_status, result_preview, created_at
                     FROM insights_conversation_sessions
                     WHERE session_id = $1
                     ORDER BY sequence_number DESC

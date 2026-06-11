@@ -36,6 +36,12 @@ KEY_RELATIONSHIPS = "relationships"
 KEY_BUSINESS_TERMS  = "business_terms"
 KEY_KNOWLEDGE_PAIRS = "knowledge_pairs"
 
+# Structured autocomplete datasets (separate from the prompt bundle sections).
+KEY_TABLES_RICH        = "tables_rich"
+KEY_KNOWLEDGE_QUESTIONS = "knowledge_questions"
+# Columns are cached per-scope: f"{KEY_COLUMNS_STRUCT}:{table_or_all}".
+KEY_COLUMNS_STRUCT      = "columns_struct"
+
 ALL_CATALOG_KEYS: List[str] = [
     KEY_TABLES, KEY_COLUMNS, KEY_RELATIONSHIPS,
     KEY_BUSINESS_TERMS, KEY_KNOWLEDGE_PAIRS,

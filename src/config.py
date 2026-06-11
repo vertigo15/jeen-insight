@@ -40,6 +40,16 @@ class Settings(BaseSettings):
     # request from blocking the entire query. 0 = no timeout.
     LLM_TIMEOUT_SECONDS: int = 30
 
+    # ── Runtime guardrails (defaults; overridable live via app_settings) ────
+    # Per-statement Postgres timeout for user-data queries. Prevents a runaway
+    # query from exhausting the connection pool. 0 = no timeout.
+    DB_STATEMENT_TIMEOUT_MS: int = 30000
+    # Hard ceiling on rows returned by run_sql, regardless of the requested
+    # LIMIT. The model cannot exceed this.
+    MAX_RESULT_ROWS: int = 10000
+    # Number of previous Q&A turns loaded as short-term conversation memory.
+    CONVERSATION_CONTEXT_TURNS: int = 5
+
     class Config:
         env_file = ".env"
         case_sensitive = True

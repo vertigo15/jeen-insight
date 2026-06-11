@@ -3,6 +3,9 @@
 LangGraph state graph for the Jeen Insights text-to-SQL agent.
 Every query passes through this graph from `START` to `END`.
 
+> **Full end-to-end path** (UI → Flask → API → pre-graph → LangGraph → insights/charts):
+> see [question-to-answer-flow.md](./question-to-answer-flow.md).
+
 ## Diagram
 
 ```mermaid

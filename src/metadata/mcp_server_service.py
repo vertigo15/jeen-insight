@@ -42,6 +42,11 @@ NEED_DESCRIBE_TABLE    = "describe_table"
 NEED_LIST_RELATIONSHIPS = "list_relationships"
 NEED_BUSINESS_GLOSSARY = "business_glossary"
 NEED_KNOWLEDGE_PAIRS   = "knowledge_pairs"
+# Structured autocomplete datasets (optional). Each maps to a dedicated tool
+# returning JSON rows, used by the `/`, `#`, and `@` UI features under MCP.
+NEED_TABLES_RICH        = "tables_rich"
+NEED_LIST_COLUMNS       = "list_columns"
+NEED_KNOWLEDGE_QUESTIONS = "knowledge_questions"
 
 # Required needs — server cannot be activated until these are mapped.
 # NEED_LIST_SOURCES → list_connections  (connection list)
@@ -57,6 +62,9 @@ CATALOG_NEEDS = [
     {"key": NEED_LIST_TABLES,        "label": "Catalog prompt (tables, columns)", "required": True},
     {"key": NEED_LIST_RELATIONSHIPS, "label": "Relationships",                    "required": False},
     {"key": NEED_BUSINESS_GLOSSARY,  "label": "Business terms & glossary",        "required": False},
+    {"key": NEED_TABLES_RICH,        "label": "Tables (rich: @ picker)",          "required": False},
+    {"key": NEED_LIST_COLUMNS,       "label": "Columns (# autocomplete)",         "required": False},
+    {"key": NEED_KNOWLEDGE_QUESTIONS,"label": "Knowledge questions (/ templates)","required": False},
 ]
 
 # Human-readable labels for required needs, used in error messages.

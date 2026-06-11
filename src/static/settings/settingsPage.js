@@ -38,6 +38,7 @@ const NAV = [
             { id: 'general',           label: 'General',              icon: ICONS.general,  type: 'general' },
             { id: 'metadata-catalog',  label: 'Metadata & Catalog',   icon: ICONS.catalog,  type: 'metadata-catalog' },
             { id: 'ai-models',         label: 'AI Models',            icon: ICONS.models,   type: 'ai-models' },
+            { id: 'query-safety',      label: 'Query & Safety',       icon: ICONS.general,  type: 'query-safety' },
             { id: 'users',             label: 'Users',                icon: ICONS_USERS,    type: 'users' },
         ],
     },
@@ -226,6 +227,8 @@ export class SettingsPage {
             this._renderMetadataCatalog();
         } else if (id === 'ai-models') {
             this._renderModels();
+        } else if (id === 'query-safety') {
+            this._renderQuerySafety();
         } else if (id === 'users') {
             this._renderUsers();
         } else if (id === 'about') {
@@ -1130,6 +1133,88 @@ export class SettingsPage {
             </div>
             <div class="sp-row-control">${controlHtml}</div>
         </div>`;
+    }
+
+    // ── Query & Safety (global runtime guardrails) ────────────────────────────
+
+    async _renderQuerySafety() {
+        this._content.innerHTML = `
+            <div class="sp-section-header">
+                <h2 class="sp-section-title">Query &amp; Safety</h2>
+                <p class="sp-section-desc">Global guardrails for SQL execution and conversation memory. Applied live across the whole application and persisted across restarts.</p>
+            </div>
+            <div class="sp-card"><div class="sp-card-title">Loading…</div></div>
+        `;
+
+        let data;
+        try {
+            const res = await fetch('/api/settings/runtime');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            data = await res.json();
+        } catch (e) {
+            console.error('[SettingsPage] load runtime settings failed:', e);
+            this._content.innerHTML = `
+                <div class="sp-section-header">
+                    <h2 class="sp-section-title">Query &amp; Safety</h2>
+                </div>
+                <div class="sp-card"><div class="sp-card-title">Could not load settings — ${_esc(e.message)}</div></div>
+            `;
+            return;
+        }
+
+        const b = data.bounds || {};
+        const tb = b.db_statement_timeout_ms || { min: 0, max: 600000 };
+        const rb = b.max_result_rows || { min: 1, max: 1000000 };
+        const cb = b.conversation_context_turns || { min: 0, max: 50 };
+
+        this._content.innerHTML = `
+            <div class="sp-section-header">
+                <h2 class="sp-section-title">Query &amp; Safety</h2>
+                <p class="sp-section-desc">Global guardrails for SQL execution and conversation memory. Applied live across the whole application and persisted across restarts.</p>
+            </div>
+            <div class="sp-card">
+                <div class="sp-card-title">SQL Execution</div>
+                ${this._row('DB statement timeout (ms)', `Per-query Postgres timeout. Prevents a runaway query from exhausting the pool. 0 = no timeout. Range ${tb.min}–${tb.max}.`, `
+                    <input class="settings-select" type="number" id="sp-rt-timeout"
+                           min="${tb.min}" max="${tb.max}" step="500"
+                           value="${data.db_statement_timeout_ms}">`)}
+                ${this._row('Max result rows', `Hard ceiling on rows returned, regardless of the requested limit. Range ${rb.min}–${rb.max}.`, `
+                    <input class="settings-select" type="number" id="sp-rt-maxrows"
+                           min="${rb.min}" max="${rb.max}" step="100"
+                           value="${data.max_result_rows}">`)}
+            </div>
+            <div class="sp-card">
+                <div class="sp-card-title">Conversation Memory</div>
+                ${this._row('Context turns', `Number of previous Q&A turns loaded as short-term memory for follow-up questions. Range ${cb.min}–${cb.max}.`, `
+                    <input class="settings-select" type="number" id="sp-rt-turns"
+                           min="${cb.min}" max="${cb.max}" step="1"
+                           value="${data.conversation_context_turns}">`)}
+            </div>
+            <div class="sp-card-footer">
+                <button class="sp-btn-primary" id="sp-rt-save">Save</button>
+            </div>
+        `;
+
+        this._content.querySelector('#sp-rt-save')?.addEventListener('click', async () => {
+            const payload = {
+                db_statement_timeout_ms: parseInt(this._content.querySelector('#sp-rt-timeout').value, 10),
+                max_result_rows: parseInt(this._content.querySelector('#sp-rt-maxrows').value, 10),
+                conversation_context_turns: parseInt(this._content.querySelector('#sp-rt-turns').value, 10),
+            };
+            try {
+                const res = await fetch('/api/settings/runtime', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                _showToast('Query & Safety settings saved', 'success');
+                this._renderQuerySafety();  // reflect clamped values
+            } catch (e) {
+                console.error('[SettingsPage] save runtime settings failed:', e);
+                _showToast('Could not save — ' + e.message, 'error');
+            }
+        });
     }
 
     // ── Model helpers ─────────────────────────────────────────────────────────

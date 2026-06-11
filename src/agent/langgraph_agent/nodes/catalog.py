@@ -88,13 +88,16 @@ def make_catalog_lookup(metadata_loader: MetadataLoader):
         bundle, meta = await _load_catalog_bundle(source_key, metadata_loader)
         load_ms = round((time.monotonic() - t0) * 1000)
         known_tables = _extract_table_names(bundle.get("tables", ""))
+        table_columns, known_columns = _extract_columns(bundle.get("columns", ""))
         logger.info(
-            "catalog_lookup: %d known tables via %s (cache=%s, %dms)",
-            len(known_tables), meta["source"], meta["cache"], load_ms,
+            "catalog_lookup: %d known tables, %d known columns via %s (cache=%s, %dms)",
+            len(known_tables), len(known_columns), meta["source"], meta["cache"], load_ms,
         )
         return {
             "metadata_bundle": bundle,
             "known_tables": known_tables,
+            "known_columns": known_columns,
+            "table_columns": table_columns,
             "catalog_source_used": meta["source"],
             "catalog_cache": meta["cache"],
             "catalog_load_ms": load_ms,
@@ -179,3 +182,36 @@ def _extract_table_names(tables_text: str) -> List[str]:
         if table_name:
             names.append(table_name.lower())
     return names
+
+
+def _extract_columns(columns_text: str) -> Tuple[Dict[str, List[str]], List[str]]:
+    """Parse ``table.column`` pairs from the metadata ``columns`` string.
+
+    Lines look like ``table_name.column_name - Type: …`` (see
+    ``MetadataLoader._load_columns``). Returns a lower-cased
+    ``{table: [columns]}`` map and a flat, de-duplicated list of column names.
+    Lines that don't match the ``table.column`` shape are skipped.
+    """
+    table_columns: Dict[str, List[str]] = {}
+    flat: List[str] = []
+    seen: set[str] = set()
+    for line in columns_text.splitlines():
+        stripped = line.lstrip("- ").strip()
+        if not stripped:
+            continue
+        # The qualified name is everything before the first " - " separator.
+        qualified = stripped.split(" - ")[0].strip()
+        if "." not in qualified:
+            continue
+        table, _, column = qualified.partition(".")
+        table = table.strip().lower()
+        column = column.strip().lower()
+        if not table or not column:
+            continue
+        table_columns.setdefault(table, [])
+        if column not in table_columns[table]:
+            table_columns[table].append(column)
+        if column not in seen:
+            seen.add(column)
+            flat.append(column)
+    return table_columns, flat

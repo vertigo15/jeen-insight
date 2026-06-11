@@ -31,10 +31,22 @@ def make_execute_query(sql_runner: PostgresSqlRunner):
     async def execute_query(state: AgentState) -> Dict[str, Any]:
         sql = state.get("generated_sql") or ""
         limit = state.get("limit") or 100
+        max_rows = state.get("max_result_rows") or 10000
+        statement_timeout_ms = state.get("statement_timeout_ms")
+        if statement_timeout_ms is None:
+            statement_timeout_ms = 30000
 
-        logger.info("execute_query: running SQL (limit=%d)", limit)
+        logger.info(
+            "execute_query: running SQL (limit=%d, max_rows=%d, timeout_ms=%d)",
+            limit, max_rows, statement_timeout_ms,
+        )
         t0 = time.monotonic()
-        result = await sql_runner.run_sql(sql, limit=limit)
+        result = await sql_runner.run_sql(
+            sql,
+            limit=limit,
+            max_rows=max_rows,
+            statement_timeout_ms=statement_timeout_ms,
+        )
         exec_time_ms = int((time.monotonic() - t0) * 1000)
 
         if "error" in result:
