@@ -1,0 +1,28 @@
+name: CI
+
+# Runs the fast unit-test suite on every push and pull request so regressions
+# are caught before merge. Deploy (build + push + release) lives in deploy.yml
+# and only runs on push to main.
+on:
+  push:
+    branches-ignore: []          # all branches
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run unit tests
+        run: pytest

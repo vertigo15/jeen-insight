@@ -169,6 +169,11 @@ def _check_columns(stmt, table_columns: Dict[str, Set[str]], sqlglot) -> Optiona
         cname = (col.name or "").lower()
         if not cname or cname == "*" or cname in select_aliases:
             continue
+        # Governed columns (e.g. 'password') are intentionally absent from the
+        # catalog; let dlp_check own them instead of misreporting "not found"
+        # (which would otherwise trigger a pointless catalog-retry loop).
+        if _DLP_RE.search(cname):
+            continue
         qualifier = (col.table or "").lower()
         if qualifier:
             # Only validate when the qualifier is a real table (not an alias).

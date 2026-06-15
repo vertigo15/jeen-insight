@@ -745,6 +745,17 @@ def settings_list_models():
     return _proxy_get("/api/settings/models", timeout=10)
 
 
+@app.route("/api/settings/models/health", methods=["GET"])
+def settings_models_health():
+    # ?refresh=true re-probes every provider, which can take a while.
+    refresh = request.args.get("refresh", "").lower() in ("1", "true", "yes")
+    return _proxy_get(
+        "/api/settings/models/health",
+        params={"refresh": "true"} if refresh else None,
+        timeout=120,
+    )
+
+
 @app.route("/api/settings/models/active", methods=["GET"])
 def settings_get_active_model():
     return _proxy_get("/api/settings/models/active", timeout=10)

@@ -3383,6 +3383,34 @@ a.sp-nav-item {
   border-radius: 4px; padding: 1px 6px;
 }
 
+/* Live credential-health dot shown before each model name. */
+.sp-model-health {
+  flex-shrink: 0;
+  width: 8px; height: 8px; border-radius: 50%;
+  display: inline-block;
+  box-shadow: 0 0 0 2px transparent;
+}
+.sp-model-health--ok {
+  background: oklch(0.72 0.18 145);            /* green */
+  box-shadow: 0 0 0 3px oklch(0.72 0.18 145 / 0.18);
+}
+.sp-model-health--fail {
+  background: oklch(0.63 0.22 25);             /* red */
+  box-shadow: 0 0 0 3px oklch(0.63 0.22 25 / 0.18);
+}
+.sp-model-health--unknown {
+  background: var(--color-border);             /* grey = not probed */
+}
+
+/* AI Models section toolbar (health summary + re-check button). */
+.sp-models-toolbar {
+  display: flex; align-items: center; gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+.sp-models-health-summary {
+  font-size: var(--text-xs); color: var(--color-muted);
+}
+
 /* Responsive: on small screens the sidebar collapses */
 @media (max-width: 640px) {
   .sp-sidebar { width: 52px; }

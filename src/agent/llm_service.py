@@ -26,9 +26,68 @@ import asyncio
 import base64
 import json
 import logging
+import re
 from typing import Any, AsyncGenerator, Dict, List, NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ── Error classification ───────────────────────────────────────────────────────
+
+class LLMUnavailableError(RuntimeError):
+    """Raised when the active model and all healthy fallbacks fail.
+
+    Carries a human-readable, actionable message (see ``classify_llm_error``)
+    so the failure surfaces clearly in the API response instead of a raw
+    provider stack trace.
+    """
+
+
+def classify_llm_error(exc: BaseException) -> str:
+    """Map a provider exception to a short, actionable message.
+
+    Recognises the common credential/availability failures (auth, missing
+    deployment, rate limit, timeout) and falls back to the exception text.
+    """
+    text = str(exc).lower()
+    if any(s in text for s in ("401", "invalid subscription key", "invalid api key",
+                               "access denied", "authentication", "unauthorized", "no api key")):
+        return ("the model's API key is invalid or expired (authentication error). "
+                "Update the key in Settings → AI Models, or pick a model marked healthy.")
+    if any(s in text for s in ("404", "not found", "deploymentnotfound", "no longer available")):
+        return ("the model deployment was not found (404) — it may be decommissioned "
+                "or misconfigured. Pick a model marked healthy in Settings → AI Models.")
+    if any(s in text for s in ("429", "rate limit", "too many requests", "quota")):
+        return "the provider is rate-limiting requests (429). Try again shortly."
+    if "timeout" in text or "timed out" in text:
+        return "the model request timed out. The provider may be slow or unreachable."
+    return str(exc)
+
+
+# ── Reasoning-model temperature handling ──────────────────────────────────────
+# GPT-5.x and the o-series (o1/o3/o4) reasoning models reject any temperature
+# other than the default (1); Azure/OpenAI return a 400 "unsupported_value".
+# We detect them by deployment identifier or model name and simply omit the
+# temperature kwarg so the provider applies its default.
+_NO_CUSTOM_TEMPERATURE_RE = re.compile(
+    r"(?:^|[-_/])(?:gpt-5|o[134])(?:[-._/]|$)",
+    re.IGNORECASE,
+)
+
+
+def _model_identifier(chat_model: Any) -> str:
+    """Best-effort extraction of a model/deployment identifier from a chat model."""
+    for attr in ("deployment_name", "azure_deployment", "model_name", "model"):
+        val = getattr(chat_model, attr, None)
+        if val:
+            return str(val)
+    return ""
+
+
+def _supports_custom_temperature(chat_model: Any, model_name: str = "") -> bool:
+    """Return False for reasoning models that only allow the default temperature."""
+    haystack = f"{_model_identifier(chat_model)} {model_name or ''}"
+    return _NO_CUSTOM_TEMPERATURE_RE.search(haystack) is None
 
 
 # ── Per-prompt model override ─────────────────────────────────────────────────
@@ -49,7 +108,6 @@ _CREDENTIAL_QUERY = """
         am.name                         AS model_name,
         am.display_name                 AS model_display_name,
         p.name                          AS provider_name,
-        p.litellm_prefix,
         amp.provider_model_identifier,
         amp.api_key,
         amp.config,
@@ -71,7 +129,6 @@ _DEFAULT_CREDENTIAL_QUERY = """
         am.name                         AS model_name,
         am.display_name                 AS model_display_name,
         p.name                          AS provider_name,
-        p.litellm_prefix,
         amp.provider_model_identifier,
         amp.api_key,
         amp.config,
@@ -94,7 +151,6 @@ _FETCH_BY_MODEL_ID = """
         am.name                         AS model_name,
         am.display_name                 AS model_display_name,
         p.name                          AS provider_name,
-        p.litellm_prefix,
         amp.provider_model_identifier,
         amp.api_key,
         amp.config,
@@ -427,6 +483,137 @@ class LangChainLlmService:
                 row["provider_model_identifier"],
             )
 
+    # ── Auto-fallback ───────────────────────────────────────────────────────
+    # When the active model's credentials/endpoint fail at call time (e.g. an
+    # expired Azure key returning 401), transparently retry on a model that the
+    # last health probe confirmed working, so one dead deployment can't take the
+    # whole app down. The healthy model is promoted in-memory (not persisted) so
+    # subsequent calls skip the dead one; on restart the admin's DB choice stands.
+
+    @staticmethod
+    def _provider_token_kwargs(provider_name: str, max_tokens: int) -> Dict[str, Any]:
+        if provider_name == "azure_openai":
+            return {"max_completion_tokens": max_tokens}
+        return {"max_tokens": max_tokens}
+
+    def _bind_model(
+        self,
+        base: Any,
+        provider_name: str,
+        model_name: str,
+        max_tokens: int,
+        temperature: float,
+        tools: Optional[List[Dict]] = None,
+    ) -> Any:
+        """Apply tools + the provider-correct token/temperature kwargs to a model."""
+        model = base
+        if tools:
+            model = model.bind_tools(tools, tool_choice="auto")
+        bind_kw = self._provider_token_kwargs(provider_name, max_tokens)
+        if _supports_custom_temperature(base, model_name):
+            bind_kw["temperature"] = temperature
+        return model.bind(**bind_kw)
+
+    async def _healthy_candidates(self, exclude: str) -> List[str]:
+        """Names of models the last probe found healthy, minus *exclude*.
+
+        Falls back to running a probe when no health snapshot is cached yet
+        (cheap and cached afterwards).
+        """
+        from src.agent import llm_health
+
+        cached = llm_health.cached_health()
+        if not cached:
+            try:
+                cached = await llm_health.get_health(self._pool)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("llm_service: health probe for fallback failed: %s", exc)
+                return []
+        return [name for name, h in cached.items() if h.healthy and name != exclude]
+
+    async def _promote(self, name: str, chat_model: Any, provider_name: str) -> None:
+        """Swap the in-memory active model (not persisted to the DB)."""
+        async with self._lock:
+            self._model_name = name
+            self._chat_model = chat_model
+            self._provider_name = provider_name
+
+    async def _ainvoke_with_fallback(
+        self,
+        lc_messages: List[Any],
+        *,
+        base: Any,
+        provider_name: str,
+        model_name: str,
+        max_tokens: int,
+        temperature: float,
+        tools: Optional[List[Dict]],
+        promote: bool,
+    ) -> Any:
+        """Invoke *base*; on failure retry on healthy fallback models.
+
+        ``promote`` swaps the service's active model to the first fallback that
+        succeeds so later calls don't keep hitting the dead one.
+        Raises the original exception when no fallback works.
+        """
+        model = self._bind_model(base, provider_name, model_name, max_tokens, temperature, tools)
+        try:
+            return await model.ainvoke(lc_messages)
+        except Exception as primary_exc:  # noqa: BLE001
+            logger.warning(
+                "llm_service: model %r failed (%s); trying healthy fallback(s)",
+                model_name or "(override)", primary_exc,
+            )
+            for cand in await self._healthy_candidates(exclude=model_name):
+                try:
+                    row = await _fetch_model_row(self._pool, cand)
+                    if not row:
+                        continue
+                    cand_base = _build_chat_model(row)
+                    cand_provider = row["provider_name"]
+                    cand_model = self._bind_model(
+                        cand_base, cand_provider, cand, max_tokens, temperature, tools
+                    )
+                    ai_msg = await cand_model.ainvoke(lc_messages)
+                    logger.warning(
+                        "llm_service: fell back %r → %r", model_name or "(override)", cand
+                    )
+                    if promote:
+                        await self._promote(cand, cand_base, cand_provider)
+                    return ai_msg
+                except Exception as cand_exc:  # noqa: BLE001
+                    logger.warning("llm_service: fallback %r also failed (%s)", cand, cand_exc)
+                    continue
+            reason = classify_llm_error(primary_exc)
+            raise LLMUnavailableError(
+                f"Model {model_name or '(override)'} failed and no healthy fallback "
+                f"was available — {reason}"
+            ) from primary_exc
+
+    async def _healthy_streaming_base(self) -> tuple:
+        """Return (base, provider, name) for streaming, proactively avoiding a
+        model the last probe marked unhealthy when a healthy one exists."""
+        from src.agent import llm_health
+
+        cached = llm_health.cached_health()
+        current = cached.get(self._model_name)
+        if current is not None and not current.healthy:
+            for cand in await self._healthy_candidates(exclude=self._model_name):
+                try:
+                    row = await _fetch_model_row(self._pool, cand)
+                    if not row:
+                        continue
+                    cand_base = _build_chat_model(row)
+                    await self._promote(cand, cand_base, row["provider_name"])
+                    logger.warning(
+                        "llm_service: active %r unhealthy; streaming via %r",
+                        current.name, cand,
+                    )
+                    return cand_base, row["provider_name"], cand
+                except Exception:  # noqa: BLE001
+                    continue
+        return self._chat_model, self._provider_name, self._model_name
+
     # ── Generation ────────────────────────────────────────────────────────
 
     def _token_kwargs(self, max_tokens: int) -> Dict[str, Any]:
@@ -459,21 +646,30 @@ class LangChainLlmService:
         lc_messages = _to_lc_messages(messages)
 
         if model_override is not None:
-            model = model_override.chat_model
-            token_kw = (
-                {"max_completion_tokens": max_tokens}
-                if model_override.provider_name == "azure_openai"
-                else {"max_tokens": max_tokens}
+            base, provider_name, model_name, promote = (
+                model_override.chat_model,
+                model_override.provider_name,
+                "",
+                False,  # don't repoint the global model because of a per-prompt override
             )
         else:
-            model = self._chat_model
-            token_kw = self._token_kwargs(max_tokens)
+            base, provider_name, model_name, promote = (
+                self._chat_model,
+                self._provider_name,
+                self._model_name,
+                True,
+            )
 
-        if tools:
-            model = model.bind_tools(tools, tool_choice="auto")
-        model = model.bind(temperature=temperature, **token_kw)
-
-        ai_msg = await model.ainvoke(lc_messages)
+        ai_msg = await self._ainvoke_with_fallback(
+            lc_messages,
+            base=base,
+            provider_name=provider_name,
+            model_name=model_name,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools,
+            promote=promote,
+        )
         return _from_lc_response(ai_msg)
 
     async def generate_stream(
@@ -487,16 +683,12 @@ class LangChainLlmService:
         """Yield raw text chunks (str)."""
         lc_messages = _to_lc_messages(messages)
         if model_override is not None:
-            base = model_override.chat_model
-            token_kw = (
-                {"max_completion_tokens": max_tokens}
-                if model_override.provider_name == "azure_openai"
-                else {"max_tokens": max_tokens}
+            base, provider_name, model_name = (
+                model_override.chat_model, model_override.provider_name, "",
             )
         else:
-            base = self._chat_model
-            token_kw = self._token_kwargs(max_tokens)
-        model = base.bind(temperature=temperature, **token_kw)
+            base, provider_name, model_name = await self._healthy_streaming_base()
+        model = self._bind_model(base, provider_name, model_name, max_tokens, temperature)
 
         async for chunk in model.astream(lc_messages):
             text = _extract_text(chunk.content)
@@ -520,16 +712,12 @@ class LangChainLlmService:
         """
         lc_messages = _to_lc_messages(messages)
         if model_override is not None:
-            base = model_override.chat_model
-            token_kw = (
-                {"max_completion_tokens": max_tokens}
-                if model_override.provider_name == "azure_openai"
-                else {"max_tokens": max_tokens}
+            base, provider_name, model_name = (
+                model_override.chat_model, model_override.provider_name, "",
             )
         else:
-            base = self._chat_model
-            token_kw = self._token_kwargs(max_tokens)
-        model = base.bind(temperature=temperature, **token_kw)
+            base, provider_name, model_name = await self._healthy_streaming_base()
+        model = self._bind_model(base, provider_name, model_name, max_tokens, temperature)
 
         try:
             async for chunk in model.astream(lc_messages):
@@ -549,4 +737,4 @@ class LangChainLlmService:
                         },
                     }
         except Exception as exc:  # noqa: BLE001
-            yield {"type": "error", "error": str(exc)}
+            yield {"type": "error", "error": classify_llm_error(exc)}

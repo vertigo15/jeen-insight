@@ -11,6 +11,7 @@ not yet initialised (e.g. during graceful shutdown).
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from src.agent import AgentRegistry
@@ -33,3 +34,5 @@ insights_eval_graph: Optional[object] = None
 mcp_server_service: Optional[McpServerService] = None
 mcp_cache_service: Optional[McpCacheService] = None
 mcp_catalog_client: Optional[McpCatalogClient] = None
+# Background task that warms the model-health cache on startup.
+health_warmup_task: "Optional[asyncio.Task]" = None

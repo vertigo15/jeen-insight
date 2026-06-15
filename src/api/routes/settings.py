@@ -596,9 +596,11 @@ class ModelInfo(BaseModel):
     name: str
     display_name: str
     description: str
-    available: bool        # True = selectable with current credentials
+    available: bool        # True = a credential row is configured (NOT proof it works)
     is_active: bool        # True = currently loaded in the LLM service
     is_default: bool       # True = flagged is_default in admin_models_providers
+    healthy: Optional[bool] = None   # True/False from last live probe; None = not probed yet
+    health_detail: Optional[str] = None  # reason from last probe (e.g. "401 …")
 
 
 class SetModelRequest(BaseModel):
@@ -680,9 +682,15 @@ async def list_models():
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Could not query models: {exc}") from exc
 
+    # Merge in the last live health probe if one is cached (never probes here —
+    # this endpoint must stay fast; call /models/health to refresh the snapshot).
+    from src.agent import llm_health
+    health = llm_health.cached_health()
+
     result = []
     for r in rows:
         available = bool(r.get("has_credentials")) and bool(r.get("is_enabled", True))
+        h = health.get(r["name"])
         result.append(ModelInfo(
             id=r["id"],
             name=r["name"],
@@ -691,8 +699,48 @@ async def list_models():
             available=available,
             is_active=(active_model is not None and r["name"] == active_model),
             is_default=bool(r.get("is_db_default")),
+            healthy=(h.healthy if h is not None else None),
+            health_detail=(h.detail if h is not None else None),
         ))
     return result
+
+
+@router.get("/models/health")
+async def models_health(refresh: bool = False):
+    """Probe each enabled model's credentials and report which actually work.
+
+    Unlike ``available`` (which only means "a credential row exists"), this runs
+    a tiny live generation against every provider so the result reflects real
+    connectivity — expired keys, wrong endpoints, decommissioned deployments and
+    missing drivers all show up here.
+
+    Results are cached for a few minutes; pass ``?refresh=true`` to force a fresh
+    probe (slower — it contacts every provider).
+    """
+    from src.agent import llm_health
+    from src.metadata import get_metadata_pool
+
+    try:
+        pool = await get_metadata_pool()
+        health = await llm_health.get_health(pool, refresh=refresh)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"Could not probe models: {exc}") from exc
+
+    # Sort working first, then failing, then skipped (non-chat / no driver).
+    _rank = {llm_health.PASS: 0, llm_health.FAIL: 1, llm_health.SKIP: 2}
+    items = sorted(health.values(), key=lambda h: (_rank.get(h.status, 3), h.name))
+    healthy = [h.name for h in items if h.healthy is True]
+    failing = [h.name for h in items if h.healthy is False]
+    skipped = [h.name for h in items if h.healthy is None]
+    return {
+        "checked_age_seconds": llm_health.cache_age_seconds(),
+        "total": len(items),
+        "healthy_count": len(healthy),
+        "failing_count": len(failing),
+        "skipped_count": len(skipped),
+        "healthy": healthy,
+        "models": [h.as_dict() for h in items],
+    }
 
 
 @router.get("/models/active")

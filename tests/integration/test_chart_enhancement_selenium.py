@@ -37,8 +37,10 @@ SCREENSHOT_DIR = "tests/screenshots/chart"
 SHORT_WAIT     = 15  # seconds — DOM element waits
 LONG_WAIT      = 60  # seconds — LLM query + chart generation
 
-# Model with confirmed credentials; used to reset state before the test.
-_KNOWN_GOOD_MODEL = "gpt-5.4"
+# Last-resort model name if the health endpoint is unreachable. The test
+# normally picks a confirmed-working model dynamically (see _pick_healthy_model)
+# rather than hardcoding one, which goes stale as credentials rotate.
+_FALLBACK_MODEL = "gpt-5.3"
 
 # ── Helpers ────────────────────────────────────────────────────────────────────────
 
@@ -50,6 +52,38 @@ def _screenshot(driver: webdriver.Chrome, name: str) -> None:
         print(f"   📸 {path}")
     except Exception as exc:
         print(f"   ⚠ screenshot skipped ({exc})")
+
+
+def _pick_healthy_model(api_url: str) -> str:
+    """Return the name of a model the live health probe confirms working.
+
+    Falls back to ``_FALLBACK_MODEL`` when the endpoint is unreachable so the
+    test stays self-contained instead of pinning a model that may be down.
+    """
+    try:
+        r = requests.get(f"{api_url}/api/settings/models/health", timeout=120)
+        if r.ok:
+            healthy = r.json().get("healthy") or []
+            if healthy:
+                return healthy[0]
+    except requests.RequestException:
+        pass
+    return _FALLBACK_MODEL
+
+
+def _login(driver: webdriver.Chrome, wait: WebDriverWait,
+           email: str = "admin", password: str = "admin") -> None:
+    """Fill and submit the password login form; wait until the main app loads."""
+    if "login" not in driver.current_url:
+        return
+    email_input = wait.until(EC.presence_of_element_located((By.ID, "email")))
+    email_input.clear()
+    email_input.send_keys(email)
+    pw_input = driver.find_element(By.ID, "password")
+    pw_input.clear()
+    pw_input.send_keys(password)
+    driver.find_element(By.ID, "login-btn").click()
+    wait.until(EC.presence_of_element_located((By.ID, "question-input")))
 
 
 # ── Test ───────────────────────────────────────────────────────────────────────────
@@ -74,21 +108,23 @@ def test_top_products_chart_enhancement():
         # Previous tests (or manual exploration) may have switched to a model
         # that has invalid/expired credentials.  Restore a known-good model so
         # this test is self-contained and independent of prior state.
+        good_model = _pick_healthy_model(API_URL)
         try:
             r = requests.put(
                 f"{API_URL}/api/settings/models/active",
-                json={"name": _KNOWN_GOOD_MODEL},
+                json={"name": good_model},
                 timeout=10,
             )
             if r.ok:
-                print(f"\u2713 Active model reset to {_KNOWN_GOOD_MODEL!r}")
+                print(f"\u2713 Active model reset to {good_model!r}")
             else:
                 print(f"\u26a0 Could not reset model ({r.status_code}): {r.text[:120]}")
         except requests.RequestException as req_err:
             pytest.skip(f"API not reachable for model reset: {req_err}")
 
-        # ── 0b. Load page ────────────────────────────────────────────────
+        # ── 0b. Load page + authenticate ─────────────────────────────────
         driver.get(APP_URL)
+        _login(driver, short)
         short.until(EC.presence_of_element_located((By.ID, "question-input")))
         print("\u2713 App loaded")
         _screenshot(driver, "00_app_loaded")

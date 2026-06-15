@@ -59,10 +59,14 @@ async def list_tables_rich(
     otherwise the metadata DB). Each entry includes ``name``, ``description``
     (nullable), and ``col_count``.
     """
+    # Resolve the provider outside the try so its 503 (e.g. loader not yet
+    # initialised) propagates intact instead of being masked as a 500.
+    provider = await get_catalog_provider(connection)
     try:
-        provider = await get_catalog_provider(connection)
         tables = await provider.load_tables_rich(connection)
         return {"tables": tables}
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         logger.exception("Error listing rich tables for connection %r", connection)
         raise HTTPException(status_code=500, detail=str(e)) from e

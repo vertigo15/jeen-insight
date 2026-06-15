@@ -7,6 +7,7 @@ Routes never instantiate services themselves; they read from `src.api.state`
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Optional
@@ -242,6 +243,24 @@ async def lifespan(_app: FastAPI):
         llm_service = LangChainLlmService.from_env_azure(pool, settings)
 
     state.llm_service = llm_service
+
+    # ── Warm the model-health cache in the background ────────────────────────
+    # Probes every enabled model so the settings UI shows real status straight
+    # away and auto-fallback has data without paying a probe cost on first
+    # failure. Fire-and-forget — never blocks or fails startup.
+    async def _warm_model_health() -> None:
+        try:
+            from src.agent import llm_health
+            health = await llm_health.get_health(pool)
+            healthy = [n for n, h in health.items() if h.healthy is True]
+            logger.info(
+                "startup: model health probed — %d/%d healthy (%s)",
+                len(healthy), len(health), ", ".join(sorted(healthy)) or "none",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("startup: model health warm-up failed: %s", exc)
+
+    state.health_warmup_task = asyncio.create_task(_warm_model_health())
 
     # ── Prompt cache (starts empty; fills lazily on first use) ───────────────
     state.prompt_cache = PromptCache(pool, llm_service)

@@ -287,6 +287,10 @@ export class SettingsPage {
             <div class="sp-section-header">
                 <h2 class="sp-section-title">AI Models</h2>
                 <p class="sp-section-desc">Select the language model used for all SQL generation and analytics. The selection is applied live and persisted across restarts.</p>
+                <div class="sp-models-toolbar">
+                    <span class="sp-models-health-summary" id="sp-models-health-summary"></span>
+                    <button class="sp-btn-ghost sp-btn-ghost-sm" id="sp-models-recheck">Re-check health</button>
+                </div>
             </div>
             <div class="sp-card" id="sp-models-list">
                 <div class="sp-model-loading">
@@ -307,6 +311,47 @@ export class SettingsPage {
         }
 
         this._renderModelCards();
+
+        const recheck = document.getElementById('sp-models-recheck');
+        if (recheck) recheck.addEventListener('click', () => this._loadHealth(true));
+
+        // Pull the (cached) health snapshot and update the dots without blocking
+        // the initial render.
+        this._loadHealth(false);
+    }
+
+    async _loadHealth(refresh) {
+        const btn = document.getElementById('sp-models-recheck');
+        const summary = document.getElementById('sp-models-health-summary');
+        if (btn) { btn.disabled = true; btn.textContent = refresh ? 'Checking…' : btn.textContent; }
+        if (summary && refresh) summary.textContent = 'Probing every model…';
+        try {
+            const res = await fetch(`/api/settings/models/health${refresh ? '?refresh=true' : ''}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            const byName = {};
+            (data.models || []).forEach(h => { byName[h.name] = h; });
+            (this._models || []).forEach(m => {
+                const h = byName[m.name];
+                if (h) { m.healthy = h.healthy; m.health_detail = h.detail; }
+            });
+            this._renderModelCards();
+            if (summary) {
+                const age = data.checked_age_seconds;
+                const ago = (age == null) ? '' :
+                    ` · checked ${age < 60 ? Math.round(age) + 's' : Math.round(age / 60) + 'm'} ago`;
+                const parts = [`${data.healthy_count} working`];
+                if (data.failing_count) parts.push(`${data.failing_count} failing`);
+                if (data.skipped_count) parts.push(`${data.skipped_count} n/a`);
+                summary.textContent = parts.join(' · ') + ago;
+            }
+        } catch (e) {
+            if (summary) summary.textContent = 'Health check unavailable';
+            console.error('[SettingsPage] health load failed:', e);
+        } finally {
+            const b = document.getElementById('sp-models-recheck');
+            if (b) { b.disabled = false; b.textContent = 'Re-check health'; }
+        }
     }
 
     _renderModelCards() {
@@ -341,12 +386,23 @@ export class SettingsPage {
         const unavailBadge = !m.available
             ? `<span class="sp-model-unavail">Not configured</span>` : '';
 
+        // Live credential health: green = probe passed, red = failing (with the
+        // reason on hover), grey = not yet probed.
+        const state = m.healthy === true ? 'ok'
+            : (m.healthy === false ? 'fail' : 'unknown');
+        const healthTitle = m.healthy === true
+            ? 'Working — last health check passed'
+            : (m.healthy === false
+                ? ('Failing — ' + (m.health_detail || 'last health check failed'))
+                : (m.health_detail || 'Not checked yet — click “Re-check health”'));
+        const healthDot = `<span class="sp-model-health sp-model-health--${state}" title="${_esc(healthTitle)}"></span>`;
+
         return `
         <div class="sp-model-card ${m.is_active ? 'is-active' : ''} ${!m.available ? 'is-unavailable' : ''}"
              data-model="${_esc(m.name)}">
             <div class="sp-model-info">
                 <div class="sp-model-name">
-                    ${_esc(m.display_name)}${defaultBadge}${unavailBadge}
+                    ${healthDot}${_esc(m.display_name)}${defaultBadge}${unavailBadge}
                 </div>
                 <div class="sp-model-desc">${_esc(m.description)}</div>
             </div>
