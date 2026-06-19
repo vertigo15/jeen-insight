@@ -473,6 +473,13 @@ def ask_question():
         payload["limit"] = data["limit"]
     if data.get("temperature") is not None:
         payload["temperature"] = data["temperature"]
+    # Forward eval_analytics so the UI can skip the in-graph insights step and
+    # render the data table as soon as SQL returns (insights stream separately).
+    if data.get("eval_analytics") is not None:
+        payload["eval_analytics"] = data["eval_analytics"]
+    # Per-request LLM timeout override from the settings panel.
+    if data.get("llm_timeout") is not None:
+        payload["llm_timeout"] = data["llm_timeout"]
     return _proxy_post("/api/query", payload, timeout=120)
 
 

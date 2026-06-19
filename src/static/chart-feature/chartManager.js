@@ -279,6 +279,13 @@ export class ChartManager {
             });
             
             if (!response.ok) {
+                if (response.status === 401) {
+                    // Session expired/not authenticated — bounce to login and
+                    // return the user here afterwards. Not a chart-backend problem.
+                    const next = encodeURIComponent(location.pathname + location.search);
+                    window.location.replace('/login?next=' + next);
+                    return;
+                }
                 throw new Error(`API returned ${response.status}: ${response.statusText}`);
             }
             
@@ -318,8 +325,7 @@ export class ChartManager {
         } catch (error) {
             console.error('[ChartManager] Failed to generate chart with LLM:', error);
             this.chartContainer.showError(
-                'Failed to generate chart: ' + error.message + 
-                '<br><br>The backend /api/generate-chart endpoint needs to be implemented. See CHART_BACKEND_TODO.md for details.'
+                'Failed to generate chart: ' + error.message
             );
         }
     }

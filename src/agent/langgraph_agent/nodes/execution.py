@@ -55,7 +55,9 @@ def make_execute_query(sql_runner: PostgresSqlRunner):
             return {
                 "query_result": result,
                 "exec_error": error_msg,
-                "execution_time_ms": exec_time_ms,
+                # Cumulative across all SQL runs in this request (incl. retries),
+                # mirroring how llm_latency_ms sums every LLM call.
+                "execution_time_ms": (state.get("execution_time_ms") or 0) + exec_time_ms,
                 "error_context": f"SQL execution error: {error_msg}",
             }
 
@@ -64,7 +66,8 @@ def make_execute_query(sql_runner: PostgresSqlRunner):
         return {
             "query_result": result,
             "exec_error": None,
-            "execution_time_ms": exec_time_ms,
+            # Cumulative across all SQL runs in this request (incl. retries).
+            "execution_time_ms": (state.get("execution_time_ms") or 0) + exec_time_ms,
             "error_context": None,
         }
 

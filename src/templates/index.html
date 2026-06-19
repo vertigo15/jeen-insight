@@ -18,7 +18,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=54">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=62">
     <!-- CodeMirror 6 via ESM — exposes window.CodeMirrorService -->
     <script type="module">
       import { EditorView, lineNumbers } from 'https://esm.sh/@codemirror/view@6';
@@ -167,8 +167,17 @@
         </aside>
 
         <!-- Main Content -->
-        <main class="main-content" id="main-content">
+        <main class="main-content" id="main-content" data-ui-state="empty">
             <div class="main-inner">
+
+                <!-- Hero (empty state only — hidden once a question is asked) -->
+                <div class="hero" id="hero">
+                    <div class="hero-connection" id="hero-connection" hidden>
+                        <span class="hero-connection-dot" aria-hidden="true"></span>
+                        <span id="hero-connection-text"></span>
+                    </div>
+                    <h1 class="hero-title">What would you like to know<br>about your data?</h1>
+                </div>
 
                 <!-- Query card -->
                 <div class="card query-card">
@@ -200,6 +209,12 @@
                     </div>
 
                     <div id="error-message" class="error-message" style="display: none;" role="alert"></div>
+                </div>
+
+                <!-- Starter suggestions (empty state only) — sourced from history + tables -->
+                <div class="hero-suggestions" id="hero-suggestions" hidden>
+                    <div class="hero-suggestions-label">Suggested for this dataset</div>
+                    <div class="hero-suggestions-chips" id="hero-suggestions-chips" role="list"></div>
                 </div>
 
                 <!-- Results section -->
@@ -349,7 +364,7 @@
 <script src="{{ url_for('static', filename='auth.js') }}?v=50"></script>
 <script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=50"></script>
 <script src="{{ url_for('static', filename='profiling/profilingManager.js') }}?v=50"></script>
-<script src="{{ url_for('static', filename='script.js') }}?v=50"></script>
+<script src="{{ url_for('static', filename='script.js') }}?v=66"></script>
 <!-- Settings page (full-screen) -->
 <script type="module">
   import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=52';

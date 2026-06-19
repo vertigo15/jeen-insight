@@ -22,7 +22,14 @@ let _allTraceEvents   = [];   // full event list from most recent query
 let _traceMetrics     = {};   // metrics from most recent query
 let _activeTraceFilter = 'all'; // current log level filter
 let _traceSearchQ     = '';   // current log text search query
-let _traceLegendOpen  = false; // whether the log legend is expanded
+// Whether the log legend is expanded. Open by default on first view; the
+// user's choice is then remembered across sessions.
+let _traceLegendOpen = (function () {
+    try {
+        const v = localStorage.getItem('jeen_log_legend_open');
+        return v === null ? true : v === '1';
+    } catch (_) { return true; }
+})();
 
 // ── Table display window ──────────────────────────────────────────────────────
 // Number of rows rendered at once. User can change it via the footer input.
@@ -35,6 +42,9 @@ const SIDEBAR_TAB_KEY        = 'jeen_sidebar_tab'; // 'tables' | 'recent'
 let availableConnections = [];
 let activeTable = null;
 let lastQueryDurationMs = 0;
+let lastTotalDurationMs = 0;   // end-to-end: click Ask → results table painted
+let _lastAskStart       = 0;   // performance.now() captured when Ask was clicked
+let _lastResultData     = null;// last response payload, for the post-paint re-render
 
 // ── Autocomplete v3 state (used by SuggestionController) ────
 let recentQuestionsCache = [];      // string[]
@@ -153,6 +163,12 @@ function onConnectionChange(sourceKey) {
     currentSessionId = null;
     allTables = [];
     activeTable = null;
+    // Back to the empty/hero landing for the freshly selected connection.
+    setUiState('empty');
+    if (typeof hideResults === 'function') hideResults();
+    if (typeof hideAskMetrics === 'function') hideAskMetrics();
+    recentQuestionsCache = [];
+    pinnedQuestionsCache = [];
     const tablesList = document.getElementById('tables-list');
     if (tablesList) tablesList.innerHTML = '';
     const searchInput = document.getElementById('table-search');
@@ -165,6 +181,8 @@ function onConnectionChange(sourceKey) {
         _tableExpandedSet.clear();
         allTablesRich = [];
         if (typeof SuggestionController !== 'undefined') SuggestionController.reset();
+    // Reflect the reset immediately (skeleton chips) while data reloads.
+    refreshHeroEmptyState();
     // Auto-load tables for the new connection.
     loadTables();
     if (typeof displayHistory === 'function') displayHistory();
@@ -181,11 +199,130 @@ function setPageTitle(text) {
     if (el) el.textContent = text || 'New query';
 }
 
+// ----------------------------------------------------------------
+// Empty / hero landing state
+// ----------------------------------------------------------------
+//
+// Before the first question is asked we show a centered hero with the
+// active connection and a set of starter suggestions sourced from the
+// user's own history (pinned + recent) topped up with table-derived
+// prompts. The first query flips the layout to the docked "results"
+// view; switching connection / session brings the hero back.
+
+const MAX_HERO_SUGGESTIONS = 6;
+
+function setUiState(state) {
+    const main = document.getElementById('main-content');
+    if (main) main.setAttribute('data-ui-state', state === 'results' ? 'results' : 'empty');
+}
+
+// Mirror the sidebar connection pill into the hero line.
+function updateHeroConnection() {
+    const box = document.getElementById('hero-connection');
+    const txt = document.getElementById('hero-connection-text');
+    if (!box || !txt) return;
+    const nameEl = document.getElementById('connection-pill-name');
+    const name = nameEl ? nameEl.textContent.trim() : '';
+    if (!name || /loading/i.test(name) || /no connections|failed/i.test(name)) {
+        box.hidden = true;
+        return;
+    }
+    const countEl = document.getElementById('table-count-badge');
+    const count = countEl ? countEl.textContent.trim() : '';
+    const tablesPart = count ? ` \u00b7 ${count} tables` : '';
+    txt.innerHTML = `Connected to <strong>${escapeHtml(name)}</strong>${tablesPart}`;
+    box.hidden = false;
+}
+
+// Derive starter prompts from the table catalog (no hardcoded questions):
+// favor fact/measure tables, then the richer (more-columns) tables.
+function _heroTableStarters() {
+    const tables = Array.isArray(allTablesRich) ? allTablesRich.slice() : [];
+    if (tables.length === 0) return [];
+    const score = (t) => {
+        const n = (t.name || '').toLowerCase();
+        let s = t.col_count || 0;
+        if (/fact|sales|order|transaction|revenue|event|invoice/.test(n)) s += 1000;
+        return s;
+    };
+    tables.sort((a, b) => score(b) - score(a));
+    const templates = [
+        (name) => `Summarize ${name}`,
+        (name) => `Show the top 10 rows from ${name}`,
+        (name) => `How many records are in ${name}?`,
+    ];
+    const out = [];
+    for (let i = 0; i < tables.length && out.length < 3; i++) {
+        const name = tables[i].name;
+        if (!name) continue;
+        out.push(templates[out.length % templates.length](name));
+    }
+    return out;
+}
+
+// Render the starter chips: pinned -> recent -> table-derived, deduped.
+function renderHeroSuggestions() {
+    const wrap = document.getElementById('hero-suggestions');
+    const chips = document.getElementById('hero-suggestions-chips');
+    if (!wrap || !chips) return;
+
+    const pinned   = (pinnedQuestionsCache || []).map(q => ({ text: q, kind: 'pinned' }));
+    const recent   = (recentQuestionsCache || []).map(q => ({ text: q, kind: 'recent' }));
+    const starters = _heroTableStarters().map(q => ({ text: q, kind: 'table' }));
+
+    const seen = new Set();
+    const merged = [];
+    for (const item of [...pinned, ...recent, ...starters]) {
+        const text = (item.text || '').trim();
+        const key = text.toLowerCase();
+        if (!text || seen.has(key)) continue;
+        seen.add(key);
+        merged.push({ text, kind: item.kind });
+        if (merged.length >= MAX_HERO_SUGGESTIONS) break;
+    }
+
+    if (merged.length === 0) {
+        // Only show skeletons while a connection's data is genuinely loading.
+        // With no active connection (or once tables have loaded empty), hide.
+        const hasConnection = !!(typeof getActiveConnection === 'function' && getActiveConnection());
+        const tablesReady   = Array.isArray(allTablesRich) && allTablesRich.length > 0;
+        if (!hasConnection || tablesReady) {
+            wrap.hidden = true;
+            chips.innerHTML = '';
+        } else {
+            wrap.hidden = false;
+            chips.innerHTML = Array.from({ length: 4 })
+                .map(() => '<span class="hero-chip is-skeleton" aria-hidden="true"></span>')
+                .join('');
+        }
+        return;
+    }
+
+    const icon = { pinned: '\uD83D\uDCCC', recent: '\uD83D\uDD52', table: '\u2728' };
+    wrap.hidden = false;
+    chips.innerHTML = merged.map(item => {
+        const safe = escapeHtml(item.text);
+        const js   = escapeHtml(item.text).replace(/'/g, "\\'");
+        return `<button type="button" class="hero-chip" role="listitem" title="${safe}"`
+            + ` onclick="fillQuestion('${js}')">`
+            + `<span class="hero-chip-icon" aria-hidden="true">${icon[item.kind] || ''}</span>${safe}</button>`;
+    }).join('');
+}
+
+// Recompute the hero connection line + suggestions from current caches.
+function refreshHeroEmptyState() {
+    updateHeroConnection();
+    renderHeroSuggestions();
+}
+window.refreshHeroEmptyState = refreshHeroEmptyState;
+
 window.addEventListener('DOMContentLoaded', () => {
+    refreshHeroEmptyState();
     loadConnections().then(() => {
         if (typeof displayHistory === 'function') displayHistory();
         // Auto-load tables once we know the active connection.
         if (getActiveConnection()) loadTables();
+        refreshHeroEmptyState();
     });
 });
 
@@ -206,10 +343,11 @@ async function askQuestion() {
     // Save to history
     saveToHistory(question);
     
-    // Show loading state
+    // Show loading state + dock the layout immediately (leave the hero).
     hideError();
     hideResults();
     hideAskMetrics();
+    setUiState('results');
     showLoading();
     
     const connection = requireConnection();
@@ -239,6 +377,8 @@ async function askQuestion() {
     if (_llmTimeoutSecs !== null) askPayload.llm_timeout = _llmTimeoutSecs;
 
     const askStart = performance.now();
+    _lastAskStart = askStart;
+    lastTotalDurationMs = 0;   // reset; set once the table actually paints
     try {
         const response = await fetch('/api/ask', {
             method: 'POST',
@@ -257,6 +397,14 @@ async function askQuestion() {
         
         hideLoading();
         displayResults(data);
+
+        // Measure the true end-to-end wait: stop the timer on the animation
+        // frame after displayResults paints the table, then refresh the run
+        // header so the `total` chip shows the final value.
+        requestAnimationFrame(() => {
+            lastTotalDurationMs = performance.now() - askStart;
+            if (_lastResultData) _updateDevRunHeader(_lastResultData);
+        });
         
     } catch (error) {
         hideLoading();
@@ -267,6 +415,7 @@ async function askQuestion() {
 
 // Display results
 function displayResults(data) {
+    _lastResultData = data;  // kept so the post-paint frame can rebuild the header
     // Reset column presentation state for every new result set
     _colFormats  = {};
     _derivedCols = [];
@@ -289,9 +438,10 @@ function displayResults(data) {
         console.log('[History] Session ID:', currentSessionId);
     }
     
-    // Show results section
+    // Show results section + dock the layout (leave the empty/hero state).
     const resultsSection = document.getElementById('results-section');
     resultsSection.style.display = 'flex';
+    setUiState('results');
 
     // Render token-usage + LLM-latency under the Ask card.
     showAskMetrics(data.metrics);
@@ -987,6 +1137,7 @@ async function loadTables() {
             if (countBadge) countBadge.textContent = '';
         }
         setConnectionStatus('ok');
+        refreshHeroEmptyState();
     } catch (error) {
         tablesList.innerHTML = '<p style="color: var(--color-error); font-size: var(--text-xs); padding: 4px 0;">Failed to load tables</p>';
         console.error('Error loading tables:', error);
@@ -1546,6 +1697,9 @@ async function displayHistory() {
         recentQuestionsCache = recentQuestions.slice();
         pinnedQuestionsCache = pinnedQuestions.slice();
 
+        // Refresh the hero starter chips now that history is available.
+        refreshHeroEmptyState();
+
         // Show/hide the sidebar search input depending on whether there are items.
         const questionSearchInput = document.getElementById('question-search');
         if (pinnedQuestions.length === 0 && recentQuestions.length === 0) {
@@ -1821,6 +1975,12 @@ function renderTrace(traceEvents, metrics) {
 function _traceEventLevel(ev) {
     if (ev.status === 'error') return 'error';
     if (ev.feedback_type || ev.status === 'blocked' || ev.status === 'retry') return 'warn';
+    // Catalog loaded via MCP is not a database query — keep it out of the DB
+    // filter. A metadata-DB catalog load is still a real DB read, so stays 'db'.
+    if (ev.node === 'catalog_lookup') {
+        const src = ev.catalog_source || (/mcp/i.test(ev.detail || '') ? 'mcp' : 'db');
+        return src === 'mcp' ? 'info' : 'db';
+    }
     if ((ev.type || '').toLowerCase() === 'llm') return 'llm';
     if ((ev.type || '').toLowerCase() === 'db')  return 'db';
     return 'info';
@@ -1863,6 +2023,7 @@ function _buildTraceToolbar(toolbar, events) {
  */
 function _toggleTraceLegend() {
     _traceLegendOpen = !_traceLegendOpen;
+    try { localStorage.setItem('jeen_log_legend_open', _traceLegendOpen ? '1' : '0'); } catch (_) {}
     const b = document.getElementById('dp-log-legend-btn');
     if (b) b.classList.toggle('active', _traceLegendOpen);
     _renderTraceEvents();
@@ -1947,25 +2108,21 @@ function _renderTraceEvents() {
     const llmMs    = metrics.llm_latency_ms || 0;
     const dbMs     = metrics.execution_time_ms;   // actual DB execution time
     const retries  = metrics.retry_count    || 0;
-    const route    = metrics.route          || '?';
     const wallMs   = lastQueryDurationMs;          // client wall time
     const netMs    = (Number.isFinite(wallMs) && wallMs > 0 && graphMs > 0)
         ? Math.max(0, wallMs - graphMs) : null;
 
-    // ── Summary chips ─────────────────────────────────────────────────────
+    // ── Summary line ───────────────────────────────────────────────────────
+    // The persistent run header above already shows route + wall/graph/LLM/DB/
+    // net, so here we only render what's unique to the log (node count, retries)
+    // plus the stacked breakdown bar below — no duplicated chips.
     let html = '<div class="trace-summary">';
-    html += `<span class="trace-summary-chip">route: <strong>${escapeHtml(route)}</strong></span>`;
-    html += `<span class="trace-summary-chip">nodes: <strong>${events.length}</strong></span>`;
-    if (Number.isFinite(wallMs) && wallMs > 0)
-        html += `<span class="trace-summary-chip trace-chip-wall" title="${_TIMING_TIPS.wall}">wall: <strong>${_fmtMs(wallMs)}</strong></span>`;
-    html += `<span class="trace-summary-chip" title="${_TIMING_TIPS.graph}">graph: <strong>${_fmtMs(graphMs)}</strong></span>`;
-    html += `<span class="trace-summary-chip" title="${_TIMING_TIPS.llm}">LLM: <strong>${_fmtMs(llmMs)}</strong></span>`;
-    if (Number.isFinite(dbMs) && dbMs > 0)
-        html += `<span class="trace-summary-chip trace-chip-db" title="${_TIMING_TIPS.db}">DB: <strong>${_fmtMs(dbMs)}</strong></span>`;
-    if (netMs !== null)
-        html += `<span class="trace-summary-chip trace-chip-net" title="${_TIMING_TIPS.net}">net: <strong>${_fmtMs(netMs)}</strong></span>`;
-    if (retries > 0) html += `<span class="trace-summary-chip">retries: <strong>${retries}</strong></span>`;
+    html += `<span class="trace-summary-chip" title="${_METRIC_TIPS.nodes}">nodes: <strong>${events.length}</strong></span>`;
+    if (retries > 0) html += `<span class="trace-summary-chip" title="${_METRIC_TIPS.retries}">retries: <strong>${retries}</strong></span>`;
     html += '</div>';
+
+    // Stacked breakdown bar (where the time went).
+    html += _buildTimingBar(wallMs, graphMs, llmMs, dbMs);
 
     if (_traceLegendOpen) html += _buildTraceLegendHtml();
 
@@ -1975,6 +2132,23 @@ function _renderTraceEvents() {
         return;
     }
 
+    // Identify the single slowest step so it can be flagged in the timeline.
+    const slowestIdx = (events.length > 1 && maxMs > 0)
+        ? events.reduce((best, e, i, arr) =>
+            (e.elapsed_ms || 0) > (arr[best].elapsed_ms || 0) ? i : best, 0)
+        : -1;
+
+    // Count how many times each node ran so repeated steps (e.g. retries) can
+    // be marked with an occurrence ordinal (#1, #2, …).
+    const _nodeCounts = {};
+    events.forEach(e => { _nodeCounts[e.node] = (_nodeCounts[e.node] || 0) + 1; });
+    const _repeatOrdinal = {};
+    const _seenSoFar = {};
+    events.forEach((e, i) => {
+        _seenSoFar[e.node] = (_seenSoFar[e.node] || 0) + 1;
+        if (_nodeCounts[e.node] > 1) _repeatOrdinal[i] = _seenSoFar[e.node];
+    });
+
     // ── Node timeline ─────────────────────────────────────────────────────
     filtered.forEach((ev, idx) => {
         // Use the original index for copy operations
@@ -1983,17 +2157,24 @@ function _renderTraceEvents() {
         const barPct  = Math.max(2, Math.round((ms / maxMs) * 100));
         const icon    = escapeHtml(ev.icon  || '●');
         const ntype   = escapeHtml(ev.type  || 'logic');
-        const name    = escapeHtml(ev.node  || '?');
+        const name    = escapeHtml(_nodeLabel(ev.node));
         const detail  = ev.detail ? escapeHtml(ev.detail) : '';
         const status  = ev.status || '';
         const lv      = _traceEventLevel(ev);
+        const isSlowest = origIdx === slowestIdx;
 
-        const nodeTip = escapeHtml(_NODE_INFO[ev.node] || 'Pipeline step.');
-        html += `<div class="trace-event" data-idx="${idx}" onclick="_toggleTraceEvent(this)">`;
+        // Tooltip keeps the raw node name accessible alongside its description.
+        const nodeTip = escapeHtml(`${ev.node || '?'} — ${_NODE_INFO[ev.node] || 'Pipeline step.'}`);
+        html += `<div class="trace-event${isSlowest ? ' trace-event-slowest' : ''}" data-idx="${idx}" onclick="_toggleTraceEvent(this)">`;
         html += `  <span class="trace-lv-dot trace-lv-${lv}" title="severity: ${lv}"></span>`;
         html += `  <span class="trace-event-icon">${icon}</span>`;
         html += `  <span class="trace-event-name" title="${nodeTip}">${name}</span>`;
+        const repeatOrd = _repeatOrdinal[origIdx];
         html += `  <div class="trace-event-bar-wrap">`;
+        if (isSlowest)
+            html += `    <span class="trace-slowest-badge" title="Slowest step in this run">slowest</span>`;
+        if (repeatOrd)
+            html += `    <span class="trace-event-count" title="This step ran ${_nodeCounts[ev.node]}\u00d7 in this run \u2014 occurrence ${repeatOrd}">#${repeatOrd}</span>`;
         html += `    <div class="trace-event-bar" data-ntype="${ntype}" style="width:${barPct}%"></div>`;
         if (detail) {
             const detailClass = status
@@ -2002,7 +2183,7 @@ function _renderTraceEvents() {
             html += `    <span class="${detailClass}">${detail}</span>`;
         }
         html += `  </div>`;
-        html += `  <span class="trace-event-ms" title="${_TIMING_TIPS.nodeMs}">${_fmtMs(ms)}</span>`;
+        html += `  <span class="trace-event-ms${_slowCls(ms)}" title="${_TIMING_TIPS.nodeMs}">${_fmtMs(ms)}</span>`;
 
         // Expandable extra detail (SQL preview, full detail, prompt)
         const expandParts = [];
@@ -2091,21 +2272,23 @@ function _updateDevRunHeader(data) {
         ? Math.max(0, wallMs - graphMs) : null;
 
     const chips = [];
-    chips.push(`<span class="dp-chip dp-chip-status ${statusClass}">${statusText}</span>`);
-    chips.push(`<span class="dp-chip">route: <strong>${escapeHtml(String(route))}</strong></span>`);
+    chips.push(`<span class="dp-chip dp-chip-status ${statusClass}" title="${_METRIC_TIPS.status}">${statusText}</span>`);
+    chips.push(`<span class="dp-chip${_routeChipCls(route)}" title="${escapeHtml(_routeTip(route))}">route: <strong>${escapeHtml(String(route))}</strong></span>`);
+    if (Number.isFinite(lastTotalDurationMs) && lastTotalDurationMs > 0)
+        chips.push(`<span class="dp-chip dp-chip-total${_slowCls(lastTotalDurationMs)}" title="${_TIMING_TIPS.total}">total: <strong>${_fmtMs(lastTotalDurationMs)}</strong></span>`);
     if (Number.isFinite(wallMs) && wallMs > 0)
-        chips.push(`<span class="dp-chip dp-chip-wall" title="${_TIMING_TIPS.wall}">wall: <strong>${_fmtMs(wallMs)}</strong></span>`);
+        chips.push(`<span class="dp-chip dp-chip-wall${_slowCls(wallMs)}" title="${_TIMING_TIPS.wall}">wall: <strong>${_fmtMs(wallMs)}</strong></span>`);
     if (Number.isFinite(graphMs) && graphMs > 0)
-        chips.push(`<span class="dp-chip" title="${_TIMING_TIPS.graph}">graph: <strong>${_fmtMs(graphMs)}</strong></span>`);
+        chips.push(`<span class="dp-chip${_slowCls(graphMs)}" title="${_TIMING_TIPS.graph}">graph: <strong>${_fmtMs(graphMs)}</strong></span>`);
     if (Number.isFinite(llmMs))
-        chips.push(`<span class="dp-chip" title="${_TIMING_TIPS.llm}">LLM: <strong>${_fmtMs(llmMs)}</strong></span>`);
+        chips.push(`<span class="dp-chip${_slowCls(llmMs)}" title="${_TIMING_TIPS.llm}">LLM: <strong>${_fmtMs(llmMs)}</strong></span>`);
     if (Number.isFinite(dbMs) && dbMs > 0)
-        chips.push(`<span class="dp-chip dp-chip-db" title="${_TIMING_TIPS.db}">DB: <strong>${_fmtMs(dbMs)}</strong></span>`);
+        chips.push(`<span class="dp-chip dp-chip-db${_slowCls(dbMs)}" title="${_TIMING_TIPS.db}">DB: <strong>${_fmtMs(dbMs)}</strong></span>`);
     if (netMs !== null && netMs > 50)
-        chips.push(`<span class="dp-chip dp-chip-net" title="${_TIMING_TIPS.net}">net: <strong>${_fmtMs(netMs)}</strong></span>`);
-    if (inTok)  chips.push(`<span class="dp-chip">in: <strong>${_formatTokens(inTok)}</strong></span>`);
-    if (outTok) chips.push(`<span class="dp-chip">out: <strong>${_formatTokens(outTok)}</strong></span>`);
-    if (rows !== null) chips.push(`<span class="dp-chip">rows: <strong>${rows}</strong></span>`);
+        chips.push(`<span class="dp-chip dp-chip-net${_slowCls(netMs)}" title="${_TIMING_TIPS.net}">net: <strong>${_fmtMs(netMs)}</strong></span>`);
+    if (inTok)  chips.push(`<span class="dp-chip" title="${_METRIC_TIPS.in}">in: <strong>${_formatTokens(inTok)}</strong></span>`);
+    if (outTok) chips.push(`<span class="dp-chip" title="${_METRIC_TIPS.out}">out: <strong>${_formatTokens(outTok)}</strong></span>`);
+    if (rows !== null) chips.push(`<span class="dp-chip" title="${_METRIC_TIPS.rows}">rows: <strong>${rows}</strong></span>`);
 
     metaEl.innerHTML = chips.join('');
     header.hidden = false;
@@ -2149,6 +2332,9 @@ function _updateSqlStats(data) {
 // Used as HTML title= attributes on all timing chips so developers can
 // hover any number to understand exactly how it was computed.
 const _TIMING_TIPS = {
+    total: 'total — Full end-to-end wait the user experiences: from clicking Ask '
+         + 'until the results table is painted in the browser. Equals wall (API '
+         + 'response) plus client-side JSON parsing and table/chart rendering.',
     wall:  'wall — Client wall time: measured in the browser from the moment '
          + '"Ask" was clicked to the last byte of the API response. '
          + 'Covers: network round-trip + Flask proxy + FastAPI routing + full graph pipeline.',
@@ -2158,9 +2344,9 @@ const _TIMING_TIPS = {
     llm:   'LLM — Cumulative LLM latency: total time waiting for the language '
          + 'model (Azure OpenAI) to respond across all LLM calls in this query. '
          + 'Comes directly from the llm_latency_ms metric.',
-    db:    'DB — Database execution time: time taken to run the generated SQL '
-         + 'query against the data warehouse. '
-         + 'Comes from execution_time_ms stored in the LangGraph state.',
+    db:    'DB — Database execution time: total time spent running SQL against '
+         + 'the data warehouse, summed across every execution in this request '
+         + '(including retries). Comes from execution_time_ms in the LangGraph state.',
     net:   'net — Flask + network overhead: wall time minus graph time. '
          + 'Covers HTTP request/response transit, Flask proxy routing, '
          + 'FastAPI middleware, and serialisation overhead. '
@@ -2169,6 +2355,97 @@ const _TIMING_TIPS = {
          + 'around the node function — it includes any LLM, database, or MCP '
          + 'call that step makes.',
 };
+
+// ── Non-timing chip explanations ──────────────────────────────────────────────
+// The remaining chip names (route, nodes, retries, in/out tokens, rows, status)
+// also get a hover tooltip so every label in the log is self-documenting.
+const _METRIC_TIPS = {
+    route:   'route — How the router classified your question; this decides which '
+           + 'pipeline path runs.',
+    nodes:   'nodes — Number of pipeline steps (LangGraph nodes) that executed for '
+           + 'this query.',
+    retries: 'retries — Times SQL generation was retried after a validation or '
+           + 'execution failure.',
+    in:      'in — Input tokens sent to the LLM across all calls in this query.',
+    out:     'out — Output tokens generated by the LLM across all calls in this query.',
+    rows:    'rows — Number of rows returned by the executed SQL.',
+    status:  'status — Whether the run finished successfully or ended in an error.',
+};
+
+// Meaning of each router classification, appended to the route chip tooltip.
+const _ROUTE_INFO = {
+    needs_query:  'generates and runs new SQL against the warehouse.',
+    from_memory:  'answers from earlier results in the conversation — no new SQL.',
+    greeting:     'greeting / small talk — no query is run.',
+    out_of_scope: 'the question is outside the scope of the connected data.',
+    unsafe:       'blocked by the safety / governance check.',
+};
+function _routeTip(route) {
+    const spec = _ROUTE_INFO[route];
+    return spec ? `${_METRIC_TIPS.route}  ·  "${route}" ${spec}` : _METRIC_TIPS.route;
+}
+
+// Colour the route chip by classification so blocked / out-of-scope answers
+// stand out, while normal query/memory/greeting routes stay calm.
+function _routeChipCls(route) {
+    switch (route) {
+        case 'unsafe':       return ' dp-route-unsafe';
+        case 'out_of_scope': return ' dp-route-warn';
+        case 'greeting':
+        case 'from_memory':  return ' dp-route-info';
+        default:             return '';  // needs_query etc. — neutral default
+    }
+}
+
+// Any timing value slower than this (ms) is visually flagged so the bottleneck
+// in a query is immediately obvious.
+const _SLOW_MS = 3000;
+function _slowCls(ms) {
+    return (Number.isFinite(ms) && ms > _SLOW_MS) ? ' is-slow' : '';
+}
+
+// Build a single stacked bar that partitions the total query time into its
+// constituents — LLM, DB, the rest of the pipeline ("pipeline"), and network +
+// proxy overhead ("net") — so where the time went is obvious at a glance.
+// wall = graph + net ; graph = llm + db + pipeline(other).
+function _buildTimingBar(wallMs, graphMs, llmMs, dbMs) {
+    const hasWall = Number.isFinite(wallMs) && wallMs > 0;
+    const total   = hasWall ? wallMs : graphMs;
+    if (!Number.isFinite(total) || total <= 0) return '';
+
+    const llm   = Math.max(0, llmMs || 0);
+    const db    = Math.max(0, dbMs  || 0);
+    const other = Math.max(0, (graphMs || 0) - llm - db);
+    const net   = hasWall ? Math.max(0, wallMs - (graphMs || 0)) : 0;
+
+    const segs = [
+        { key: 'llm',   ms: llm,   label: 'LLM' },
+        { key: 'db',    ms: db,    label: 'DB' },
+        { key: 'other', ms: other, label: 'pipeline' },
+        { key: 'net',   ms: net,   label: 'net' },
+    ].filter(s => s.ms > 0);
+    if (!segs.length) return '';
+
+    const basis = hasWall ? 'wall' : 'graph';
+    const pct   = (ms) => (ms / total) * 100;
+
+    let bar = '<div class="timing-bar" role="img" aria-label="Query time breakdown">';
+    segs.forEach(s => {
+        const p = pct(s.ms);
+        bar += `<span class="timing-bar-seg timing-seg-${s.key}" style="width:${p.toFixed(1)}%"`
+            + ` title="${s.label}: ${_fmtMs(s.ms)} (${Math.round(p)}% of ${basis})"></span>`;
+    });
+    bar += '</div>';
+
+    let legend = '<div class="timing-bar-legend">';
+    segs.forEach(s => {
+        legend += `<span class="timing-bar-key"><span class="timing-bar-dot timing-seg-${s.key}"></span>`
+            + `${s.label} ${Math.round(pct(s.ms))}%</span>`;
+    });
+    legend += '</div>';
+
+    return `<div class="timing-bar-wrap">${bar}${legend}</div>`;
+}
 
 // ── Per-node explanations ─────────────────────────────────────────────────────
 // Hovering a node name in the log shows what that pipeline step does, so the
@@ -2191,6 +2468,32 @@ const _NODE_INFO = {
     save_to_memory:          'Persists the SQL, token usage and execution result to the conversation history.',
     observability_log:       'Emits the structured QUERY_EVENT log line at the end of every run.',
 };
+
+// Friendly, human-readable label for each pipeline node. The raw node name is
+// still shown on hover (and is searchable), but the timeline reads in plain
+// English. Unknown nodes fall back to a prettified version of the raw name.
+const _NODE_LABELS = {
+    memory_shrink_check:     'Memory check',
+    memory_summarizer:       'Memory summarize',
+    fused_router:            'Router',
+    memory_answer_generator: 'Answer from memory',
+    catalog_lookup:          'Catalog lookup',
+    prompt_builder:          'Prompt build',
+    sql_generator:           'SQL generation',
+    sqlglot_validate:        'SQL validate',
+    dlp_check:               'Governance check',
+    execute_query:           'Run SQL',
+    trivial_result_check:    'Trivial check',
+    fused_eval_analytics:    'Analyze & insights',
+    feedback_classifier:     'Retry classify',
+    response_formatter:      'Format response',
+    save_to_memory:          'Save to memory',
+    observability_log:       'Log event',
+};
+function _nodeLabel(node) {
+    if (_NODE_LABELS[node]) return _NODE_LABELS[node];
+    return (node || '?').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
 
 function _fmtMs(ms) {
     if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—';
@@ -2276,7 +2579,7 @@ window._toggleTraceEvent = _toggleTraceEvent;
 async function initializeChartFeature(results) {
     // Dynamically import ChartManager if not already loaded
     if (!ChartManager) {
-        const module = await import('./chart-feature/chartManager.js');
+        const module = await import('./chart-feature/chartManager.js?v=55');
         ChartManager = module.ChartManager;
     }
     

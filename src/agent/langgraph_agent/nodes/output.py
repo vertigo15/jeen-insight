@@ -177,6 +177,9 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
         elif node == "catalog_lookup":
             known = state.get("known_tables") or []
             src = state.get("catalog_source_used") or "db"
+            # Expose the source so the UI can keep MCP catalog loads out of the
+            # "DB" filter (MCP is not a database query).
+            ev["catalog_source"] = src
             src_label = "MCP" if src == "mcp" else "metadata DB"
             detail = f"{len(known)} tables · via {src_label}"
             cache = state.get("catalog_cache")
