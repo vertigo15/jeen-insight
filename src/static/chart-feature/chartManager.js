@@ -8,6 +8,7 @@
 /// <reference path="./types/chart.types.js" />
 
 import { analyzeData } from './utils/dataAnalyzer.js';
+import { makeValueFormatter } from './utils/valueFormat.js?v=68';
 import { ChartContainer } from './components/ChartContainer.js';
 import { ChartToggle } from './components/ChartToggle.js';
 import { ChartTypeSelector } from './components/ChartTypeSelector.js';
@@ -218,90 +219,56 @@ export class ChartManager {
         if (this.chartChat) this.chartChat.disable();
         
         try {
-            // Prepare data for LLM
-            const columns = this.dataAnalysis.columns.map(col => ({
-                name: col.name,
-                type: col.type
-            }));
-            
-            // Get sample data (first 10 rows) - convert to array format
-            const rows = this.state.currentData.data || this.state.currentData.rows || [];
-            const sampleData = rows.slice(0, 10).map(row => {
-                if (Array.isArray(row)) {
-                    return row;
-                } else {
-                    // Convert object to array using column order
-                    return this.state.currentData.columns.map(col => row[col]);
-                }
-            });
-            
-            // Convert all_data to array format too
-            const allData = rows.length <= 100 ? rows.map(row => {
-                if (Array.isArray(row)) {
-                    return row;
-                } else {
-                    return this.state.currentData.columns.map(col => row[col]);
-                }
-            }) : sampleData;
-            
             // Check cache first (include chart type in cache key)
             const cacheKey = this.getLLMCacheKey(chartType);
             const cached = sessionStorage.getItem(cacheKey);
             if (cached) {
-                console.log('[ChartManager] Using cached LLM response for type:', chartType);
+                console.log('[ChartManager] Using cached chart config for type:', chartType);
                 const config = JSON.parse(cached);
                 await this.renderChart(config);
                 return;
             }
-            
+
             console.log('[ChartManager] Calling LLM API for type:', chartType);
-            
-            // Call LLM API
+
+            // The server builds the chart from the FULL result set (kept in its
+            // result cache, keyed by query_id). On the hot path we send only the
+            // query_id; on a cache miss the server replies 409 and we re-send the
+            // rows as the fallback.
             const connection = (typeof getActiveConnection === 'function') ? getActiveConnection() : '';
             const mapping = this.chartOptionsPanel ? this.chartOptionsPanel.getMapping() : {};
             const payload = {
                 connection,
-                columns: columns,
-                column_names: this.state.currentData.columns,
-                sample_data: sampleData,
-                all_data: allData,
+                query_id: window.currentQueryId || null,
+                question: window.currentQuestion || null,
                 chart_type: chartType,
             };
             if (mapping.xColumn) payload.x_column = mapping.xColumn;
             if (mapping.yColumn) payload.y_column = mapping.yColumn;
             if (mapping.seriesColumn) payload.series_column = mapping.seriesColumn;
 
-            const response = await fetch('/api/generate-chart', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-                signal: AbortSignal.timeout(120000) // 2 minute timeout
-            });
-            
-            if (!response.ok) {
-                if (response.status === 401) {
-                    // Session expired/not authenticated — bounce to login and
-                    // return the user here afterwards. Not a chart-backend problem.
-                    const next = encodeURIComponent(location.pathname + location.search);
-                    window.location.replace('/login?next=' + next);
-                    return;
-                }
-                throw new Error(`API returned ${response.status}: ${response.statusText}`);
+            let data = await this._postChart(payload);
+            if (data === '__REDIRECT__') return;
+            if (data === '__CACHE_MISS__') {
+                console.log('[ChartManager] Cache miss — re-sending full rows');
+                data = await this._postChart({ ...payload, ...this._fallbackRows() });
+                if (data === '__REDIRECT__') return;
             }
-            
-            const data = await response.json();
-            
+
             if (data.error) {
                 throw new Error(data.error);
             }
-            
-            if (!data.chart_config) {
-                throw new Error('No chart configuration returned from API');
-            }
-            
+
             console.log('[ChartManager] LLM response received');
             console.log('[ChartManager] Requested type:', chartType, '| Generated type:', data.chart_type);
-            
+
+            // The server returns a complete ECharts config built from the full
+            // dataset. Just render it.
+            const chartConfig = data.chart_config;
+            if (!chartConfig || !chartConfig.series) {
+                throw new Error('Could not build a chart for this data');
+            }
+
             // Store LLM recommendation (when chart_type is auto)
             if (chartType === 'auto' && data.chart_type) {
                 this.llmRecommendedType = data.chart_type;
@@ -316,11 +283,11 @@ export class ChartManager {
                 this.displayChartPrompt(data);
             }
             
-            // Cache the response
-            sessionStorage.setItem(cacheKey, JSON.stringify(data.chart_config));
+            // Cache the built config (keyed on data + type + mapping).
+            sessionStorage.setItem(cacheKey, JSON.stringify(chartConfig));
             
             // Render the chart
-            await this.renderChart(data.chart_config);
+            await this.renderChart(chartConfig);
             
         } catch (error) {
             console.error('[ChartManager] Failed to generate chart with LLM:', error);
@@ -330,6 +297,51 @@ export class ChartManager {
         }
     }
     
+    /**
+     * POST to /api/generate-chart. Returns parsed JSON, or a sentinel:
+     *   '__CACHE_MISS__' when the server has no cached rows (409),
+     *   '__REDIRECT__'   when the session expired (401, redirecting to login).
+     */
+    async _postChart(payload) {
+        const response = await fetch('/api/generate-chart', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(120000), // 2 minute timeout
+        });
+        if (response.status === 409) return '__CACHE_MISS__';
+        if (response.status === 401) {
+            const next = encodeURIComponent(location.pathname + location.search);
+            window.location.replace('/login?next=' + next);
+            return '__REDIRECT__';
+        }
+        if (!response.ok) {
+            throw new Error(`API returned ${response.status}: ${response.statusText}`);
+        }
+        return await response.json();
+    }
+
+    /**
+     * Full-rows fallback payload sent only on a server cache miss. Mirrors the
+     * shape the server expects (column metadata + every row, in array form).
+     */
+    _fallbackRows() {
+        const cd = this.state.currentData;
+        const colNames = cd.columns || [];
+        const rows = cd.data || cd.rows || [];
+        const toArray = (row) => Array.isArray(row) ? row : colNames.map(c => row[c]);
+        const allData = rows.map(toArray);
+        const columns = (this.dataAnalysis && this.dataAnalysis.columns)
+            ? this.dataAnalysis.columns.map(c => ({ name: c.name, type: c.type }))
+            : colNames.map(n => ({ name: n, type: 'string' }));
+        return {
+            columns,
+            column_names: colNames,
+            sample_data: allData.slice(0, 8),
+            all_data: allData,
+        };
+    }
+
     /**
      * Renders chart with given config (the original LLM-generated config).
      * Snapshots the config as the Reset baseline.
@@ -816,8 +828,52 @@ export class ChartManager {
     }
 
     _withQuickToggles(config) {
-        if (!this.chartOptionsPanel || !config) return config;
-        return this.chartOptionsPanel.applyTogglesTo(config, this.originalConfig);
+        if (!config) return config;
+        let out = config;
+        if (this.chartOptionsPanel) {
+            out = this.chartOptionsPanel.applyTogglesTo(config, this.originalConfig);
+        }
+        // Apply value formatting last so it covers initial render, chat edits,
+        // quick toggles, and reset uniformly.
+        return this._applyValueFormatting(out);
+    }
+
+    /**
+     * Attach the compact/currency/percent value formatter to value axes and the
+     * tooltip, driven by the server's `jeenFormat` hint. The hint is remembered
+     * so chat-edited configs (which may drop it) keep consistent formatting.
+     * Mutates and returns the option object; strips `jeenFormat` before ECharts.
+     */
+    _applyValueFormatting(options) {
+        if (!options || typeof options !== 'object') return options;
+
+        if (options.jeenFormat) {
+            this._valueFormat = {
+                kind: options.jeenFormat.kind || 'number',
+                compact: options.jeenFormat.compact !== false,
+                symbol: options.jeenFormat.symbol || '',
+            };
+            delete options.jeenFormat;
+        }
+        const meta = this._valueFormat || { kind: 'number', compact: true, symbol: '' };
+        const fmt = makeValueFormatter(meta);
+
+        const applyAxis = (axis) => {
+            if (!axis) return;
+            if (Array.isArray(axis)) { axis.forEach(applyAxis); return; }
+            if (axis.type === 'value') {
+                axis.axisLabel = { ...(axis.axisLabel || {}), formatter: fmt };
+            }
+        };
+        applyAxis(options.xAxis);
+        applyAxis(options.yAxis);
+
+        // Don't clobber an explicit string formatter (e.g. pie "{b}: {d}%").
+        if (options.tooltip && !Array.isArray(options.tooltip)
+            && typeof options.tooltip.formatter !== 'string') {
+            options.tooltip.valueFormatter = fmt;
+        }
+        return options;
     }
 
     _reapplyQuickToggles() {

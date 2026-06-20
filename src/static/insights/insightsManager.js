@@ -34,15 +34,17 @@ class InsightsManager {
 
         const connection = (typeof getActiveConnection === 'function') ? getActiveConnection() : '';
 
-        // Cap the rows sent to the LLM — insights don't need the full dataset,
-        // just a representative sample. Sending hundreds of rows bloats the
-        // prompt and slows Azure OpenAI significantly.
-        const MAX_INSIGHT_ROWS = 20;
-        const cappedResults = results && results.rows && results.rows.length > MAX_INSIGHT_ROWS
-            ? { ...results, rows: results.rows.slice(0, MAX_INSIGHT_ROWS), row_count: MAX_INSIGHT_ROWS }
+        // The server analyses the FULL result set from its result cache (keyed by
+        // query_id) and computes whole-dataset statistics — so insights reflect
+        // ALL the data, not a sample. The dataset we send here is only a
+        // cache-miss fallback, so we send a generous sample (not the whole frame)
+        // to keep the upload small while staying useful if the cache missed.
+        const MAX_FALLBACK_ROWS = 200;
+        const fallbackResults = results && results.rows && results.rows.length > MAX_FALLBACK_ROWS
+            ? { ...results, rows: results.rows.slice(0, MAX_FALLBACK_ROWS), row_count: results.rows.length }
             : results;
 
-        const requestBody = { connection, dataset: cappedResults, question };
+        const requestBody = { connection, dataset: fallbackResults, question };
         if (queryId) requestBody.query_id = queryId;
         // Forward the SQL so the server can use the LangGraph eval node.
         if (sql) requestBody.sql = sql;

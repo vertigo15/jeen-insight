@@ -350,6 +350,7 @@ async def run_eval(
     sql: str,
     results: list,
     row_count: int,
+    statistics: str = "",
 ) -> dict:
     """Invoke the eval graph and return the final InsightsState."""
     return await graph.ainvoke(
@@ -358,5 +359,6 @@ async def run_eval(
             sql=sql,
             results=results,
             row_count=row_count,
+            statistics=statistics,
         )
     )

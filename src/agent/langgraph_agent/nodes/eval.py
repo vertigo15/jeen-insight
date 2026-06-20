@@ -39,6 +39,42 @@ def _merge_usage(current: Dict[str, int], new: Dict[str, Any]) -> Dict[str, int]
     }
 
 
+_SAMPLE_ROWS = 12
+
+
+def _build_results_block(statistics: str, rows: List[Any], row_count: int) -> str:
+    """Compose the data context the eval LLM sees: full-data statistics (when
+    available) plus a small verbatim row sample. The statistics carry the
+    whole-dataset signal so the model never has to infer totals from the sample."""
+    sample = rows[:_SAMPLE_ROWS] if isinstance(rows, list) else []
+    try:
+        sample_json = json.dumps(sample, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001
+        sample_json = str(sample)[:2000]
+
+    parts: List[str] = []
+    if statistics:
+        parts.append(
+            f"Full-data statistics (computed over all {row_count} rows):\n{statistics}"
+        )
+    parts.append(f"Sample rows (first {len(sample)} of {row_count}):\n{sample_json}")
+    return "\n\n".join(parts)
+
+
+def _profile_statistics(rows: List[Any], columns: List[str]) -> str:
+    """Best-effort full-data statistics for the inline pipeline node, where we
+    have the rows but no precomputed statistics."""
+    try:
+        from src.api.chart_builder import profile_dataset, summarize_profile
+
+        if not columns and rows and isinstance(rows[0], dict):
+            columns = list(rows[0].keys())
+        return summarize_profile(profile_dataset({"columns": columns, "rows": rows}, scan_cap=100_000))
+    except Exception:  # noqa: BLE001
+        logger.debug("fused_eval: statistics computation failed", exc_info=True)
+        return ""
+
+
 def _extract_json(content: str) -> str:
     """Strip markdown code fences to get the raw JSON string."""
     if "```json" in content:
@@ -62,12 +98,10 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
         rows = result.get("rows") or []
         row_count = len(rows)
 
-        # Serialise a small sample for the prompt (avoid huge payloads)
-        sample_rows = rows[:5]
-        try:
-            results_sample = json.dumps(sample_rows, default=str, indent=2)
-        except Exception:  # noqa: BLE001
-            results_sample = str(sample_rows)[:1000]
+        # Full-data statistics + small sample (so the model reasons over ALL rows,
+        # not just the first few).
+        statistics = _profile_statistics(rows, result.get("columns") or [])
+        results_sample = _build_results_block(statistics, rows, row_count)
 
         prompt = prompt_loader.render(
             "fused_eval_analytics",
@@ -166,10 +200,11 @@ def make_fused_eval_analytics_subgraph(
     """Return an async LangGraph node for the standalone insights eval subgraph."""
 
     async def _node(state: dict) -> dict:
-        question  = state.get("question", "")
-        sql       = state.get("sql", "")
-        results   = state.get("results") or []
-        row_count = state.get("row_count", len(results) if isinstance(results, list) else 0)
+        question   = state.get("question", "")
+        sql        = state.get("sql", "")
+        results    = state.get("results") or []
+        row_count  = state.get("row_count", len(results) if isinstance(results, list) else 0)
+        statistics = state.get("statistics") or ""
 
         try:
             template       = await prompt_cache.get_content("fused_eval_analytics")
@@ -178,17 +213,16 @@ def make_fused_eval_analytics_subgraph(
             template       = _FALLBACK_PROMPT
             model_override = None
 
-        sample = results[:5] if isinstance(results, list) else []
-        try:
-            sample_json = json.dumps(sample, ensure_ascii=False, default=str)
-        except Exception:  # noqa: BLE001
-            sample_json = str(sample)
+        # Data context = full-data statistics (the model's window onto ALL rows)
+        # + a small verbatim sample for shape. Folded into results_sample so it
+        # rides the existing prompt placeholder regardless of the DB template.
+        results_block = _build_results_block(statistics, results, row_count)
 
         try:
             prompt_text = template.format(
                 question       = question,
                 sql            = sql or "N/A",
-                results_sample = sample_json,
+                results_sample = results_block,
                 row_count      = row_count,
             )
         except KeyError:

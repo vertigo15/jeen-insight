@@ -66,9 +66,18 @@ class ColumnInfo(BaseModel):
 # ----------------------------------------------------------------------
 class GenerateChartRequest(BaseModel):
     connection: str
-    columns: List[ColumnInfo]
-    column_names: List[str]
-    sample_data: List[List[Any]]
+    # Cache coordinates: when the query result is still cached server-side we
+    # build the chart from the full rows and the client can omit columns/data.
+    query_id: Optional[str] = None
+    user_id: Optional[str] = None
+    # The natural-language question that produced the data — used as
+    # "instructions" so the LLM can choose a chart that matches user intent.
+    question: Optional[str] = None
+    # Columns/data are optional: present only on a cache miss (the client
+    # re-sends them as the fallback). all_data carries the FULL rows.
+    columns: Optional[List[ColumnInfo]] = None
+    column_names: Optional[List[str]] = None
+    sample_data: Optional[List[List[Any]]] = None
     all_data: Optional[List[List[Any]]] = None
     chart_type: Optional[str] = "auto"
     x_column: Optional[str] = None
@@ -77,8 +86,13 @@ class GenerateChartRequest(BaseModel):
 
 
 class GenerateChartResponse(BaseModel):
-    chart_config: Dict[str, Any]
+    # chart_config is the legacy full ECharts config (fallback path). New
+    # clients prefer chart_spec and build the option from the full dataset
+    # client-side, so chart_config may be empty.
+    chart_config: Dict[str, Any] = Field(default_factory=dict)
     chart_type: str
+    # Compact visualization spec the client renders from the full result set.
+    chart_spec: Optional[Dict[str, Any]] = None
     prompt: Optional[str] = None
     system_message: Optional[str] = None
 
@@ -128,9 +142,12 @@ class EditChartResponse(BaseModel):
 # ----------------------------------------------------------------------
 class GenerateInsightsRequest(BaseModel):
     connection: str
-    dataset: Dict[str, Any]
+    # dataset is optional: when the result is cached server-side (matched by
+    # query_id) the rows are pulled from the cache instead of the request body.
+    dataset: Optional[Dict[str, Any]] = None
     question: str
     query_id: Optional[UUID] = None
+    user_id: Optional[str] = None
     # SQL that produced the dataset — when provided the LangGraph eval node is
     # used instead of the legacy insight_service path.
     sql: Optional[str] = None
@@ -149,8 +166,13 @@ class GenerateInsightsResponse(BaseModel):
 
 
 class GenerateProfileRequest(BaseModel):
-    dataset: Dict[str, Any]
+    # dataset is optional: when the result is cached server-side (matched by
+    # connection+query_id) the rows are pulled from the cache.
+    dataset: Optional[Dict[str, Any]] = None
     report_type: str = "ydata"
+    connection: Optional[str] = None
+    query_id: Optional[str] = None
+    user_id: Optional[str] = None
 
 
 # ----------------------------------------------------------------------

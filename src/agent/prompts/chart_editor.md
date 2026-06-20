@@ -11,6 +11,7 @@ You MUST return a single JSON object with this shape:
 {{
   "chart_config": <full ECharts option object>,
   "chart_type": <string, primary chart type, e.g. "bar" | "line" | "pie">,
+  "jeenFormat": {{ "kind": "number" | "currency" | "percent", "compact": <bool>, "symbol": <currency symbol like "$"/"€"/"₪", or "" if unknown> }},
   "derived_series": [
     {{
       "operator": "moving_avg" | "cumulative_sum" | "percent_change" | "linear_trend" | "normalize_0_1" | "log_scale",
@@ -23,6 +24,18 @@ You MUST return a single JSON object with this shape:
   "out_of_scope": <bool>
 }}
 
+`jeenFormat` controls value formatting (axis labels + tooltips). Include it ONLY
+when the user asks to change number formatting (e.g. "show as dollars",
+"format as percent", "show full numbers not K/M"). Use kind="currency" for money,
+"percent" for rates, "number" otherwise; set compact=false to disable K/M/B
+abbreviation. The app applies it — do NOT hand-write "$" / "%" / "K" / "M" into
+axis or tooltip formatter strings for the measure values.
+
+For currency, set `symbol` to the actual currency symbol the user names
+("dollars"/"USD" → "$", "euros"/"EUR" → "€", "pounds" → "£", "shekels" → "₪").
+NEVER assume US dollars: if the user just says "format as currency" without
+naming one, set kind="currency" and symbol="" (a plain number, no symbol).
+
 # STRICT JSON REQUIREMENTS
 - Pure JSON only. No markdown fences (no ```), no comments (// or /* */),
   no trailing commas, no JavaScript code, no NaN, no undefined.
@@ -33,16 +46,25 @@ You MUST return a single JSON object with this shape:
   "{{value}}%".
 
 # WHAT YOU MAY CHANGE (chart visualization)
-- Title, subtitle, legend, grid, tooltip styling/format
-- Axis labels, axis formatters (template strings only), axis names
+- Title, subtitle, legend, grid, tooltip styling
+- Axis names/labels (template strings ok for NON-value text; use jeenFormat for
+  the measure values)
 - Series colors, color palette, series item styling
 - Show/hide data labels (label.show)
 - Chart type: switch between bar, line, area (line + areaStyle), scatter,
   pie, donut (pie + radius), horizontal bar, stacked bar/area (stack: 'total'),
   combo (bar + line, dual axis when needed), heatmap, gauge
+- Value formatting via jeenFormat (currency / percent / compact)
 - Sort order of category axis (asc / desc / by value)
 - Smoothing on line series, stacking, opacity
 - Symbol size, line width, bar gap
+
+# VISUALIZATION BEST PRACTICES (apply when switching chart type)
+- Time/ordered data (dates, or a "2024-01"-style joined axis) → line; area only
+  for volume/cumulative. Never switch a time trend to a pie.
+- Discrete categories → bar; many/long labels → horizontal bar.
+- Parts of a whole with few (≤6) categories → pie/donut; otherwise keep bar.
+- Keep the existing chronological order of a time axis; do not shuffle it.
 
 # WHAT YOU MAY NOT DO
 - Do not invent rows or values that are not in the provided sample.
@@ -120,11 +142,14 @@ Output:
   "out_of_scope": false
 }}
 
-## Example 4 — Currency formatting on Y axis
-Instruction: "format the Y axis as USD"
-Output: same config except yAxis.axisLabel.formatter = "${{value}}" and
-tooltip.valueFormatter or tooltip.formatter updated to a template string
-that includes the dollar sign. No JavaScript functions.
+## Example 4 — Currency formatting on the value axis
+Instruction: "format the values as USD"
+Output: the config unchanged, plus
+"jeenFormat": {{ "kind": "currency", "compact": true, "symbol": "$" }}.
+For "format as euros" use "symbol": "€"; for a bare "format as currency" use
+"symbol": "". Do NOT hand-edit axisLabel/tooltip formatter strings for the
+measure — the app applies jeenFormat (e.g. $1.2M). Set "compact": false if the
+user wants full numbers.
 
 ## Example 5 — Sort descending
 Instruction: "sort highest to lowest"

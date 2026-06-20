@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from src.api.dependencies import get_catalog_provider, resolve_agent
 from src.api.models import QueryRequest, QueryResponse
+from src.api.result_cache import result_cache
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["query"])
@@ -28,6 +29,18 @@ async def query_database(request: QueryRequest):
             eval_analytics=request.eval_analytics,
             llm_timeout=request.llm_timeout,
         )
+        # Cache the result so charts / describe / insights can reuse the full
+        # rows (keyed by user+connection+query_id) instead of the browser
+        # re-uploading them. Best-effort: never fail the query over a cache hiccup.
+        try:
+            result_cache.put(
+                user_id=(request.user_context or {}).get("user_id"),
+                connection=request.connection,
+                query_id=result.get("query_id"),
+                dataset=result.get("results"),
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("result_cache put failed", exc_info=True)
         return QueryResponse(**result)
     except HTTPException:
         raise

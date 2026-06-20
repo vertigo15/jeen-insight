@@ -15,7 +15,16 @@ from src.api.models import (
     GenerateInsightsResponse,
     GenerateProfileRequest,
 )
+from src.api.chart_builder import profile_dataset, summarize_profile
+from src.api.result_cache import result_cache
 from src.config import settings
+
+# Stats for insights are computed over (essentially) the whole result set, not a
+# 5k sample, so figures like sums/averages reflect all the data.
+_INSIGHTS_STATS_SCAN_CAP = 100_000
+# Rows shown verbatim to the LLM as a shape sample (full-data signal comes from
+# the computed statistics, so this stays small to keep the prompt cheap).
+_INSIGHTS_SAMPLE_ROWS = 12
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["insights"])
@@ -26,10 +35,60 @@ def _sse(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _has_rows(ds) -> bool:
+    return bool(ds and (ds.get("rows") or ds.get("data")))
+
+
+def _resolve_dataset(
+    *, user_id, connection, query_id, body_dataset, prefer_cache=False, cap=None
+) -> dict:
+    """Pick the dataset to operate on, from the server-side result cache or the
+    request body. Raises 409 ``cache_miss`` when neither has rows so the client
+    can re-send them.
+
+    - ``prefer_cache``: use the full cached frame even when the body has rows
+      (Describe/profiling wants ALL rows; insights prefers the body's capped sample).
+    - ``cap``: trim to this many rows (insights caps to keep prompt size bounded).
+    """
+    cached = result_cache.get(user_id=user_id, connection=connection, query_id=query_id)
+
+    chosen = None
+    if prefer_cache and _has_rows(cached):
+        chosen = cached
+    elif _has_rows(body_dataset):
+        chosen = body_dataset
+    elif _has_rows(cached):
+        chosen = cached
+    if not _has_rows(chosen):
+        raise HTTPException(status_code=409, detail="cache_miss")
+
+    rows = chosen.get("rows") or chosen.get("data") or []
+    if cap and len(rows) > cap:
+        return {"columns": chosen.get("columns"), "rows": rows[:cap], "row_count": cap}
+    return chosen
+
+
+def _dataset_statistics(dataset: dict) -> str:
+    """Full-data statistics block for the insights prompt (best-effort)."""
+    try:
+        return summarize_profile(profile_dataset(dataset, scan_cap=_INSIGHTS_STATS_SCAN_CAP))
+    except Exception:  # noqa: BLE001
+        logger.debug("insights: statistics computation failed", exc_info=True)
+        return ""
+
+
 @router.post("/generate-insights", response_model=GenerateInsightsResponse)
 async def generate_insights_endpoint(request: GenerateInsightsRequest):
     agent = await resolve_agent(request.connection)
     logger.info("Generating insights for: %s", request.question[:50])
+    # Resolve before the try so a 409 cache_miss propagates instead of being
+    # swallowed into a generic "Unable to generate insights" response.
+    # prefer_cache: insights reason over the FULL result set (the cached frame),
+    # not the small sample the browser sends.
+    dataset = _resolve_dataset(
+        user_id=request.user_id, connection=request.connection, query_id=request.query_id,
+        body_dataset=request.dataset, prefer_cache=True,
+    )
     try:
         from src.api import state as app_state
 
@@ -38,8 +97,8 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
             logger.info("insights: using LangGraph eval node")
             from src.agent.langgraph_agent import run_eval
 
-            columns  = request.dataset.get("columns", [])
-            rows_raw = request.dataset.get("rows") or request.dataset.get("data") or []
+            columns  = dataset.get("columns", [])
+            rows_raw = dataset.get("rows") or dataset.get("data") or []
             results  = [
                 dict(zip(columns, row)) if isinstance(row, (list, tuple)) else row
                 for row in rows_raw
@@ -48,10 +107,11 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
             start = time.time()
             state_out = await run_eval(
                 app_state.insights_eval_graph,
-                question  = request.question,
-                sql       = request.sql,
-                results   = results,
-                row_count = len(results),
+                question   = request.question,
+                sql        = request.sql,
+                results    = results,
+                row_count  = len(results),
+                statistics = _dataset_statistics(dataset),
             )
             exec_time_ms = int((time.time() - start) * 1000)
 
@@ -105,7 +165,7 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
 
         start = time.time()
         insights = await generate_insights(
-            dataset=request.dataset,
+            dataset=dataset,
             context=context,
             original_question=request.question,
             llm_service=agent.llm,
@@ -166,6 +226,15 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
     from src.api import state as app_state
     from src.agent.insight_service import generate_insights_stream
 
+    # Resolve before streaming starts so a 409 cache_miss is a normal HTTP error
+    # the client can retry (re-sending rows) rather than a mid-stream failure.
+    # prefer_cache: stream insights over the FULL cached result set.
+    dataset = _resolve_dataset(
+        user_id=request.user_id, connection=request.connection, query_id=request.query_id,
+        body_dataset=request.dataset, prefer_cache=True,
+    )
+    statistics = _dataset_statistics(dataset)
+
     bundle = await agent.metadata_loader.load_all(agent.source_key)
     context = {"documentation": [bundle.get("business_terms", "")]}
     history = get_history_service() if request.query_id else None
@@ -182,8 +251,8 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
             try:
                 from src.agent.langgraph_agent import run_eval
 
-                columns  = request.dataset.get("columns", [])
-                rows_raw = request.dataset.get("rows") or request.dataset.get("data") or []
+                columns  = dataset.get("columns", [])
+                rows_raw = dataset.get("rows") or dataset.get("data") or []
                 results  = [
                     dict(zip(columns, row)) if isinstance(row, (list, tuple)) else row
                     for row in rows_raw
@@ -192,10 +261,11 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
                 t0 = time.time()
                 state_out = await run_eval(
                     app_state.insights_eval_graph,
-                    question  = request.question,
-                    sql       = request.sql,
-                    results   = results,
-                    row_count = len(results),
+                    question   = request.question,
+                    sql        = request.sql,
+                    results    = results,
+                    row_count  = len(results),
+                    statistics = statistics,
                 )
                 latency_ms = int((time.time() - t0) * 1000)
 
@@ -233,7 +303,7 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
             try:
                 legacy_prompt = ""
                 async for ev in generate_insights_stream(
-                    dataset=request.dataset,
+                    dataset=dataset,
                     context=context,
                     original_question=request.question,
                     llm_service=agent.llm,
@@ -317,15 +387,21 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
 async def generate_profile_endpoint(request: GenerateProfileRequest):
     report_type = request.report_type.lower()
     logger.info("Generating data profile report using: %s", report_type)
+    # Profiling wants the FULL result set: prefer the cached frame, fall back to
+    # rows in the body. Resolve before the try so a 409 cache_miss propagates.
+    dataset = _resolve_dataset(
+        user_id=request.user_id, connection=request.connection, query_id=request.query_id,
+        body_dataset=request.dataset, prefer_cache=True,
+    )
     try:
         if report_type == "sweetviz":
             from src.agent.sweetviz_service import generate_sweetviz_report
 
-            html_report = await generate_sweetviz_report(request.dataset)
+            html_report = await generate_sweetviz_report(dataset)
         else:
             from src.agent.profiling_service import generate_profile_report
 
-            html_report = await generate_profile_report(request.dataset)
+            html_report = await generate_profile_report(dataset)
         return {"html": html_report}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

@@ -134,6 +134,9 @@ class InsightsState(TypedDict, total=False):
     sql: str
     results: List[Any]
     row_count: int
+    # full-data statistics block (computed over the whole result set, not just
+    # the sample) so the eval node can reason over all the data
+    statistics: str
     # eval outputs
     answers_intent: bool
     summary: str

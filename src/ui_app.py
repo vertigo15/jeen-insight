@@ -580,6 +580,9 @@ def generate_chart():
     data = request.get_json() or {}
     if not data.get("connection"):
         return jsonify({"error": "No connection selected"}), 400
+    # Stamp the authenticated user so the server-side result cache is scoped
+    # to this user (never trust a client-supplied id).
+    data["user_id"] = _session_user_id()
     return _proxy_post("/api/generate-chart", data)
 
 
@@ -588,6 +591,7 @@ def generate_insights():
     data = request.get_json() or {}
     if not data.get("connection"):
         return jsonify({"error": "No connection selected"}), 400
+    data["user_id"] = _session_user_id()
     return _proxy_post("/api/generate-insights", data)
 
 
@@ -601,6 +605,7 @@ def generate_insights_stream():
     data = request.get_json() or {}
     if not data.get("connection"):
         return jsonify({"error": "No connection selected"}), 400
+    data["user_id"] = _session_user_id()
 
     upstream = requests.post(
         f"{API_BASE_URL}/api/generate-insights/stream",
@@ -638,6 +643,7 @@ def generate_insights_stream():
 @app.route("/api/generate-profile", methods=["POST"])
 def generate_profile():
     data = request.get_json() or {}
+    data["user_id"] = _session_user_id()
     return _proxy_post("/api/generate-profile", data, timeout=120)
 
 

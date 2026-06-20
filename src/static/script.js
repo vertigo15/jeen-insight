@@ -429,6 +429,10 @@ function displayResults(data) {
     currentQuestion = data.question;
     currentQueryId = data.query_id || null;
     currentSessionId = data.session_id || null;
+    // Expose to feature modules (chart/profiling) so they can reference the
+    // server-side cached result by query_id and pass the question as intent.
+    window.currentQueryId = currentQueryId;
+    window.currentQuestion = currentQuestion;
     
     // Log conversation IDs
     if (currentQueryId) {
@@ -2579,7 +2583,7 @@ window._toggleTraceEvent = _toggleTraceEvent;
 async function initializeChartFeature(results) {
     // Dynamically import ChartManager if not already loaded
     if (!ChartManager) {
-        const module = await import('./chart-feature/chartManager.js?v=55');
+        const module = await import('./chart-feature/chartManager.js?v=68');
         ChartManager = module.ChartManager;
     }
     

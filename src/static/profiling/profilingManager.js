@@ -200,30 +200,23 @@ class ProfilingManager {
                 throw new Error('No results available to profile');
             }
 
-            // Prepare dataset with report type
-            const dataset = {
-                rows: results.rows,
-                columns: results.columns
+            // The server profiles the FULL result set from its result cache
+            // (keyed by query_id). Hot path sends only the query_id; on a cache
+            // miss (409) we re-send the rows as the fallback.
+            const connection = (typeof getActiveConnection === 'function') ? getActiveConnection() : '';
+            const basePayload = {
+                report_type: this.selectedReportType,
+                connection,
+                query_id: window.currentQueryId || null,
             };
 
-            // Call API with report type
-            const response = await fetch('/api/generate-profile', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ 
-                    dataset,
-                    report_type: this.selectedReportType
-                })
-            });
-
-            if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.error || 'Failed to generate profile report');
+            let data = await this._postProfile(basePayload);
+            if (data === '__CACHE_MISS__') {
+                data = await this._postProfile({
+                    ...basePayload,
+                    dataset: { rows: results.rows, columns: results.columns },
+                });
             }
-
-            const data = await response.json();
             const htmlReport = data.html;
 
             // Cache the report for this type
@@ -246,6 +239,28 @@ class ProfilingManager {
         } finally {
             this.isGenerating = false;
         }
+    }
+
+    /**
+     * POST to /api/generate-profile. Returns parsed JSON, or '__CACHE_MISS__'
+     * when the server has no cached rows (409) so the caller can re-send them.
+     */
+    async _postProfile(payload) {
+        const response = await fetch('/api/generate-profile', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (response.status === 409) return '__CACHE_MISS__';
+        if (!response.ok) {
+            let msg = 'Failed to generate profile report';
+            try {
+                const e = await response.json();
+                msg = e.error || e.detail || msg;
+            } catch (_) { /* non-JSON error body */ }
+            throw new Error(msg);
+        }
+        return await response.json();
     }
 
     /**
