@@ -15,8 +15,74 @@ Rows may be dicts (column->value, as ``run_sql`` returns) or positional lists.
 from __future__ import annotations
 
 import math
+import re
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
+
+# Measure names that belong on a combo chart's SECONDARY (right) axis as a line:
+# percentages, rates and period-over-period change metrics live on a very
+# different scale than the primary measures they're compared against.
+_SECONDARY_MEASURE_RE = re.compile(
+    r"(pct|percent|ratio|rate|change|growth|delta|diff|margin|yoy|mom|qoq|index)",
+    re.I,
+)
+
+# Narrower than the above: names that read as a PERCENTAGE (so we format with %).
+_PERCENT_MEASURE_RE = re.compile(
+    r"(pct|percent|rate|ratio|margin|share|growth|yoy|mom|qoq)", re.I
+)
+
+# Negative bars/points get a distinct (red) colour so losses read at a glance.
+_NEG_COLOR = "#d9534f"
+
+
+def _fmt_meta(value_format: str, symbol: str = "", scale: float = 1) -> Dict[str, Any]:
+    """Client value-format hint. ``scale`` (only emitted when ≠ 1) multiplies the
+    value before formatting — used to render 0–1 fractions as 0–100 percent."""
+    meta: Dict[str, Any] = {
+        "kind": value_format,
+        "compact": value_format != "percent",
+        "symbol": symbol if value_format == "currency" else "",
+    }
+    if scale and scale != 1:
+        meta["scale"] = scale
+    return meta
+
+
+def _percent_scale(values) -> float:
+    """Decide whether a percent measure is stored as a fraction (0.34) or already
+    as a percentage (34). Fractions (|max| ≤ 1.5) are scaled ×100 for display."""
+    mx = 0.0
+    for v in values:
+        if isinstance(v, (int, float)) and math.isfinite(v):
+            mx = max(mx, abs(v))
+    return 100.0 if 0 < mx <= 1.5 else 1.0
+
+
+def _color_negatives(data: List[Any]) -> tuple[List[Any], bool]:
+    """Wrap negative bar values so they render in ``_NEG_COLOR``; positives keep
+    the series colour. Returns (new_data, had_negative)."""
+    out: List[Any] = []
+    had_neg = False
+    for v in data:
+        if isinstance(v, (int, float)) and math.isfinite(v) and v < 0:
+            had_neg = True
+            out.append({"value": v, "itemStyle": {"color": _NEG_COLOR}})
+        else:
+            out.append(v)
+    return out, had_neg
+
+
+def _zero_markline() -> Dict[str, Any]:
+    """A subtle dashed line at zero so the baseline is obvious when a series
+    spans positive and negative values."""
+    return {
+        "silent": True,
+        "symbol": "none",
+        "label": {"show": False},
+        "lineStyle": {"color": "#9aa0a6", "type": "dashed", "width": 1},
+        "data": [{"yAxis": 0}],
+    }
 
 OTHER_LABEL = "Other"
 NULL_LABEL = "(null)"
@@ -417,12 +483,25 @@ def _build_cartesian(spec, matrix, kind):
     is_area = kind in ("area", "stacked_area")
     stacked = spec.get("stacked") or kind in ("stacked_bar", "stacked_area")
 
-    cat_axis = {
-        "type": "category", "data": categories,
-        "name": (spec.get("y_label") if horizontal else spec.get("x_label")) or None,
-        "boundaryGap": not is_line,
-        "axisLabel": {"hideOverlap": True} if horizontal else _category_axis_label(categories),
-    }
+    # A genuine, single date column on a line/area chart gets a real TIME axis so
+    # irregular gaps are spaced proportionally (composite year+month labels and
+    # categorical x stay on a category axis).
+    use_time = (is_line and not horizontal and matrix.get("x_is_date")
+                and not spec.get("x_parts"))
+
+    if use_time:
+        cat_axis = {
+            "type": "time",
+            "name": spec.get("x_label") or None,
+            "axisLabel": {},
+        }
+    else:
+        cat_axis = {
+            "type": "category", "data": categories,
+            "name": (spec.get("y_label") if horizontal else spec.get("x_label")) or None,
+            "boundaryGap": not is_line,
+            "axisLabel": {"hideOverlap": True} if horizontal else _category_axis_label(categories),
+        }
     val_axis = {
         "type": "value",
         "name": (spec.get("x_label") if horizontal else spec.get("y_label")) or None,
@@ -446,10 +525,16 @@ def _build_cartesian(spec, matrix, kind):
         opt["xAxis"], opt["yAxis"] = cat_axis, val_axis
 
     dense = len(categories) > 40
+    any_negative = False
     built = []
     for s in series:
-        item = {"name": s["name"], "type": "line" if is_line else "bar", "data": s["data"]}
+        data = s["data"]
+        item = {"name": s["name"], "type": "line" if is_line else "bar"}
         if is_line:
+            # Time axis needs explicit [x, y] pairs; category axis uses the
+            # aligned value list.
+            item["data"] = ([[categories[i], data[i]] for i in range(len(data))]
+                            if use_time else data)
             item["smooth"] = bool(spec.get("smooth"))
             item["symbol"] = "circle"
             item["symbolSize"] = 0 if dense else 5
@@ -459,11 +544,21 @@ def _build_cartesian(spec, matrix, kind):
             if is_area:
                 item["areaStyle"] = {}
         else:
+            # Colour negative bars distinctly unless stacking (where the sign is
+            # carried by the stack direction).
+            if stacked:
+                item["data"] = data
+            else:
+                item["data"], had_neg = _color_negatives(data)
+                any_negative = any_negative or had_neg
             item["barMaxWidth"] = 48
         if stacked:
             item["stack"] = "total"
         item["emphasis"] = {"focus": "series"}
         built.append(item)
+    # Make the zero baseline explicit when bars cross it.
+    if any_negative and built:
+        built[0]["markLine"] = _zero_markline()
     opt["series"] = built
     _maybe_data_zoom(opt, len(categories), horizontal)
     return opt
@@ -525,22 +620,84 @@ def _build_scatter(spec, rows, ctx):
     return opt
 
 
+def _combo_secondary_names(spec, series) -> set:
+    """Names of measures that go on the secondary (right) axis as lines.
+
+    Percent/rate/change measures (e.g. ``yoy_change_pct``) sit on the right axis
+    as a line; same-scale measures (e.g. ``revenue_2006``/``revenue_2007``) are
+    grouped bars on the left. The LLM may pin this explicitly via ``secondary_y``.
+    """
+    explicit = {str(n) for n in (spec.get("secondary_y") or [])}
+    names = [s["name"] for s in series]
+    if explicit:
+        secondary = {n for n in names if n in explicit}
+    else:
+        secondary = {n for n in names if _SECONDARY_MEASURE_RE.search(str(n))}
+    # Need bars on at least one axis: if every (or no) measure matched, fall back
+    # to "first measure is a bar, the rest are secondary-axis lines".
+    if not secondary or len(secondary) >= len(names):
+        secondary = set(names[1:])
+    return secondary
+
+
 def _build_combo(spec, matrix):
     categories, series = matrix["categories"], matrix["series"]
+    secondary = _combo_secondary_names(spec, series)
+    left_name = next((s["name"] for s in series if s["name"] not in secondary), None)
+    right_name = next((s["name"] for s in series if s["name"] in secondary), None)
+
+    # Primary (left/bars) format follows the spec; a secondary measure that reads
+    # as a percentage gets its OWN percent format on the right axis, so the line
+    # shows "34%" while the bars show "$1.3M".
+    value_format = spec.get("value_format") or "number"
+    symbol = spec.get("currency_symbol") or ""
+    primary_scale = (_percent_scale(v for s in series if s["name"] not in secondary
+                                    for v in s["data"])
+                     if value_format == "percent" else 1)
+    primary_meta = _fmt_meta(value_format, symbol, primary_scale)
+
+    def _secondary_meta(name, data):
+        if _PERCENT_MEASURE_RE.search(str(name)):
+            return _fmt_meta("percent", "", _percent_scale(data))
+        return _fmt_meta("number")  # different scale, but not a percentage
+
+    right_meta = next((_secondary_meta(s["name"], s["data"])
+                       for s in series if s["name"] in secondary), _fmt_meta("number"))
+
     opt = _base_option(spec)
-    opt["tooltip"] = {"trigger": "axis", "axisPointer": {"type": "cross"}}
-    opt["legend"] = {"bottom": 0}
-    opt["xAxis"] = {"type": "category", "data": categories, "axisLabel": _category_axis_label(categories)}
+    opt["tooltip"] = {"trigger": "axis", "axisPointer": {"type": "cross"},
+                      "order": "valueDesc"}
+    opt["legend"] = {"type": "scroll", "bottom": 0}
+    opt["xAxis"] = {"type": "category", "data": categories,
+                    "axisLabel": _category_axis_label(categories)}
     opt["yAxis"] = [
-        {"type": "value", "name": series[0]["name"] if series else None, "axisLabel": {}},
-        {"type": "value", "name": series[1]["name"] if len(series) > 1 else None},
+        {"type": "value", "name": left_name, "axisLabel": {}, "jeenFormat": primary_meta},
+        {"type": "value", "name": right_name, "splitLine": {"show": False},
+         "jeenFormat": right_meta},
     ]
-    opt["series"] = [{
-        "name": s["name"], "type": "bar" if i == 0 else "line",
-        "yAxisIndex": 0 if i == 0 else 1, "data": s["data"],
-        "smooth": bool(spec.get("smooth")), "barMaxWidth": 48,
-        "emphasis": {"focus": "series"},
-    } for i, s in enumerate(series)]
+
+    built = []
+    for s in series:
+        is_secondary = s["name"] in secondary
+        item = {
+            "name": s["name"],
+            "type": "line" if is_secondary else "bar",
+            "yAxisIndex": 1 if is_secondary else 0,
+            "data": s["data"],
+            "smooth": bool(spec.get("smooth")),
+            "barMaxWidth": 48,
+            "barGap": "30%",
+            "symbolSize": 6,
+            "emphasis": {"focus": "series"},
+            # Each series formats by its own axis (bars=currency, line=percent).
+            "jeenFormat": _secondary_meta(s["name"], s["data"]) if is_secondary else primary_meta,
+        }
+        # A percent/diff line that dips below zero gets an explicit baseline.
+        if is_secondary and any(isinstance(v, (int, float)) and v < 0 for v in s["data"]):
+            item["markLine"] = _zero_markline()
+        built.append(item)
+    opt["series"] = built
+    _maybe_data_zoom(opt, len(categories), horizontal=False)
     return opt
 
 
@@ -657,12 +814,23 @@ def build_chart_option(spec: Dict[str, Any], dataset: Dict[str, Any]) -> Dict[st
     # Value-formatting hint consumed client-side (compact K/M, currency, percent,
     # decimals). Carried in the option so it survives chat edits; the client
     # strips it before ECharts setOption. `symbol` is empty unless the currency
-    # is actually known — we never assume "$".
+    # is actually known — we never assume "$". For percent, `scale` (×100) is
+    # added when the data is stored as 0–1 fractions so it reads as 0–100%.
     value_format = spec.get("value_format") or "number"
     symbol = (spec.get("currency_symbol") or "") if value_format == "currency" else ""
-    opt["jeenFormat"] = {
-        "kind": value_format,
-        "compact": value_format != "percent",
-        "symbol": symbol,
-    }
+    scale = _percent_scale(_option_values(opt)) if value_format == "percent" else 1
+    opt["jeenFormat"] = _fmt_meta(value_format, symbol, scale)
     return opt
+
+
+def _option_values(opt: Dict[str, Any]):
+    """Yield the numeric measure values from a built option (handles plain
+    numbers, {value,…} items, and [x, y] pairs)."""
+    for s in opt.get("series", []) or []:
+        for v in (s.get("data") or []):
+            if isinstance(v, dict):
+                v = v.get("value")
+            if isinstance(v, list):
+                v = v[-1] if v else None
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                yield v

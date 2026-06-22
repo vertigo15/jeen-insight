@@ -10,27 +10,34 @@
  */
 
 /**
- * @param {{kind?: string, compact?: boolean, symbol?: string}} meta
+ * @param {{kind?: string, compact?: boolean, symbol?: string, scale?: number}} meta
  *   kind: "number" | "currency" | "percent"
  *   symbol: currency symbol to PREFIX (e.g. "$", "€", "₪"). Only used for
  *           kind="currency"; when empty we do NOT assume a currency (no symbol),
  *           because the data could be any currency.
+ *   scale: multiplier applied before formatting (e.g. 100 to render 0–1
+ *          fractions as 0–100 percent). Defaults to 1.
  * @returns {(value:number|string)=>string}
  */
 export function makeValueFormatter(meta = {}) {
     const kind = meta.kind || 'number';
     const compact = meta.compact !== false;
     const symbol = typeof meta.symbol === 'string' ? meta.symbol : '';
+    // Multiply before formatting — used to show 0–1 fractions as 0–100 percent.
+    const scale = (typeof meta.scale === 'number' && isFinite(meta.scale) && meta.scale > 0) ? meta.scale : 1;
 
     const trim = (n, d) => {
         const s = n.toFixed(d);
         return d > 0 ? s.replace(/\.?0+$/, '') : s;
     };
+    // Thousands separators for the non-abbreviated path: 1,234,567.
+    const grouped = (n) => Math.round(n).toLocaleString('en-US');
 
     return function format(value) {
         if (value === null || value === undefined) return '';
-        const n = typeof value === 'number' ? value : Number(value);
+        let n = typeof value === 'number' ? value : Number(value);
         if (!isFinite(n)) return typeof value === 'string' ? value : '';
+        if (scale !== 1) n = n * scale;
 
         const abs = Math.abs(n);
         let body;
@@ -44,6 +51,10 @@ export function makeValueFormatter(meta = {}) {
                     break;
                 }
             }
+        } else if (abs >= 1000) {
+            // Big numbers: drop the decimals (they're noise at this scale) and
+            // group thousands → 1,000 / 10,000,000, never 10000000.34.
+            body = grouped(n);
         } else if (Number.isInteger(n)) {
             body = String(n);
         } else {

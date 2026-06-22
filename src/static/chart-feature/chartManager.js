@@ -8,12 +8,12 @@
 /// <reference path="./types/chart.types.js" />
 
 import { analyzeData } from './utils/dataAnalyzer.js';
-import { makeValueFormatter } from './utils/valueFormat.js?v=68';
+import { makeValueFormatter } from './utils/valueFormat.js?v=73';
 import { ChartContainer } from './components/ChartContainer.js';
 import { ChartToggle } from './components/ChartToggle.js';
 import { ChartTypeSelector } from './components/ChartTypeSelector.js';
-import { ChartOptionsPanel } from './components/ChartOptionsPanel.js';
-import { ChartChat } from './components/ChartChat.js';
+import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=70';
+import { ChartChat } from './components/ChartChat.js?v=72';
 import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js';
 
 /**
@@ -236,16 +236,18 @@ export class ChartManager {
             // query_id; on a cache miss the server replies 409 and we re-send the
             // rows as the fallback.
             const connection = (typeof getActiveConnection === 'function') ? getActiveConnection() : '';
-            const mapping = this.chartOptionsPanel ? this.chartOptionsPanel.getMapping() : {};
+            // Only fields the user explicitly picked override the LLM. On Auto
+            // this is empty, so the LLM is free to choose x/y/series + combo.
+            const overrides = this.chartOptionsPanel ? this.chartOptionsPanel.getOverrides() : {};
             const payload = {
                 connection,
                 query_id: window.currentQueryId || null,
                 question: window.currentQuestion || null,
                 chart_type: chartType,
             };
-            if (mapping.xColumn) payload.x_column = mapping.xColumn;
-            if (mapping.yColumn) payload.y_column = mapping.yColumn;
-            if (mapping.seriesColumn) payload.series_column = mapping.seriesColumn;
+            if (overrides.xColumn) payload.x_column = overrides.xColumn;
+            if (overrides.yColumn) payload.y_column = overrides.yColumn;
+            if (overrides.seriesColumn) payload.series_column = overrides.seriesColumn;
 
             let data = await this._postChart(payload);
             if (data === '__REDIRECT__') return;
@@ -276,6 +278,12 @@ export class ChartManager {
                 console.log('[ChartManager] LLM recommended type:', data.chart_type);
             } else if (chartType !== 'auto') {
                 console.log('[ChartManager] User-requested type:', chartType);
+            }
+
+            // Reflect the LLM's actual column choices in the mapping dropdowns so
+            // the panel matches the chart and later tweaks start from there.
+            if (this.chartOptionsPanel && data.chart_spec) {
+                this.chartOptionsPanel.syncFromSpec(data.chart_spec);
             }
             
             // Display chart prompt in Chart Prompt tab if available
@@ -404,6 +412,12 @@ export class ChartManager {
             derivedSpecs || [],
             this.state.currentData
         );
+        // Mirror the edit's visual state (e.g. label.show=true from "add data
+        // labels") into the quick toggles BEFORE re-applying them — otherwise a
+        // default-off toggle would immediately strip the change the user asked for.
+        if (this.chartOptionsPanel) {
+            this.chartOptionsPanel.syncTogglesFromConfig(withDerived);
+        }
         const displayConfig = this._withQuickToggles(withDerived);
 
         const chartConfig = {
@@ -822,8 +836,11 @@ export class ChartManager {
     
     getLLMCacheKey(chartType = 'auto') {
         const dataHash = this.simpleHash(JSON.stringify(this.state.currentData));
-        const mapping = this.chartOptionsPanel ? this.chartOptionsPanel.getMapping() : {};
-        const mapKey = [mapping.xColumn, mapping.yColumn, mapping.seriesColumn].join('|');
+        // Key only on user-chosen overrides (stable across the post-generation
+        // dropdown sync), so an Auto chart isn't re-fetched after we mirror the
+        // LLM's columns into the panel.
+        const o = this.chartOptionsPanel ? this.chartOptionsPanel.getOverrides() : {};
+        const mapKey = [o.xColumn || '', o.yColumn || '', o.seriesColumn || ''].join('|');
         return `chart_llm_${dataHash}_${chartType}_${mapKey}`;
     }
 
@@ -852,26 +869,80 @@ export class ChartManager {
                 kind: options.jeenFormat.kind || 'number',
                 compact: options.jeenFormat.compact !== false,
                 symbol: options.jeenFormat.symbol || '',
+                scale: options.jeenFormat.scale,
             };
             delete options.jeenFormat;
         }
-        const meta = this._valueFormat || { kind: 'number', compact: true, symbol: '' };
-        const fmt = makeValueFormatter(meta);
+        const primaryMeta = this._valueFormat || { kind: 'number', compact: true, symbol: '' };
+        const primaryFmt = makeValueFormatter(primaryMeta);
 
+        // Pull the numeric value out of a point regardless of shape: plain
+        // number, {value}, or [x, y] / time-axis pairs.
+        const pickValue = (p) => {
+            const raw = p && p.value;
+            if (Array.isArray(raw)) return raw[raw.length - 1];
+            return (raw !== undefined && raw !== null) ? raw : p;
+        };
+
+        // Axes may carry their OWN format (combo dual-axis: $ left, % right).
         const applyAxis = (axis) => {
             if (!axis) return;
             if (Array.isArray(axis)) { axis.forEach(applyAxis); return; }
             if (axis.type === 'value') {
-                axis.axisLabel = { ...(axis.axisLabel || {}), formatter: fmt };
+                const f = axis.jeenFormat ? makeValueFormatter(axis.jeenFormat) : primaryFmt;
+                axis.axisLabel = { ...(axis.axisLabel || {}), formatter: f };
             }
+            if (axis.jeenFormat) delete axis.jeenFormat;
         };
         applyAxis(options.xAxis);
         applyAxis(options.yAxis);
 
-        // Don't clobber an explicit string formatter (e.g. pie "{b}: {d}%").
-        if (options.tooltip && !Array.isArray(options.tooltip)
-            && typeof options.tooltip.formatter !== 'string') {
-            options.tooltip.valueFormatter = fmt;
+        // Per-series formatter (so a combo's % line formats as % while its bars
+        // format as currency). Data labels reuse the same formatter and get
+        // overlap protection so dense charts stay readable.
+        const series = Array.isArray(options.series) ? options.series : [];
+        const seriesFmts = [];
+        let perSeriesDiff = false;
+        series.forEach((s, i) => {
+            if (!s || typeof s !== 'object') { seriesFmts[i] = primaryFmt; return; }
+            let f = primaryFmt;
+            if (s.jeenFormat) {
+                f = makeValueFormatter(s.jeenFormat);
+                perSeriesDiff = true;
+                delete s.jeenFormat;
+            }
+            seriesFmts[i] = f;
+            if ((s.type === 'bar' || s.type === 'line')
+                && !(s.label && typeof s.label.formatter === 'string')) {
+                s.label = (s.label && typeof s.label === 'object') ? s.label : {};
+                s.label.formatter = (p) => f(pickValue(p));
+                if (s.label.fontSize == null) s.label.fontSize = 11;
+                // Drop labels that would collide instead of overprinting them.
+                if (!s.labelLayout) s.labelLayout = { hideOverlap: true };
+            }
+        });
+
+        // Tooltip: a single valueFormatter can't express per-series formats or
+        // unwrap [x, y] pairs, so use a formatter fn when either is in play.
+        const tip = options.tooltip;
+        if (tip && !Array.isArray(tip) && typeof tip.formatter !== 'string') {
+            const isAxis = tip.trigger === 'axis';
+            const hasPairs = series.some((s) => s && Array.isArray(s.data)
+                && s.data.length && Array.isArray(s.data[0]));
+            if (isAxis && (perSeriesDiff || hasPairs)) {
+                tip.formatter = (params) => {
+                    const arr = Array.isArray(params) ? params : [params];
+                    const head = arr.length ? (arr[0].axisValueLabel ?? arr[0].name ?? '') : '';
+                    const rows = arr.map((p) => {
+                        const f = seriesFmts[p.seriesIndex] || primaryFmt;
+                        return `${p.marker || ''} ${p.seriesName}: ${f(pickValue(p))}`;
+                    });
+                    return [head, ...rows].join('<br/>');
+                };
+                delete tip.valueFormatter;
+            } else {
+                tip.valueFormatter = primaryFmt;
+            }
         }
         return options;
     }

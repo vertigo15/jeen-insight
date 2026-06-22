@@ -3,7 +3,7 @@
  * @module ChartOptionsPanel
  */
 
-import { applyQuickOptions } from '../utils/chartQuickOptions.js';
+import { applyQuickOptions, detectToggles } from '../utils/chartQuickOptions.js?v=70';
 
 const TOGGLE_DEFS = [
     { key: 'dataLabels', label: 'Labels', title: 'Show data labels on series' },
@@ -12,13 +12,27 @@ const TOGGLE_DEFS = [
     { key: 'sortDesc', label: 'Sort ↓', title: 'Sort categories high to low' },
 ];
 
+// Numeric columns whose NAME ends in an identifier/ordinal token are dimensions
+// (e.g. month_number, year, order_id), not measures — don't default Y to them.
+const IDENTIFIER_RE = /(^|_)(id|number|no|num|year|month|day|quarter|qtr|week|rank|index|idx|seq)s?$/i;
+
+function looksLikeIdentifier(name) {
+    return IDENTIFIER_RE.test(name || '');
+}
+
 /**
  * @param {Array<{name: string, type: string}>} columns
  * @param {{ xAxisColumn?: object, yAxisColumn?: object }|null} analysis
  */
 function defaultMapping(columns, analysis) {
+    const numeric = columns.filter((c) => c.type === 'numeric');
+    // Prefer a "real" measure (skip id/ordinal columns like month_number).
+    const measure = numeric.find((c) => !looksLikeIdentifier(c.name)) || numeric[0];
+    const analysisY = analysis?.yAxisColumn?.name;
     const xDefault = analysis?.xAxisColumn?.name || columns.find((c) => c.type !== 'numeric')?.name || columns[0]?.name || '';
-    const yDefault = analysis?.yAxisColumn?.name || columns.find((c) => c.type === 'numeric')?.name || '';
+    const yDefault = (analysisY && !looksLikeIdentifier(analysisY))
+        ? analysisY
+        : (measure?.name || analysisY || '');
     return { xColumn: xDefault, yColumn: yDefault, seriesColumn: '' };
 }
 
@@ -35,6 +49,9 @@ export class ChartOptionsPanel {
         this.hooks = hooks || {};
         this.columns = [];
         this.mapping = { xColumn: '', yColumn: '', seriesColumn: '' };
+        // Which fields the USER explicitly chose. Only these are sent as
+        // overrides — auto-defaults must NOT clobber the LLM's column choice.
+        this.userSet = { xColumn: false, yColumn: false, seriesColumn: false };
         this.toggles = { dataLabels: false, legend: true, dataZoom: false, sortDesc: false };
         this._mounted = false;
     }
@@ -46,6 +63,8 @@ export class ChartOptionsPanel {
     setColumns(columns, analysis = null) {
         this.columns = columns || [];
         this.mapping = defaultMapping(this.columns, analysis);
+        // New dataset → nothing is user-chosen yet.
+        this.userSet = { xColumn: false, yColumn: false, seriesColumn: false };
         if (this._mounted) this._syncSelects();
     }
 
@@ -53,8 +72,52 @@ export class ChartOptionsPanel {
         return { ...this.mapping };
     }
 
+    /**
+     * Column overrides to send to the server — ONLY fields the user explicitly
+     * changed. On the initial Auto run this is empty, so the LLM decides x/y/series.
+     */
+    getOverrides() {
+        const out = {};
+        for (const k of ['xColumn', 'yColumn', 'seriesColumn']) {
+            if (this.userSet[k] && this.mapping[k]) out[k] = this.mapping[k];
+        }
+        return out;
+    }
+
+    /**
+     * Reflect the LLM's resolved spec in the dropdowns (without marking the
+     * fields as user-chosen), so the panel shows what was actually charted and
+     * later tweaks start from there.
+     * @param {{x?: string, y?: string|string[], series?: string|null}} spec
+     */
+    syncFromSpec(spec) {
+        if (!spec) return;
+        const y = Array.isArray(spec.y) ? spec.y[0] : spec.y;
+        if (spec.x) this.mapping.xColumn = spec.x;
+        if (y) this.mapping.yColumn = y;
+        this.mapping.seriesColumn = spec.series || '';
+        if (this._mounted) this._syncSelects();
+    }
+
     getToggles() {
         return { ...this.toggles };
+    }
+
+    /**
+     * Mirror the toggle state encoded in a (chat-edited) config so re-applying
+     * quick options doesn't undo an LLM change like "add data labels". Refreshes
+     * the toggle buttons so they reflect what's actually on the chart.
+     * @param {object} config
+     */
+    syncTogglesFromConfig(config) {
+        const detected = detectToggles(config);
+        for (const k of ['dataLabels', 'legend', 'dataZoom']) {
+            if (typeof detected[k] === 'boolean') this.toggles[k] = detected[k];
+        }
+        document.querySelectorAll('.chart-opt-toggle').forEach((btn) => {
+            const key = btn.dataset.key;
+            if (key in this.toggles) btn.classList.toggle('is-on', !!this.toggles[key]);
+        });
     }
 
     /** Apply current toggles to a config copy (uses baseline for sort restore). */
@@ -137,6 +200,7 @@ export class ChartOptionsPanel {
 
     _onColumnChange(field, value) {
         this.mapping[field] = value;
+        if (field in this.userSet) this.userSet[field] = true;
         if (this.hooks.onColumnsChange) {
             this.hooks.onColumnsChange(this.getMapping());
         }

@@ -143,3 +143,48 @@ def test_currency_symbol_dropped_for_non_currency():
 def test_currency_symbol_absent_defaults_empty():
     spec = _call({"x": "region", "y": ["revenue"], "value_format": "currency"})
     assert spec["currency_symbol"] == ""
+
+
+# ── identifier/ordinal columns are dimensions, never measures ────────────────
+
+def test_default_y_prefers_real_measure_over_identifier():
+    # month_number is the FIRST numeric column but it's an ordinal — y must
+    # default to the real measure (revenue), not the month number.
+    spec = _validate_chart_spec(
+        {"x": "month_name", "chart_type": "line"},
+        column_names=["month_number", "month_name", "revenue"],
+        numeric_cols=["month_number", "revenue"],
+        date_cols=[],
+    )
+    assert spec["y"] == ["revenue"]
+
+
+def test_y_of_only_identifiers_swapped_for_real_measures():
+    # The model picked only ordinal columns; swap in the real measure.
+    spec = _call({"x": "region", "y": ["year", "month"]})
+    assert spec["y"] == ["revenue"]
+
+
+def test_user_y_override_respected_even_if_identifier():
+    # An EXPLICIT user choice still wins, even for an ordinal column.
+    spec = _call({"x": "region", "y": ["revenue"]}, y_column="year")
+    assert spec["y"] == ["year"]
+
+
+# ── secondary_y (combo right-axis line) ──────────────────────────────────────
+
+def test_secondary_y_kept_when_subset_of_y():
+    spec = _call({
+        "chart_type": "combo", "x": "region",
+        "y": ["revenue", "year"], "secondary_y": ["year"],
+    })
+    # year is numeric so it survives as a measure here; secondary_y references it.
+    assert spec["secondary_y"] == ["year"]
+
+
+def test_secondary_y_dropped_when_not_in_y():
+    spec = _call({
+        "chart_type": "combo", "x": "region",
+        "y": ["revenue"], "secondary_y": ["year"],
+    })
+    assert spec["secondary_y"] == []

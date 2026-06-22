@@ -22,16 +22,7 @@
  * @module ChartChat
  */
 
-const SUGGESTIONS = [
-    'Show data labels on each bar',
-    'Switch to a line chart',
-    'Add a 3-month moving average',
-    'Format Y axis as currency',
-    'Sort highest to lowest',
-    'Add a trend line',
-    'Make it a stacked bar chart',
-    'Turn this into a donut chart',
-];
+import { buildChartSuggestions } from '../utils/chartSuggestions.js?v=72';
 
 const MAX_INSTRUCTION_LEN = 500;
 const MAX_TRANSCRIPT_MESSAGES = 30;
@@ -105,17 +96,6 @@ export class ChartChat {
 
         const chipRow = document.createElement('div');
         chipRow.className = 'chart-chat-chips';
-        SUGGESTIONS.forEach(text => {
-            const chip = document.createElement('button');
-            chip.type = 'button';
-            chip.className = 'chart-chat-chip';
-            chip.textContent = text;
-            chip.addEventListener('click', () => {
-                this._inputEl.value = text;
-                this._inputEl.focus();
-            });
-            chipRow.appendChild(chip);
-        });
 
         const inputRow = document.createElement('div');
         inputRow.className = 'chart-chat-input-row';
@@ -158,6 +138,9 @@ export class ChartChat {
         this._sendBtnEl = sendBtn;
         this._chipRowEl = chipRow;
         this._resetBtnEl = resetBtn;
+
+        // Generic chips until a chart exists; refreshSuggestions() tailors them.
+        this._renderChips(buildChartSuggestions(null, null));
     }
 
     enable() {
@@ -166,6 +149,44 @@ export class ChartChat {
         this._inputEl.disabled = false;
         this._sendBtnEl.disabled = false;
         this._chipRowEl.querySelectorAll('button').forEach(b => { b.disabled = false; });
+        // The chart just (re)rendered — tailor chips to its type + data.
+        this.refreshSuggestions();
+    }
+
+    /**
+     * Rebuild the suggestion chips from the CURRENT chart config + data, so
+     * they only offer changes that make sense (e.g. moving average only for
+     * time/ordered data). Safe to call repeatedly; no-op until mounted.
+     */
+    refreshSuggestions() {
+        if (!this.mounted || !this._chipRowEl) return;
+        let list;
+        try {
+            const config = this.hooks.getCurrentConfig && this.hooks.getCurrentConfig();
+            const results = this.hooks.getCurrentResults && this.hooks.getCurrentResults();
+            list = buildChartSuggestions(config, results);
+        } catch (e) {
+            console.warn('[ChartChat] suggestion build failed', e);
+            list = buildChartSuggestions(null, null);
+        }
+        this._renderChips(list);
+    }
+
+    _renderChips(list) {
+        if (!this._chipRowEl) return;
+        this._chipRowEl.innerHTML = '';
+        (list || []).forEach((text) => {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'chart-chat-chip';
+            chip.textContent = text;
+            chip.disabled = !this.enabled;
+            chip.addEventListener('click', () => {
+                this._inputEl.value = text;
+                this._inputEl.focus();
+            });
+            this._chipRowEl.appendChild(chip);
+        });
     }
 
     disable() {
@@ -307,6 +328,8 @@ export class ChartChat {
                     this._appendMessage('assistant', 'Got a config back but failed to render it. The chart was not changed.', 'error');
                     return;
                 }
+                // The chart changed (maybe its type) — re-tailor the chips.
+                this.refreshSuggestions();
             }
 
             const summaryParts = [];

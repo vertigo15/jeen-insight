@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import List, Optional
 
@@ -134,6 +135,7 @@ _GENERATE_SYSTEM_PROMPT = (
     '  "x": "<column for the category or time axis (pie/donut label dimension)>",\n'
     '  "x_parts": ["<col>", "<col>"]  // OPTIONAL: 2+ columns to join into one ordered axis label, e.g. ["year","month"]. Omit or null otherwise.,\n'
     '  "y": ["<one or more numeric measure columns>"],\n'
+    '  "secondary_y": ["<subset of y to draw on a right-hand axis as a line; combo only>"]  // OPTIONAL,\n'
     '  "series": "<column to split into multiple series/segments, or null>",\n'
     '  "aggregate": "sum|avg|count|min|max|none",\n'
     '  "sort": "asc|desc|none",\n'
@@ -159,6 +161,14 @@ _GENERATE_SYSTEM_PROMPT = (
     "  (set series and stacked=true).\n"
     "- Correlation between two numeric measures → scatter (x and y both numeric).\n"
     "- Single headline KPI → gauge. Two categorical dims + one measure → heatmap.\n\n"
+    "WIDE / PERIOD-COMPARISON DATA (e.g. revenue_2006 vs revenue_2007):\n"
+    "- When the SAME metric is split across columns by period/group (revenue_2006,\n"
+    "  revenue_2007; sales_q1..q4; this_year/last_year), put ALL those columns in y\n"
+    "  so they render as GROUPED BARS — do NOT chart just one of them.\n"
+    "- If a change/percentage/difference column is also present (e.g. yoy_change_pct,\n"
+    "  growth, delta), use chart_type \"combo\": keep the period columns in y as bars\n"
+    "  and list the change/% column in BOTH y and secondary_y so it draws as a line\n"
+    "  on a second right-hand axis. This is the classic bars + diff-line view.\n\n"
     "DATES & TIME AXES:\n"
     "- A real date/timestamp column → use it as x with chart_type line; the app\n"
     "  sorts chronologically automatically.\n"
@@ -183,15 +193,22 @@ _GENERATE_SYSTEM_PROMPT = (
     "  (>~6), instead set top_n (~15) on x and drop series, or keep the few biggest.\n"
     "- Bars encode magnitude from a zero baseline — never start a bar's value axis\n"
     "  above zero. Lines may use a fitted range to show trend.\n"
-    "- Use combo ONLY for two measures with different units/scales (e.g. revenue as\n"
-    "  bars + margin %% as line); otherwise prefer a single type.\n"
+    "- Use combo for measures with different units/scales (e.g. revenue as bars +\n"
+    "  margin %% as line, or two period columns as bars + their %% change as line);\n"
+    "  otherwise prefer a single type.\n"
     "- Don't put high-cardinality IDs/keys (order id, customer id) on x — aggregate\n"
     "  to a meaningful category or time instead.\n"
     "- For ranking questions (top/bottom/most/least) use horizontal_bar + sort=desc.\n\n"
+    "IDENTIFIERS ARE NOT MEASURES:\n"
+    "- Numeric columns that are really labels/ordinals — month_number, year, quarter,\n"
+    "  week, day, rank, *_id, *_number — are DIMENSIONS. Never put them in y. Use\n"
+    "  them on x (or to order/label x), e.g. month_number orders the months but the\n"
+    "  measure on y is revenue/sales, not the month number itself.\n\n"
     "RULES:\n"
-    "- x, x_parts[], y[], and series MUST be exact column names from the schema.\n"
-    "- y must be numeric measures; aggregate when x (and series) repeats. Prefer\n"
-    "  sum for additive quantities and avg for rates/ratios/prices.\n"
+    "- x, x_parts[], y[], secondary_y[] and series MUST be exact column names.\n"
+    "- y must be numeric MEASURES (values you'd sum/average), not id/ordinal columns;\n"
+    "  aggregate when x (and series) repeats. Prefer sum for additive quantities and\n"
+    "  avg for rates/ratios/prices.\n"
     "- Sort categorical charts by the measure desc unless x is time (chronological).\n"
     "- Use the sample rows ONLY to understand shape/meaning, never to copy values."
 )
@@ -234,6 +251,18 @@ def _columns_from_profile(profile: dict) -> tuple[list[str], list[str], list[str
     return column_names, numeric_cols, date_cols
 
 
+# Numeric columns whose name ends in an identifier/ordinal token (month_number,
+# year, order_id, …) are dimensions, not measures — never auto-pick them for y.
+_IDENTIFIER_RE = re.compile(
+    r"(^|_)(id|number|no|num|year|month|day|quarter|qtr|week|rank|index|idx|seq)s?$",
+    re.I,
+)
+
+
+def _looks_like_identifier(name: str) -> bool:
+    return bool(_IDENTIFIER_RE.search(name or ""))
+
+
 def _validate_chart_spec(
     spec: dict,
     *,
@@ -270,14 +299,23 @@ def _validate_chart_spec(
             non_numeric[0] if non_numeric else (column_names[0] if column_names else None)
         )
 
-    # y measures
+    # y measures. Identifier/ordinal numerics (month_number, year, *_id) are
+    # dimensions, so we never default to them — and if the model picked ONLY
+    # such columns while real measures exist, we swap in the real measures.
+    real_measures = [c for c in numeric_cols if not _looks_like_identifier(c)]
     y = [c for c in _coerce_columns(spec.get("y"), lowered) if c in numeric_set]
+    if y and real_measures and all(_looks_like_identifier(c) for c in y):
+        y = real_measures
     if not y:
-        y = numeric_cols[:1] or ([c for c in column_names if c != x][:1])
+        y = real_measures[:1] or numeric_cols[:1] or ([c for c in column_names if c != x][:1])
 
     # series (group-by) — must differ from x
     series_list = _coerce_columns(spec.get("series"), lowered)
     series = next((c for c in series_list if c != x), None)
+
+    # Combo: measures to draw on the secondary (right) y-axis as a line. Only
+    # meaningful for combo charts; filtered to the final y measures below.
+    secondary_raw = [c for c in _coerce_columns(spec.get("secondary_y"), lowered) if c in numeric_set]
 
     # Composite x-axis: e.g. separate year + month columns joined into one
     # ordered time label. Only honoured when ≥2 real columns are named.
@@ -339,6 +377,7 @@ def _validate_chart_spec(
         "x": x,
         "x_parts": x_parts,
         "y": y,
+        "secondary_y": [c for c in secondary_raw if c in set(y)],
         "series": series,
         "aggregate": aggregate,
         "sort": sort,

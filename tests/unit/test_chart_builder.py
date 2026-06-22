@@ -129,7 +129,7 @@ def test_positional_rows_supported():
 
 # ── dates & time ───────────────────────────────────────────────────────────────
 
-def test_line_orders_dates_chronologically():
+def test_line_with_real_dates_uses_time_axis():
     rows = [
         {"d": "2024-03-01", "revenue": 3},
         {"d": "2024-01-01", "revenue": 1},
@@ -138,9 +138,23 @@ def test_line_orders_dates_chronologically():
     opt = build_chart_option(
         _bar_spec(chart_type="line", x="d", sort="none"), _dataset(rows, ["d", "revenue"])
     )
-    assert opt["xAxis"]["data"] == ["2024-01-01", "2024-02-01", "2024-03-01"]
-    assert opt["series"][0]["data"] == [1, 2, 3]
+    # A genuine date column gets a real time axis with chronological [x, y] pairs.
+    assert opt["xAxis"]["type"] == "time"
+    assert opt["series"][0]["data"] == [
+        ["2024-01-01", 1], ["2024-02-01", 2], ["2024-03-01", 3]
+    ]
     assert opt["series"][0]["type"] == "line"
+
+
+def test_categorical_line_keeps_category_axis():
+    # Non-date x stays on a category axis with a plain value list.
+    rows = [{"region": "West", "revenue": 3}, {"region": "East", "revenue": 1}]
+    opt = build_chart_option(
+        _bar_spec(chart_type="line", x="region", sort="none"),
+        _dataset(rows, ["region", "revenue"]),
+    )
+    assert opt["xAxis"]["type"] == "category"
+    assert opt["series"][0]["data"] == [3, 1]
 
 
 def test_composite_x_parts_join_and_chronological_order():
@@ -192,6 +206,49 @@ def test_currency_symbol_passed_through_only_for_currency():
     # A symbol on a non-currency format must be ignored.
     num = build_chart_option(_bar_spec(value_format="number", currency_symbol="€"), ds)
     assert num["jeenFormat"]["symbol"] == ""
+
+
+def test_percent_fractions_get_x100_scale():
+    # Stored as 0–1 fractions → scaled ×100 so labels read 34%, not 0.34%.
+    rows = [{"region": "A", "rate": 0.34}, {"region": "B", "rate": 0.12}]
+    opt = build_chart_option(
+        _bar_spec(value_format="percent", x="region", y=["rate"]),
+        _dataset(rows, ["region", "rate"]),
+    )
+    assert opt["jeenFormat"]["kind"] == "percent"
+    assert opt["jeenFormat"]["scale"] == 100
+
+
+def test_percent_already_0_to_100_has_no_scale():
+    rows = [{"region": "A", "rate": 34}, {"region": "B", "rate": 12}]
+    opt = build_chart_option(
+        _bar_spec(value_format="percent", x="region", y=["rate"]),
+        _dataset(rows, ["region", "rate"]),
+    )
+    assert opt["jeenFormat"]["kind"] == "percent"
+    assert "scale" not in opt["jeenFormat"]
+
+
+# ── negative values ────────────────────────────────────────────────────────────
+
+def test_negative_bars_colored_with_zero_baseline():
+    rows = [{"region": "A", "profit": 10}, {"region": "B", "profit": -4}]
+    opt = build_chart_option(
+        _bar_spec(x="region", y=["profit"], sort="none"),
+        _dataset(rows, ["region", "profit"]),
+    )
+    data = opt["series"][0]["data"]
+    assert data[0] == 10                       # positive stays a plain number
+    assert data[1]["value"] == -4              # negative wrapped with a colour
+    assert data[1]["itemStyle"]["color"]
+    assert "markLine" in opt["series"][0]      # explicit zero baseline
+
+
+def test_all_positive_bars_have_no_negative_styling():
+    rows = [{"region": "A", "v": 10}, {"region": "B", "v": 4}]
+    opt = build_chart_option(_bar_spec(x="region", y=["v"]), _dataset(rows, ["region", "v"]))
+    assert opt["series"][0]["data"] == [10, 4]
+    assert "markLine" not in opt["series"][0]
 
 
 # ── aggregates ─────────────────────────────────────────────────────────────────
@@ -314,6 +371,87 @@ def test_pie_avoids_label_overlap():
     series = opt["series"][0]
     assert series["minAngle"] >= 1
     assert series["labelLayout"] == {"hideOverlap": True}
+
+
+# ── combo (grouped bars + secondary-axis line) ───────────────────────────────
+
+def _combo_dataset():
+    rows = [
+        {"month": "Jan", "revenue_2006": 100, "revenue_2007": 150, "yoy_change_pct": 50},
+        {"month": "Feb", "revenue_2006": 200, "revenue_2007": 180, "yoy_change_pct": -10},
+    ]
+    cols = ["month", "revenue_2006", "revenue_2007", "yoy_change_pct"]
+    return _dataset(rows, cols)
+
+
+def test_combo_groups_same_scale_bars_and_puts_change_on_secondary_line():
+    spec = _bar_spec(
+        chart_type="combo", x="month",
+        y=["revenue_2006", "revenue_2007", "yoy_change_pct"],
+    )
+    opt = build_chart_option(spec, _combo_dataset())
+    by_name = {s["name"]: s for s in opt["series"]}
+    # Two revenue columns = grouped bars on the primary (left) axis.
+    assert by_name["revenue_2006"]["type"] == "bar"
+    assert by_name["revenue_2006"]["yAxisIndex"] == 0
+    assert by_name["revenue_2007"]["type"] == "bar"
+    assert by_name["revenue_2007"]["yAxisIndex"] == 0
+    # The %-change column = line on the secondary (right) axis.
+    assert by_name["yoy_change_pct"]["type"] == "line"
+    assert by_name["yoy_change_pct"]["yAxisIndex"] == 1
+    # Two value axes present.
+    assert isinstance(opt["yAxis"], list) and len(opt["yAxis"]) == 2
+
+
+def test_combo_respects_explicit_secondary_y():
+    spec = _bar_spec(
+        chart_type="combo", x="month",
+        y=["revenue_2006", "revenue_2007"],
+        secondary_y=["revenue_2007"],
+    )
+    opt = build_chart_option(spec, _combo_dataset())
+    by_name = {s["name"]: s for s in opt["series"]}
+    assert by_name["revenue_2006"]["type"] == "bar"
+    assert by_name["revenue_2007"]["type"] == "line"
+    assert by_name["revenue_2007"]["yAxisIndex"] == 1
+
+
+def test_combo_fallback_first_is_bar_when_no_secondary_detected():
+    # No percent/change measure and no explicit secondary_y → first is a bar,
+    # the rest become secondary-axis lines (legacy behaviour preserved).
+    spec = _bar_spec(chart_type="combo", x="region", y=["revenue", "cost"])
+    rows = [{"region": "W", "revenue": 10, "cost": 4}, {"region": "E", "revenue": 8, "cost": 3}]
+    opt = build_chart_option(spec, _dataset(rows, ["region", "revenue", "cost"]))
+    by_name = {s["name"]: s for s in opt["series"]}
+    assert by_name["revenue"]["type"] == "bar" and by_name["revenue"]["yAxisIndex"] == 0
+    assert by_name["cost"]["type"] == "line" and by_name["cost"]["yAxisIndex"] == 1
+
+
+def test_combo_emits_per_axis_and_per_series_formats():
+    # Bars (revenue) format as currency on the left; the %-change line formats as
+    # percent on the right — each axis and series carries its own format hint.
+    spec = _bar_spec(
+        chart_type="combo", x="month",
+        y=["revenue_2006", "revenue_2007", "yoy_change_pct"],
+        value_format="currency", currency_symbol="$",
+    )
+    opt = build_chart_option(spec, _combo_dataset())
+    assert opt["yAxis"][0]["jeenFormat"]["kind"] == "currency"
+    assert opt["yAxis"][0]["jeenFormat"]["symbol"] == "$"
+    assert opt["yAxis"][1]["jeenFormat"]["kind"] == "percent"
+    by_name = {s["name"]: s for s in opt["series"]}
+    assert by_name["revenue_2006"]["jeenFormat"]["kind"] == "currency"
+    assert by_name["yoy_change_pct"]["jeenFormat"]["kind"] == "percent"
+
+
+def test_combo_secondary_line_gets_zero_baseline_when_negative():
+    spec = _bar_spec(
+        chart_type="combo", x="month",
+        y=["revenue_2006", "revenue_2007", "yoy_change_pct"],
+    )
+    opt = build_chart_option(spec, _combo_dataset())  # yoy has -10
+    line = next(s for s in opt["series"] if s["name"] == "yoy_change_pct")
+    assert "markLine" in line
 
 
 # ── result cache ───────────────────────────────────────────────────────────────

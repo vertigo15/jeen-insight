@@ -694,9 +694,12 @@ const _EM_DASH = '\u2014';
 function formatNumeric(value) {
     const n = (typeof value === 'number') ? value : Number(value);
     if (!Number.isFinite(n)) return (typeof value === 'string' && value.trim() !== '') ? String(value) : _EM_DASH;
-    if (n < 0) return _MINUS + Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: 4 });
-    if (Number.isInteger(n)) return n.toLocaleString('en-US');
-    return n.toLocaleString('en-US', { maximumFractionDigits: 4 });
+    const abs = Math.abs(n);
+    // Big numbers drop noise decimals (1,309,863 not 1,309,863.4); thousands are
+    // grouped; small values keep precision. Mirrors the chart formatter.
+    const maxFrac = abs >= 1000 ? 0 : 4;
+    const body = abs.toLocaleString('en-US', { maximumFractionDigits: maxFrac });
+    return n < 0 ? _MINUS + body : body;
 }
 
 /**
@@ -708,8 +711,8 @@ function _fmtSigned(value) {
     if (!Number.isFinite(n)) return _EM_DASH;
     const sign = n > 0 ? '+' : n < 0 ? _MINUS : '';
     const abs  = Math.abs(n);
-    if (Number.isInteger(n)) return sign + abs.toLocaleString('en-US');
-    return sign + abs.toLocaleString('en-US', { maximumFractionDigits: 4 });
+    const maxFrac = abs >= 1000 ? 0 : 4;
+    return sign + abs.toLocaleString('en-US', { maximumFractionDigits: maxFrac });
 }
 
 function renderCellHtml(value, colIndex, profile) {
@@ -2583,7 +2586,7 @@ window._toggleTraceEvent = _toggleTraceEvent;
 async function initializeChartFeature(results) {
     // Dynamically import ChartManager if not already loaded
     if (!ChartManager) {
-        const module = await import('./chart-feature/chartManager.js?v=68');
+        const module = await import('./chart-feature/chartManager.js?v=73');
         ChartManager = module.ChartManager;
     }
     

@@ -146,3 +146,25 @@ function _seriesValue(point) {
     if (typeof point === 'object' && point.value != null) return Number(point.value) || -Infinity;
     return Number(point) || -Infinity;
 }
+
+/**
+ * Read the visual-toggle state that a (possibly chat-edited) config already
+ * encodes, so the quick-toggle layer can mirror it instead of overwriting it.
+ * Without this, an LLM edit like "add data labels" (label.show=true) gets wiped
+ * by the default-off `dataLabels` toggle on the next re-render.
+ *
+ * sortDesc is intentionally not detected — it isn't reliably recoverable from a
+ * config — so the user's current sort toggle is preserved as-is.
+ *
+ * @param {object} config
+ * @returns {{ dataLabels?: boolean, legend?: boolean, dataZoom?: boolean }}
+ */
+export function detectToggles(config) {
+    const out = {};
+    if (!config || typeof config !== 'object') return out;
+    const series = Array.isArray(config.series) ? config.series : [];
+    out.dataLabels = series.some((s) => s && s.label && s.label.show === true);
+    out.legend = !(config.legend && config.legend.show === false);
+    out.dataZoom = Array.isArray(config.dataZoom) && config.dataZoom.length > 0;
+    return out;
+}
