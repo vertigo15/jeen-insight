@@ -24,7 +24,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -188,6 +188,13 @@ class SetPromptModelRequest(BaseModel):
     model_name: Optional[str] = None  # None = clear override, use global default
 
 
+class _SafeFormatDict(dict):
+    """Leave unknown placeholders visible instead of failing prompt preview."""
+
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
 # ── DB helpers for prompts ──────────────────────────────────────────────────────────────
 
 _LIST_PROMPTS_SQL = """
@@ -302,6 +309,180 @@ def _invalidate_cache(place: str) -> None:
         logger.debug("settings: cache invalidation skipped: %s", exc)
 
 
+def _estimate_tokens(text: Any) -> int:
+    """Token count for prompt previews; tiktoken when installed, rough fallback."""
+    raw = "" if text is None else str(text)
+    if not raw:
+        return 0
+    try:
+        import tiktoken  # type: ignore
+
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(raw))
+    except Exception:
+        # Same conservative rule used elsewhere in the graph when tokenizer
+        # libraries are unavailable.
+        return max(1, (len(raw) + 3) // 4)
+
+
+def _tokenizer_name() -> str:
+    try:
+        import tiktoken  # noqa: F401
+        return "tiktoken:cl100k_base"
+    except Exception:
+        return "estimate:chars/4"
+
+
+def _extract_table_names(tables_text: str, limit: int = 200) -> List[str]:
+    names: List[str] = []
+    for line in (tables_text or "").splitlines():
+        stripped = line.strip().lstrip("- ").strip()
+        if not stripped:
+            continue
+        name = re.split(r"\s[-—]\s|\s\|\s|,", stripped, maxsplit=1)[0].strip()
+        if name and name not in names:
+            names.append(name)
+        if len(names) >= limit:
+            break
+    return names
+
+
+async def _catalog_source() -> str:
+    from src.api import state as app_state
+
+    if app_state.mcp_server_service:
+        try:
+            return await app_state.mcp_server_service.get_catalog_source()
+        except Exception:
+            pass
+    return "db"
+
+
+async def _list_prompt_context_connections() -> Dict[str, Any]:
+    """Return connection choices from the active catalog source."""
+    from src.api import state as app_state
+
+    source = await _catalog_source()
+    connections: List[Dict[str, Any]] = []
+
+    if source == "mcp" and app_state.mcp_catalog_client:
+        try:
+            raw = await app_state.mcp_catalog_client.load_connections()
+            connections = [
+                {
+                    "source_key": c.get("source_key") or c.get("name"),
+                    "display_name": c.get("display_name") or c.get("name") or c.get("source_key"),
+                    "database_type": c.get("database_type") or "",
+                    "description": c.get("description"),
+                    "catalog_source": "mcp",
+                }
+                for c in raw
+                if c.get("source_key") or c.get("name")
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("settings: MCP prompt contexts failed: %s", exc)
+
+    if not connections and app_state.connection_service:
+        try:
+            db_connections = await app_state.connection_service.list_connections()
+            connections = [
+                {
+                    **c.to_public_dict(),
+                    "catalog_source": "db",
+                }
+                for c in db_connections
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("settings: DB prompt contexts failed: %s", exc)
+
+    return {"catalog_source": source, "connections": connections}
+
+
+async def _connection_info(source_key: str) -> Dict[str, Any]:
+    """Best-effort display metadata for a selected source_key."""
+    from src.api import state as app_state
+
+    if app_state.connection_service:
+        try:
+            c = await app_state.connection_service.get_connection(source_key)
+            return c.to_public_dict()
+        except Exception:
+            pass
+
+    if app_state.mcp_catalog_client:
+        try:
+            for c in await app_state.mcp_catalog_client.load_connections():
+                if c.get("source_key") == source_key or c.get("name") == source_key:
+                    return {
+                        "source_key": source_key,
+                        "display_name": c.get("display_name") or c.get("name") or source_key,
+                        "description": c.get("description"),
+                        "database_type": c.get("database_type") or "",
+                    }
+        except Exception:
+            pass
+
+    return {
+        "source_key": source_key,
+        "display_name": source_key,
+        "database_type": "",
+        "description": None,
+    }
+
+
+async def _load_prompt_catalog_bundle(source_key: str) -> Dict[str, Any]:
+    """Load the same catalog bundle the query graph uses for prompt context."""
+    from src.api import state as app_state
+
+    source = await _catalog_source()
+    cache_status: Optional[Dict[str, Any]] = None
+
+    if source == "mcp" and app_state.mcp_catalog_client and app_state.mcp_server_service:
+        active = await app_state.mcp_server_service.get_active()
+        if active:
+            try:
+                cache_status = await app_state.mcp_catalog_client.get_cache_status(
+                    active.id, source_key
+                )
+            except Exception:
+                cache_status = None
+        try:
+            bundle = await app_state.mcp_catalog_client.load_all(source_key)
+            return {"source": "mcp", "bundle": bundle, "cache": cache_status}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("settings: MCP resolved prompt catalog failed: %s", exc)
+
+    if not app_state.metadata_loader:
+        raise HTTPException(503, "MetadataLoader not initialised")
+    bundle = await app_state.metadata_loader.load_all(source_key)
+    return {"source": "db", "bundle": bundle, "cache": None}
+
+
+def _placeholder_meta(values: Dict[str, str], sources: Dict[str, str]) -> List[Dict[str, Any]]:
+    rows = []
+    for key in sorted(values):
+        value = values[key]
+        rows.append({
+            "name": key,
+            "source": sources.get(key, "runtime"),
+            "characters": len(value),
+            "tokens": _estimate_tokens(value),
+            "preview": value[:240],
+        })
+    return rows
+
+
+def _render_prompt_template(content: str, values: Dict[str, str]) -> str:
+    """Render placeholders while tolerating custom prompts with stray braces."""
+    try:
+        return content.format_map(_SafeFormatDict(values))
+    except Exception:
+        rendered = content
+        for key, value in values.items():
+            rendered = rendered.replace("{" + key + "}", value)
+        return rendered.replace("{{", "{").replace("}}", "}")
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────────
 
 @router.get("/prompts", response_model=List[PromptMeta])
@@ -358,6 +539,126 @@ async def get_prompt(name: str):
         model_id=model_id,
         model_name=model_name,
     )
+
+
+@router.get("/prompt-contexts")
+async def list_prompt_contexts():
+    """Connection choices for prompt resolved view."""
+    return await _list_prompt_context_connections()
+
+
+@router.get("/prompts/{name}/resolved")
+async def resolve_prompt(
+    name: str,
+    connection: str = Query(..., description="source_key/catalog to resolve against"),
+):
+    """Render a prompt with real catalog values for a selected connection.
+
+    Runtime-only placeholders such as ``{question}`` stay visible but are
+    labelled as runtime values. Catalog placeholders are loaded from MCP or the
+    metadata DB according to the global catalog source.
+    """
+    entry = _entry_for(name)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Prompt '{name}' not found")
+
+    row = await _db_get_prompt(name)
+    content = (row or {}).get("content") or _read_file(entry["path"])
+    placeholders = _extract_placeholders(content)
+
+    info = await _connection_info(connection)
+    catalog = await _load_prompt_catalog_bundle(connection)
+    bundle = catalog["bundle"]
+
+    table_names = _extract_table_names(bundle.get("tables", ""))
+    source_description = (
+        bundle.get("sources")
+        or info.get("description")
+        or info.get("display_name")
+        or connection
+    )
+
+    values: Dict[str, str] = {
+        "connection_display_name": str(info.get("display_name") or connection),
+        "database_type": str(info.get("database_type") or ""),
+        "source_description": str(source_description),
+        "tables": bundle.get("tables", ""),
+        "columns": bundle.get("columns", ""),
+        "relationships": bundle.get("relationships", ""),
+        "sources": bundle.get("sources", ""),
+        "knowledge_pairs": bundle.get("knowledge_pairs", ""),
+        "business_terms": bundle.get("business_terms", ""),
+        "available_tables": "\n".join(f"- {name}" for name in table_names),
+        "business_rules": bundle.get("business_terms", ""),
+        # Runtime placeholders cannot be known before a user action. Keep
+        # explicit markers so the resolved view is honest rather than blank.
+        "question": "{runtime: user question}",
+        "partial": "{runtime: partial user input}",
+        "conversation_history": "{runtime: conversation history}",
+        "conversation_summary": "{runtime: conversation summary}",
+        "recent_questions": "{runtime: recent questions}",
+        "recent_messages": "{runtime: recent chart chat messages}",
+        "instruction": "{runtime: chart edit instruction}",
+        "current_config": "{runtime: current chart config}",
+        "column_names": "{runtime: result column names}",
+        "column_types": "{runtime: result column types}",
+        "sample_rows": "{runtime: result sample rows}",
+        "original_question": "{runtime: original user question}",
+        "row_count": "{runtime: result row count}",
+        "data_sample": "{runtime: data sample}",
+        "column_stats": "{runtime: column statistics}",
+        "sql": "{runtime: generated SQL}",
+        "results_sample": "{runtime: result sample}",
+        "error_context": "{runtime: SQL error context}",
+        "retry_count": "{runtime: retry count}",
+    }
+    sources = {
+        key: catalog["source"]
+        for key in (
+            "tables", "columns", "relationships", "sources",
+            "knowledge_pairs", "business_terms", "available_tables",
+            "business_rules", "source_description",
+        )
+    }
+    sources.update({
+        "connection_display_name": "connection",
+        "database_type": "connection",
+    })
+
+    resolved = _render_prompt_template(content, values)
+    unresolved = [
+        p for p in placeholders
+        if p not in values or values.get(p, "").startswith("{runtime:")
+    ]
+
+    return {
+        "name": name,
+        "label": entry["label"],
+        "connection": {
+            "source_key": connection,
+            "display_name": info.get("display_name") or connection,
+            "database_type": info.get("database_type") or "",
+        },
+        "catalog_source": catalog["source"],
+        "catalog_cache": catalog.get("cache"),
+        "tokenizer": _tokenizer_name(),
+        "content": content,
+        "resolved_content": resolved,
+        "placeholders": placeholders,
+        "unresolved_placeholders": unresolved,
+        "placeholder_tokens": _placeholder_meta(
+            {p: values[p] for p in placeholders if p in values},
+            sources,
+        ),
+        "tokens": {
+            "template": _estimate_tokens(content),
+            "resolved": _estimate_tokens(resolved),
+            "catalog": sum(_estimate_tokens(bundle.get(k, "")) for k in (
+                "tables", "columns", "relationships", "sources",
+                "knowledge_pairs", "business_terms",
+            )),
+        },
+    }
 
 
 @router.put("/prompts/{name}", response_model=PromptDetail)

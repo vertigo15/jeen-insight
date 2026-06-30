@@ -233,6 +233,29 @@ class McpCatalogClient:
     ) -> None:
         await self._cache_svc.invalidate(mcp_server_id, source_key)
 
+    async def inspect_tools(self, server: McpServer) -> List[Dict[str, Any]]:
+        """Return live MCP tool descriptors with Jeen catalog-need mapping.
+
+        Used by the settings panel's tool inspector. Unlike the compact health
+        blob, this keeps the schema fields so users can see what arguments each
+        tool accepts before running a test call.
+        """
+        raw_tools = await self._list_tools(server)
+        return [
+            _normalise_tool_descriptor(t)
+            for t in raw_tools
+            if isinstance(t, dict)
+        ]
+
+    async def call_tool_for_test(
+        self,
+        server: McpServer,
+        tool_name: str,
+        arguments: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Call a selected MCP tool with user-supplied JSON arguments."""
+        return await self._call_tool(server, tool_name, arguments or {})
+
     # ── Health check ──────────────────────────────────────────────────────────
 
     async def run_health_check(self, server: McpServer) -> Dict[str, Any]:
@@ -274,6 +297,12 @@ class McpCatalogClient:
                 "name":        t.get("name", ""),
                 "description": t.get("description", "") or "",
                 "need":        _map_tool_to_need(t.get("name", "")),
+                "input_schema": (
+                    t.get("inputSchema") or t.get("input_schema") or {}
+                ),
+                "output_schema": (
+                    t.get("outputSchema") or t.get("output_schema") or {}
+                ),
             }
             for t in raw_tools if isinstance(t, dict)
         ]
@@ -558,6 +587,25 @@ def _normalise_connections(raw: Any) -> List[Dict[str, Any]]:
             "is_active":         True,
         })
     return result
+
+
+def _normalise_tool_descriptor(tool: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep the user-facing parts of a MCP tool descriptor.
+
+    MCP SDKs commonly use camelCase schema keys; older Jeen UI code used
+    snake_case in the persisted health blob. Return both through a stable
+    snake_case API shape and preserve the raw descriptor for debugging.
+    """
+    name = tool.get("name", "")
+    return {
+        "name": name,
+        "description": tool.get("description", "") or "",
+        "need": _map_tool_to_need(name),
+        "input_schema": tool.get("inputSchema") or tool.get("input_schema") or {},
+        "output_schema": tool.get("outputSchema") or tool.get("output_schema") or {},
+        "annotations": tool.get("annotations") or {},
+        "raw": tool,
+    }
 
 
 # ── Catalog markdown parser ───────────────────────────────────────────────────

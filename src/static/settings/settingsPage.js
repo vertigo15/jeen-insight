@@ -79,6 +79,9 @@ export class SettingsPage {
         this._prompts    = {};      // name → {meta, content, dirty, editing}
         this._models     = null;    // cached model list (Array)
         this._onApplyTheme = null;
+        this._promptContexts = null; // connection choices for resolved prompt view
+        this._promptContextSource = 'db';
+        this._promptResolveConnection = null;
         // Metadata & Catalog state
         this._mcpStatus   = null;   // last /api/mcp/status response
         this._mcpConn     = null;   // currently viewed connection
@@ -86,6 +89,13 @@ export class SettingsPage {
         this._mcpDraft    = null;   // form draft object
         this._mcpTesting  = false;  // health check in progress
         this._mcpReloading= false;  // background status reload in progress
+        this._mcpToolsServerId = null; // server id for loaded tool schemas
+        this._mcpTools    = null;   // live tool descriptors for inspector
+        this._mcpToolsLoading = false;
+        this._mcpSelectedTool = null;
+        this._mcpToolArgs = null;   // editable JSON string
+        this._mcpToolResult = null; // last test-call response/error
+        this._mcpToolCalling = false;
     }
 
     mount(hooks = {}) {
@@ -491,6 +501,14 @@ export class SettingsPage {
         this._mcpStatus.servers[idx] = { ...this._mcpStatus.servers[idx], ...data.server };
     }
 
+    _mcpClearToolInspector() {
+        this._mcpToolsServerId = null;
+        this._mcpTools = null;
+        this._mcpSelectedTool = null;
+        this._mcpToolArgs = null;
+        this._mcpToolResult = null;
+    }
+
     _mcpRender() {
         const S   = this._mcpStatus || {};
         const src = S.catalog_source || 'db';
@@ -815,6 +833,7 @@ export class SettingsPage {
                 This server cannot be the active catalog source until satisfied.
                </div>`
             : '';
+        const toolInspectorHtml = this._mcpToolInspector(server, tools);
 
         return `
         <div class="mc-active-srv">
@@ -823,12 +842,80 @@ export class SettingsPage {
                 ${statusText}
             </div>
             ${diagnosticsHtml}
+            ${toolInspectorHtml}
             <div class="mc-field" style="margin-top:14px">
                 <label class="mc-field-label">Catalog tool mapping</label>
                 <div class="mc-map">${mapRows}</div>
                 ${missingWarn}
                 <div class="mc-field-help">Tools are auto-discovered from the server's <code>tools/list</code> and mapped to each catalog need.</div>
             </div>
+        </div>`;
+    }
+
+    _mcpToolInspector(server, healthTools = []) {
+        const liveTools = (this._mcpToolsServerId === server.id && Array.isArray(this._mcpTools))
+            ? this._mcpTools
+            : null;
+        const tools = liveTools || healthTools || [];
+        const selectedName = (
+            this._mcpSelectedTool && tools.some(t => t.name === this._mcpSelectedTool)
+        ) ? this._mcpSelectedTool : (tools[0]?.name || '');
+        const tool = tools.find(t => t.name === selectedName) || null;
+        const inputSchema = tool?.input_schema || tool?.inputSchema || {};
+        const outputSchema = tool?.output_schema || tool?.outputSchema || {};
+        const argsText = this._mcpToolArgs ?? _prettyJson(_sampleArgsFromSchema(inputSchema));
+        const resultHtml = this._mcpToolResult
+            ? `<div class="mc-tool-result">
+                <div class="mc-tool-result-head">${this._mcpToolResult.ok === false ? 'Error' : 'Result'}</div>
+                <pre>${_esc(_prettyJson(this._mcpToolResult))}</pre>
+               </div>`
+            : '';
+        const schemaSource = liveTools ? 'live tools/list' : 'health snapshot';
+        const loadLabel = this._mcpToolsLoading
+            ? 'Loading tools…'
+            : liveTools ? 'Refresh tool schemas' : 'Load tool schemas';
+
+        return `
+        <div class="mc-tool-inspector">
+            <div class="mc-tool-inspector-head">
+                <div>
+                    <div class="mc-field-label">MCP function inspector</div>
+                    <div class="mc-field-help">View tool input/output schemas and run a test call against this server.</div>
+                </div>
+                <button class="sp-btn-ghost sp-btn-ghost-sm" id="mc-tools-load-btn" ${this._mcpToolsLoading ? 'disabled' : ''}>${_esc(loadLabel)}</button>
+            </div>
+            ${tools.length ? `
+                <div class="mc-tool-test-grid">
+                    <div class="mc-field">
+                        <label class="mc-field-label">Function <span class="mc-badge">${_esc(schemaSource)}</span></label>
+                        <select class="settings-select" id="mc-tool-select">
+                            ${tools.map(t => `<option value="${_esc(t.name)}"${t.name === selectedName ? ' selected' : ''}>${_esc(t.name)}</option>`).join('')}
+                        </select>
+                        <div class="mc-field-help">${_esc(tool?.description || 'No description provided.')}</div>
+                    </div>
+                    <div class="mc-tool-schema-pair">
+                        <div>
+                            <div class="mc-field-label">Input schema</div>
+                            <pre class="mc-schema-pre">${_esc(_prettyJson(inputSchema || {}))}</pre>
+                        </div>
+                        <div>
+                            <div class="mc-field-label">Output schema</div>
+                            <pre class="mc-schema-pre">${_esc(_prettyJson(outputSchema || {}))}</pre>
+                        </div>
+                    </div>
+                    <div class="mc-field">
+                        <label class="mc-field-label">Test arguments JSON</label>
+                        <textarea id="mc-tool-args" class="mc-json-area" spellcheck="false">${_esc(argsText)}</textarea>
+                        <div class="mc-tool-actions">
+                            <button class="sp-btn-ghost sp-btn-ghost-sm" id="mc-tool-sample-btn">Use schema sample</button>
+                            <button class="sp-btn-primary-sm" id="mc-tool-call-btn" ${this._mcpToolCalling ? 'disabled' : ''}>${this._mcpToolCalling ? 'Running…' : 'Run function'}</button>
+                        </div>
+                    </div>
+                    ${resultHtml}
+                </div>
+            ` : `
+                <div class="mc-empty mc-tool-empty">Run a health check or load schemas to discover this server's functions.</div>
+            `}
         </div>`;
     }
 
@@ -932,6 +1019,7 @@ export class SettingsPage {
                 try {
                     const r = await fetch(`/api/mcp/servers/${id}/activate`, {method:'POST'});
                     if (!r.ok) { const err = await r.json().catch(()=>({})); throw new Error(err.detail||`HTTP ${r.status}`); }
+                    this._mcpClearToolInspector();
                     this._mcpStatus = null;
                     await this._mcpLoadStatus();
                     this._mcpRender();
@@ -962,6 +1050,7 @@ export class SettingsPage {
                 try {
                     const r = await fetch(`/api/mcp/servers/${id}`, {method:'DELETE'});
                     if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    if (this._mcpToolsServerId === id) this._mcpClearToolInspector();
                     this._mcpStatus = null;
                     await this._mcpLoadStatus();
                     this._mcpRender();
@@ -1046,6 +1135,7 @@ export class SettingsPage {
                     if (!r.ok) { const err = await r.json().catch(()=>({})); throw new Error(err.detail||`HTTP ${r.status}`); }
                     this._mcpEditing = null; this._mcpDraft = null;
                     this._mcpStatus  = null;
+                    this._mcpClearToolInspector();
                     await this._mcpLoadStatus();
                     this._mcpRender();
                     _showToast(isNew ? 'Server added' : 'Server updated', 'success');
@@ -1060,6 +1150,7 @@ export class SettingsPage {
                 const activeServ = (S.servers||[]).find(s => s.is_active);
                 if (!activeServ) return;
                 this._mcpTesting = true;
+                this._mcpClearToolInspector();
                 this._mcpRender();
                 let toastMsg = null;
                 let toastType = 'error';
@@ -1077,6 +1168,18 @@ export class SettingsPage {
                     } else if (!r.ok) {
                         toastMsg = data.error || data.detail || `HTTP ${r.status}`;
                     } else {
+                        const freshTools = data.health?.tools || data.server?.health?.tools || [];
+                        if (freshTools.length) {
+                            this._mcpToolsServerId = activeServ.id;
+                            this._mcpTools = freshTools;
+                            this._mcpSelectedTool = freshTools[0].name || null;
+                            this._mcpToolArgs = _prettyJson(
+                                _sampleArgsFromSchema(
+                                    freshTools[0].input_schema || freshTools[0].inputSchema || {}
+                                )
+                            );
+                            this._mcpToolResult = null;
+                        }
                         toastType = 'success';
                         toastMsg = 'Health check complete';
                     }
@@ -1088,6 +1191,119 @@ export class SettingsPage {
                     this._mcpTesting = false;
                     this._mcpRender();
                     if (toastMsg) _showToast(toastMsg, toastType);
+                }
+            });
+        }
+
+        // Tool inspector: fetch live schemas from tools/list.
+        const loadToolsBtn = $('#mc-tools-load-btn');
+        if (loadToolsBtn) {
+            loadToolsBtn.addEventListener('click', async () => {
+                const activeServ = (S.servers||[]).find(s => s.is_active);
+                if (!activeServ) return;
+                this._mcpToolsLoading = true;
+                this._mcpToolResult = null;
+                this._mcpRender();
+                try {
+                    const r = await fetch(`/api/mcp/servers/${activeServ.id}/tools`, {
+                        credentials: 'same-origin',
+                    });
+                    const data = await r.json().catch(() => ({}));
+                    if (!r.ok) throw new Error(data.detail || data.error || `HTTP ${r.status}`);
+                    const tools = data.tools || [];
+                    this._mcpToolsServerId = activeServ.id;
+                    this._mcpTools = tools;
+                    this._mcpSelectedTool = tools[0]?.name || null;
+                    this._mcpToolArgs = _prettyJson(
+                        _sampleArgsFromSchema(
+                            tools[0]?.input_schema || tools[0]?.inputSchema || {}
+                        )
+                    );
+                    _showToast(`Loaded ${tools.length} MCP function${tools.length === 1 ? '' : 's'}`, 'success');
+                } catch (e2) {
+                    _showToast('Could not load MCP functions — ' + e2.message, 'error');
+                } finally {
+                    this._mcpToolsLoading = false;
+                    this._mcpRender();
+                }
+            });
+        }
+
+        const toolSelect = $('#mc-tool-select');
+        if (toolSelect) {
+            toolSelect.addEventListener('change', () => {
+                const tools = (this._mcpToolsServerId === S.active_server_id && this._mcpTools)
+                    ? this._mcpTools
+                    : ((S.servers||[]).find(s => s.is_active)?.health?.tools || []);
+                const tool = tools.find(t => t.name === toolSelect.value);
+                this._mcpSelectedTool = toolSelect.value;
+                this._mcpToolArgs = _prettyJson(
+                    _sampleArgsFromSchema(tool?.input_schema || tool?.inputSchema || {})
+                );
+                this._mcpToolResult = null;
+                this._mcpRender();
+            });
+        }
+
+        const toolArgs = $('#mc-tool-args');
+        if (toolArgs) {
+            toolArgs.addEventListener('input', () => {
+                this._mcpToolArgs = toolArgs.value;
+            });
+        }
+
+        const sampleBtn = $('#mc-tool-sample-btn');
+        if (sampleBtn) {
+            sampleBtn.addEventListener('click', () => {
+                const tools = (this._mcpToolsServerId === S.active_server_id && this._mcpTools)
+                    ? this._mcpTools
+                    : ((S.servers||[]).find(s => s.is_active)?.health?.tools || []);
+                const tool = tools.find(t => t.name === this._mcpSelectedTool) || tools[0];
+                this._mcpToolArgs = _prettyJson(
+                    _sampleArgsFromSchema(tool?.input_schema || tool?.inputSchema || {})
+                );
+                this._mcpToolResult = null;
+                this._mcpRender();
+            });
+        }
+
+        const callBtn = $('#mc-tool-call-btn');
+        if (callBtn) {
+            callBtn.addEventListener('click', async () => {
+                const activeServ = (S.servers||[]).find(s => s.is_active);
+                const toolName = this._mcpSelectedTool || $('#mc-tool-select')?.value;
+                const rawArgs = $('#mc-tool-args')?.value || '{}';
+                if (!activeServ || !toolName) return;
+                let args;
+                try {
+                    args = rawArgs.trim() ? JSON.parse(rawArgs) : {};
+                    if (!args || Array.isArray(args) || typeof args !== 'object') {
+                        throw new Error('Arguments must be a JSON object');
+                    }
+                } catch (e2) {
+                    _showToast('Invalid JSON arguments — ' + e2.message, 'error');
+                    return;
+                }
+                this._mcpToolCalling = true;
+                this._mcpToolArgs = _prettyJson(args);
+                this._mcpToolResult = null;
+                this._mcpRender();
+                try {
+                    const r = await fetch(`/api/mcp/servers/${activeServ.id}/tools/call`, {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: {'Content-Type':'application/json'},
+                        body: JSON.stringify({tool_name: toolName, arguments: args}),
+                    });
+                    const data = await r.json().catch(() => ({}));
+                    this._mcpToolResult = r.ok ? data : {ok: false, error: data.detail || data.error || `HTTP ${r.status}`};
+                    _showToast(r.ok ? 'MCP function call complete' : 'MCP function call failed', r.ok ? 'success' : 'error');
+                } catch (e2) {
+                    this._mcpToolResult = {ok: false, error: e2.message || String(e2)};
+                    _showToast('MCP function call failed — ' + e2.message, 'error');
+                } finally {
+                    this._mcpToolCalling = false;
+                    this._mcpRender();
                 }
             });
         }
@@ -1311,6 +1527,126 @@ export class SettingsPage {
 
     // ── Prompt editor ─────────────────────────────────────────────────────────
 
+    async _ensurePromptContexts() {
+        if (this._promptContexts) return;
+        try {
+            const res = await fetch('/api/settings/prompt-contexts');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            this._promptContextSource = data.catalog_source || 'db';
+            this._promptContexts = data.connections || [];
+            if (!this._promptResolveConnection && this._promptContexts.length) {
+                this._promptResolveConnection = this._promptContexts[0].source_key;
+            }
+        } catch (e) {
+            console.warn('[SettingsPage] could not load prompt contexts:', e);
+            this._promptContexts = [];
+        }
+    }
+
+    async _loadResolvedPrompt(name, { force = false } = {}) {
+        const entry = this._prompts[name];
+        const conn = this._promptResolveConnection;
+        if (!entry || !conn) return;
+        const key = `${name}:${conn}`;
+        if (!force && entry.resolvedKey === key && entry.resolved) return;
+
+        entry.resolving = true;
+        entry.resolveError = null;
+        try {
+            const res = await fetch(
+                `/api/settings/prompts/${encodeURIComponent(name)}/resolved?connection=${encodeURIComponent(conn)}`,
+            );
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+            entry.resolvedKey = key;
+            entry.resolved = data;
+        } catch (e) {
+            entry.resolveError = e.message || String(e);
+        } finally {
+            entry.resolving = false;
+        }
+    }
+
+    _resolvedPromptControls(name, entry) {
+        const mode = entry.viewMode || 'template';
+        const contexts = this._promptContexts || [];
+        const conn = this._promptResolveConnection || '';
+        const resolved = entry.resolvedKey === `${name}:${conn}` ? entry.resolved : null;
+        const tok = resolved?.tokens || null;
+        const cache = resolved?.catalog_cache;
+        const cacheLabel = cache
+            ? `${cache.cache_hit && !cache.is_stale ? 'cache HIT' : 'cache MISS'}`
+            : 'live';
+        const sourceLabel = resolved?.catalog_source || this._promptContextSource || 'db';
+        const tokenLabel = tok
+            ? `${_formatCount(tok.resolved)} tokens`
+            : 'tokens after resolve';
+
+        return `
+        <div class="sp-resolve-bar">
+            <div class="sp-view-seg" id="sp-prompt-view-mode-${_esc(name)}">
+                <button data-mode="template" class="${mode === 'template' ? 'is-active' : ''}">Template</button>
+                <button data-mode="resolved" class="${mode === 'resolved' ? 'is-active' : ''}">Resolved</button>
+            </div>
+            <select class="settings-select sp-resolve-conn" id="sp-resolve-conn-${_esc(name)}" ${contexts.length ? '' : 'disabled'}>
+                ${contexts.length
+                    ? contexts.map(c => `<option value="${_esc(c.source_key)}"${c.source_key === conn ? ' selected' : ''}>${_esc(c.display_name || c.source_key)} · ${_esc(c.database_type || c.catalog_source || '')}</option>`).join('')
+                    : '<option>No connections available</option>'}
+            </select>
+            <button class="sp-btn-ghost sp-btn-ghost-sm" id="sp-resolve-refresh-${_esc(name)}" ${mode === 'resolved' && conn ? '' : 'disabled'}>Refresh</button>
+            <div class="sp-resolve-tokens">
+                <span class="sp-token-pill">${_esc(sourceLabel.toUpperCase())}</span>
+                <span class="sp-token-pill">${_esc(cacheLabel)}</span>
+                <span class="sp-token-pill sp-token-pill-strong">${_esc(tokenLabel)}</span>
+            </div>
+        </div>`;
+    }
+
+    _resolvedPromptBody(name, entry, templateContent) {
+        const conn = this._promptResolveConnection || '';
+        const resolved = entry.resolvedKey === `${name}:${conn}` ? entry.resolved : null;
+        if (entry.resolving) {
+            return `<div class="sp-prompt-view sp-resolved-empty">Resolving prompt for ${_esc(conn || 'connection')}…</div>`;
+        }
+        if (entry.resolveError) {
+            return `<div class="sp-prompt-view sp-resolved-empty sp-resolved-error">Could not resolve prompt: ${_esc(entry.resolveError)}</div>`;
+        }
+        if (!resolved) {
+            return `<div class="sp-prompt-view sp-resolved-empty">Select a connection and click <b>Resolved</b> or <b>Refresh</b> to load real MCP/DB values.</div>`;
+        }
+        return `
+            <div class="sp-resolved-summary">
+                ${this._resolvedTokenCards(resolved)}
+            </div>
+            <div class="sp-prompt-view sp-prompt-view-resolved" id="sp-prompt-view-${_esc(name)}">${_renderResolvedPromptView(resolved.resolved_content || templateContent)}</div>`;
+    }
+
+    _resolvedTokenCards(resolved) {
+        const rows = resolved.placeholder_tokens || [];
+        const total = resolved.tokens?.resolved ?? 0;
+        const catalog = resolved.tokens?.catalog ?? 0;
+        const unresolved = resolved.unresolved_placeholders || [];
+        return `
+            <div class="sp-token-total">
+                <span>Total <b>${_formatCount(total)}</b> tokens</span>
+                <span>Catalog <b>${_formatCount(catalog)}</b> tokens</span>
+                <span class="sp-tokenizer">${_esc(resolved.tokenizer || '')}</span>
+            </div>
+            ${unresolved.length ? `<div class="sp-resolved-note">Runtime placeholders still shown: ${unresolved.map(p => `<code>{${_esc(p)}}</code>`).join(' ')}</div>` : ''}
+            <div class="sp-token-grid">
+                ${rows.map(r => `
+                    <div class="sp-token-card">
+                        <div class="sp-token-card-head">
+                            <code>{${_esc(r.name)}}</code>
+                            <span>${_esc(r.source)}</span>
+                        </div>
+                        <div class="sp-token-card-num">${_formatCount(r.tokens)} tokens</div>
+                    </div>
+                `).join('')}
+            </div>`;
+    }
+
     async _renderPrompt(name) {
         // Show loading skeleton while fetching
         if (!this._prompts[name] || this._prompts[name].content === null) {
@@ -1327,6 +1663,7 @@ export class SettingsPage {
 
         // Ensure the model list is available for the model selector.
         await this._ensureModels();
+        await this._ensurePromptContexts();
 
         const entry = this._prompts[name];
         if (!entry) return;
@@ -1338,6 +1675,13 @@ export class SettingsPage {
         const isDirty = entry.dirty || false;
         const isEditing = entry.editing || false;
         const currentModelName = meta.model_name || null;
+        entry.viewMode = entry.viewMode || 'template';
+        const viewMode = isEditing ? 'template' : entry.viewMode;
+        const promptBodyHtml = isEditing
+            ? `<textarea class="sp-prompt-textarea" id="sp-prompt-ta-${name}" spellcheck="false">${_esc(content)}</textarea>`
+            : viewMode === 'resolved'
+                ? this._resolvedPromptBody(name, entry, content)
+                : `<div class="sp-prompt-view" id="sp-prompt-view-${name}">${_renderPromptView(content)}</div>`;
 
         // Build model selector options.
         const availableModels = (this._models || []).filter(m => m.available);
@@ -1371,11 +1715,10 @@ export class SettingsPage {
                 </div>
             </div>` : ''}
 
+            ${!isEditing ? this._resolvedPromptControls(name, entry) : ''}
+
             <div class="sp-prompt-body" id="sp-prompt-body-${name}">
-                ${isEditing
-                    ? `<textarea class="sp-prompt-textarea" id="sp-prompt-ta-${name}" spellcheck="false">${_esc(content)}</textarea>`
-                    : `<div class="sp-prompt-view" id="sp-prompt-view-${name}">${_renderPromptView(content)}</div>`
-                }
+                ${promptBodyHtml}
             </div>
 
             <div class="sp-prompt-footer">
@@ -1412,6 +1755,35 @@ export class SettingsPage {
                 entry.dirty = (ta.value !== content);
             });
         }
+
+        // Template / Resolved view switch
+        this._content.querySelectorAll(`#sp-prompt-view-mode-${name} button`).forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const mode = btn.dataset.mode || 'template';
+                entry.viewMode = mode;
+                if (mode === 'resolved') {
+                    await this._loadResolvedPrompt(name);
+                }
+                this._renderPrompt(name);
+            });
+        });
+
+        const connSel = this._content.querySelector(`#sp-resolve-conn-${name}`);
+        if (connSel) {
+            connSel.addEventListener('change', async () => {
+                this._promptResolveConnection = connSel.value;
+                if (entry.viewMode === 'resolved') {
+                    await this._loadResolvedPrompt(name, { force: true });
+                }
+                this._renderPrompt(name);
+            });
+        }
+
+        this._content.querySelector(`#sp-resolve-refresh-${name}`)?.addEventListener('click', async () => {
+            entry.viewMode = 'resolved';
+            await this._loadResolvedPrompt(name, { force: true });
+            this._renderPrompt(name);
+        });
 
         // Edit button
         this._content.querySelector(`#sp-edit-${name}`)?.addEventListener('click', () => {
@@ -1829,6 +2201,54 @@ function _esc(text) {
     return d.innerHTML;
 }
 
+function _prettyJson(value) {
+    if (typeof value === 'string') {
+        try {
+            return JSON.stringify(JSON.parse(value), null, 2);
+        } catch {
+            return value;
+        }
+    }
+    try {
+        return JSON.stringify(value ?? {}, null, 2);
+    } catch {
+        return String(value ?? '');
+    }
+}
+
+function _sampleArgsFromSchema(schema) {
+    const s = schema && typeof schema === 'object' ? schema : {};
+    const props = s.properties && typeof s.properties === 'object' ? s.properties : {};
+    if (!Object.keys(props).length) return {};
+
+    const required = Array.isArray(s.required) ? s.required : [];
+    const ordered = [
+        ...required,
+        ...Object.keys(props).filter(k => !required.includes(k)),
+    ];
+    const sample = {};
+    ordered.forEach(key => {
+        sample[key] = _sampleValueFromSchema(props[key]);
+    });
+    return sample;
+}
+
+function _sampleValueFromSchema(schema) {
+    const s = schema && typeof schema === 'object' ? schema : {};
+    if (Object.prototype.hasOwnProperty.call(s, 'default')) return s.default;
+    if (Object.prototype.hasOwnProperty.call(s, 'const')) return s.const;
+    if (Array.isArray(s.enum) && s.enum.length) return s.enum[0];
+    if (Array.isArray(s.examples) && s.examples.length) return s.examples[0];
+
+    const type = Array.isArray(s.type) ? s.type[0] : s.type;
+    if (type === 'integer' || type === 'number') return 0;
+    if (type === 'boolean') return false;
+    if (type === 'array') return [];
+    if (type === 'object' || s.properties) return _sampleArgsFromSchema(s);
+    if (type === 'null') return null;
+    return '';
+}
+
 const _PLACEHOLDER_RE  = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
 const _ESCAPED_RE      = /\{\{[^}]*\}\}/g;
 
@@ -1857,6 +2277,24 @@ function _renderPromptView(text) {
         /(?<!\{)\{([a-zA-Z_][a-zA-Z0-9_]*)\}(?!\})/g,
         (_, name) => `<code class="sp-ph-inline">{${_esc(name)}}</code>`,
     );
+}
+
+function _renderResolvedPromptView(text) {
+    const escaped = _esc(text)
+        .replace(/\n/g, '<br>')
+        .replace(/  /g, '&nbsp;&nbsp;');
+    return escaped
+        .replace(
+            /\{runtime: ([^}]+)\}/g,
+            (_, name) => `<code class="sp-runtime-inline">{runtime: ${_esc(name)}}</code>`,
+        );
+}
+
+function _formatCount(value) {
+    const n = Number(value || 0);
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}K`;
+    return String(n);
 }
 
 function _aboutRow(label, value) {
