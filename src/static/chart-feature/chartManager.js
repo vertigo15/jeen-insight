@@ -45,6 +45,12 @@ export class ChartManager {
 
         console.log('[ChartManager] Initialized');
     }
+
+    _devTrace(status, payload = {}) {
+        if (typeof window !== 'undefined' && typeof window._devPostQueryUpdate === 'function') {
+            window._devPostQueryUpdate('chart', { status, ...payload });
+        }
+    }
     
     /**
      * Initializes chart feature for given query results
@@ -68,6 +74,7 @@ export class ChartManager {
             console.log('[ChartManager] Data cannot be charted:', this.dataAnalysis.reason);
             this.chartToggle.disableChartButton();
             this.showNotChartableMessage(this.dataAnalysis.reason);
+            this._devTrace('skipped', { detail: `Not chartable: ${this.dataAnalysis.reason}` });
             return;
         }
         
@@ -208,6 +215,10 @@ export class ChartManager {
      */
     async generateChartWithLLM(chartType = 'auto') {
         console.log('[ChartManager] Generating chart with LLM, type:', chartType);
+        this._devTrace('running', {
+            metrics: { chart_type: chartType },
+            detail: `Preparing ${chartType === 'auto' ? 'auto' : chartType} chart generation.`,
+        });
 
         // Regenerating from scratch — clear any prior chat-edit state so the
         // user starts on a clean baseline.
@@ -224,12 +235,19 @@ export class ChartManager {
             const cached = sessionStorage.getItem(cacheKey);
             if (cached) {
                 console.log('[ChartManager] Using cached chart config for type:', chartType);
+                this._devTrace('running', { metrics: { cache: 'browser hit' }, detail: 'Using cached chart config.' });
                 const config = JSON.parse(cached);
+                const renderStart = performance.now();
                 await this.renderChart(config);
+                this._devTrace('done', {
+                    metrics: { cache: 'browser hit', chart_type: chartType, render_ms: Math.round(performance.now() - renderStart) },
+                    detail: 'Rendered cached chart config.',
+                });
                 return;
             }
 
             console.log('[ChartManager] Calling LLM API for type:', chartType);
+            this._devTrace('running', { metrics: { cache: 'browser miss' }, detail: 'Requesting chart spec and config from the server.' });
 
             // The server builds the chart from the FULL result set (kept in its
             // result cache, keyed by query_id). On the hot path we send only the
@@ -249,11 +267,19 @@ export class ChartManager {
             if (overrides.yColumn) payload.y_column = overrides.yColumn;
             if (overrides.seriesColumn) payload.series_column = overrides.seriesColumn;
 
+            let serverMs = 0;
+            let cacheStatus = 'result hit';
+            const requestStart = performance.now();
             let data = await this._postChart(payload);
+            serverMs += Math.round(performance.now() - requestStart);
             if (data === '__REDIRECT__') return;
             if (data === '__CACHE_MISS__') {
                 console.log('[ChartManager] Cache miss — re-sending full rows');
+                cacheStatus = 'result miss';
+                this._devTrace('running', { metrics: { cache: 'result miss' }, detail: 'Server result cache missed; re-sending full rows for chart build.' });
+                const fallbackStart = performance.now();
                 data = await this._postChart({ ...payload, ...this._fallbackRows() });
+                serverMs += Math.round(performance.now() - fallbackStart);
                 if (data === '__REDIRECT__') return;
             }
 
@@ -295,10 +321,21 @@ export class ChartManager {
             sessionStorage.setItem(cacheKey, JSON.stringify(chartConfig));
             
             // Render the chart
+            const renderStart = performance.now();
             await this.renderChart(chartConfig);
+            this._devTrace('done', {
+                metrics: {
+                    cache: cacheStatus,
+                    chart_type: data.chart_type || chartType,
+                    server_ms: serverMs,
+                    render_ms: Math.round(performance.now() - renderStart),
+                },
+                detail: `Rendered ${data.chart_type || chartType} chart from server-built config.`,
+            });
             
         } catch (error) {
             console.error('[ChartManager] Failed to generate chart with LLM:', error);
+            this._devTrace('error', { detail: error.message || String(error) });
             this.chartContainer.showError(
                 'Failed to generate chart: ' + error.message
             );

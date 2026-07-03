@@ -22,6 +22,7 @@ let _allTraceEvents   = [];   // full event list from most recent query
 let _traceMetrics     = {};   // metrics from most recent query
 let _activeTraceFilter = 'all'; // current log level filter
 let _traceSearchQ     = '';   // current log text search query
+let _postQueryTrace   = {};   // async work that starts after /api/ask returns
 let _traceViewMode = (function () {
     try {
         return localStorage.getItem('jeen_trace_view_mode') || 'flow';
@@ -421,6 +422,7 @@ async function askQuestion() {
 // Display results
 function displayResults(data) {
     _lastResultData = data;  // kept so the post-paint frame can rebuild the header
+    _resetPostQueryTrace();
     // Reset column presentation state for every new result set
     _colFormats  = {};
     _derivedCols = [];
@@ -2077,9 +2079,9 @@ function _buildTraceLegendHtml() {
         + '<strong>catalog_lookup</strong> shows where the metadata came from (MCP or metadata DB), cache HIT/MISS and load time.</li>'
         + `<li>The number on the right is per-step time. ${escapeHtml(_TIMING_TIPS.nodeMs)}</li>`
         + '<li>Summary chips at the top: '
-        + `<strong>wall</strong> = total time in the browser; <strong>graph</strong> = sum of all step times; `
+        + `<strong>wall</strong> = total time in the browser; <strong>main graph</strong> = sum of the /api/ask LangGraph step times; `
         + `<strong>LLM</strong> = time waiting on the model; <strong>DB</strong> = SQL execution time; `
-        + `<strong>net</strong> = wall − graph (HTTP + proxy overhead). Hover any chip for the exact formula.</li>`
+        + `<strong>net</strong> = wall − main graph (HTTP + proxy overhead). Hover any chip for the exact formula.</li>`
         + '</ul></div>';
 }
 
@@ -2197,6 +2199,109 @@ function _traceRanEdges(events) {
     return edges;
 }
 
+function _traceFlowLayout() {
+    const nodeW = 122;
+    const nodeH = 34;
+    const colGap = 170;
+    const rowGap = 58;
+    const marginX = 44;
+    const marginY = 56;
+    const maxRows = Math.max(..._TRACE_FLOW_COLUMNS.map(col => col.nodes.length), 1);
+    const positions = {};
+
+    _TRACE_FLOW_COLUMNS.forEach((col, colIdx) => {
+        const colOffset = Math.max(0, (maxRows - col.nodes.length) * rowGap / 2);
+        col.nodes.forEach((node, rowIdx) => {
+            positions[node] = {
+                x: marginX + colIdx * colGap,
+                y: marginY + colOffset + rowIdx * rowGap,
+                col: colIdx,
+                row: rowIdx,
+            };
+        });
+    });
+
+    return {
+        positions,
+        nodeW,
+        nodeH,
+        width: marginX * 2 + (_TRACE_FLOW_COLUMNS.length - 1) * colGap + nodeW,
+        height: marginY * 2 + maxRows * rowGap,
+    };
+}
+
+function _shortTraceLabel(label, max = 17) {
+    const str = String(label || '');
+    return str.length > max ? `${str.slice(0, max - 1)}…` : str;
+}
+
+function _buildTraceTransitionsHtml(ranEdges, ranNodes) {
+    const layout = _traceFlowLayout();
+    const { positions, nodeW, nodeH, width, height } = layout;
+
+    let html = '<div class="trace-flow-edges trace-transition-map">';
+    html += '<div class="trace-flow-edge-title">Transitions</div>';
+    html += '<p class="trace-flow-edge-help">Directed transition map. The layout reads left-to-right, but retry/back edges can loop, so this is not a strict DAG.</p>';
+    html += `<svg class="trace-transition-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="LangGraph transition map">`;
+    html += '<defs>'
+        + '<marker id="trace-arrow-run" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 Z" fill="var(--color-accent)"/></marker>'
+        + '<marker id="trace-arrow-near" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 Z" fill="var(--color-muted)"/></marker>'
+        + '<marker id="trace-arrow-skip" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 Z" fill="var(--color-faint)"/></marker>'
+        + '</defs>';
+
+    _TRACE_FLOW_EDGES.forEach(([from, to, label], idx) => {
+        const a = positions[from];
+        const b = positions[to];
+        if (!a || !b) return;
+
+        const key = `${from}->${to}`;
+        const ran = ranEdges.has(key);
+        const near = !ran && (ranNodes.has(from) || ranNodes.has(to));
+        const marker = ran ? 'trace-arrow-run' : near ? 'trace-arrow-near' : 'trace-arrow-skip';
+        const isBack = b.col <= a.col;
+        const startX = isBack ? a.x : a.x + nodeW;
+        const endX = isBack ? b.x + nodeW : b.x;
+        const startY = a.y + nodeH / 2;
+        const endY = b.y + nodeH / 2;
+        const className = `trace-transition-edge${ran ? ' is-run' : near ? ' is-near' : ' is-skipped'}${isBack ? ' is-back' : ''}`;
+        let d;
+        let labelX;
+        let labelY;
+
+        if (isBack) {
+            const lift = 40 + (idx % 3) * 14;
+            const controlX = Math.min(startX, endX) - lift;
+            d = `M ${startX} ${startY} C ${controlX} ${startY}, ${controlX} ${endY}, ${endX} ${endY}`;
+            labelX = controlX + 4;
+            labelY = (startY + endY) / 2 - 6;
+        } else {
+            const midX = (startX + endX) / 2;
+            d = `M ${startX} ${startY} C ${midX} ${startY}, ${midX} ${endY}, ${endX} ${endY}`;
+            labelX = midX;
+            labelY = (startY + endY) / 2 - 7;
+        }
+
+        html += `<g class="${className}">`;
+        html += `<title>${escapeHtml(_nodeLabel(from))} → ${escapeHtml(_nodeLabel(to))}: ${escapeHtml(label)}</title>`;
+        html += `<path d="${d}" marker-end="url(#${marker})"></path>`;
+        html += `<text x="${labelX}" y="${labelY}" text-anchor="${isBack ? 'end' : 'middle'}">${escapeHtml(_shortTraceLabel(label, isBack ? 14 : 18))}</text>`;
+        html += '</g>';
+    });
+
+    Object.entries(positions).forEach(([node, pos]) => {
+        const ran = ranNodes.has(node);
+        html += `<g class="trace-transition-node${ran ? ' is-run' : ' is-skipped'}">`;
+        html += `<title>${escapeHtml(node)} — ${escapeHtml(_NODE_INFO[node] || 'Pipeline step.')}</title>`;
+        html += `<rect x="${pos.x}" y="${pos.y}" width="${nodeW}" height="${nodeH}" rx="8"></rect>`;
+        html += `<text x="${pos.x + nodeW / 2}" y="${pos.y + nodeH / 2 + 4}" text-anchor="middle">${escapeHtml(_shortTraceLabel(_nodeLabel(node), 18))}</text>`;
+        html += '</g>';
+    });
+
+    html += '</svg>';
+    html += '</div>';
+    return html;
+}
+
 function _buildTraceFlowHtml(events, metrics) {
     const stats = _traceStatsByNode(events);
     const ranEdges = _traceRanEdges(events);
@@ -2251,20 +2356,7 @@ function _buildTraceFlowHtml(events, metrics) {
     });
     html += '</div>';
 
-    html += '<div class="trace-flow-edges">';
-    html += '<div class="trace-flow-edge-title">Transitions</div>';
-    html += '<p class="trace-flow-edge-help">All possible graph transitions are listed here. Highlighted rows are the transitions this query actually took.</p>';
-    _TRACE_FLOW_EDGES.forEach(([from, to, label]) => {
-        const ran = ranEdges.has(`${from}->${to}`);
-        const fromRan = ranNodes.has(from);
-        const toRan = ranNodes.has(to);
-        html += `<div class="trace-flow-edge${ran ? ' is-run' : fromRan || toRan ? ' is-near' : ''}">`;
-        html += `<code>${escapeHtml(_nodeLabel(from))}</code>`;
-        html += `<span>${escapeHtml(label)}</span>`;
-        html += `<code>${escapeHtml(_nodeLabel(to))}</code>`;
-        html += '</div>';
-    });
-    html += '</div>';
+    html += _buildTraceTransitionsHtml(ranEdges, ranNodes);
 
     if (repeated.length) {
         html += '<div class="trace-flow-retries"><strong>Repeated nodes:</strong> '
@@ -2280,6 +2372,118 @@ function _traceNodeType(node) {
     if (['memory_summarizer', 'fused_router', 'memory_answer_generator', 'sql_generator', 'fused_eval_analytics'].includes(node)) return 'llm';
     if (['catalog_lookup', 'execute_query', 'save_to_memory'].includes(node)) return 'db';
     return 'logic';
+}
+
+const _POST_QUERY_SPECS = {
+    insights: {
+        label: 'Insights calculation',
+        kind: 'LLM analytics',
+        idle: 'Starts after the table renders when AI Analytics is enabled.',
+    },
+    chart: {
+        label: 'Chart calculation',
+        kind: 'LLM chart spec + render',
+        idle: 'Starts when the Chart view asks the server to build a chart.',
+    },
+};
+
+function _resetPostQueryTrace() {
+    _postQueryTrace = {};
+}
+
+function _updatePostQueryTrace(kind, update = {}) {
+    if (!_POST_QUERY_SPECS[kind]) return;
+    const now = performance.now();
+    const prev = _postQueryTrace[kind] || {
+        kind,
+        status: 'running',
+        startedAt: now,
+        updatedAt: now,
+        details: [],
+        metrics: {},
+    };
+    const next = {
+        ...prev,
+        ...update,
+        updatedAt: now,
+        metrics: { ...(prev.metrics || {}), ...(update.metrics || {}) },
+    };
+
+    if (update.status === 'running' && !prev.startedAt) next.startedAt = now;
+    if (update.detail) {
+        next.details = [...(prev.details || []), update.detail].slice(-4);
+    } else if (update.details) {
+        next.details = update.details.slice(-4);
+    }
+    if ((update.status === 'done' || update.status === 'error') && !next.endedAt) {
+        next.endedAt = now;
+    }
+    if (next.startedAt && next.endedAt && !Number.isFinite(next.elapsedMs)) {
+        next.elapsedMs = Math.max(0, Math.round(next.endedAt - next.startedAt));
+    }
+
+    _postQueryTrace[kind] = next;
+    if (_allTraceEvents.length) _renderTraceEvents();
+}
+window._devPostQueryUpdate = _updatePostQueryTrace;
+window._devPostQueryReset = _resetPostQueryTrace;
+
+function _postQueryStatusLabel(status) {
+    return {
+        idle: 'not started',
+        running: 'running',
+        done: 'done',
+        error: 'error',
+        skipped: 'skipped',
+    }[status || 'idle'] || status;
+}
+
+function _postQueryElapsed(item) {
+    if (!item) return null;
+    if (Number.isFinite(item.elapsedMs)) return item.elapsedMs;
+    if (item.startedAt && item.status === 'running') {
+        return Math.max(0, Math.round(performance.now() - item.startedAt));
+    }
+    return null;
+}
+
+function _buildPostQueryWorkHtml() {
+    let html = '<div class="post-query-work">';
+    html += '<div class="post-query-head">'
+        + '<div><strong>Post-query work</strong><span>Insights and charts run after the main SQL answer, so they are tracked separately from the LangGraph trace above.</span></div>'
+        + '</div>';
+    html += '<div class="post-query-grid">';
+
+    Object.entries(_POST_QUERY_SPECS).forEach(([kind, spec]) => {
+        const item = _postQueryTrace[kind] || { status: 'idle', details: [spec.idle], metrics: {} };
+        const status = item.status || 'idle';
+        const elapsed = _postQueryElapsed(item);
+        const metrics = item.metrics || {};
+        const detail = item.details?.length ? item.details[item.details.length - 1] : spec.idle;
+
+        html += `<section class="post-query-card post-query-${escapeHtml(status)}">`;
+        html += '<div class="post-query-card-top">';
+        html += `<div><div class="post-query-title">${escapeHtml(spec.label)}</div><div class="post-query-kind">${escapeHtml(spec.kind)}</div></div>`;
+        html += `<span class="post-query-status">${escapeHtml(_postQueryStatusLabel(status))}</span>`;
+        html += '</div>';
+        html += '<div class="post-query-chips">';
+        if (elapsed !== null) html += `<span>${_fmtMs(elapsed)}</span>`;
+        if (Number.isFinite(metrics.ttft_ms)) html += `<span>TTFT ${_fmtMs(metrics.ttft_ms)}</span>`;
+        if (Number.isFinite(metrics.llm_latency_ms)) html += `<span>LLM ${_fmtMs(metrics.llm_latency_ms)}</span>`;
+        if (Number.isFinite(metrics.server_ms)) html += `<span>server ${_fmtMs(metrics.server_ms)}</span>`;
+        if (Number.isFinite(metrics.render_ms)) html += `<span>render ${_fmtMs(metrics.render_ms)}</span>`;
+        if (Number.isFinite(metrics.input_tokens)) html += `<span>in ${_formatTokens(metrics.input_tokens)}</span>`;
+        if (Number.isFinite(metrics.output_tokens)) html += `<span>out ${_formatTokens(metrics.output_tokens)}</span>`;
+        if (metrics.cache) html += `<span>cache ${escapeHtml(metrics.cache)}</span>`;
+        if (metrics.chart_type) html += `<span>${escapeHtml(metrics.chart_type)}</span>`;
+        if (elapsed === null && !Object.keys(metrics).length) html += '<span>waiting</span>';
+        html += '</div>';
+        html += `<div class="post-query-detail">${escapeHtml(detail || '')}</div>`;
+        html += '</section>';
+    });
+
+    html += '</div></div>';
+    return html;
 }
 
 /**
@@ -2332,6 +2536,7 @@ function _renderTraceEvents() {
 
     if (_traceViewMode === 'flow') {
         html += _buildTraceFlowHtml(events, metrics);
+        html += _buildPostQueryWorkHtml();
         panel.innerHTML = html;
         return;
     }
@@ -2340,6 +2545,7 @@ function _renderTraceEvents() {
 
     if (filtered.length === 0) {
         html += '<p class="trace-empty">No events match the current filter.</p>';
+        html += _buildPostQueryWorkHtml();
         panel.innerHTML = html;
         return;
     }
@@ -2438,6 +2644,7 @@ function _renderTraceEvents() {
         html += `</div>`;
     }
 
+    html += _buildPostQueryWorkHtml();
     panel.innerHTML = html;
 }
 
@@ -2491,7 +2698,7 @@ function _updateDevRunHeader(data) {
     if (Number.isFinite(wallMs) && wallMs > 0)
         chips.push(`<span class="dp-chip dp-chip-wall${_slowCls(wallMs)}" title="${_TIMING_TIPS.wall}">wall: <strong>${_fmtMs(wallMs)}</strong></span>`);
     if (Number.isFinite(graphMs) && graphMs > 0)
-        chips.push(`<span class="dp-chip${_slowCls(graphMs)}" title="${_TIMING_TIPS.graph}">graph: <strong>${_fmtMs(graphMs)}</strong></span>`);
+        chips.push(`<span class="dp-chip${_slowCls(graphMs)}" title="${_TIMING_TIPS.graph}">main graph: <strong>${_fmtMs(graphMs)}</strong></span>`);
     if (Number.isFinite(llmMs))
         chips.push(`<span class="dp-chip${_slowCls(llmMs)}" title="${_TIMING_TIPS.llm}">LLM: <strong>${_fmtMs(llmMs)}</strong></span>`);
     if (Number.isFinite(dbMs) && dbMs > 0)
@@ -2550,19 +2757,19 @@ const _TIMING_TIPS = {
     wall:  'wall — Client wall time: measured in the browser from the moment '
          + '"Ask" was clicked to the last byte of the API response. '
          + 'Covers: network round-trip + Flask proxy + FastAPI routing + full graph pipeline.',
-    graph: 'graph — LangGraph pipeline time: sum of elapsed_ms across every '
-         + 'node in the trace. Pure server-side processing inside the agent '
-         + 'graph (router, SQL gen, DB exec, eval, formatter, …).',
+    graph: 'main graph — The /api/ask LangGraph pipeline time: sum of elapsed_ms '
+         + 'across every node in the main query trace. This does not include '
+         + 'post-query Insights or Chart work.',
     llm:   'LLM — Cumulative LLM latency: total time waiting for the language '
          + 'model (Azure OpenAI) to respond across all LLM calls in this query. '
          + 'Comes directly from the llm_latency_ms metric.',
     db:    'DB — Database execution time: total time spent running SQL against '
          + 'the data warehouse, summed across every execution in this request '
          + '(including retries). Comes from execution_time_ms in the LangGraph state.',
-    net:   'net — Flask + network overhead: wall time minus graph time. '
+    net:   'net — Flask + network overhead: wall time minus main graph time. '
          + 'Covers HTTP request/response transit, Flask proxy routing, '
          + 'FastAPI middleware, and serialisation overhead. '
-         + 'Formula: net = wall − graph.',
+         + 'Formula: net = wall − main graph.',
     nodeMs: 'Wall time spent inside this pipeline step, measured server-side '
          + 'around the node function — it includes any LLM, database, or MCP '
          + 'call that step makes.',
@@ -2619,7 +2826,7 @@ function _slowCls(ms) {
 // Build a single stacked bar that partitions the total query time into its
 // constituents — LLM, DB, the rest of the pipeline ("pipeline"), and network +
 // proxy overhead ("net") — so where the time went is obvious at a glance.
-// wall = graph + net ; graph = llm + db + pipeline(other).
+// wall = main graph + net ; main graph = llm + db + pipeline(other).
 function _buildTimingBar(wallMs, graphMs, llmMs, dbMs) {
     const hasWall = Number.isFinite(wallMs) && wallMs > 0;
     const total   = hasWall ? wallMs : graphMs;
@@ -2638,7 +2845,7 @@ function _buildTimingBar(wallMs, graphMs, llmMs, dbMs) {
     ].filter(s => s.ms > 0);
     if (!segs.length) return '';
 
-    const basis = hasWall ? 'wall' : 'graph';
+    const basis = hasWall ? 'wall' : 'main graph';
     const pct   = (ms) => (ms / total) * 100;
 
     let bar = '<div class="timing-bar" role="img" aria-label="Query time breakdown">';
@@ -2791,7 +2998,7 @@ window._toggleTraceEvent = _toggleTraceEvent;
 async function initializeChartFeature(results) {
     // Dynamically import ChartManager if not already loaded
     if (!ChartManager) {
-        const module = await import('./chart-feature/chartManager.js?v=73');
+        const module = await import('./chart-feature/chartManager.js?v=74');
         ChartManager = module.ChartManager;
     }
     

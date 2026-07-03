@@ -49,6 +49,11 @@ class InsightsManager {
         // Forward the SQL so the server can use the LangGraph eval node.
         if (sql) requestBody.sql = sql;
 
+        this._devTrace('running', {
+            detail: sql
+                ? 'Streaming LangGraph eval insights after the SQL answer rendered.'
+                : 'Streaming legacy insights after the answer rendered.',
+        });
         this.showStreamingPlaceholder(container);
         this.state.isLoading = true;
 
@@ -59,10 +64,12 @@ class InsightsManager {
             // endpoint once before giving up so a transient transport problem
             // doesn't lose the user's insights.
             console.warn('[InsightsManager] Stream failed, falling back to non-streaming:', error);
+            this._devTrace('running', { detail: 'Streaming failed; retrying with non-streaming insights endpoint.' });
             try {
                 await this._fetchInsightsFallback(container, requestBody);
             } catch (fallbackErr) {
                 console.error('[InsightsManager] Fallback also failed:', fallbackErr);
+                this._devTrace('error', { detail: fallbackErr.message || String(fallbackErr) });
                 this.showError(container, fallbackErr.message || String(fallbackErr));
             }
         } finally {
@@ -84,6 +91,7 @@ class InsightsManager {
         if (!response.ok || !response.body) {
             throw new Error(`Stream returned ${response.status}: ${response.statusText}`);
         }
+        this._devTrace('running', { detail: 'Insights stream opened.' });
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -91,6 +99,7 @@ class InsightsManager {
         let charsReceived = 0;
         let ttftMs = null;
         let finalInsights = null;
+        let sawDelta = false;
 
         while (true) {
             const { value, done } = await reader.read();
@@ -107,10 +116,15 @@ class InsightsManager {
 
                 if (event.name === 'ttft') {
                     ttftMs = (event.data && event.data.ms) || null;
+                    this._devTrace('running', { metrics: { ttft_ms: ttftMs }, detail: 'First insight token received.' });
                     this._setStreamingTtft(container, ttftMs);
                 } else if (event.name === 'delta') {
                     const t = (event.data && event.data.text) || '';
                     charsReceived += t.length;
+                    if (!sawDelta) {
+                        sawDelta = true;
+                        this._devTrace('running', { detail: 'Insights content is streaming.' });
+                    }
                     this._setStreamingProgress(container, charsReceived);
                 } else if (event.name === 'done') {
                     finalInsights = event.data && event.data.insights;
@@ -119,9 +133,14 @@ class InsightsManager {
                         this.state.currentInsights = finalInsights;
                         this.displayInsights(container, finalInsights, { ttftMs, metrics });
                         if (finalInsights.prompt) this.displayInsightsPrompt(finalInsights);
+                        this._devTrace('done', {
+                            metrics: { ...(metrics || {}), ttft_ms: ttftMs },
+                            detail: `Generated ${(finalInsights.findings || []).length} finding(s).`,
+                        });
                     }
                 } else if (event.name === 'error') {
                     const msg = (event.data && event.data.error) || 'streaming failed';
+                    this._devTrace('error', { detail: msg });
                     throw new Error(msg);
                 }
                 // 'open' is informational; ignore.
@@ -175,6 +194,15 @@ class InsightsManager {
         this.state.currentInsights = insights;
         this.displayInsights(container, insights);
         if (insights.prompt) this.displayInsightsPrompt(insights);
+        this._devTrace('done', {
+            detail: `Generated ${(insights.findings || []).length} finding(s) via fallback endpoint.`,
+        });
+    }
+
+    _devTrace(status, payload = {}) {
+        if (typeof window !== 'undefined' && typeof window._devPostQueryUpdate === 'function') {
+            window._devPostQueryUpdate('insights', { status, ...payload });
+        }
     }
 
     // ── SVG constants ──────────────────────────────────────────────────────
