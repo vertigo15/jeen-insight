@@ -178,33 +178,51 @@ flowchart TD
 
 ## 5. LangGraph agent (core question → SQL → answer)
 
-The compiled graph has **16 nodes**. Every node appends a timed event to `state.trace` (shown in the UI developer panel).
+The compiled graph has **16 nodes**. Every node appends a timed event to `state.trace` (shown in the UI developer panel). The columns below are logical branch groupings; the graph follows one route through them for a given question.
 
 ```mermaid
-flowchart TD
-    S([▶ START])
-    E([⏹ END])
+flowchart LR
+    S([START])
+    E([END])
 
-    MSC["🧠 memory_shrink_check"]
-    MS["🤏 memory_summarizer · LLM"]
-    FR["🔀 fused_router · LLM"]
-    MAG["💬 memory_answer_generator · LLM"]
-    CL["📦 catalog_lookup · DB/MCP"]
-    PB["🔧 prompt_builder"]
-    SG["🧠 sql_generator · LLM"]
-    SV["✅ sqlglot_validate · sqlglot"]
-    DC["🛡 dlp_check · regex patterns"]
-    EQ["▶ execute_query · PostgresSqlRunner"]
-    TRC["⚡ trivial_result_check"]
-    FEA["📊 fused_eval_analytics · LLM"]
-    FC["🔁 feedback_classifier"]
-    RF["📋 response_formatter"]
-    STM["💾 save_to_memory · DB"]
-    OL["🪵 observability_log"]
+    subgraph Memory["Memory"]
+        MSC["memory_shrink_check"]
+        MS["memory_summarizer · LLM"]
+        MAG["memory_answer_generator · LLM"]
+    end
+
+    subgraph Routing["Routing"]
+        FR["fused_router · LLM"]
+    end
+
+    subgraph CatalogPrompt["Catalog + Prompt"]
+        CL["catalog_lookup · DB/MCP"]
+        PB["prompt_builder"]
+    end
+
+    subgraph SqlSafety["SQL + Safety"]
+        SG["sql_generator · LLM"]
+        SV["sqlglot_validate · sqlglot"]
+        DC["dlp_check · regex patterns"]
+    end
+
+    subgraph ExecutionEval["Execution + Eval"]
+        EQ["execute_query · PostgresSqlRunner"]
+        TRC["trivial_result_check"]
+        FEA["fused_eval_analytics · LLM"]
+        FC["feedback_classifier"]
+    end
+
+    subgraph Output["Output"]
+        RF["response_formatter"]
+        STM["save_to_memory · DB"]
+        OL["observability_log"]
+    end
 
     S --> MSC
-    MSC -->|over token budget| MS --> FR
+    MSC -->|over token budget| MS
     MSC -->|within budget| FR
+    MS --> FR
 
     FR -->|needs_query| CL
     FR -->|from_memory| MAG
@@ -238,19 +256,9 @@ flowchart TD
     FC -->|exhausted| RF
 
     RF --> STM --> OL --> E
-
-    classDef llm fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,font-weight:bold
-    classDef db fill:#d1fae5,stroke:#059669,color:#064e3b,font-weight:bold
-    classDef logic fill:#f1f5f9,stroke:#64748b,color:#1e293b
-    classDef tool fill:#ffedd5,stroke:#ea580c,color:#7c2d12,font-weight:bold
-    classDef term fill:#0f172a,stroke:#0f172a,color:#f8fafc,font-weight:bold
-
-    class MS,FR,MAG,SG,FEA llm
-    class CL,EQ,STM db
-    class MSC,PB,TRC,FC,RF,OL logic
-    class SV,DC tool
-    class S,E term
 ```
+
+Only the pre-graph bootstrap in §3 runs concurrent work with `asyncio.gather()`. The LangGraph trace itself is sequential per route, even though the UI and docs lay out alternative branches side-by-side.
 
 ### Router outcomes (`fused_router`)
 

@@ -9,26 +9,43 @@ Every query passes through this graph from `START` to `END`.
 ## Diagram
 
 ```mermaid
-flowchart TD
-    S([▶ START])
-    E([⏹ END])
+flowchart LR
+    S([START])
+    E([END])
 
-    MSC["🧠 memory_shrink_check\n― logic ―"]
-    MS["🤏 memory_summarizer\n― LLM ―"]
-    FR["🔀 fused_router\n― LLM ―"]
-    MAG["💬 memory_answer_generator\n― LLM ―"]
-    CL["📦 catalog_lookup\n― DB ―"]
-    PB["🔧 prompt_builder\n― logic ―"]
-    SG["🧠 sql_generator\n― LLM ―"]
-    SV["✅ sqlglot_validate\n― logic ―"]
-    DC["🛡️ dlp_check\n― logic ―"]
-    EQ["▶ execute_query\n― DB ―"]
-    TRC["⚡ trivial_result_check\n― logic ―"]
-    FEA["📊 fused_eval_analytics\n― LLM ―"]
-    FC["🔁 feedback_classifier\n― logic ―"]
-    RF["📋 response_formatter\n― logic ―"]
-    STM["💾 save_to_memory\n― DB ―"]
-    OL["🪵 observability_log\n― logic ―"]
+    subgraph Memory["Memory"]
+        MSC["memory_shrink_check\nlogic"]
+        MS["memory_summarizer\nLLM"]
+        MAG["memory_answer_generator\nLLM"]
+    end
+
+    subgraph Routing["Routing"]
+        FR["fused_router\nLLM"]
+    end
+
+    subgraph CatalogPrompt["Catalog + Prompt"]
+        CL["catalog_lookup\nDB or MCP"]
+        PB["prompt_builder\nlogic"]
+    end
+
+    subgraph SqlSafety["SQL + Safety"]
+        SG["sql_generator\nLLM"]
+        SV["sqlglot_validate\nlogic"]
+        DC["dlp_check\nlogic"]
+    end
+
+    subgraph ExecutionEval["Execution + Eval"]
+        EQ["execute_query\nDB"]
+        TRC["trivial_result_check\nlogic"]
+        FEA["fused_eval_analytics\nLLM"]
+        FC["feedback_classifier\nlogic"]
+    end
+
+    subgraph Output["Output"]
+        RF["response_formatter\nlogic"]
+        STM["save_to_memory\nDB"]
+        OL["observability_log\nlogic"]
+    end
 
     S --> MSC
     MSC -->|over budget| MS
@@ -67,17 +84,13 @@ flowchart TD
     FC -->|syntax / exec / semantic| SG
 
     RF --> STM --> OL --> E
-
-    classDef llm    fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,font-weight:bold
-    classDef db     fill:#d1fae5,stroke:#059669,color:#064e3b,font-weight:bold
-    classDef logic  fill:#f1f5f9,stroke:#64748b,color:#1e293b
-    classDef term   fill:#0f172a,stroke:#0f172a,color:#f8fafc,font-weight:bold
-
-    class MS,FR,MAG,SG,FEA llm
-    class CL,EQ,STM db
-    class MSC,PB,SV,DC,TRC,FC,RF,OL logic
-    class S,E term
 ```
+
+## Parallel vs Logical Branches
+
+The columns above are logical groupings, not simultaneous LangGraph execution. At runtime the graph follows one route through alternatives such as memory answer, normal SQL generation, blocked request, retry, or terminal formatting.
+
+The true parallel work happens before `START`: `JeenInsightsAgent.process_question()` uses `asyncio.gather()` to resolve the user, load short-term memory, create the audit row, and preload catalog metadata. Once `graph.ainvoke()` starts, trace events are emitted in node execution order.
 
 ## Node Reference
 
@@ -87,7 +100,7 @@ flowchart TD
 | 🤏 | `memory_summarizer` | LLM | Condenses history into a short summary when over budget |
 | 🔀 | `fused_router` | LLM | Classifies the question: `needs_query`, `from_memory`, `out_of_scope`, `unsafe`, `greeting` |
 | 💬 | `memory_answer_generator` | LLM | Answers directly from conversation history; escapes to SQL path if needed |
-| 📦 | `catalog_lookup` | DB | Loads table/column metadata from the metadata database |
+| 📦 | `catalog_lookup` | DB/MCP | Loads table/column metadata from the active catalog source |
 | 🔧 | `prompt_builder` | Logic | Assembles the dynamic system prompt with injected metadata |
 | 🧠 | `sql_generator` | LLM | Generates SQL or returns a clarification message |
 | ✅ | `sqlglot_validate` | Logic | Parses and validates SQL syntax and table references via sqlglot |
