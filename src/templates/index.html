@@ -18,7 +18,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=62">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=63">
     <!-- CodeMirror 6 via ESM — exposes window.CodeMirrorService -->
     <script type="module">
       import { EditorView, lineNumbers } from 'https://esm.sh/@codemirror/view@6';
@@ -308,6 +308,7 @@
 <!-- ── Dev Drawer (Prompts & SQL) ───────────────────────────────── -->
 <div id="dev-drawer-overlay" class="dev-drawer-overlay" aria-hidden="true"></div>
 <aside id="dev-drawer" class="dev-drawer" aria-label="Developer panel" aria-hidden="true">
+    <div id="dev-drawer-resize" class="dev-drawer-resize" role="separator" aria-orientation="vertical" aria-label="Resize developer panel" title="Drag to resize"></div>
     <div class="dev-drawer-header">
         <h2 class="dev-drawer-title">Prompts &amp; SQL</h2>
         <button class="dev-drawer-close-btn" id="dev-drawer-close" aria-label="Close developer panel">×</button>
@@ -364,7 +365,7 @@
 <script src="{{ url_for('static', filename='auth.js') }}?v=50"></script>
 <script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=51"></script>
 <script src="{{ url_for('static', filename='profiling/profilingManager.js') }}?v=68"></script>
-<script src="{{ url_for('static', filename='script.js') }}?v=73"></script>
+<script src="{{ url_for('static', filename='script.js') }}?v=75"></script>
 <!-- Settings page (full-screen) -->
 <script type="module">
   import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=52';

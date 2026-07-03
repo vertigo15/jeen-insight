@@ -22,7 +22,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.api import state
 from src.metadata.mcp_server_service import (
@@ -81,6 +81,11 @@ class UpdateServerRequest(BaseModel):
     auth_type: Optional[str] = None
     bearer_token: Optional[str] = None
     cache_ttl_seconds: Optional[int] = None
+
+
+class ToolCallRequest(BaseModel):
+    tool_name: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -331,6 +336,57 @@ async def run_health_check(server_id: int):
         "ok":     True,
         "server": updated.to_dict() if updated else None,
         "health": result.get("health"),
+    }
+
+
+@router.get("/servers/{server_id}/tools")
+async def list_server_tools(server_id: int):
+    """Return live MCP tool descriptors, including input/output schemas."""
+    svc    = _srv_svc()
+    server = await svc.get_by_id(server_id)
+    if not server:
+        raise HTTPException(404, f"Server {server_id} not found")
+
+    try:
+        tools = await _catalog_client().inspect_tools(server)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mcp/tools: tool inspection failed for id=%d: %s", server_id, exc)
+        raise HTTPException(502, f"MCP tool inspection failed: {exc}") from exc
+
+    return {
+        "server_id": server_id,
+        "server_name": server.server_name,
+        "tools": tools,
+    }
+
+
+@router.post("/servers/{server_id}/tools/call")
+async def call_server_tool(server_id: int, body: ToolCallRequest):
+    """Run a selected MCP tool with JSON arguments for diagnostics/testing."""
+    svc    = _srv_svc()
+    server = await svc.get_by_id(server_id)
+    if not server:
+        raise HTTPException(404, f"Server {server_id} not found")
+    if not body.tool_name.strip():
+        raise HTTPException(400, "tool_name is required")
+
+    try:
+        result = await _catalog_client().call_tool_for_test(
+            server, body.tool_name.strip(), body.arguments
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "mcp/tools: test call failed for id=%d tool=%s: %s",
+            server_id, body.tool_name, exc,
+        )
+        raise HTTPException(502, f"MCP tool call failed: {exc}") from exc
+
+    return {
+        "ok": True,
+        "server_id": server_id,
+        "tool_name": body.tool_name.strip(),
+        "arguments": body.arguments,
+        "result": result,
     }
 
 

@@ -22,6 +22,11 @@ let _allTraceEvents   = [];   // full event list from most recent query
 let _traceMetrics     = {};   // metrics from most recent query
 let _activeTraceFilter = 'all'; // current log level filter
 let _traceSearchQ     = '';   // current log text search query
+let _traceViewMode = (function () {
+    try {
+        return localStorage.getItem('jeen_trace_view_mode') || 'flow';
+    } catch (_) { return 'flow'; }
+})();
 // Whether the log legend is expanded. Open by default on first view; the
 // user's choice is then remembered across sessions.
 let _traceLegendOpen = (function () {
@@ -2006,24 +2011,40 @@ function _buildTraceToolbar(toolbar, events) {
     const LEVELS  = ['all', 'llm', 'db', 'warn', 'error'];
     const LABELS  = { all: 'All', llm: 'LLM', db: 'DB', warn: 'Warn', error: 'Error' };
 
-    let html = '<div class="dp-log-filters">';
-    LEVELS.forEach(lv => {
-        const c = counts[lv] || 0;
-        if (lv !== 'all' && c === 0) return;
-        const active = _activeTraceFilter === lv ? ' active' : '';
-        html += `<button class="dp-log-filter${active}" data-level="${lv}" onclick="_switchTraceFilter('${lv}')">`
-            + `${LABELS[lv]} <span class="dp-lf-count">${c}</span></button>`;
-    });
+    let html = '<div class="trace-view-seg" role="tablist" aria-label="Trace view mode">';
+    html += `<button class="${_traceViewMode === 'flow' ? 'active' : ''}" onclick="_switchTraceView('flow')" role="tab" aria-selected="${_traceViewMode === 'flow'}">Flow</button>`;
+    html += `<button class="${_traceViewMode === 'log' ? 'active' : ''}" onclick="_switchTraceView('log')" role="tab" aria-selected="${_traceViewMode === 'log'}">Log</button>`;
     html += '</div>';
-    html += `<input type="text" class="dp-log-search" id="dp-log-search" `
-        + `placeholder="Search log…" value="${escapeHtml(_traceSearchQ)}" `
-        + `oninput="_traceSearchInput(this.value)" aria-label="Search execution log" />`;
-    html += `<button class="dp-log-legend-btn${_traceLegendOpen ? ' active' : ''}" id="dp-log-legend-btn" `
-        + `title="What does each row and number mean?" aria-label="Toggle log legend" `
-        + `onclick="_toggleTraceLegend()">?</button>`;
+
+    if (_traceViewMode === 'log') {
+        html += '<div class="dp-log-filters">';
+        LEVELS.forEach(lv => {
+            const c = counts[lv] || 0;
+            if (lv !== 'all' && c === 0) return;
+            const active = _activeTraceFilter === lv ? ' active' : '';
+            html += `<button class="dp-log-filter${active}" data-level="${lv}" onclick="_switchTraceFilter('${lv}')">`
+                + `${LABELS[lv]} <span class="dp-lf-count">${c}</span></button>`;
+        });
+        html += '</div>';
+        html += `<input type="text" class="dp-log-search" id="dp-log-search" `
+            + `placeholder="Search log…" value="${escapeHtml(_traceSearchQ)}" `
+            + `oninput="_traceSearchInput(this.value)" aria-label="Search execution log" />`;
+        html += `<button class="dp-log-legend-btn${_traceLegendOpen ? ' active' : ''}" id="dp-log-legend-btn" `
+            + `title="What does each row and number mean?" aria-label="Toggle log legend" `
+            + `onclick="_toggleTraceLegend()">?</button>`;
+    }
 
     toolbar.innerHTML = html;
 }
+
+function _switchTraceView(mode) {
+    _traceViewMode = mode === 'log' ? 'log' : 'flow';
+    try { localStorage.setItem('jeen_trace_view_mode', _traceViewMode); } catch (_) {}
+    const toolbar = document.getElementById('dp-log-toolbar');
+    if (toolbar) _buildTraceToolbar(toolbar, _allTraceEvents || []);
+    _renderTraceEvents();
+}
+window._switchTraceView = _switchTraceView;
 
 /**
  * Toggle the explanatory legend that documents the log rows and timings.
@@ -2083,6 +2104,184 @@ function _traceSearchInput(val) {
 }
 window._traceSearchInput = _traceSearchInput;
 
+const _TRACE_FLOW_COLUMNS = [
+    {
+        title: 'Memory',
+        hint: 'Conversation context and optional summarisation.',
+        nodes: ['memory_shrink_check', 'memory_summarizer', 'memory_answer_generator'],
+    },
+    {
+        title: 'Routing',
+        hint: 'Classifies the request and chooses the logical branch.',
+        nodes: ['fused_router'],
+    },
+    {
+        title: 'Catalog + Prompt',
+        hint: 'Loads MCP/DB metadata and builds the system prompt.',
+        nodes: ['catalog_lookup', 'prompt_builder'],
+    },
+    {
+        title: 'SQL + Safety',
+        hint: 'Generates SQL, validates syntax/tables, and checks DLP rules.',
+        nodes: ['sql_generator', 'sqlglot_validate', 'dlp_check'],
+    },
+    {
+        title: 'Execution + Eval',
+        hint: 'Runs SQL, decides whether eval is needed, and checks intent.',
+        nodes: ['execute_query', 'trivial_result_check', 'fused_eval_analytics', 'feedback_classifier'],
+    },
+    {
+        title: 'Output',
+        hint: 'Formats the answer, saves memory, and writes observability logs.',
+        nodes: ['response_formatter', 'save_to_memory', 'observability_log'],
+    },
+];
+
+const _TRACE_FLOW_EDGES = [
+    ['memory_shrink_check', 'memory_summarizer', 'over budget'],
+    ['memory_shrink_check', 'fused_router', 'within budget'],
+    ['memory_summarizer', 'fused_router', 'then route'],
+    ['fused_router', 'memory_answer_generator', 'from memory'],
+    ['fused_router', 'catalog_lookup', 'needs query'],
+    ['fused_router', 'response_formatter', 'blocked / greeting'],
+    ['memory_answer_generator', 'catalog_lookup', 'needs fresh data'],
+    ['memory_answer_generator', 'response_formatter', 'answer ready'],
+    ['catalog_lookup', 'prompt_builder', 'catalog bundle'],
+    ['prompt_builder', 'sql_generator', 'system prompt'],
+    ['sql_generator', 'sqlglot_validate', 'SQL'],
+    ['sql_generator', 'response_formatter', 'clarification'],
+    ['sqlglot_validate', 'dlp_check', 'valid'],
+    ['sqlglot_validate', 'feedback_classifier', 'syntax / table issue'],
+    ['dlp_check', 'execute_query', 'safe'],
+    ['dlp_check', 'response_formatter', 'blocked'],
+    ['execute_query', 'trivial_result_check', 'rows'],
+    ['execute_query', 'feedback_classifier', 'exec error'],
+    ['trivial_result_check', 'fused_eval_analytics', 'needs eval'],
+    ['trivial_result_check', 'response_formatter', 'trivial / eval off'],
+    ['fused_eval_analytics', 'response_formatter', 'answers intent'],
+    ['fused_eval_analytics', 'feedback_classifier', 'wrong result'],
+    ['feedback_classifier', 'sql_generator', 'retry SQL'],
+    ['feedback_classifier', 'catalog_lookup', 'missing table'],
+    ['feedback_classifier', 'response_formatter', 'exhausted'],
+    ['response_formatter', 'save_to_memory', 'final payload'],
+    ['save_to_memory', 'observability_log', 'persisted'],
+];
+
+function _traceStatsByNode(events) {
+    const stats = {};
+    events.forEach((ev, idx) => {
+        const node = ev.node || '?';
+        const s = stats[node] || {
+            count: 0,
+            totalMs: 0,
+            firstIdx: idx,
+            lastIdx: idx,
+            events: [],
+        };
+        s.count += 1;
+        s.totalMs += ev.elapsed_ms || 0;
+        s.lastIdx = idx;
+        s.events.push(ev);
+        stats[node] = s;
+    });
+    return stats;
+}
+
+function _traceRanEdges(events) {
+    const edges = new Set();
+    for (let i = 0; i < events.length - 1; i += 1) {
+        const from = events[i]?.node;
+        const to = events[i + 1]?.node;
+        if (from && to) edges.add(`${from}->${to}`);
+    }
+    return edges;
+}
+
+function _buildTraceFlowHtml(events, metrics) {
+    const stats = _traceStatsByNode(events);
+    const ranEdges = _traceRanEdges(events);
+    const ranNodes = new Set(Object.keys(stats));
+    const repeated = Object.entries(stats).filter(([, s]) => s.count > 1);
+    const slowestEntry = Object.entries(stats).reduce((best, entry) =>
+        (!best || entry[1].totalMs > best[1].totalMs) ? entry : best, null);
+    const slowestNode = slowestEntry && slowestEntry[1].totalMs > 0 ? slowestEntry[0] : null;
+    const route = metrics.route || '—';
+
+    let html = '<div class="trace-flow">';
+    html += '<div class="trace-flow-note">'
+        + '<strong>Logical flow.</strong> Columns show possible branches side-by-side; highlighted cards are the nodes that ran for this query. '
+        + 'This view does not claim runtime parallelism.'
+        + ` <span>route: <b>${escapeHtml(String(route))}</b></span>`
+        + '</div>';
+    html += '<div class="trace-flow-legend" aria-label="Flow color legend">'
+        + '<span><i class="trace-flow-key trace-flow-key-llm"></i>LLM call</span>'
+        + '<span><i class="trace-flow-key trace-flow-key-db"></i>DB / tool call</span>'
+        + '<span><i class="trace-flow-key trace-flow-key-logic"></i>logic step</span>'
+        + '<span><i class="trace-flow-key trace-flow-key-skipped"></i>not run</span>'
+        + '<span><i class="trace-flow-key trace-flow-key-slowest"></i>slowest step</span>'
+        + '</div>';
+
+    html += '<div class="trace-flow-grid">';
+    _TRACE_FLOW_COLUMNS.forEach(col => {
+        html += `<section class="trace-flow-col" title="${escapeHtml(col.hint)}">`;
+        html += `<div class="trace-flow-col-head"><span>${escapeHtml(col.title)}</span></div>`;
+        col.nodes.forEach(node => {
+            const s = stats[node];
+            const ran = !!s;
+            const last = s ? s.events[s.events.length - 1] : null;
+            const lv = last ? _traceEventLevel(last) : 'info';
+            const type = last?.type || _traceNodeType(node);
+            const detail = last?.detail || (ran ? 'executed' : 'not run in this query');
+            const title = `${node} — ${_NODE_INFO[node] || 'Pipeline step.'}`;
+            const isSlowest = node === slowestNode;
+            html += `<div class="trace-flow-node${ran ? ' is-run' : ' is-skipped'}${isSlowest ? ' is-slowest' : ''} trace-flow-${escapeHtml(type)}" title="${escapeHtml(title)}">`;
+            html += `  <div class="trace-flow-node-main">`;
+            html += `    <span class="trace-lv-dot trace-lv-${lv}" aria-hidden="true"></span>`;
+            html += `    <span class="trace-flow-node-name">${escapeHtml(_nodeLabel(node))}</span>`;
+            html += `  </div>`;
+            html += `  <div class="trace-flow-node-meta">`;
+            html += ran
+                ? `<span>${_fmtMs(s.totalMs)}</span>${isSlowest ? '<span class="trace-flow-slowest">slowest</span>' : ''}${s.count > 1 ? `<span class="trace-flow-repeat">x${s.count}</span>` : ''}`
+                : '<span>not run</span>';
+            html += `  </div>`;
+            html += `  <div class="trace-flow-node-detail">${escapeHtml(detail)}</div>`;
+            html += '</div>';
+        });
+        html += '</section>';
+    });
+    html += '</div>';
+
+    html += '<div class="trace-flow-edges">';
+    html += '<div class="trace-flow-edge-title">Transitions</div>';
+    html += '<p class="trace-flow-edge-help">All possible graph transitions are listed here. Highlighted rows are the transitions this query actually took.</p>';
+    _TRACE_FLOW_EDGES.forEach(([from, to, label]) => {
+        const ran = ranEdges.has(`${from}->${to}`);
+        const fromRan = ranNodes.has(from);
+        const toRan = ranNodes.has(to);
+        html += `<div class="trace-flow-edge${ran ? ' is-run' : fromRan || toRan ? ' is-near' : ''}">`;
+        html += `<code>${escapeHtml(_nodeLabel(from))}</code>`;
+        html += `<span>${escapeHtml(label)}</span>`;
+        html += `<code>${escapeHtml(_nodeLabel(to))}</code>`;
+        html += '</div>';
+    });
+    html += '</div>';
+
+    if (repeated.length) {
+        html += '<div class="trace-flow-retries"><strong>Repeated nodes:</strong> '
+            + repeated.map(([node, s]) => `<code>${escapeHtml(_nodeLabel(node))}</code> x${s.count}`).join(' · ')
+            + '</div>';
+    }
+
+    html += '</div>';
+    return html;
+}
+
+function _traceNodeType(node) {
+    if (['memory_summarizer', 'fused_router', 'memory_answer_generator', 'sql_generator', 'fused_eval_analytics'].includes(node)) return 'llm';
+    if (['catalog_lookup', 'execute_query', 'save_to_memory'].includes(node)) return 'db';
+    return 'logic';
+}
+
 /**
  * Render the trace event timeline into #trace-panel,
  * respecting the current filter + search query.
@@ -2130,6 +2329,12 @@ function _renderTraceEvents() {
 
     // Stacked breakdown bar (where the time went).
     html += _buildTimingBar(wallMs, graphMs, llmMs, dbMs);
+
+    if (_traceViewMode === 'flow') {
+        html += _buildTraceFlowHtml(events, metrics);
+        panel.innerHTML = html;
+        return;
+    }
 
     if (_traceLegendOpen) html += _buildTraceLegendHtml();
 
@@ -4684,13 +4889,39 @@ document.addEventListener('DOMContentLoaded', () => {
         const btn     = document.getElementById('dev-panel-btn');
         const closeBtn = document.getElementById('dev-drawer-close');
         const badge   = document.getElementById('dev-panel-badge');
+        const resizeHandle = document.getElementById('dev-drawer-resize');
         if (!drawer || !overlay || !btn) return;
 
         let isOpen = false;
+        const widthKey = 'jeen_dev_drawer_width';
+
+        function _clampDrawerWidth(width) {
+            const viewport = window.innerWidth || 1024;
+            const min = Math.min(420, Math.max(320, viewport - 24));
+            const max = Math.max(min, Math.min(Math.round(viewport * 0.92), 1400));
+            return Math.min(Math.max(Math.round(width), min), max);
+        }
+
+        function _setDrawerWidth(width, persist = true) {
+            const clamped = _clampDrawerWidth(width);
+            drawer.style.setProperty('--dev-drawer-width', `${clamped}px`);
+            if (persist) {
+                try { localStorage.setItem(widthKey, String(clamped)); } catch (_) {}
+            }
+        }
+
+        function _applySavedDrawerWidth() {
+            let stored = null;
+            try { stored = Number(localStorage.getItem(widthKey)); } catch (_) {}
+            if (Number.isFinite(stored) && stored > 0) _setDrawerWidth(stored, false);
+        }
+
+        _applySavedDrawerWidth();
 
         function open() {
             if (isOpen) return;
             isOpen = true;
+            _applySavedDrawerWidth();
             drawer.classList.add('open');
             overlay.classList.add('open');
             btn.classList.add('is-active');
@@ -4733,6 +4964,52 @@ document.addEventListener('DOMContentLoaded', () => {
         document.addEventListener('keydown', (e) => {
             if (isOpen && e.key === 'Escape') { e.preventDefault(); close(); }
         });
+        window.addEventListener('resize', () => {
+            const current = drawer.getBoundingClientRect().width;
+            if (current > 0) _setDrawerWidth(current, false);
+        });
+
+        if (resizeHandle) {
+            const startResize = (e) => {
+                if (!isOpen) return;
+                if (e.type === 'mousedown' && e.button !== 0) return;
+                e.preventDefault();
+                if (e.pointerId !== undefined) resizeHandle.setPointerCapture?.(e.pointerId);
+                drawer.classList.add('is-resizing');
+                document.body.classList.add('dev-drawer-resizing');
+
+                const onMove = (moveEvent) => {
+                    _setDrawerWidth((window.innerWidth || 0) - moveEvent.clientX);
+                };
+                const onUp = (upEvent) => {
+                    if (upEvent.pointerId !== undefined) resizeHandle.releasePointerCapture?.(upEvent.pointerId);
+                    drawer.classList.remove('is-resizing');
+                    document.body.classList.remove('dev-drawer-resizing');
+                    window.removeEventListener('pointermove', onMove);
+                    window.removeEventListener('pointerup', onUp);
+                    window.removeEventListener('pointercancel', onUp);
+                    window.removeEventListener('mousemove', onMove);
+                    window.removeEventListener('mouseup', onUp);
+                };
+
+                if (e.type === 'pointerdown') {
+                    window.addEventListener('pointermove', onMove);
+                    window.addEventListener('pointerup', onUp);
+                    window.addEventListener('pointercancel', onUp);
+                } else {
+                    window.addEventListener('mousemove', onMove);
+                    window.addEventListener('mouseup', onUp);
+                }
+            };
+
+            resizeHandle.addEventListener('pointerdown', startResize);
+            resizeHandle.addEventListener('mousedown', startResize);
+
+            resizeHandle.addEventListener('dblclick', () => {
+                drawer.style.removeProperty('--dev-drawer-width');
+                try { localStorage.removeItem(widthKey); } catch (_) {}
+            });
+        }
 
         // Expose so initCodeMirror (called after SQL loads) can show the badge.
         window._devDrawerShowBadge = function () {
