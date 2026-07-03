@@ -339,6 +339,7 @@ After the graph completes, `JeenInsightsAgent` attaches the full **execution tra
 ## 8. Optional follow-up flows (same session)
 
 These run **after** the main query returns rows. They use separate API endpoints and (for insights) a small LangGraph subgraph.
+The Developer panel shows them as **Post-query work** so their latency is visible without mixing it into the main `/api/ask` LangGraph trace.
 
 ```mermaid
 flowchart TB
@@ -348,7 +349,7 @@ flowchart TB
 
     subgraph Insights["AI Insights (background)"]
         IM["InsightsManager"]
-        GE["POST /api/generate-insights"]
+        GE["POST /api/generate-insights/stream"]
         EVAL["insights_eval_graph\n(single eval node)"]
         DBI["insights_query_insights table"]
     end
@@ -360,6 +361,10 @@ flowchart TB
         ECH["Apache ECharts render"]
     end
 
+    subgraph DevPanel["Developer panel"]
+        PQ["Post-query work cards\nTTFT · LLM · tokens · render status"]
+    end
+
     subgraph Autocomplete["Ask box helpers (separate)"]
         AC1["@ tables · # columns · / templates"]
         AC2["GET /api/knowledge-* · suggest-questions"]
@@ -368,12 +373,14 @@ flowchart TB
     RES --> IM --> GE --> EVAL --> DBI
     RES --> CM --> GC --> ECH
     CM --> EC --> ECH
+    GE --> PQ
+    GC --> PQ
 ```
 
 | Feature | Endpoint | LLM / graph |
 |---------|----------|-------------|
-| Insights summary | `/api/generate-insights` | `build_insights_eval_graph` → `fused_eval_analytics` |
-| Chart generation | `/api/generate-chart` | Direct LLM → ECharts JSON |
+| Insights summary | `/api/generate-insights/stream` | `build_insights_eval_graph` → `fused_eval_analytics`; streamed TTFT, LLM time, and tokens appear in Developer panel post-query work |
+| Chart generation | `/api/generate-chart` | LLM chart-spec decision + server-built ECharts option; request/render/cache status appears in Developer panel post-query work |
 | Chart refinement | `/api/edit-chart` | `chart_editor.md` + client `chartOperators` |
 | Autocomplete `/` | `/api/knowledge-questions` | No LLM (DB `knowledge_pairs`) |
 | Autocomplete tier 3 | `/api/suggest-questions` | `autocomplete_suggestions.md` |

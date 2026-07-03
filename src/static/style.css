@@ -4454,16 +4454,13 @@ a.sp-nav-item {
   border-color: color-mix(in oklch, var(--color-accent) 45%, var(--color-border));
 }
 .trace-flow-edges {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 6px;
   padding: 10px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface-2);
+  overflow-x: auto;
 }
 .trace-flow-edge-title {
-  grid-column: 1 / -1;
   color: var(--color-muted);
   font-size: 11px;
   font-weight: var(--weight-bold);
@@ -4471,44 +4468,76 @@ a.sp-nav-item {
   letter-spacing: 0.04em;
 }
 .trace-flow-edge-help {
-  grid-column: 1 / -1;
-  margin: -2px 0 4px;
+  margin: 3px 0 8px;
   color: var(--color-faint);
   font-size: var(--text-xs);
   line-height: 1.45;
 }
-.trace-flow-edge {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  gap: 6px;
-  align-items: center;
-  padding: 5px 6px;
-  border: 1px solid var(--color-border-2);
-  border-radius: var(--radius-sm);
-  color: var(--color-faint);
-  font-size: 10px;
-  opacity: 0.42;
+.trace-transition-svg {
+  display: block;
+  min-width: 900px;
+  width: 100%;
+  height: auto;
 }
-.trace-flow-edge.is-near {
-  opacity: 0.68;
+.trace-transition-edge path {
+  fill: none;
+  stroke: var(--color-faint);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  opacity: 0.32;
 }
-.trace-flow-edge.is-run {
-  opacity: 1;
-  color: var(--color-text);
-  border-color: color-mix(in oklch, var(--color-accent) 45%, var(--color-border));
-  background: color-mix(in oklch, var(--color-accent) 7%, transparent);
-}
-.trace-flow-edge code {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.trace-transition-edge text {
+  fill: var(--color-faint);
   font-family: var(--font-mono);
   font-size: 10px;
+  paint-order: stroke;
+  stroke: var(--color-surface-2);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+  opacity: 0.46;
 }
-.trace-flow-edge span {
-  color: var(--color-muted);
-  white-space: nowrap;
+.trace-transition-edge.is-near path {
+  stroke: var(--color-muted);
+  opacity: 0.58;
+}
+.trace-transition-edge.is-near text {
+  fill: var(--color-muted);
+  opacity: 0.7;
+}
+.trace-transition-edge.is-run path {
+  stroke: var(--color-accent);
+  stroke-width: 2.2;
+  opacity: 1;
+}
+.trace-transition-edge.is-run text {
+  fill: var(--color-text);
+  font-weight: var(--weight-semibold);
+  opacity: 1;
+}
+.trace-transition-edge.is-back path {
+  stroke-dasharray: 4 3;
+}
+.trace-transition-node rect {
+  fill: var(--color-surface);
+  stroke: var(--color-border);
+  stroke-width: 1;
+}
+.trace-transition-node text {
+  fill: var(--color-muted);
+  font-size: 10px;
+  font-weight: var(--weight-semibold);
+  pointer-events: none;
+}
+.trace-transition-node.is-run rect {
+  fill: color-mix(in oklch, var(--color-accent) 8%, var(--color-surface));
+  stroke: color-mix(in oklch, var(--color-accent) 55%, var(--color-border));
+  stroke-width: 1.4;
+}
+.trace-transition-node.is-run text {
+  fill: var(--color-text);
+}
+.trace-transition-node.is-skipped {
+  opacity: 0.55;
 }
 .trace-flow-retries {
   padding: 8px 10px;
@@ -4525,6 +4554,118 @@ a.sp-nav-item {
   color: var(--color-text);
 }
 
+.post-query-work {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.post-query-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+.post-query-head strong {
+  display: block;
+  color: var(--color-text);
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+.post-query-head span {
+  display: block;
+}
+.post-query-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.post-query-card {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+}
+.post-query-card-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 7px;
+}
+.post-query-title {
+  color: var(--color-text);
+  font-size: 12px;
+  font-weight: var(--weight-semibold);
+}
+.post-query-kind {
+  margin-top: 1px;
+  color: var(--color-faint);
+  font-size: 10px;
+}
+.post-query-status {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  color: var(--color-muted);
+  background: var(--color-surface);
+  font-size: 10px;
+  font-weight: var(--weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.post-query-running {
+  border-color: color-mix(in oklch, var(--color-accent) 45%, var(--color-border));
+  background: color-mix(in oklch, var(--color-accent) 7%, var(--color-surface-2));
+}
+.post-query-running .post-query-status {
+  color: var(--color-accent);
+  border-color: color-mix(in oklch, var(--color-accent) 55%, transparent);
+}
+.post-query-done {
+  border-color: oklch(50% 0.18 145 / 0.55);
+}
+.post-query-done .post-query-status {
+  color: var(--color-success);
+  border-color: color-mix(in oklch, var(--color-success) 55%, transparent);
+}
+.post-query-error {
+  border-color: color-mix(in oklch, var(--color-error) 65%, var(--color-border));
+  background: var(--color-error-bg);
+}
+.post-query-error .post-query-status {
+  color: var(--color-error);
+  border-color: color-mix(in oklch, var(--color-error) 60%, transparent);
+}
+.post-query-skipped {
+  opacity: 0.72;
+}
+.post-query-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 7px;
+}
+.post-query-chips span {
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-3);
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.post-query-detail {
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 @media (max-width: 1180px) {
   .trace-flow-grid {
     grid-template-columns: repeat(3, minmax(150px, 1fr));
@@ -4534,11 +4675,8 @@ a.sp-nav-item {
   .trace-flow-grid {
     grid-template-columns: 1fr;
   }
-  .trace-flow-edge {
+  .post-query-grid {
     grid-template-columns: 1fr;
-  }
-  .trace-flow-edge span::before {
-    content: "then: ";
   }
 }
 
