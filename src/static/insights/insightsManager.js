@@ -205,6 +205,10 @@ class InsightsManager {
         }
     }
 
+    getSaveState() {
+        return this.state.currentInsights || null;
+    }
+
     // ── SVG constants ──────────────────────────────────────────────────────
     static _SVG_SPARK = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/></svg>`;
     static _SVG_CHECK = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>`;
@@ -551,7 +555,7 @@ class InsightsManager {
             console.warn('[InsightsManager] Insights prompt content element not found');
             return;
         }
-        
+
         if (!insights.prompt) {
             promptContent.innerHTML = '<p style="color: #999;">No prompt available</p>';
             return;
@@ -561,46 +565,46 @@ class InsightsManager {
         if (typeof window._devDrawerShowBadge === 'function') {
             window._devDrawerShowBadge();
         }
-        
+
         // Parse the prompt into sections
         const sections = this.parseInsightsPrompt(insights.prompt);
-        
+
         let html = '<div class="structured-prompt">';
-        
+
         // Section 1: Main Instructions (Rules and Thresholds)
         if (sections.mainInstructions) {
-            html += this.createPromptSection('insights-main', 'Instructions & Rules', 
+            html += this.createPromptSection('insights-main', 'Instructions & Rules',
                 `<pre class="prompt-text">${this.escapeHtml(sections.mainInstructions)}</pre>`, true);
         }
-        
+
         // Section 2: Dataset Summary
         if (sections.datasetSummary) {
-            html += this.createPromptSection('insights-dataset', 'Dataset Summary', 
+            html += this.createPromptSection('insights-dataset', 'Dataset Summary',
                 `<pre class="prompt-text">${this.escapeHtml(sections.datasetSummary)}</pre>`, false);
         }
-        
+
         // Section 3: Column Statistics
         if (sections.columnStats) {
-            html += this.createPromptSection('insights-stats', 'Column Statistics', 
+            html += this.createPromptSection('insights-stats', 'Column Statistics',
                 `<pre class="prompt-text">${this.escapeHtml(sections.columnStats)}</pre>`, false);
         }
-        
+
         // Section 4: Output Format
         if (sections.outputFormat) {
-            html += this.createPromptSection('insights-format', 'Output Format', 
+            html += this.createPromptSection('insights-format', 'Output Format',
                 `<pre class="prompt-text">${this.escapeHtml(sections.outputFormat)}</pre>`, false);
         }
-        
+
         // Section 5: Full Prompt
-        html += this.createPromptSection('insights-full', 'Full Prompt Text', 
+        html += this.createPromptSection('insights-full', 'Full Prompt Text',
             `<pre class="prompt-text">${this.escapeHtml(insights.prompt)}</pre>`, false);
-        
+
         html += '</div>';
         promptContent.innerHTML = html;
-        
+
         console.log('[InsightsManager] Insights prompt displayed in structured format');
     }
-    
+
     /**
      * Parse insights prompt into sections
      */
@@ -611,12 +615,12 @@ class InsightsManager {
             columnStats: '',
             outputFormat: ''
         };
-        
+
         // Split by section headers
         const datasetSummaryIndex = prompt.indexOf('## DATASET SUMMARY:');
         const columnStatsIndex = prompt.indexOf('## COLUMN STATISTICS:');
         const outputFormatIndex = prompt.indexOf('## OUTPUT FORMAT');
-        
+
         // Extract main instructions (everything before DATASET SUMMARY)
         if (datasetSummaryIndex !== -1) {
             sections.mainInstructions = prompt.substring(0, datasetSummaryIndex).trim();
@@ -625,29 +629,29 @@ class InsightsManager {
             sections.mainInstructions = prompt;
             return sections;
         }
-        
+
         // Extract dataset summary (between DATASET SUMMARY and COLUMN STATISTICS)
         if (datasetSummaryIndex !== -1 && columnStatsIndex !== -1) {
             sections.datasetSummary = prompt.substring(datasetSummaryIndex + 19, columnStatsIndex).trim();
         } else if (datasetSummaryIndex !== -1) {
             sections.datasetSummary = prompt.substring(datasetSummaryIndex + 19).trim();
         }
-        
+
         // Extract column statistics (between COLUMN STATISTICS and OUTPUT FORMAT)
         if (columnStatsIndex !== -1 && outputFormatIndex !== -1) {
             sections.columnStats = prompt.substring(columnStatsIndex + 22, outputFormatIndex).trim();
         } else if (columnStatsIndex !== -1) {
             sections.columnStats = prompt.substring(columnStatsIndex + 22).trim();
         }
-        
+
         // Extract output format (from OUTPUT FORMAT to end)
         if (outputFormatIndex !== -1) {
             sections.outputFormat = prompt.substring(outputFormatIndex + 16).trim();
         }
-        
+
         return sections;
     }
-    
+
     /**
      * Create a collapsible prompt section
      */
@@ -655,7 +659,7 @@ class InsightsManager {
         const expandedClass = expanded ? 'expanded' : '';
         const displayStyle = expanded ? 'block' : 'none';
         const arrow = expanded ? '▼' : '▶';
-        
+
         return `
             <div class="prompt-section ${expandedClass}">
                 <div class="prompt-section-header" onclick="toggleInsightsPromptSection('${id}')">
@@ -668,14 +672,14 @@ class InsightsManager {
             </div>
         `;
     }
-    
+
     /**
      * Toggle a prompt section
      */
     togglePromptSection(sectionId) {
         const content = document.getElementById(`content-${sectionId}`);
         const arrow = document.getElementById(`arrow-${sectionId}`);
-        
+
         if (content && arrow) {
             if (content.style.display === 'none') {
                 content.style.display = 'block';
@@ -686,7 +690,7 @@ class InsightsManager {
             }
         }
     }
-    
+
     /**
      * Escape HTML to prevent XSS
      */
@@ -704,7 +708,7 @@ window.InsightsManager = InsightsManager;
 window.toggleInsightsPromptSection = function(sectionId) {
     const content = document.getElementById(`content-${sectionId}`);
     const arrow = document.getElementById(`arrow-${sectionId}`);
-    
+
     if (content && arrow) {
         if (content.style.display === 'none') {
             content.style.display = 'block';

@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Tuple
 
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
+from src.connectors.dialects import dialect_rules_for
 from src.metadata import MetadataLoader
 
 logger = logging.getLogger(__name__)
@@ -116,13 +117,23 @@ def make_prompt_builder(prompt_loader: PromptLoader):
         bundle = state.get("metadata_bundle") or {}
         display_name = state.get("connection_display_name", "")
         db_type = state.get("database_type", "")
+        source_key = state.get("source_key", "")
+        catalog = state.get("connection_catalog") or ""
+        schema = state.get("connection_schema") or ""
+        database = state.get("connection_database") or ""
+        dialect_rules = dialect_rules_for(db_type)
         question = state.get("question", "")
         history = state.get("conversation_history") or []
 
         system_prompt = prompt_loader.render(
             "jeen_insights_system",
             connection_display_name=display_name,
+            source_key=source_key,
             database_type=db_type,
+            connection_database=database or "not specified",
+            connection_catalog=catalog or "not specified",
+            connection_schema=schema or "not specified",
+            dialect_rules=dialect_rules,
             tables=bundle.get("tables", ""),
             columns=bundle.get("columns", ""),
             relationships=bundle.get("relationships", ""),
@@ -139,6 +150,7 @@ def make_prompt_builder(prompt_loader: PromptLoader):
             "sources": bundle.get("sources", ""),
             "knowledge_pairs": bundle.get("knowledge_pairs", ""),
             "business_terms": bundle.get("business_terms", ""),
+            "dialect_rules": dialect_rules,
             "conversation_history": [
                 {
                     "question": qa.get("natural_language_query"),
@@ -153,6 +165,9 @@ def make_prompt_builder(prompt_loader: PromptLoader):
                 "source_key": state.get("source_key"),
                 "display_name": display_name,
                 "database_type": db_type,
+                "database": database,
+                "catalog": catalog,
+                "schema": schema,
             },
         }
 
@@ -160,6 +175,7 @@ def make_prompt_builder(prompt_loader: PromptLoader):
         return {
             "system_prompt": system_prompt,
             "structured_prompt": structured_prompt,
+            "dialect_rules": dialect_rules,
         }
 
     return prompt_builder
@@ -171,14 +187,28 @@ def make_prompt_builder(prompt_loader: PromptLoader):
 def _extract_table_names(tables_text: str) -> List[str]:
     """Parse lower-cased table names from the metadata ``tables`` string.
 
-    Lines look like ``- TableName`` or ``- TableName - description``.
+    DB-backed metadata lines look like ``- TableName`` or
+    ``- TableName - description``. MCP catalog prompts can use
+    ``TableName: description``. Keep only the table token so validation doesn't
+    mistake descriptions for table-name suffixes.
     """
     names: List[str] = []
     for line in tables_text.splitlines():
         stripped = line.lstrip("- ").strip()
         if not stripped:
             continue
-        table_name = stripped.split(" - ")[0].strip()
+        lowered = stripped.lower().rstrip(":")
+        if lowered in {
+            "tables",
+            "tables available for querying",
+            "available tables",
+        }:
+            continue
+        table_name = stripped
+        for separator in (" - ", " — ", " | ", ":"):
+            if separator in table_name:
+                table_name = table_name.split(separator, 1)[0].strip()
+                break
         if table_name:
             names.append(table_name.lower())
     return names

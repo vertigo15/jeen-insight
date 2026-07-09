@@ -188,3 +188,74 @@ def test_secondary_y_dropped_when_not_in_y():
         "y": ["revenue"], "secondary_y": ["year"],
     })
     assert spec["secondary_y"] == []
+
+
+# ── maps ─────────────────────────────────────────────────────────────────────
+
+
+def test_country_map_spec_passes_through():
+    spec = _validate_chart_spec(
+        {
+            "chart_type": "map",
+            "map_mode": "choropleth",
+            "map_name": "world",
+            "location": "country",
+            "value": "customer_count",
+        },
+        column_names=["country", "customer_count"],
+        numeric_cols=["customer_count"],
+        date_cols=[],
+    )
+    assert spec["chart_type"] == "map"
+    assert spec["map_mode"] == "choropleth"
+    assert spec["map_name"] == "world"
+    assert spec["location"] == "country"
+    assert spec["y"] == ["customer_count"]
+
+
+def test_map_style_fields_are_validated():
+    spec = _validate_chart_spec(
+        {
+            "chart_type": "map",
+            "map_mode": "choropleth",
+            "map_name": "world",
+            "location": "country",
+            "value": "customer_count",
+            "map_quality": "detailed",
+            "map_palette": "green",
+            "show_labels": True,
+            "show_unmatched": False,
+            "map_focus": "world",
+        },
+        column_names=["country", "customer_count"],
+        numeric_cols=["customer_count"],
+        date_cols=[],
+    )
+    assert spec["map_name"] == "world_detailed"
+    assert spec["map_quality"] == "detailed"
+    assert spec["map_palette"] == "green"
+    assert spec["show_labels"] is True
+    assert spec["show_unmatched"] is False
+    assert spec["map_focus"] == "world"
+
+
+def test_israel_city_map_infers_point_columns():
+    spec = _validate_chart_spec(
+        {
+            "chart_type": "map",
+            "map_mode": "points",
+            "map_name": "israel_districts",
+            "location": "city",
+            "value": "sales",
+        },
+        column_names=["city", "latitude", "longitude", "sales"],
+        numeric_cols=["latitude", "longitude", "sales"],
+        date_cols=[],
+    )
+    assert spec["chart_type"] == "map"
+    assert spec["map_mode"] == "points"
+    assert spec["latitude"] == "latitude"
+    assert spec["longitude"] == "longitude"
+    assert spec["map_name"] == "israel_districts"
+
+

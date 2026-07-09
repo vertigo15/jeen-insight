@@ -11,7 +11,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 
 from src.api.chart_builder import build_chart_option, profile_dataset
-from src.api.dependencies import resolve_agent
+from src.api.dependencies import get_history_service, require_user_id, resolve_agent
 from src.api.llm_json import (
     extract_chart_type,
     extract_json_object,
@@ -35,6 +35,16 @@ from src.api.result_cache import result_cache
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["charts"])
+
+
+async def _verify_query_owner(*, query_id: Optional[str], user_id: str, connection: str) -> None:
+    if not query_id:
+        return
+    history = get_history_service()
+    if not await history.query_belongs_to_user(
+        query_id=query_id, user_id=user_id, source_key=connection
+    ):
+        raise HTTPException(status_code=404, detail="Query not found for this user")
 
 
 # ----------------------------------------------------------------------
@@ -86,11 +96,16 @@ def _format_recent_messages(messages: Optional[List[ChatMessage]]) -> str:
 # ----------------------------------------------------------------------
 _ALLOWED_CHART_TYPES = {
     "bar", "line", "area", "pie", "donut", "scatter", "horizontal_bar",
-    "stacked_bar", "stacked_area", "combo", "heatmap", "gauge",
+    "stacked_bar", "stacked_area", "combo", "heatmap", "gauge", "map",
 }
 _ALLOWED_AGGREGATES = {"sum", "avg", "count", "min", "max", "none"}
 _ALLOWED_SORTS = {"asc", "desc", "none"}
 _ALLOWED_FORMATS = {"number", "currency", "percent", "none"}
+_ALLOWED_MAP_MODES = {"choropleth", "points"}
+_ALLOWED_MAP_NAMES = {"world", "world_detailed", "israel_districts"}
+_ALLOWED_MAP_QUALITIES = {"standard", "detailed"}
+_ALLOWED_MAP_PALETTES = {"blue", "green", "purple", "orange"}
+_ALLOWED_MAP_FOCUS = {"world", "israel", "auto"}
 
 
 def _profile_blob(profile: dict) -> str:
@@ -131,7 +146,7 @@ _GENERATE_SYSTEM_PROMPT = (
     "all number formatting. Decide the encoding; the app builds it.\n\n"
     "Return ONLY valid JSON (no markdown fences, no comments, no prose). Schema:\n"
     "{\n"
-    '  "chart_type": "bar|line|area|pie|donut|scatter|horizontal_bar|stacked_bar|stacked_area|combo|heatmap|gauge",\n'
+    '  "chart_type": "bar|line|area|pie|donut|scatter|horizontal_bar|stacked_bar|stacked_area|combo|heatmap|gauge|map",\n'
     '  "x": "<column for the category or time axis (pie/donut label dimension)>",\n'
     '  "x_parts": ["<col>", "<col>"]  // OPTIONAL: 2+ columns to join into one ordered axis label, e.g. ["year","month"]. Omit or null otherwise.,\n'
     '  "y": ["<one or more numeric measure columns>"],\n'
@@ -145,6 +160,17 @@ _GENERATE_SYSTEM_PROMPT = (
     '  "y_label": "<axis label or null>",\n'
     '  "value_format": "number|currency|percent|none",\n'
     '  "currency_symbol": "<currency symbol like $, €, £, ₪ — ONLY if the currency is known; else null>",\n'
+    '  "map_mode": "choropleth|points|null",\n'
+    '  "map_name": "world|world_detailed|israel_districts|null",\n'
+    '  "location": "<country/region/district/city column for map charts, or null>",\n'
+    '  "latitude": "<latitude column for point maps, or null>",\n'
+    '  "longitude": "<longitude/lng column for point maps, or null>",\n'
+    '  "value": "<numeric measure column for map charts, or null>",\n'
+    '  "map_quality": "standard|detailed|null",\n'
+    '  "map_palette": "blue|green|purple|orange|null",\n'
+    '  "show_labels": <true|false|null>,\n'
+    '  "show_unmatched": <true|false|null>,\n'
+    '  "map_focus": "world|israel|auto|null",\n'
     '  "stacked": <true|false>,\n'
     '  "smooth": <true|false>,\n'
     '  "reason": "<one short sentence>"\n'
@@ -161,6 +187,20 @@ _GENERATE_SYSTEM_PROMPT = (
     "  (set series and stacked=true).\n"
     "- Correlation between two numeric measures → scatter (x and y both numeric).\n"
     "- Single headline KPI → gauge. Two categorical dims + one measure → heatmap.\n\n"
+    "MAPS / GEOGRAPHY:\n"
+    "- If the dataset has a country/region/district/location column plus a numeric\n"
+    "  measure, you may choose chart_type \"map\" with map_mode \"choropleth\".\n"
+    "- If the dataset has latitude and longitude columns plus a numeric measure,\n"
+    "  choose chart_type \"map\" with map_mode \"points\".\n"
+    "- For Israeli district-level data, use map_name \"israel_districts\" and\n"
+    "  map_mode \"choropleth\". For Israeli city data with lat/lng or known city\n"
+    "  names, use map_name \"israel_districts\" and map_mode \"points\".\n"
+    "- For country-level data, use map_name \"world\".\n"
+    "- Use map_quality \"detailed\" only when the user asks for a higher quality\n"
+    "  map; otherwise use \"standard\" or null. Use map_palette only for style\n"
+    "  requests. Use show_labels=true for small district maps or top city points.\n"
+    "- Never invent coordinates. If city names have no lat/lng and are not clearly\n"
+    "  Israeli city names, prefer horizontal_bar instead of a map.\n\n"
     "WIDE / PERIOD-COMPARISON DATA (e.g. revenue_2006 vs revenue_2007):\n"
     "- When the SAME metric is split across columns by period/group (revenue_2006,\n"
     "  revenue_2007; sales_q1..q4; this_year/last_year), put ALL those columns in y\n"
@@ -257,10 +297,20 @@ _IDENTIFIER_RE = re.compile(
     r"(^|_)(id|number|no|num|year|month|day|quarter|qtr|week|rank|index|idx|seq)s?$",
     re.I,
 )
+_LATITUDE_RE = re.compile(r"(^|_)(lat|latitude)$", re.I)
+_LONGITUDE_RE = re.compile(r"(^|_)(lon|lng|long|longitude)$", re.I)
+_LOCATION_RE = re.compile(
+    r"(country|nation|region|district|state|province|city|town|municipality|locality|location)",
+    re.I,
+)
 
 
 def _looks_like_identifier(name: str) -> bool:
     return bool(_IDENTIFIER_RE.search(name or ""))
+
+
+def _first_name_matching(columns: list[str], pattern: re.Pattern) -> Optional[str]:
+    return next((c for c in columns if pattern.search(c or "")), None)
 
 
 def _validate_chart_spec(
@@ -309,6 +359,83 @@ def _validate_chart_spec(
     if not y:
         y = real_measures[:1] or numeric_cols[:1] or ([c for c in column_names if c != x][:1])
 
+    # Map-specific fields. These live alongside x/y so the rest of the API can
+    # still display selected columns, but map building does not rely on a
+    # cartesian axis interpretation.
+    map_mode = str(spec.get("map_mode", "")).strip().lower()
+    if map_mode not in _ALLOWED_MAP_MODES:
+        map_mode = ""
+
+    map_name = str(spec.get("map_name", "")).strip().lower()
+    if map_name not in _ALLOWED_MAP_NAMES:
+        map_name = ""
+
+    map_quality = str(spec.get("map_quality", "")).strip().lower()
+    if map_quality not in _ALLOWED_MAP_QUALITIES:
+        map_quality = "standard"
+
+    map_palette = str(spec.get("map_palette", "")).strip().lower()
+    if map_palette not in _ALLOWED_MAP_PALETTES:
+        map_palette = "blue"
+
+    map_focus = str(spec.get("map_focus", "")).strip().lower()
+    if map_focus not in _ALLOWED_MAP_FOCUS:
+        map_focus = "auto"
+
+    show_labels = spec.get("show_labels")
+    show_labels = show_labels if isinstance(show_labels, bool) else None
+    show_unmatched = spec.get("show_unmatched")
+    show_unmatched = show_unmatched if isinstance(show_unmatched, bool) else True
+
+    location_cols = _coerce_columns(spec.get("location"), lowered)
+    location = location_cols[0] if location_cols else None
+    latitude_cols = _coerce_columns(spec.get("latitude"), lowered)
+    latitude = latitude_cols[0] if latitude_cols else None
+    longitude_cols = _coerce_columns(spec.get("longitude"), lowered)
+    longitude = longitude_cols[0] if longitude_cols else None
+    value_cols = [c for c in _coerce_columns(spec.get("value"), lowered) if c in numeric_set]
+    value = value_cols[0] if value_cols else (y[0] if y else None)
+
+    if not location:
+        location = _first_name_matching(non_numeric, _LOCATION_RE) or x
+    if not latitude:
+        latitude = _first_name_matching(numeric_cols, _LATITUDE_RE)
+    if not longitude:
+        longitude = _first_name_matching(numeric_cols, _LONGITUDE_RE)
+
+    if forced_type and forced_type not in ("auto", "", None):
+        forced = forced_type.strip().lower()
+        if forced in _ALLOWED_CHART_TYPES:
+            chart_type = forced
+
+    if chart_type == "map":
+        if not map_mode:
+            map_mode = "points" if latitude and longitude else "choropleth"
+        if not map_name:
+            if map_focus == "israel":
+                map_name = "israel_districts"
+            elif map_focus == "world":
+                map_name = "world"
+            elif location and re.search(r"(district|city|town|municipality)", location, re.I):
+                map_name = "israel_districts"
+            else:
+                map_name = "world"
+        if map_quality == "detailed" and map_name == "world":
+            map_name = "world_detailed"
+
+        can_render_points = bool(value and location) or bool(value and latitude and longitude)
+        can_render_choropleth = bool(value and location)
+        if map_mode == "points" and not can_render_points:
+            chart_type = "horizontal_bar"
+            map_mode = ""
+        elif map_mode == "choropleth" and not can_render_choropleth:
+            chart_type = "horizontal_bar"
+            map_mode = ""
+        elif value:
+            y = [value]
+            if location:
+                x = location
+
     # series (group-by) — must differ from x
     series_list = _coerce_columns(spec.get("series"), lowered)
     series = next((c for c in series_list if c != x), None)
@@ -355,15 +482,15 @@ def _validate_chart_spec(
         return v.strip()[:60] if isinstance(v, str) and v.strip() else None
 
     # ── User overrides from the column-mapping panel (MUST win) ──────────
-    if forced_type and forced_type not in ("auto", "", None):
-        forced = forced_type.strip().lower()
-        if forced in _ALLOWED_CHART_TYPES:
-            chart_type = forced
     if x_col and x_col in column_names:
         x = x_col
+        if chart_type == "map":
+            location = x_col
         x_parts = None  # explicit single-column choice overrides a composite axis
     if y_col and y_col in column_names:
         y = [y_col]
+        if chart_type == "map":
+            value = y_col
     if series_col is not None:
         series = series_col if series_col in column_names else None
     if series == x:
@@ -387,6 +514,17 @@ def _validate_chart_spec(
         "y_label": _label("y_label"),
         "value_format": value_format,
         "currency_symbol": currency_symbol,
+        "map_mode": map_mode or None,
+        "map_name": map_name or None,
+        "location": location,
+        "latitude": latitude,
+        "longitude": longitude,
+        "value": value,
+        "map_quality": map_quality,
+        "map_palette": map_palette,
+        "show_labels": show_labels,
+        "show_unmatched": show_unmatched,
+        "map_focus": map_focus,
         "stacked": bool(spec.get("stacked")),
         "smooth": bool(spec.get("smooth")),
         "reason": (spec.get("reason") or "").strip()[:200]
@@ -415,12 +553,16 @@ def _dataset_from_request(request: GenerateChartRequest) -> Optional[dict]:
 # ----------------------------------------------------------------------
 @router.post("/generate-chart", response_model=GenerateChartResponse)
 async def generate_chart(request: GenerateChartRequest):
+    user_id = require_user_id(request.user_id)
+    await _verify_query_owner(
+        query_id=request.query_id, user_id=user_id, connection=request.connection
+    )
     agent = await resolve_agent(request.connection)
     chart_type_param = (request.chart_type or "auto").strip().lower()
 
     # 1. Resolve the dataset: cache first, then client-sent fallback.
     dataset = result_cache.get(
-        user_id=request.user_id,
+        user_id=user_id,
         connection=request.connection,
         query_id=request.query_id,
     )

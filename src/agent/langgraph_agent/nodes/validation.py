@@ -16,6 +16,7 @@ import re
 from typing import Any, Dict, List, Optional, Set
 
 from src.agent.langgraph_agent.state import AgentState
+from src.connectors.dialects import sqlglot_dialect_for
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,12 @@ def make_sqlglot_validate(enabled: bool):
 
         # 1. Parse check
         try:
-            stmts = sqlglot.parse(sql, dialect="postgres", error_level=sqlglot.errors.ErrorLevel.RAISE)
+            dialect = sqlglot_dialect_for(state.get("database_type"))
+            stmts = sqlglot.parse(
+                sql,
+                dialect=dialect,
+                error_level=sqlglot.errors.ErrorLevel.RAISE,
+            )
         except sqlglot.errors.ParseError as exc:
             error_msg = f"SQL syntax error: {exc}"
             logger.info("sqlglot_validate: %s", error_msg)
@@ -197,7 +203,9 @@ def _check_columns(stmt, table_columns: Dict[str, Set[str]], sqlglot) -> Optiona
 
 
 def _resolve_referenced_columns(
-    sql: str, table_columns: Dict[str, Set[str]]
+    sql: str,
+    table_columns: Dict[str, Set[str]],
+    database_type: Optional[str] = None,
 ) -> Optional[Set[str]]:
     """Return the set of column names a query actually references, or None.
 
@@ -212,7 +220,7 @@ def _resolve_referenced_columns(
         return None
 
     try:
-        stmts = sqlglot.parse(sql, dialect="postgres")
+        stmts = sqlglot.parse(sql, dialect=sqlglot_dialect_for(database_type))
     except Exception:  # noqa: BLE001
         return None
     if not stmts or stmts[0] is None:
@@ -256,7 +264,11 @@ def make_dlp_check(enabled: bool):
         sql = state.get("generated_sql") or ""
         table_columns = _normalise_table_columns(state.get("table_columns"))
 
-        referenced = _resolve_referenced_columns(sql, table_columns)
+        referenced = _resolve_referenced_columns(
+            sql,
+            table_columns,
+            state.get("database_type"),
+        )
         if referenced is not None:
             # Column-aware path: only block on an actual governed column.
             for col in referenced:

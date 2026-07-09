@@ -1,7 +1,7 @@
 /**
  * Chart Manager
  * Main orchestrator for chart feature
- * 
+ *
  * @module chartManager
  */
 
@@ -9,12 +9,14 @@
 
 import { analyzeData } from './utils/dataAnalyzer.js';
 import { makeValueFormatter } from './utils/valueFormat.js?v=73';
-import { ChartContainer } from './components/ChartContainer.js';
+import { ChartContainer } from './components/ChartContainer.js?v=78';
 import { ChartToggle } from './components/ChartToggle.js';
-import { ChartTypeSelector } from './components/ChartTypeSelector.js';
+import { ChartTypeSelector } from './components/ChartTypeSelector.js?v=77';
 import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=70';
+import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v=1';
 import { ChartChat } from './components/ChartChat.js?v=72';
 import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js';
+import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
 
 /**
  * Main chart manager class
@@ -30,14 +32,16 @@ export class ChartManager {
             isEChartsLoaded: false,
             currentData: null
         };
-        
+
         this.dataAnalysis = null;
         this.chartContainer = null;
         this.chartToggle = null;
         this.chartTypeSelector = null;
         this.chartOptionsPanel = null;
+        this.mapOptionsPanel = null;
         this.chartChat = null;
         this.llmRecommendedType = null;
+        this.currentChartSpec = null;
         // Baseline (LLM-generated) config — Reset reverts to this.
         this.originalConfig = null;
         // The current ECharts options object actually rendered.
@@ -51,24 +55,24 @@ export class ChartManager {
             window._devPostQueryUpdate('chart', { status, ...payload });
         }
     }
-    
+
     /**
      * Initializes chart feature for given query results
-     * 
+     *
      * @param {import('./types/chart.types.js').QueryResults} results - Query results
      */
     async initialize(results) {
         console.log('[ChartManager] Initializing with results');
-        
+
         this.state.currentData = results;
-        
+
         // Analyze data (for type detection only)
         this.dataAnalysis = analyzeData(results);
         console.log('[ChartManager] Data analysis complete:', this.dataAnalysis);
-        
+
         // Initialize UI components
         this.initializeComponents();
-        
+
         // Check if data can be charted
         if (!this.dataAnalysis.canChart) {
             console.log('[ChartManager] Data cannot be charted:', this.dataAnalysis.reason);
@@ -77,11 +81,11 @@ export class ChartManager {
             this._devTrace('skipped', { detail: `Not chartable: ${this.dataAnalysis.reason}` });
             return;
         }
-        
+
         // Always default to table view (no auto-switch to chart)
         console.log('[ChartManager] Initialization complete - defaulting to table view');
     }
-    
+
     /**
      * Initializes UI components
      */
@@ -91,7 +95,7 @@ export class ChartManager {
             this.handleViewChange(viewMode);
         });
         this.chartToggle.render();
-        
+
         // Chart type selector
         this.chartTypeSelector = new ChartTypeSelector('chart-type-selector-container', (chartType) => {
             this.handleChartTypeChange(chartType);
@@ -117,7 +121,22 @@ export class ChartManager {
             }
             this.chartOptionsPanel.render();
         }
-        
+
+        const chartOptionsHost = document.getElementById('chart-options-panel-container');
+        if (chartOptionsHost && !document.getElementById('map-options-panel-container')) {
+            const mapHost = document.createElement('div');
+            mapHost.id = 'map-options-panel-container';
+            mapHost.className = 'chart-options-panel-container';
+            mapHost.style.display = 'none';
+            chartOptionsHost.insertAdjacentElement('afterend', mapHost);
+        }
+        if (document.getElementById('map-options-panel-container')) {
+            this.mapOptionsPanel = new MapOptionsPanel('map-options-panel-container', {
+                onMapControl: (action, value) => this._handleMapControl(action, value),
+            });
+            this.mapOptionsPanel.render();
+        }
+
         // Chart container
         this.chartContainer = new ChartContainer('chart-display-container');
 
@@ -141,76 +160,78 @@ export class ChartManager {
 
         console.log('[ChartManager] Components initialized');
     }
-    
+
     /**
      * Handles view mode change (table/chart)
-     * 
+     *
      * @param {import('./types/chart.types.js').ViewMode} viewMode - New view mode
      */
     async handleViewChange(viewMode) {
         console.log('[ChartManager] View changed to:', viewMode);
-        
+
         this.state.currentView = viewMode;
         this.saveViewPreference(viewMode);
-        
+
         const tableContainer = document.getElementById('results-display');
         const chartViewContainer = document.getElementById('chart-view-container');
-        
+
         if (viewMode === 'table') {
             // Show table, hide chart
             if (tableContainer) tableContainer.style.display = 'block';
             if (chartViewContainer) chartViewContainer.style.display = 'none';
-            
+
             // Hide chart type selector
             const selectorContainer = document.getElementById('chart-type-selector-container');
             if (selectorContainer) selectorContainer.style.display = 'none';
             if (this.chartOptionsPanel) this.chartOptionsPanel.hide();
+            if (this.mapOptionsPanel) this.mapOptionsPanel.hide();
         } else {
             // Show chart, hide table
             if (tableContainer) tableContainer.style.display = 'none';
             if (chartViewContainer) chartViewContainer.style.display = 'flex';
-            
+
             // Show chart type selector + options panel
             const selectorContainer = document.getElementById('chart-type-selector-container');
             if (selectorContainer) selectorContainer.style.display = 'block';
-            if (this.chartOptionsPanel) this.chartOptionsPanel.show();
-            
+
             // Load ECharts if not loaded
             if (!this.state.isEChartsLoaded) {
                 await this.loadECharts();
             }
-            
+
             // Get selected chart type
             const selectedType = this.chartTypeSelector.getSelectedType();
-            
+            this._syncMapControls(selectedType);
+
             // Call LLM to generate chart
             this.generateChartWithLLM(selectedType);
         }
     }
-    
+
     /**
      * Handles chart type selection change
-     * 
+     *
      * @param {string} chartType - Selected chart type
      */
     async handleChartTypeChange(chartType) {
         console.log('[ChartManager] Chart type changed to:', chartType);
-        
+
         // Clear cache for this chart type to force regeneration
         const cacheKey = this.getLLMCacheKey(chartType);
         sessionStorage.removeItem(cacheKey);
         console.log('[ChartManager] Cleared cache for:', chartType);
-        
+
         // Show visual feedback
         this.showToast(`Generating ${chartType === 'auto' ? 'LLM-recommended' : chartType} chart...`, 'info');
-        
+        this._syncMapControls(chartType);
+
         // Regenerate chart with new type
         await this.generateChartWithLLM(chartType);
     }
-    
+
     /**
      * Generates chart using LLM
-     * 
+     *
      * @param {string} chartType - Chart type ("auto" for LLM choice, or specific type)
      */
     async generateChartWithLLM(chartType = 'auto') {
@@ -228,7 +249,7 @@ export class ChartManager {
         // Show loading state
         this.chartContainer.showLoading();
         if (this.chartChat) this.chartChat.disable();
-        
+
         try {
             // Check cache first (include chart type in cache key)
             const cacheKey = this.getLLMCacheKey(chartType);
@@ -256,7 +277,7 @@ export class ChartManager {
             const connection = (typeof getActiveConnection === 'function') ? getActiveConnection() : '';
             // Only fields the user explicitly picked override the LLM. On Auto
             // this is empty, so the LLM is free to choose x/y/series + combo.
-            const overrides = this.chartOptionsPanel ? this.chartOptionsPanel.getOverrides() : {};
+            const overrides = (this.chartOptionsPanel && chartType !== 'map') ? this.chartOptionsPanel.getOverrides() : {};
             const payload = {
                 connection,
                 query_id: window.currentQueryId || null,
@@ -305,21 +326,23 @@ export class ChartManager {
             } else if (chartType !== 'auto') {
                 console.log('[ChartManager] User-requested type:', chartType);
             }
+            this._syncMapControls(data.chart_type || chartType);
 
             // Reflect the LLM's actual column choices in the mapping dropdowns so
             // the panel matches the chart and later tweaks start from there.
             if (this.chartOptionsPanel && data.chart_spec) {
                 this.chartOptionsPanel.syncFromSpec(data.chart_spec);
             }
-            
+            this.currentChartSpec = data.chart_spec || null;
+
             // Display chart prompt in Chart Prompt tab if available
             if (data.prompt || data.system_message) {
                 this.displayChartPrompt(data);
             }
-            
+
             // Cache the built config (keyed on data + type + mapping).
             sessionStorage.setItem(cacheKey, JSON.stringify(chartConfig));
-            
+
             // Render the chart
             const renderStart = performance.now();
             await this.renderChart(chartConfig);
@@ -332,7 +355,7 @@ export class ChartManager {
                 },
                 detail: `Rendered ${data.chart_type || chartType} chart from server-built config.`,
             });
-            
+
         } catch (error) {
             console.error('[ChartManager] Failed to generate chart with LLM:', error);
             this._devTrace('error', { detail: error.message || String(error) });
@@ -341,7 +364,7 @@ export class ChartManager {
             );
         }
     }
-    
+
     /**
      * POST to /api/generate-chart. Returns parsed JSON, or a sentinel:
      *   '__CACHE_MISS__' when the server has no cached rows (409),
@@ -393,6 +416,9 @@ export class ChartManager {
      */
     async renderChart(echartsConfig) {
         console.log('[ChartManager] Rendering chart with LLM config');
+        if (!this.state.isEChartsLoaded) {
+            await this.loadECharts();
+        }
 
         // Capture the unmodified baseline so Reset can always restore it.
         // Deep-clone so later edits to currentEchartsOptions don't mutate it.
@@ -403,9 +429,10 @@ export class ChartManager {
         }
 
         const displayConfig = this._withQuickToggles(echartsConfig);
+        await ensureMapsForOption(displayConfig);
 
         const chartConfig = {
-            type: displayConfig.series?.[0]?.type || 'bar',
+            type: this._optionChartType(displayConfig),
             options: displayConfig,
             isEnhanced: true
         };
@@ -416,6 +443,11 @@ export class ChartManager {
         try {
             await this.chartContainer.init();
             this.chartContainer.render(chartConfig);
+            this._syncMapControls(chartConfig.type);
+            if (chartConfig.type === 'map' && this.mapOptionsPanel) {
+                this.mapOptionsPanel.syncFromConfig(displayConfig);
+            }
+            this._renderMapFeedback(displayConfig);
             if (this.chartChat) this.chartChat.enable();
             this._enableChartActions(true);
             console.log('[ChartManager] Chart rendered successfully');
@@ -424,6 +456,29 @@ export class ChartManager {
             this.chartContainer.showError('Failed to render chart: ' + error.message);
             this._enableChartActions(false);
         }
+    }
+
+    getSaveState() {
+        return {
+            chart_spec: this.currentChartSpec,
+            chart_config: this.currentEchartsOptions || this.originalConfig || null,
+        };
+    }
+
+    async restoreSavedChart(echartsConfig, chartSpec = null) {
+        if (!echartsConfig) return;
+        this.currentChartSpec = chartSpec || null;
+        if (this.chartOptionsPanel && chartSpec) {
+            try { this.chartOptionsPanel.syncFromSpec(chartSpec); } catch (_) {}
+        }
+        await this.renderChart(echartsConfig);
+        if (this.chartToggle && typeof this.chartToggle.showChartView === 'function') {
+            this.chartToggle.showChartView();
+        }
+        const table = document.getElementById('results-display');
+        const chart = document.getElementById('chart-view-container');
+        if (table) table.style.display = 'none';
+        if (chart) chart.style.display = 'block';
     }
 
     /**
@@ -458,7 +513,7 @@ export class ChartManager {
         const displayConfig = this._withQuickToggles(withDerived);
 
         const chartConfig = {
-            type: displayConfig.series?.[0]?.type || 'bar',
+            type: this._optionChartType(displayConfig),
             options: displayConfig,
             isEnhanced: true,
         };
@@ -474,7 +529,7 @@ export class ChartManager {
             if (previous) {
                 try {
                     this.chartContainer.render({
-                        type: previous.series?.[0]?.type || 'bar',
+                        type: this._optionChartType(previous),
                         options: previous,
                         isEnhanced: true,
                     });
@@ -497,7 +552,7 @@ export class ChartManager {
             baseline = this.originalConfig;
         }
         const chartConfig = {
-            type: baseline.series?.[0]?.type || 'bar',
+            type: this._optionChartType(baseline),
             options: this._withQuickToggles(baseline),
             isEnhanced: true,
         };
@@ -509,8 +564,8 @@ export class ChartManager {
             console.error('[ChartManager] Failed to reset chart:', error);
         }
     }
-    
-    
+
+
     // ─────────────────────────────────────────────────────────────────────
     // Chart export toolbar (Save PNG / Copy)
     // ─────────────────────────────────────────────────────────────────────
@@ -623,12 +678,12 @@ export class ChartManager {
      */
     async loadECharts() {
         if (this.state.isEChartsLoaded) return;
-        
+
         console.log('[ChartManager] Loading ECharts library');
-        
+
         return new Promise((resolve, reject) => {
             const script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js';
+            script.src = '/static/vendor/echarts/echarts.min.js';
             script.async = true;
             script.onload = () => {
                 this.state.isEChartsLoaded = true;
@@ -642,10 +697,10 @@ export class ChartManager {
             document.head.appendChild(script);
         });
     }
-    
+
     /**
      * Shows a message when data can't be charted
-     * 
+     *
      * @param {string} reason - Reason why data can't be charted
      */
     showNotChartableMessage(reason) {
@@ -659,10 +714,10 @@ export class ChartManager {
             `;
         }
     }
-    
+
     /**
      * Shows a toast message
-     * 
+     *
      * @param {string} message - Toast message
      * @param {string} type - Toast type (success/error/info)
      */
@@ -672,17 +727,17 @@ export class ChartManager {
         toast.className = `toast toast-${type}`;
         toast.textContent = message;
         document.body.appendChild(toast);
-        
+
         setTimeout(() => {
             toast.classList.add('show');
         }, 100);
-        
+
         setTimeout(() => {
             toast.classList.remove('show');
             setTimeout(() => toast.remove(), 300);
         }, 3000);
     }
-    
+
     /**
      * Display chart prompt in the Chart Prompt tab with collapsible sections
      */
@@ -692,51 +747,51 @@ export class ChartManager {
             console.warn('[ChartManager] Chart prompt content element not found');
             return;
         }
-        
+
         if (!chartData.prompt) {
             promptContent.innerHTML = '<p style="color: #999;">No prompt available</p>';
             return;
         }
-        
+
         // Parse the prompt into sections
         const sections = this.parseChartPrompt(chartData.prompt);
-        
+
         let html = '<div class="structured-prompt">';
-        
+
         // Section 1: Chart Type Override (if present)
         if (sections.chartTypeOverride) {
-            html += this.createPromptSection('chart-type-override', 'Chart Type Selection', 
+            html += this.createPromptSection('chart-type-override', 'Chart Type Selection',
                 `<pre class="prompt-text">${this.escapeHtml(sections.chartTypeOverride)}</pre>`, true);
         }
-        
+
         // Section 2: Column Information
         if (sections.columnInfo) {
-            html += this.createPromptSection('chart-columns', 'Column Information', 
+            html += this.createPromptSection('chart-columns', 'Column Information',
                 `<pre class="prompt-text">${this.escapeHtml(sections.columnInfo)}</pre>`, false);
         }
-        
+
         // Section 3: Data Sample
         if (sections.dataSample) {
-            html += this.createPromptSection('chart-data', 'Data Sample', 
+            html += this.createPromptSection('chart-data', 'Data Sample',
                 `<pre class="prompt-text">${this.escapeHtml(sections.dataSample)}</pre>`, false);
         }
-        
+
         // Section 4: Instructions
         if (sections.instructions) {
-            html += this.createPromptSection('chart-instructions', 'Chart Instructions', 
+            html += this.createPromptSection('chart-instructions', 'Chart Instructions',
                 `<pre class="prompt-text">${this.escapeHtml(sections.instructions)}</pre>`, false);
         }
-        
+
         // Section 5: Full Prompt
-        html += this.createPromptSection('chart-full', 'Full Prompt Text', 
+        html += this.createPromptSection('chart-full', 'Full Prompt Text',
             `<pre class="prompt-text">${this.escapeHtml(chartData.prompt)}</pre>`, false);
-        
+
         html += '</div>';
         promptContent.innerHTML = html;
-        
+
         console.log('[ChartManager] Chart prompt displayed in structured format');
     }
-    
+
     /**
      * Parse chart prompt into sections
      */
@@ -747,39 +802,39 @@ export class ChartManager {
             dataSample: '',
             instructions: ''
         };
-        
+
         // Extract chart type override section
         const chartTypeMatch = prompt.match(/##\s*CHART TYPE OVERRIDE([\s\S]*?)(?=Column Names:|$)/i);
         if (chartTypeMatch) {
             sections.chartTypeOverride = chartTypeMatch[0].trim();
         }
-        
+
         // Extract column information
         const columnMatch = prompt.match(/Column Names:([\s\S]*?)(?=Data \(first|Instructions:|$)/i);
         if (columnMatch) {
             sections.columnInfo = 'Column Names:' + columnMatch[1].trim();
         }
-        
+
         // Extract data sample
         const dataMatch = prompt.match(/Data \(first[^:]*\):([\s\S]*?)(?=Instructions:|$)/i);
         if (dataMatch) {
             sections.dataSample = dataMatch[0].trim();
         }
-        
+
         // Extract instructions
         const instructionsMatch = prompt.match(/Instructions:([\s\S]*?)$/i);
         if (instructionsMatch) {
             sections.instructions = instructionsMatch[0].trim();
         }
-        
+
         // Fallback: if no sections found, put everything in instructions
         if (!sections.columnInfo && !sections.dataSample && !sections.instructions) {
             sections.instructions = prompt;
         }
-        
+
         return sections;
     }
-    
+
     /**
      * Create a collapsible prompt section
      */
@@ -787,7 +842,7 @@ export class ChartManager {
         const expandedClass = expanded ? 'expanded' : '';
         const displayStyle = expanded ? 'block' : 'none';
         const arrow = expanded ? '▼' : '▶';
-        
+
         return `
             <div class="prompt-section ${expandedClass}">
                 <div class="prompt-section-header" onclick="toggleChartPromptSection('${id}')">
@@ -800,14 +855,14 @@ export class ChartManager {
             </div>
         `;
     }
-    
+
     /**
      * Toggle a prompt section
      */
     togglePromptSection(sectionId) {
         const content = document.getElementById(`content-${sectionId}`);
         const arrow = document.getElementById(`arrow-${sectionId}`);
-        
+
         if (content && arrow) {
             if (content.style.display === 'none') {
                 content.style.display = 'block';
@@ -818,7 +873,7 @@ export class ChartManager {
             }
         }
     }
-    
+
     /**
      * Escape HTML to prevent XSS
      */
@@ -827,21 +882,21 @@ export class ChartManager {
         div.textContent = text;
         return div.innerHTML;
     }
-    
+
     // Cache and preferences methods
-    
+
     loadViewPreference() {
         return localStorage.getItem('chartViewPreference') || 'table';
     }
-    
+
     saveViewPreference(viewMode) {
         localStorage.setItem('chartViewPreference', viewMode);
     }
-    
+
     saveChartTypePreference(chartType) {
         localStorage.setItem('chartTypePreference', chartType);
     }
-    
+
     loadCachedConfig(chartType) {
         const cacheKey = this.getCacheKey(chartType);
         const cached = sessionStorage.getItem(cacheKey);
@@ -858,19 +913,19 @@ export class ChartManager {
         console.log('[ChartManager] Cache miss for', chartType);
         return null;
     }
-    
+
     cacheEnhancedConfig(chartType, config) {
         const cacheKey = this.getCacheKey(chartType);
         sessionStorage.setItem(cacheKey, JSON.stringify(config));
         console.log('[ChartManager] Cached config for', chartType);
     }
-    
+
     getCacheKey(chartType) {
         // Use SQL as part of cache key (hash it for shorter key)
         const sqlHash = this.simpleHash(window.currentSql || JSON.stringify(this.state.currentData));
         return `chart_${sqlHash}_${chartType}`;
     }
-    
+
     getLLMCacheKey(chartType = 'auto') {
         const dataHash = this.simpleHash(JSON.stringify(this.state.currentData));
         // Key only on user-chosen overrides (stable across the post-generation
@@ -884,12 +939,130 @@ export class ChartManager {
     _withQuickToggles(config) {
         if (!config) return config;
         let out = config;
-        if (this.chartOptionsPanel) {
+        if (this.chartOptionsPanel && !isMapOption(config)) {
             out = this.chartOptionsPanel.applyTogglesTo(config, this.originalConfig);
         }
         // Apply value formatting last so it covers initial render, chat edits,
         // quick toggles, and reset uniformly.
         return this._applyValueFormatting(out);
+    }
+
+    _syncMapControls(chartType) {
+        if (chartType === 'map') {
+            if (this.chartOptionsPanel) this.chartOptionsPanel.hide();
+            if (this.mapOptionsPanel) this.mapOptionsPanel.show();
+        } else {
+            if (this.chartOptionsPanel) this.chartOptionsPanel.show();
+            if (this.mapOptionsPanel) this.mapOptionsPanel.hide();
+            this._renderMapFeedback(null);
+        }
+    }
+
+    _handleMapControl(action, value) {
+        if (!this.currentEchartsOptions || !this.chartContainer) return;
+        const chart = this.chartContainer.getInstance?.();
+        if (!chart) return;
+
+        if (action === 'zoom-in') {
+            this._patchMapView((target) => { target.zoom = Math.min((target.zoom || 1) * 1.2, 12); });
+        } else if (action === 'zoom-out') {
+            this._patchMapView((target) => { target.zoom = Math.max((target.zoom || 1) / 1.2, 0.7); });
+        } else if (action === 'fit' || action === 'reset') {
+            if (action === 'reset') {
+                try { chart.dispatchAction({ type: 'restore' }); } catch (_) {}
+            }
+            const view = this.currentEchartsOptions.jeenMap?.defaultView || {};
+            this._patchMapView((target) => {
+                for (const key of ['layoutCenter', 'layoutSize', 'aspectScale', 'zoom', 'scaleLimit']) {
+                    if (view[key] !== undefined) target[key] = Array.isArray(view[key]) ? view[key].slice() : view[key];
+                }
+            });
+            setTimeout(() => this.chartContainer.resize(), 0);
+        } else if (action === 'labels') {
+            this._patchMapView((target) => {
+                target.label = target.label && typeof target.label === 'object' ? { ...target.label } : {};
+                target.label.show = !!value;
+            });
+            if (this.currentEchartsOptions.jeenMap) this.currentEchartsOptions.jeenMap.showLabels = !!value;
+        } else if (action === 'roam') {
+            this._patchMapView((target) => { target.roam = !!value; });
+        } else if (action === 'noData') {
+            this._patchMapView((target) => {
+                target.itemStyle = target.itemStyle && typeof target.itemStyle === 'object' ? { ...target.itemStyle } : {};
+                target.itemStyle.areaColor = value ? '#eef2f7' : 'rgba(0,0,0,0)';
+            });
+        } else if (action === 'palette') {
+            this._applyMapPalette(value);
+        }
+    }
+
+    _patchMapView(mutator) {
+        const options = this.currentEchartsOptions;
+        const patch = {};
+        if (Array.isArray(options.series)) {
+            patch.series = options.series.map((series) => {
+                if (!series || (series.type !== 'map' && series.coordinateSystem !== 'geo')) return {};
+                mutator(series);
+                return { ...series };
+            });
+        }
+        if (options.geo && typeof options.geo === 'object' && !Array.isArray(options.geo)) {
+            mutator(options.geo);
+            patch.geo = { ...options.geo };
+        }
+        this.chartContainer.getInstance()?.setOption(patch, false);
+        if (this.state.currentConfig) this.state.currentConfig.options = options;
+    }
+
+    _applyMapPalette(name) {
+        const palette = MAP_PALETTES[name] || MAP_PALETTES.blue;
+        const options = this.currentEchartsOptions;
+        if (options.visualMap && typeof options.visualMap === 'object' && !Array.isArray(options.visualMap)) {
+            options.visualMap.inRange = { ...(options.visualMap.inRange || {}), color: palette.slice() };
+        }
+        if (Array.isArray(options.series)) {
+            options.series.forEach((series) => {
+                if (!series || typeof series !== 'object') return;
+                if (series.type === 'map') {
+                    series.emphasis = series.emphasis && typeof series.emphasis === 'object' ? { ...series.emphasis } : {};
+                    series.emphasis.itemStyle = { ...(series.emphasis.itemStyle || {}), areaColor: palette[palette.length - 2] };
+                } else if (series.coordinateSystem === 'geo') {
+                    series.itemStyle = { ...(series.itemStyle || {}), color: palette[palette.length - 2] };
+                }
+            });
+        }
+        if (options.jeenMap) options.jeenMap.palette = name;
+        this.chartContainer.getInstance()?.setOption({
+            visualMap: options.visualMap,
+            series: Array.isArray(options.series) ? options.series.map((series) => ({ ...series })) : undefined,
+        }, false);
+    }
+
+    _renderMapFeedback(config) {
+        let host = document.getElementById('map-feedback-container');
+        if (!host) {
+            const chart = document.getElementById('chart-display-container');
+            if (!chart || !chart.parentNode) return;
+            host = document.createElement('div');
+            host.id = 'map-feedback-container';
+            host.className = 'map-feedback';
+            chart.insertAdjacentElement('afterend', host);
+        }
+        const meta = config?.jeenMap;
+        if (!meta || meta.showUnmatched === false || !meta.unmatchedCount) {
+            host.style.display = 'none';
+            host.textContent = '';
+            return;
+        }
+        const shown = Array.isArray(meta.unmatched) ? meta.unmatched.join(', ') : '';
+        const suffix = meta.unmatchedCount > (meta.unmatched?.length || 0) ? '...' : '';
+        host.textContent = `${meta.unmatchedCount} location${meta.unmatchedCount === 1 ? '' : 's'} not matched: ${shown}${suffix}`;
+        host.style.display = 'block';
+    }
+
+    _optionChartType(option) {
+        if (isMapOption(option)) return 'map';
+        return option?.series?.[0]?.type || 'bar';
     }
 
     /**
@@ -961,12 +1134,30 @@ export class ChartManager {
 
         // Tooltip: a single valueFormatter can't express per-series formats or
         // unwrap [x, y] pairs, so use a formatter fn when either is in play.
+        const hasGeoVisual = isMapOption(options);
+        if (hasGeoVisual && options.visualMap && typeof options.visualMap === 'object' && !Array.isArray(options.visualMap)) {
+            options.visualMap.formatter = (value) => primaryFmt(value);
+        }
+
         const tip = options.tooltip;
         if (tip && !Array.isArray(tip) && typeof tip.formatter !== 'string') {
             const isAxis = tip.trigger === 'axis';
             const hasPairs = series.some((s) => s && Array.isArray(s.data)
                 && s.data.length && Array.isArray(s.data[0]));
-            if (isAxis && (perSeriesDiff || hasPairs)) {
+            if (hasGeoVisual) {
+                tip.formatter = (params) => {
+                    const p = Array.isArray(params) ? params[0] : params;
+                    const raw = p && p.value;
+                    const value = Array.isArray(raw) ? raw[2] : raw;
+                    const name = (p && (p.name || p.seriesName)) || '';
+                    const seriesName = p && p.seriesName ? p.seriesName : 'Value';
+                    const formatted = (value === undefined || value === null || value === '-')
+                        ? 'No data'
+                        : primaryFmt(value);
+                    return `${name}<br/>${p?.marker || ''} ${seriesName}: ${formatted}`;
+                };
+                delete tip.valueFormatter;
+            } else if (isAxis && (perSeriesDiff || hasPairs)) {
                 tip.formatter = (params) => {
                     const arr = Array.isArray(params) ? params : [params];
                     const head = arr.length ? (arr[0].axisValueLabel ?? arr[0].name ?? '') : '';
@@ -994,7 +1185,7 @@ export class ChartManager {
         }
         const displayConfig = this._withQuickToggles(baseline);
         const chartConfig = {
-            type: displayConfig.series?.[0]?.type || 'bar',
+            type: this._optionChartType(displayConfig),
             options: displayConfig,
             isEnhanced: true,
         };
@@ -1006,7 +1197,7 @@ export class ChartManager {
             console.error('[ChartManager] Failed to apply quick toggles:', error);
         }
     }
-    
+
     simpleHash(str) {
         let hash = 0;
         for (let i = 0; i < str.length; i++) {
@@ -1016,7 +1207,7 @@ export class ChartManager {
         }
         return Math.abs(hash).toString(36);
     }
-    
+
     /**
      * Cleanup method
      */
@@ -1032,7 +1223,7 @@ export class ChartManager {
 window.toggleChartPromptSection = function(sectionId) {
     const content = document.getElementById(`content-${sectionId}`);
     const arrow = document.getElementById(`arrow-${sectionId}`);
-    
+
     if (content && arrow) {
         if (content.style.display === 'none') {
             content.style.display = 'block';
