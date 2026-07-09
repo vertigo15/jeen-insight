@@ -7,7 +7,7 @@
 
 /// <reference path="../types/chart.types.js" />
 
-import { CHART_TYPE_OPTIONS } from '../chartTypes.js';
+import { CHART_TYPE_OPTIONS } from '../chartTypes.js?v=77';
 
 /**
  * Available chart types (shared with settings + preferences)

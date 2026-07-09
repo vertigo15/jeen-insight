@@ -8,6 +8,8 @@ let currentPrompt = '';
 let currentResults = null;
 let currentQueryId = null;  // For conversation history tracking
 let currentSessionId = null;  // For conversation continuity
+let _isRestoringSavedAnalysis = false;
+let _restoredSavedQuestion = '';
 let allTables = [];
 let promptExpanded = false;
 let sqlExpanded = false;
@@ -336,7 +338,7 @@ window.addEventListener('DOMContentLoaded', () => {
 async function askQuestion() {
     const questionInput = document.getElementById('question-input');
     const question = questionInput.value.trim();
-    
+
     if (!question) {
         showError('Please enter a question');
         return;
@@ -345,17 +347,17 @@ async function askQuestion() {
     // Immediately dismiss any open autocomplete dropdown so it doesn't block
     // the query submission or remain visible while loading.
     if (typeof SuggestionController !== 'undefined') SuggestionController.close();
-    
+
     // Save to history
     saveToHistory(question);
-    
+
     // Show loading state + dock the layout immediately (leave the hero).
     hideError();
     hideResults();
     hideAskMetrics();
     setUiState('results');
     showLoading();
-    
+
     const connection = requireConnection();
     if (!connection) {
         hideLoading();
@@ -394,13 +396,13 @@ async function askQuestion() {
             body: JSON.stringify(askPayload),
         });
         lastQueryDurationMs = performance.now() - askStart;
-        
+
         const data = await response.json();
-        
+
         if (!response.ok) {
             throw new Error(data.error || 'Failed to process question');
         }
-        
+
         hideLoading();
         displayResults(data);
 
@@ -411,7 +413,7 @@ async function askQuestion() {
             lastTotalDurationMs = performance.now() - askStart;
             if (_lastResultData) _updateDevRunHeader(_lastResultData);
         });
-        
+
     } catch (error) {
         hideLoading();
         showError(`Error: ${error.message}`);
@@ -431,7 +433,7 @@ function displayResults(data) {
     // Reset toggle states
     sqlExpanded = false;
     promptExpanded = false;
-    
+
     // Store current question and IDs for history tracking
     currentQuestion = data.question;
     currentQueryId = data.query_id || null;
@@ -440,7 +442,7 @@ function displayResults(data) {
     // server-side cached result by query_id and pass the question as intent.
     window.currentQueryId = currentQueryId;
     window.currentQuestion = currentQuestion;
-    
+
     // Log conversation IDs
     if (currentQueryId) {
         console.log('[History] Query ID:', currentQueryId);
@@ -448,7 +450,7 @@ function displayResults(data) {
     if (currentSessionId) {
         console.log('[History] Session ID:', currentSessionId);
     }
-    
+
     // Show results section + dock the layout (leave the empty/hero state).
     const resultsSection = document.getElementById('results-section');
     resultsSection.style.display = 'flex';
@@ -461,7 +463,7 @@ function displayResults(data) {
     const derivedTitle = deriveResultTitle(data.question);
     setResultTitle(derivedTitle);
     setPageTitle(derivedTitle);
-    
+
     // Display SQL via CodeMirror (or fallback)
     if (data.sql) {
         currentSql = data.sql;
@@ -470,18 +472,22 @@ function displayResults(data) {
         currentSql = '';
         initCodeMirror('-- No SQL generated');
     }
-    
+
     // Display results
     const resultsDisplay = document.getElementById('results-display');
     const exportBtn = document.getElementById('export-btn');
     const copyResultsBtn = document.getElementById('copy-results-btn');
-    
+    const saveAnalysisBtn = document.getElementById('save-analysis-btn');
+    const rerunFreshBtn = document.getElementById('rerun-fresh-btn');
+
     const describeBtn = document.getElementById('describe-btn');
-    
+
     if (data.error) {
         resultsDisplay.innerHTML = `<div class="error-message">${data.error}</div>`;
         exportBtn.style.display = 'none';
         copyResultsBtn.style.display = 'none';
+        if (saveAnalysisBtn) saveAnalysisBtn.style.display = 'none';
+        if (rerunFreshBtn) rerunFreshBtn.style.display = 'none';
         describeBtn.style.display = 'none';
         currentResults = null;
         window.currentResults = null;
@@ -494,29 +500,32 @@ function displayResults(data) {
         showResultsToolbar(true);
         exportBtn.style.display = 'inline-block';
         copyResultsBtn.style.display = 'inline-block';
+        if (saveAnalysisBtn) saveAnalysisBtn.style.display = 'inline-block';
+        if (rerunFreshBtn) rerunFreshBtn.style.display = _isRestoringSavedAnalysis ? 'inline-block' : 'none';
         describeBtn.style.display = 'inline-block';
         // Result meta line: "<n> rows · 0.3s"
         const rows = data.results.data || data.results.rows || [];
         setResultMeta(rows.length, lastQueryDurationMs);
-        
+
         // Store results globally for profiling manager
         window.currentResults = data.results;
-        
-        // Initialize chart feature
-        initializeChartFeature(data.results);
-        
+
+        // Initialize chart feature. Saved restores initialise explicitly so
+        // they can await the manager before rendering the saved config.
+        if (!_isRestoringSavedAnalysis) initializeChartFeature(data.results);
+
         // Generate insights in background — gated by the AI Analytics preference.
         // The table is already visible; InsightsManager streams the analysis
         // and updates the Insights panel when each chunk arrives.
         const _aiAnalytics = (window.JeenPreferences && window.JeenPreferences.getAll().aiAnalytics) || 'on';
-        if (_aiAnalytics === 'on') {
+        if (_aiAnalytics === 'on' && !_isRestoringSavedAnalysis) {
             generateInsights(data.results, currentQuestion, currentQueryId, currentSql);
         } else {
             // Hide the insights container when analytics is off.
             const ic = document.getElementById('insights-container');
             if (ic) ic.style.display = 'none';
         }
-        
+
         // Initialize profiling section (collapsed by default)
         if (typeof profilingManager !== 'undefined') {
             profilingManager.initialize(data.results);
@@ -527,6 +536,8 @@ function displayResults(data) {
         showResultsToolbar(false);
         exportBtn.style.display = 'none';
         copyResultsBtn.style.display = 'none';
+        if (saveAnalysisBtn) saveAnalysisBtn.style.display = 'none';
+        if (rerunFreshBtn) rerunFreshBtn.style.display = 'none';
         describeBtn.style.display = 'none';
         currentResults = null;
         window.currentResults = null;
@@ -539,6 +550,8 @@ function displayResults(data) {
         showResultsToolbar(false);
         exportBtn.style.display = 'none';
         copyResultsBtn.style.display = 'none';
+        if (saveAnalysisBtn) saveAnalysisBtn.style.display = 'none';
+        if (rerunFreshBtn) rerunFreshBtn.style.display = 'none';
         describeBtn.style.display = 'none';
         currentResults = null;
         window.currentResults = null;
@@ -547,7 +560,7 @@ function displayResults(data) {
         }
         setResultMeta(0, lastQueryDurationMs);
     }
-    
+
     // Display structured prompt in Query Prompt tab
     if (data.prompt) {
         currentPrompt = data.prompt;
@@ -562,10 +575,10 @@ function displayResults(data) {
     // ── Developer Panel: run header + SQL stats bar ──────────────────────
     _updateDevRunHeader(data);
     _updateSqlStats(data);
-    
+
     // Display SQL in SQL tab
     // (Already handled above in the SQL display section)
-    
+
     // Scroll to results
     resultsSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -856,11 +869,11 @@ function sortTable(columnIndex) {
         console.warn('[Sort] No current results');
         return;
     }
-    
+
     // Clone the data array to avoid modifying original
     let rows = [...(currentResults.data || currentResults.rows)];
     const column = currentResults.columns[columnIndex];
-    
+
     // Toggle sort direction if clicking same column
     if (sortColumn === columnIndex) {
         sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
@@ -868,11 +881,11 @@ function sortTable(columnIndex) {
         sortColumn = columnIndex;
         sortDirection = 'asc';
     }
-    
+
     // Sort rows
     rows.sort((a, b) => {
         let valA, valB;
-        
+
         if (Array.isArray(a)) {
             valA = a[columnIndex];
             valB = b[columnIndex];
@@ -880,51 +893,51 @@ function sortTable(columnIndex) {
             valA = a[column];
             valB = b[column];
         }
-        
+
         // Handle nulls
         if (valA === null || valA === undefined) return 1;
         if (valB === null || valB === undefined) return -1;
-        
+
         // Try numeric comparison first
         const numA = parseFloat(String(valA).replace(/[^0-9.-]/g, ''));
         const numB = parseFloat(String(valB).replace(/[^0-9.-]/g, ''));
-        
+
         if (!isNaN(numA) && !isNaN(numB)) {
             return sortDirection === 'asc' ? numA - numB : numB - numA;
         }
-        
+
         // String comparison
         const strA = String(valA).toLowerCase();
         const strB = String(valB).toLowerCase();
-        
+
         if (sortDirection === 'asc') {
             return strA < strB ? -1 : strA > strB ? 1 : 0;
         } else {
             return strA > strB ? -1 : strA < strB ? 1 : 0;
         }
     });
-    
+
     // Apply current filter if exists
     const filterInput = document.getElementById('result-filter');
     const filterValue = filterInput ? filterInput.value.toLowerCase() : '';
-    
+
     if (filterValue) {
         rows = rows.filter(row => {
             if (Array.isArray(row)) {
-                return row.some(cell => 
-                    cell !== null && cell !== undefined && 
+                return row.some(cell =>
+                    cell !== null && cell !== undefined &&
                     String(cell).toLowerCase().includes(filterValue)
                 );
             } else {
                 return currentResults.columns.some(col => {
                     const cell = row[col];
-                    return cell !== null && cell !== undefined && 
+                    return cell !== null && cell !== undefined &&
                         String(cell).toLowerCase().includes(filterValue);
                 });
             }
         });
     }
-    
+
     // Apply display limit and update footer bar
     const totalSorted = rows.length;
     document.getElementById('table-container').innerHTML = renderTable(currentResults, rows.slice(0, _displayLimit));
@@ -938,17 +951,17 @@ function filterResults() {
         console.warn('[Filter] No current results');
         return;
     }
-    
+
     filterText = document.getElementById('result-filter').value.toLowerCase();
     // Clone the data array
     let rows = [...(currentResults.data || currentResults.rows)];
-    
+
     // Apply current sort if exists
     if (sortColumn !== null) {
         const column = currentResults.columns[sortColumn];
         rows.sort((a, b) => {
             let valA, valB;
-            
+
             if (Array.isArray(a)) {
                 valA = a[sortColumn];
                 valB = b[sortColumn];
@@ -956,23 +969,23 @@ function filterResults() {
                 valA = a[column];
                 valB = b[column];
             }
-            
+
             // Handle nulls
             if (valA === null || valA === undefined) return 1;
             if (valB === null || valB === undefined) return -1;
-            
+
             // Try numeric comparison first
             const numA = parseFloat(String(valA).replace(/[^0-9.-]/g, ''));
             const numB = parseFloat(String(valB).replace(/[^0-9.-]/g, ''));
-            
+
             if (!isNaN(numA) && !isNaN(numB)) {
                 return sortDirection === 'asc' ? numA - numB : numB - numA;
             }
-            
+
             // String comparison
             const strA = String(valA).toLowerCase();
             const strB = String(valB).toLowerCase();
-            
+
             if (sortDirection === 'asc') {
                 return strA < strB ? -1 : strA > strB ? 1 : 0;
             } else {
@@ -980,7 +993,7 @@ function filterResults() {
             }
         });
     }
-    
+
     if (!filterText) {
         // No filter, show all (with current sort) — apply display limit
         document.getElementById('table-container').innerHTML = renderTable(currentResults, rows.slice(0, _displayLimit));
@@ -1012,7 +1025,7 @@ function filterResults() {
 // Copy SQL to clipboard
 function copySql() {
     if (!currentSql) return;
-    
+
     navigator.clipboard.writeText(currentSql).then(() => {
         const button = document.querySelector('.sql-copy-btn') || document.querySelector('.copy-button');
         if (button) {
@@ -1032,16 +1045,16 @@ function copySql() {
 // Copy Results to clipboard
 function copyResults() {
     if (!currentResults) return;
-    
+
     const rows = currentResults.data || currentResults.rows;
     if (!rows || rows.length === 0) return;
-    
+
     // Create tab-separated text (better for pasting into Excel/Sheets)
     let text = '';
-    
+
     // Add headers
     text += currentResults.columns.join('\t') + '\n';
-    
+
     // Add data rows
     rows.forEach(row => {
         if (Array.isArray(row)) {
@@ -1050,7 +1063,7 @@ function copyResults() {
             text += currentResults.columns.map(col => row[col] || '').join('\t') + '\n';
         }
     });
-    
+
     navigator.clipboard.writeText(text).then(() => {
         const button = document.getElementById('copy-results-btn');
         if (button) {
@@ -1071,9 +1084,9 @@ function copyResults() {
 function toggleSql() {
     const sqlContent = document.getElementById('sql-content');
     const toggleBtn = document.getElementById('toggle-sql-btn');
-    
+
     sqlExpanded = !sqlExpanded;
-    
+
     if (sqlExpanded) {
         sqlContent.style.display = 'block';
         toggleBtn.textContent = '▲ Hide SQL';
@@ -1087,9 +1100,9 @@ function toggleSql() {
 function togglePrompt() {
     const promptContent = document.getElementById('prompt-content');
     const toggleBtn = document.getElementById('toggle-prompt-btn');
-    
+
     promptExpanded = !promptExpanded;
-    
+
     if (promptExpanded) {
         promptContent.style.display = 'block';
         toggleBtn.textContent = '▲ Hide Prompt';
@@ -1384,16 +1397,16 @@ function copyTableName(table) {
 // Export to Excel
 function exportToExcel() {
     if (!currentResults) return;
-    
+
     const rows = currentResults.data || currentResults.rows;
     if (!rows || rows.length === 0) return;
-    
+
     // Create CSV content
     let csv = '';
-    
+
     // Add headers
     csv += currentResults.columns.join(',') + '\n';
-    
+
     // Add data rows
     rows.forEach(row => {
         if (Array.isArray(row)) {
@@ -1402,7 +1415,7 @@ function exportToExcel() {
             csv += currentResults.columns.map(col => escapeCSV(row[col])).join(',') + '\n';
         }
     });
-    
+
     // Create download link
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
@@ -1525,59 +1538,59 @@ function displayStructuredPrompt(promptData) {
     html += `<button class="dp-copy-all" onclick="_copyAllPrompt()" title="Copy full prompt">&#10697; Copy all</button>`;
     html += '</div>';
     html += '<div class="structured-prompt">';
-    
+
     // Section 1: System Instructions
     if (promptData.system_instructions) {
-        html += createPromptSection('system-instructions', 'System Instructions', 
+        html += createPromptSection('system-instructions', 'System Instructions',
             `<pre class="prompt-text">${escapeHtml(promptData.system_instructions)}</pre>`, true);
     }
-    
+
     // Section 2: Active Connection
     if (promptData.connection) {
         const conn = promptData.connection;
         const connContent = `<pre class="prompt-text">${escapeHtml(`${conn.display_name} (${conn.database_type}) — source_key: ${conn.source_key}`)}</pre>`;
         html += createPromptSection('connection', 'Active Connection', connContent, true);
     }
-    
+
     // Section 3: Tables
     if (promptData.tables) {
         html += createPromptSection('tables', 'Tables', `<pre class="prompt-text">${escapeHtml(promptData.tables)}</pre>`, false);
     }
-    
+
     // Section 4: Columns
     if (promptData.columns) {
         html += createPromptSection('columns', 'Columns', `<pre class="prompt-text">${escapeHtml(promptData.columns)}</pre>`, false);
     }
-    
+
     // Section 5: Relationships
     if (promptData.relationships) {
         html += createPromptSection('relationships', 'Relationships', `<pre class="prompt-text">${escapeHtml(promptData.relationships)}</pre>`, false);
     }
-    
+
     // Section 6: Sources
     if (promptData.sources) {
         html += createPromptSection('sources', 'Sources', `<pre class="prompt-text">${escapeHtml(promptData.sources)}</pre>`, false);
     }
-    
+
     // Section 7: Knowledge Pairs
     if (promptData.knowledge_pairs) {
         html += createPromptSection('knowledge-pairs', 'Knowledge Pairs', `<pre class="prompt-text">${escapeHtml(promptData.knowledge_pairs)}</pre>`, false);
     }
-    
+
     // Section 8: Business Terms
     if (promptData.business_terms) {
         html += createPromptSection('business-terms', 'Business Terms', `<pre class="prompt-text">${escapeHtml(promptData.business_terms)}</pre>`, false);
     }
-    
+
     // Section 5: Tool Description
     if (promptData.tool_description) {
         const toolContent = `<pre class="prompt-text">${escapeHtml(JSON.stringify(promptData.tool_description, null, 2))}</pre>`;
         html += createPromptSection('tool-description', 'Tool Description', toolContent, false);
     }
-    
+
     // Section 6: Conversation History
     if (promptData.conversation_history && promptData.conversation_history.length > 0) {
-        const historyContent = promptData.conversation_history.map(qa => 
+        const historyContent = promptData.conversation_history.map(qa =>
             `<div class="conversation-item">
                 <div class="conv-question"><strong>Previous Q:</strong> ${escapeHtml(qa.question)}</div>
                 <div class="conv-sql"><strong>Previous SQL:</strong><pre>${escapeHtml(qa.sql)}</pre></div>
@@ -1585,19 +1598,19 @@ function displayStructuredPrompt(promptData) {
         ).join('');
         html += createPromptSection('conversation-history', `Conversation History (${promptData.conversation_history.length} Q&As)`, historyContent, true);
     }
-    
+
     // Section 7: Current Question
     if (promptData.current_question) {
-        html += createPromptSection('current-question', 'Current Question', 
+        html += createPromptSection('current-question', 'Current Question',
             `<div class="current-question-text">${escapeHtml(promptData.current_question)}</div>`, true);
     }
-    
+
     // Section 8: Full Text (complete prompt)
     if (promptData.full_text) {
-        html += createPromptSection('full-text', 'Full Prompt Text', 
+        html += createPromptSection('full-text', 'Full Prompt Text',
             `<pre class="prompt-text">${escapeHtml(promptData.full_text)}</pre>`, false);
     }
-    
+
     html += '</div>';
     promptContent.innerHTML = html;
 }
@@ -1607,7 +1620,7 @@ function createPromptSection(id, title, content, expanded = false) {
     const expandedClass = expanded ? 'expanded' : '';
     const displayStyle = expanded ? 'block' : 'none';
     const arrow = expanded ? '▼' : '▶';
-    
+
     return `
         <div class="prompt-section ${expandedClass}">
             <div class="prompt-section-header" onclick="togglePromptSection('${id}')">
@@ -1625,7 +1638,7 @@ function createPromptSection(id, title, content, expanded = false) {
 function togglePromptSection(sectionId) {
     const content = document.getElementById(`content-${sectionId}`);
     const arrow = document.getElementById(`arrow-${sectionId}`);
-    
+
     if (content.style.display === 'none') {
         content.style.display = 'block';
         arrow.textContent = '▼';
@@ -1638,38 +1651,79 @@ function togglePromptSection(sectionId) {
 // Switch between prompt tabs
 function switchPromptTab(tabName) {
     const tabContent = document.querySelector('.prompt-tab-content');
-    
+    const promptSubTabs = new Set(['query', 'insights', 'chart']);
+    let promptSubTab = null;
+    if (promptSubTabs.has(tabName)) {
+        promptSubTab = tabName;
+        tabName = 'prompts';
+    }
+
     // Show tab content container on first interaction
     if (tabContent && tabContent.style.display === 'none') {
         tabContent.style.display = 'block';
     }
-    
+
     // Hide all tab panes
     const allPanes = document.querySelectorAll('.tab-pane');
     allPanes.forEach(pane => {
         pane.style.display = 'none';
         pane.classList.remove('active');
     });
-    
+
     // Remove active class from all tabs
     const allTabs = document.querySelectorAll('.prompt-tab');
     allTabs.forEach(tab => {
         tab.classList.remove('active');
     });
-    
+
     // Show selected tab pane
     const selectedPane = document.getElementById(`content-${tabName}`);
     if (selectedPane) {
         selectedPane.style.display = 'block';
         selectedPane.classList.add('active');
     }
-    
+
     // Add active class to selected tab
     const selectedTab = document.getElementById(`tab-${tabName}`);
     if (selectedTab) {
         selectedTab.classList.add('active');
+        selectedTab.setAttribute('aria-selected', 'true');
+    }
+    allTabs.forEach(tab => {
+        if (tab !== selectedTab) tab.setAttribute('aria-selected', 'false');
+    });
+
+    if (tabName === 'prompts') {
+        switchPromptSubTab(promptSubTab || _activePromptSubTab || 'query');
     }
 }
+
+let _activePromptSubTab = 'query';
+
+function switchPromptSubTab(tabName) {
+    _activePromptSubTab = ['query', 'insights', 'chart'].includes(tabName) ? tabName : 'query';
+
+    document.querySelectorAll('.prompt-subpane').forEach(pane => {
+        pane.style.display = 'none';
+        pane.classList.remove('active');
+    });
+    document.querySelectorAll('.prompt-subtab').forEach(tab => {
+        tab.classList.remove('active');
+        tab.setAttribute('aria-selected', 'false');
+    });
+
+    const pane = document.getElementById(`content-${_activePromptSubTab}`);
+    if (pane) {
+        pane.style.display = 'block';
+        pane.classList.add('active');
+    }
+    const tab = document.getElementById(`tab-${_activePromptSubTab}`);
+    if (tab) {
+        tab.classList.add('active');
+        tab.setAttribute('aria-selected', 'true');
+    }
+}
+window.switchPromptSubTab = switchPromptSubTab;
 
 // Question History Management
 function saveToHistory(question) {
@@ -1678,32 +1732,189 @@ function saveToHistory(question) {
     displayHistory();
 }
 
+async function loadSavedAnalyses() {
+    const list = document.getElementById('saved-analyses-list');
+    if (!list) return;
+    const connection = getActiveConnection();
+    if (!connection) {
+        list.innerHTML = '<p class="history-empty">Pick a connection to see saved analyses.</p>';
+        return;
+    }
+    list.innerHTML = '<p class="history-empty">Loading saved analyses…</p>';
+    try {
+        const res = await fetch(`/api/saved-analyses?connection=${encodeURIComponent(connection)}&limit=50`);
+        if (!res.ok) throw new Error('Failed to fetch saved analyses');
+        const data = await res.json();
+        const items = data.items || [];
+        if (!items.length) {
+            list.innerHTML = '<p class="history-empty">No saved analyses yet.</p>';
+            return;
+        }
+        list.innerHTML = items.map(item => {
+            const name = escapeHtml(item.name || item.question || 'Saved analysis');
+            const question = escapeHtml(item.question || '');
+            const rows = Number.isFinite(item.row_count) ? `${item.row_count} rows` : '';
+            const meta = [rows, item.has_chart ? 'chart' : '', item.has_insights ? 'insights' : '']
+                .filter(Boolean).join(' · ');
+            return `<div class="saved-analysis-item" role="button" tabindex="0" onclick="restoreSavedAnalysis('${escapeHtml(item.id)}')">
+                <div class="saved-analysis-title">${name}</div>
+                <div class="saved-analysis-question">${question}</div>
+                <div class="saved-analysis-meta">${escapeHtml(meta)}</div>
+            </div>`;
+        }).join('');
+    } catch (err) {
+        console.error('[SavedAnalyses]', err);
+        list.innerHTML = '<p class="history-empty">Unable to load saved analyses.</p>';
+    }
+}
+window.loadSavedAnalyses = loadSavedAnalyses;
+
+function _analysisSnapshotName() {
+    const fallback = currentQuestion || 'Saved analysis';
+    if (fallback.length <= 80) return fallback;
+    return fallback.slice(0, 77) + '...';
+}
+
+async function saveCurrentAnalysis() {
+    const connection = requireConnection();
+    if (!connection || !currentResults) return;
+    const btn = document.getElementById('save-analysis-btn');
+    const oldText = btn ? btn.textContent : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Saving…';
+    }
+    try {
+        const chartState = (chartManager && typeof chartManager.getSaveState === 'function')
+            ? chartManager.getSaveState()
+            : {};
+        const insightsState = (insightsManager && typeof insightsManager.getSaveState === 'function')
+            ? insightsManager.getSaveState()
+            : null;
+        const res = await fetch('/api/saved-analyses', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                connection,
+                name: _analysisSnapshotName(),
+                question: currentQuestion,
+                sql: currentSql,
+                query_id: currentQueryId,
+                results: currentResults,
+                chart_spec: chartState.chart_spec || null,
+                chart_config: chartState.chart_config || null,
+                insights: insightsState,
+            }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        showToast('Analysis saved', 'success');
+        await loadSavedAnalyses();
+    } catch (err) {
+        console.error('[SavedAnalyses] save failed', err);
+        showToast('Save failed', 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = oldText || 'Save';
+        }
+    }
+}
+window.saveCurrentAnalysis = saveCurrentAnalysis;
+
+async function restoreSavedAnalysis(savedId) {
+    if (!savedId) return;
+    try {
+        const res = await fetch(`/api/saved-analyses/${encodeURIComponent(savedId)}`);
+        if (!res.ok) throw new Error(await res.text());
+        const item = await res.json();
+        const snapshot = item.result_snapshot || {};
+        const results = {
+            columns: snapshot.columns || item.columns || [],
+            rows: snapshot.rows || [],
+        };
+        const restored = {
+            question: item.question,
+            query_id: item.query_id,
+            session_id: null,
+            sql: item.generated_sql,
+            results,
+            prompt: null,
+            metrics: { restored: true },
+            trace: [],
+        };
+        _isRestoringSavedAnalysis = true;
+        _restoredSavedQuestion = item.question || '';
+        displayResults(restored);
+        _isRestoringSavedAnalysis = false;
+        const input = document.getElementById('question-input');
+        if (input && item.question) input.value = item.question;
+        if (item.insights_payload) {
+            if (!insightsManager) insightsManager = new window.InsightsManager();
+            const container = document.getElementById('insights-container');
+            if (container) {
+                container.style.display = 'block';
+                insightsManager.state.currentInsights = item.insights_payload;
+                insightsManager.displayInsights(container, item.insights_payload);
+                if (item.insights_payload.prompt) insightsManager.displayInsightsPrompt(item.insights_payload);
+            }
+        }
+        if (item.chart_config) {
+            try {
+                await initializeChartFeature(results);
+                if (!chartManager || typeof chartManager.restoreSavedChart !== 'function') {
+                    throw new Error('Chart manager unavailable');
+                }
+                await chartManager.restoreSavedChart(item.chart_config, item.chart_spec || null);
+            } catch (chartErr) {
+                console.warn('[SavedAnalyses] chart restore failed', chartErr);
+            }
+        } else {
+            await initializeChartFeature(results);
+        }
+        showToast('Saved analysis restored', 'success');
+    } catch (err) {
+        _isRestoringSavedAnalysis = false;
+        console.error('[SavedAnalyses] restore failed', err);
+        showToast('Restore failed', 'error');
+    }
+}
+window.restoreSavedAnalysis = restoreSavedAnalysis;
+
+function rerunFreshFromSaved() {
+    const input = document.getElementById('question-input');
+    if (input && _restoredSavedQuestion) input.value = _restoredSavedQuestion;
+    askQuestion();
+}
+window.rerunFreshFromSaved = rerunFreshFromSaved;
+
 async function displayHistory() {
     const historyDiv = document.getElementById('question-history');
     const clearBtn = document.getElementById('clear-history-btn');
-    
+
     const connection = getActiveConnection();
     if (!connection) {
         historyDiv.innerHTML = '<p class="history-empty">Pick a connection to see your recent questions.</p>';
         if (clearBtn) clearBtn.style.display = 'none';
+        loadSavedAnalyses();
         return;
     }
 
     try {
+        loadSavedAnalyses();
         // Fetch both pinned and recent questions for the active connection
         const qs = `?connection=${encodeURIComponent(connection)}`;
         const [pinnedResponse, recentResponse] = await Promise.all([
             fetch(`/api/user/pinned-questions${qs}`),
             fetch(`/api/user/recent-questions${qs}&limit=15`)
         ]);
-        
+
         if (!pinnedResponse.ok || !recentResponse.ok) {
             throw new Error('Failed to fetch history');
         }
-        
+
         const pinnedData = await pinnedResponse.json();
         const recentData = await recentResponse.json();
-        
+
         const pinnedQuestions = pinnedData.questions || [];
         const recentQuestions = recentData.questions || [];
 
@@ -1723,14 +1934,14 @@ async function displayHistory() {
             return;
         }
         if (questionSearchInput) questionSearchInput.style.display = 'block';
-        
+
         clearBtn.style.display = 'none';  // Hide clear button since history is from DB
-        
+
         let html = '';
-        
+
         // Show pinned questions first with pin icon
         if (pinnedQuestions.length > 0) {
-            html += pinnedQuestions.map(q => 
+            html += pinnedQuestions.map(q =>
                 `<div class="history-item pinned-item">
                     <span class="pin-icon" onclick="unpinQuestion(event, '${escapeHtml(q).replace(/'/g, "\\'")}')">📌</span>
                     <span class="question-text" onclick="fillQuestion('${escapeHtml(q).replace(/'/g, "\\'")}')"
@@ -1738,10 +1949,10 @@ async function displayHistory() {
                 </div>`
             ).join('');
         }
-        
+
         // Show recent questions below pinned ones with unpin icon
         if (recentQuestions.length > 0) {
-            html += recentQuestions.map(q => 
+            html += recentQuestions.map(q =>
                 `<div class="history-item">
                     <span class="pin-icon" onclick="pinQuestion(event, '${escapeHtml(q).replace(/'/g, "\\'")}')">📍</span>
                     <span class="question-text" onclick="fillQuestion('${escapeHtml(q).replace(/'/g, "\\'")}')"
@@ -1749,7 +1960,7 @@ async function displayHistory() {
                 </div>`
             ).join('');
         }
-        
+
         historyDiv.innerHTML = html;
     } catch (error) {
         console.error('Error loading history:', error);
@@ -1763,14 +1974,14 @@ async function pinQuestion(event, question) {
     event.stopPropagation();  // Prevent triggering fillQuestion
     const connection = requireConnection();
     if (!connection) return;
-    
+
     try {
         const response = await fetch('/api/user/pin-question', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ connection, question: question })
         });
-        
+
         if (response.ok) {
             displayHistory();  // Refresh the list
         } else {
@@ -1786,14 +1997,14 @@ async function unpinQuestion(event, question) {
     event.stopPropagation();  // Prevent triggering fillQuestion
     const connection = requireConnection();
     if (!connection) return;
-    
+
     try {
         const response = await fetch('/api/user/unpin-question', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ connection, question: question })
         });
-        
+
         if (response.ok) {
             displayHistory();  // Refresh the list
         } else {
@@ -2998,18 +3209,18 @@ window._toggleTraceEvent = _toggleTraceEvent;
 async function initializeChartFeature(results) {
     // Dynamically import ChartManager if not already loaded
     if (!ChartManager) {
-        const module = await import('./chart-feature/chartManager.js?v=74');
+        const module = await import('./chart-feature/chartManager.js?v=81');
         ChartManager = module.ChartManager;
     }
-    
+
     // Dispose previous chart manager if exists
     if (chartManager) {
         chartManager.dispose();
     }
-    
+
     // Create new chart manager
     chartManager = new ChartManager();
-    chartManager.initialize(results);
+    await chartManager.initialize(results);
 }
 
 // Insights Feature
@@ -3018,13 +3229,13 @@ function generateInsights(results, question, queryId = null, sql = null) {
     if (!insightsManager) {
         insightsManager = new window.InsightsManager();
     }
-    
+
     // Show insights container
     const insightsContainer = document.getElementById('insights-container');
     if (insightsContainer) {
         insightsContainer.style.display = 'block';
     }
-    
+
     // Generate insights asynchronously (non-blocking) with query_id + sql for
     // the LangGraph eval node path.
     setTimeout(() => {
@@ -3038,9 +3249,9 @@ let describeExpanded = false;
 function toggleDescribe() {
     const describeSection = document.getElementById('describe-section');
     const describeBtn = document.getElementById('describe-btn');
-    
+
     if (!currentResults) return;
-    
+
     if (describeExpanded) {
         // Hide describe section
         describeSection.style.display = 'none';
@@ -3062,7 +3273,7 @@ function calculateStatistics(results) {
     const columns = results.columns;
     const stats = {};
     const totalRows = rows.length;
-    
+
     // Helper function to parse currency values
     const parseCurrency = (val) => {
         if (typeof val === 'number') return val;
@@ -3073,17 +3284,17 @@ function calculateStatistics(results) {
         }
         return NaN;
     };
-    
+
     columns.forEach((column, colIndex) => {
         // Skip columns that start with or end with "key" (case insensitive)
         const columnLower = column.toLowerCase();
         if (columnLower.startsWith('key') || columnLower.endsWith('key')) {
             return; // Skip this column
         }
-        
+
         const values = [];
         const allValues = []; // Include null/undefined for missing value analysis
-        
+
         // Extract column values
         rows.forEach(row => {
             const value = Array.isArray(row) ? row[colIndex] : row[column];
@@ -3092,17 +3303,17 @@ function calculateStatistics(results) {
                 values.push(value);
             }
         });
-        
+
         // Count missing values
         const missingCount = allValues.filter(v => v === null || v === undefined || v === '').length;
         const missingPct = (missingCount / totalRows * 100).toFixed(2);
-        
+
         // Determine if numeric (including currency values)
         const numericValues = values
             .map(v => parseCurrency(v))
             .filter(v => !isNaN(v));
         const isNumeric = numericValues.length > values.length * 0.5;
-        
+
         if (isNumeric && numericValues.length > 0) {
             // Calculate numeric statistics
             const sorted = numericValues.slice().sort((a, b) => a - b);
@@ -3111,21 +3322,21 @@ function calculateStatistics(results) {
             const median = sorted.length % 2 === 0
                 ? (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
                 : sorted[Math.floor(sorted.length / 2)];
-            
+
             // Calculate standard deviation
             const variance = numericValues.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / numericValues.length;
             const std = Math.sqrt(variance);
-            
+
             // Calculate quartiles
             const q1 = sorted[Math.floor(sorted.length * 0.25)];
             const q3 = sorted[Math.floor(sorted.length * 0.75)];
-            
+
             // Calculate IQR and outliers
             const iqr = q3 - q1;
             const lowerBound = q1 - 1.5 * iqr;
             const upperBound = q3 + 1.5 * iqr;
             const outliers = numericValues.filter(v => v < lowerBound || v > upperBound);
-            
+
             stats[column] = {
                 type: 'numeric',
                 count: numericValues.length,
@@ -3152,7 +3363,7 @@ function calculateStatistics(results) {
                 valueCounts[v] = (valueCounts[v] || 0) + 1;
             });
             const topValue = Object.entries(valueCounts).sort((a, b) => b[1] - a[1])[0];
-            
+
             stats[column] = {
                 type: 'categorical',
                 count: values.length,
@@ -3164,14 +3375,14 @@ function calculateStatistics(results) {
             };
         }
     });
-    
+
     return stats;
 }
 
 // Format statistics as HTML
 function formatStatistics(stats) {
     let html = '<h3 style="margin-bottom: 15px;">📊 Statistical Analysis</h3>';
-    
+
     // Tab Navigation
     html += '<div class="stats-tabs">';
     html += '<button class="stats-tab active" onclick="switchStatsTab(\'summary\')">📊 Summary</button>';
@@ -3179,17 +3390,17 @@ function formatStatistics(stats) {
     html += '<button class="stats-tab" onclick="switchStatsTab(\'missing\')">❓ Missing Values</button>';
     html += '<button class="stats-tab" onclick="switchStatsTab(\'correlation\')">🔗 Correlation Matrix</button>';
     html += '</div>';
-    
+
     // Tab Content Container
     html += '<div class="stats-tab-content-container">';
-    
+
     // Summary Tab (default visible)
     html += '<div id="stats-tab-summary" class="stats-tab-content active">';
     html += '<div class="stats-container">';
     Object.entries(stats).forEach(([column, stat]) => {
         html += '<div class="stat-column">';
         html += `<h4>${escapeHtml(column)}</h4>`;
-        
+
         if (stat.type === 'numeric') {
             html += '<table class="stats-table">';
             html += `<tr><td>Count</td><td>${stat.count}</td></tr>`;
@@ -3212,24 +3423,24 @@ function formatStatistics(stats) {
         html += '</div>';
     });
     html += '</div></div>';
-    
+
     // Outliers Tab
     html += '<div id="stats-tab-outliers" class="stats-tab-content">';
     html += formatOutliersSection(stats);
     html += '</div>';
-    
+
     // Missing Values Tab
     html += '<div id="stats-tab-missing" class="stats-tab-content">';
     html += formatMissingValuesSection(stats);
     html += '</div>';
-    
+
     // Correlation Matrix Tab
     html += '<div id="stats-tab-correlation" class="stats-tab-content">';
     html += formatCorrelationSection(stats);
     html += '</div>';
-    
+
     html += '</div>'; // Close tab content container
-    
+
     return html;
 }
 
@@ -3237,13 +3448,13 @@ function formatStatistics(stats) {
 function formatOutliersSection(stats) {
     const numericStats = Object.entries(stats).filter(([_, stat]) => stat.type === 'numeric');
     if (numericStats.length === 0) return '<p style="text-align: center; padding: 40px; color: #999;">No numeric columns available for outlier analysis.</p>';
-    
+
     let html = '';
-    
+
     numericStats.forEach(([column, stat]) => {
         html += '<div class="outlier-column-section">';
         html += `<h4>${escapeHtml(column)}</h4>`;
-        
+
         // Quartiles and IQR table
         html += '<table class="stats-table" style="margin-bottom: 15px;">';
         html += `<tr><td>Q1 (25%)</td><td>${stat.q25.toFixed(2)}</td></tr>`;
@@ -3253,7 +3464,7 @@ function formatOutliersSection(stats) {
         html += `<tr><td>Lower Bound</td><td>${stat.lowerBound.toFixed(2)}</td></tr>`;
         html += `<tr><td>Upper Bound</td><td>${stat.upperBound.toFixed(2)}</td></tr>`;
         html += '</table>';
-        
+
         // Outliers
         if (stat.outliers.length > 0) {
             html += `<p><strong>Outliers Detected: ${stat.outliers.length}</strong></p>`;
@@ -3268,15 +3479,15 @@ function formatOutliersSection(stats) {
         } else {
             html += '<p style="color: #28a745;">✓ No outliers detected</p>';
         }
-        
+
         // Simple boxplot visualization
         html += '<div class="boxplot-container">';
         html += renderBoxplot(stat);
         html += '</div>';
-        
+
         html += '</div>';
     });
-    
+
     return html;
 }
 
@@ -3284,33 +3495,33 @@ function formatOutliersSection(stats) {
 function renderBoxplot(stat) {
     const range = stat.max - stat.min;
     const scale = 100 / range;
-    
+
     const minPos = 0;
     const q1Pos = (stat.q25 - stat.min) * scale;
     const medianPos = (stat.median - stat.min) * scale;
     const q3Pos = (stat.q75 - stat.min) * scale;
     const maxPos = 100;
-    
+
     let html = '<div class="boxplot" style="position: relative; height: 60px; margin-top: 10px;">';
-    
+
     // Whisker line
     html += `<div style="position: absolute; top: 29px; left: ${minPos}%; width: ${maxPos - minPos}%; height: 2px; background: var(--color-border-2);"></div>`;
-    
+
     // Box
     html += `<div style="position: absolute; top: 15px; left: ${q1Pos}%; width: ${q3Pos - q1Pos}%; height: 30px; background: var(--color-accent); border: 2px solid var(--color-accent-2); border-radius: var(--radius-sm);"></div>`;
-    
+
     // Median line
     html += `<div style="position: absolute; top: 15px; left: ${medianPos}%; width: 2px; height: 30px; background: var(--color-error);"></div>`;
-    
+
     // Min/Max markers
     html += `<div style="position: absolute; top: 25px; left: ${minPos}%; width: 2px; height: 10px; background: var(--color-border-2);"></div>`;
     html += `<div style="position: absolute; top: 25px; left: ${maxPos}%; width: 2px; height: 10px; background: var(--color-border-2);"></div>`;
-    
+
     // Labels
     html += `<div style="position: absolute; top: 45px; left: ${minPos}%; font-size: var(--text-xs); color: var(--color-muted);">${stat.min.toFixed(1)}</div>`;
     html += `<div style="position: absolute; top: 45px; left: ${medianPos}%; font-size: var(--text-xs); color: var(--color-muted); transform: translateX(-50%);">${stat.median.toFixed(1)}</div>`;
     html += `<div style="position: absolute; top: 45px; right: ${100 - maxPos}%; font-size: var(--text-xs); color: var(--color-muted);">${stat.max.toFixed(1)}</div>`;
-    
+
     html += '</div>';
     return html;
 }
@@ -3318,17 +3529,17 @@ function renderBoxplot(stat) {
 // Format Missing Values Analysis Section
 function formatMissingValuesSection(stats) {
     let html = '';
-    
+
     // Filter columns with missing values
     const columnsWithMissing = Object.entries(stats).filter(([_, stat]) => stat.missingCount > 0);
-    
+
     if (columnsWithMissing.length === 0) {
         html += '<p style="color: #28a745; text-align: center; padding: 20px;">✓ No missing values detected in any column</p>';
     } else {
         html += '<table class="missing-values-table">';
         html += '<thead><tr><th>Column</th><th>Missing Count</th><th>Missing %</th><th>Visual</th></tr></thead>';
         html += '<tbody>';
-        
+
         columnsWithMissing.forEach(([column, stat]) => {
             const severity = stat.missingPct < 5 ? 'low' : stat.missingPct < 20 ? 'medium' : 'high';
             html += '<tr>';
@@ -3342,10 +3553,10 @@ function formatMissingValuesSection(stats) {
             html += '</td>';
             html += '</tr>';
         });
-        
+
         html += '</tbody></table>';
     }
-    
+
     return html;
 }
 
@@ -3353,23 +3564,23 @@ function formatMissingValuesSection(stats) {
 function formatCorrelationSection(stats) {
     const numericColumns = Object.entries(stats).filter(([_, stat]) => stat.type === 'numeric');
     if (numericColumns.length < 2) return '<p style="text-align: center; padding: 40px; color: #999;">Need at least 2 numeric columns for correlation analysis.</p>';
-    
+
     let html = '';
-    
+
     // Calculate correlation matrix
     const correlations = calculateCorrelationMatrix(numericColumns);
-    
+
     // Render heatmap
     html += '<div class="correlation-heatmap">';
     html += '<table class="correlation-table">';
-    
+
     // Header row
     html += '<thead><tr><th></th>';
     numericColumns.forEach(([column]) => {
         html += `<th class="correlation-header">${escapeHtml(column)}</th>`;
     });
     html += '</tr></thead>';
-    
+
     // Data rows
     html += '<tbody>';
     numericColumns.forEach(([rowColumn], rowIdx) => {
@@ -3386,7 +3597,7 @@ function formatCorrelationSection(stats) {
     });
     html += '</tbody></table>';
     html += '</div>';
-    
+
     return html;
 }
 
@@ -3394,7 +3605,7 @@ function formatCorrelationSection(stats) {
 function calculateCorrelationMatrix(numericColumns) {
     const n = numericColumns.length;
     const correlations = Array(n).fill(0).map(() => Array(n).fill(0));
-    
+
     for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
             if (i === j) {
@@ -3406,7 +3617,7 @@ function calculateCorrelationMatrix(numericColumns) {
             }
         }
     }
-    
+
     return correlations;
 }
 
@@ -3414,14 +3625,14 @@ function calculateCorrelationMatrix(numericColumns) {
 function calculateCorrelation(values1, values2) {
     const n = Math.min(values1.length, values2.length);
     if (n === 0) return 0;
-    
+
     const mean1 = values1.reduce((a, b) => a + b, 0) / values1.length;
     const mean2 = values2.reduce((a, b) => a + b, 0) / values2.length;
-    
+
     let numerator = 0;
     let sum1 = 0;
     let sum2 = 0;
-    
+
     for (let i = 0; i < n; i++) {
         const diff1 = values1[i] - mean1;
         const diff2 = values2[i] - mean2;
@@ -3429,7 +3640,7 @@ function calculateCorrelation(values1, values2) {
         sum1 += diff1 * diff1;
         sum2 += diff2 * diff2;
     }
-    
+
     const denominator = Math.sqrt(sum1 * sum2);
     return denominator === 0 ? 0 : numerator / denominator;
 }
@@ -3450,19 +3661,19 @@ function switchStatsTab(tabName) {
     allTabContents.forEach(content => {
         content.classList.remove('active');
     });
-    
+
     // Remove active class from all tabs
     const allTabs = document.querySelectorAll('.stats-tab');
     allTabs.forEach(tab => {
         tab.classList.remove('active');
     });
-    
+
     // Show selected tab content
     const selectedContent = document.getElementById(`stats-tab-${tabName}`);
     if (selectedContent) {
         selectedContent.classList.add('active');
     }
-    
+
     // Add active class to clicked tab
     event.target.classList.add('active');
 }
@@ -5089,7 +5300,7 @@ document.addEventListener('DOMContentLoaded', () => {
         window._historyDrawerClose = close;
     })();
 
-    // ── Dev Drawer (Prompts & SQL) ──────────────────────────────────────
+    // ── Run Details Drawer ──────────────────────────────────────────────
     (function () {
         const drawer  = document.getElementById('dev-drawer');
         const overlay = document.getElementById('dev-drawer-overlay');
