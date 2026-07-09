@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from src.api.chart_builder import build_chart_option, profile_dataset, summarize_profile
+from src.api.map_locations import (
+    _COUNTRY_ALIASES,
+    _ISRAEL_DISTRICT_ALIASES,
+    map_feature_names,
+)
 from src.api.result_cache import ResultCache
 
 
@@ -314,6 +322,142 @@ def test_grouped_series_align_to_categories():
     cats = opt["xAxis"]["data"]
     for s in opt["series"]:
         assert len(s["data"]) == len(cats)
+
+
+def test_country_choropleth_map_builds_with_aliases():
+    rows = [
+        {"country": "USA", "customer_count": 6828},
+        {"country": "United Kingdom", "customer_count": 1944},
+        {"country": "Canada", "customer_count": 1553},
+    ]
+    opt = build_chart_option(
+        _bar_spec(
+            chart_type="map",
+            map_mode="choropleth",
+            map_name="world",
+            x="country",
+            location="country",
+            y=["customer_count"],
+            value="customer_count",
+            title="Customers by Country",
+        ),
+        _dataset(rows, ["country", "customer_count"]),
+    )
+    assert opt["series"][0]["type"] == "map"
+    assert opt["series"][0]["map"] == "world"
+    data = {item["name"]: item["value"] for item in opt["series"][0]["data"]}
+    assert data["United States"] == 6828
+    assert data["United Kingdom"] == 1944
+    assert opt["jeenMap"]["matched"] == 3
+
+
+def test_country_choropleth_reports_unknown_locations():
+    rows = [
+        {"country": "USA", "customer_count": 10},
+        {"country": "Atlantis", "customer_count": 5},
+    ]
+    opt = build_chart_option(
+        _bar_spec(
+            chart_type="map",
+            map_mode="choropleth",
+            map_name="world",
+            x="country",
+            location="country",
+            y=["customer_count"],
+            value="customer_count",
+        ),
+        _dataset(rows, ["country", "customer_count"]),
+    )
+    data = {item["name"]: item["value"] for item in opt["series"][0]["data"]}
+    assert data == {"United States": 10}
+    assert opt["jeenMap"]["matched"] == 1
+    assert opt["jeenMap"]["unmatched"] == ["Atlantis"]
+
+
+def test_israel_district_choropleth_matches_hebrew_alias():
+    rows = [
+        {"district": "מחוז תל אביב", "customers": 120},
+        {"district": "Central", "customers": 80},
+    ]
+    opt = build_chart_option(
+        _bar_spec(
+            chart_type="map",
+            map_mode="choropleth",
+            map_name="israel_districts",
+            x="district",
+            location="district",
+            y=["customers"],
+            value="customers",
+        ),
+        _dataset(rows, ["district", "customers"]),
+    )
+    data = {item["name"]: item["value"] for item in opt["series"][0]["data"]}
+    assert data["Tel Aviv District"] == 120
+    assert data["Center District"] == 80
+
+
+def test_israel_city_points_use_local_lookup_without_lat_lng():
+    rows = [
+        {"city": "תל אביב", "sales": 100},
+        {"city": "Haifa", "sales": 50},
+    ]
+    opt = build_chart_option(
+        _bar_spec(
+            chart_type="map",
+            map_mode="points",
+            map_name="israel_districts",
+            x="city",
+            location="city",
+            y=["sales"],
+            value="sales",
+        ),
+        _dataset(rows, ["city", "sales"]),
+    )
+    assert opt["geo"]["map"] == "israel_districts"
+    assert opt["series"][0]["type"] == "scatter"
+    assert len(opt["series"][0]["data"]) == 2
+    point = opt["series"][0]["data"][0]
+    assert point["name"] == "Tel Aviv"
+    assert len(point["value"]) == 3
+
+
+
+
+def test_map_assets_have_no_dateline_rendering_jumps():
+    asset_root = Path(__file__).resolve().parents[2] / "src" / "static" / "chart-feature" / "assets" / "maps"
+    for filename in ["world.json", "world_detailed.json", "israel_districts.json"]:
+        _assert_no_dateline_jumps(asset_root / filename)
+
+
+def _assert_no_dateline_jumps(asset_path):
+    geojson = json.loads(asset_path.read_text(encoding="utf-8"))
+    names = {feature["properties"]["name"] for feature in geojson["features"]}
+    if asset_path.name.startswith("world"):
+        assert "Antarctica" not in names
+
+    jumps = []
+    for feature in geojson["features"]:
+        geometry = feature["geometry"]
+        polygons = geometry["coordinates"] if geometry["type"] == "MultiPolygon" else [geometry["coordinates"]]
+        for polygon in polygons:
+            for ring in polygon:
+                jumps.extend(
+                    (feature["properties"]["name"], prev, cur)
+                    for prev, cur in zip(ring, ring[1:])
+                    if abs(cur[0] - prev[0]) > 180
+                )
+    assert jumps == []
+
+
+def test_alias_targets_exist_in_map_assets():
+    world_names = map_feature_names("world")
+    detailed_names = map_feature_names("world_detailed")
+    israel_names = map_feature_names("israel_districts")
+
+    country_targets = set(_COUNTRY_ALIASES.values())
+    assert country_targets <= world_names
+    assert country_targets <= detailed_names
+    assert set(_ISRAEL_DISTRICT_ALIASES.values()) <= israel_names
 
 
 # ── ECharts rendering best practices ───────────────────────────────────────────

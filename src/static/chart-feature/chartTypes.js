@@ -20,6 +20,7 @@ export const CHART_TYPE_OPTIONS = [
     { value: 'combo',          label: '📊 Combo (Bar + Line)' },
     { value: 'heatmap',        label: '🟦 Heatmap' },
     { value: 'gauge',          label: '🎯 Gauge / KPI' },
+    { value: 'map',            label: '🗺️ Flat Map' },
 ];
 
 /** @type {Set<string>} */

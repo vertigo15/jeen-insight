@@ -16,7 +16,7 @@
  */
 
 /**
- * @typedef {'line' | 'bar' | 'pie'} ChartType
+ * @typedef {'line' | 'bar' | 'pie' | 'area' | 'scatter' | 'horizontal_bar' | 'stacked_bar' | 'stacked_area' | 'donut' | 'combo' | 'heatmap' | 'gauge' | 'map'} ChartType
  */
 
 /**

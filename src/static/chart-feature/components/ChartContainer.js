@@ -68,6 +68,10 @@ export class ChartContainer {
         try {
             // Clear previous chart
             this.chartInstance.clear();
+            const container = document.getElementById(this.containerId);
+            if (container) {
+                container.dataset.chartType = config.type || '';
+            }
             
             // Set new options
             this.chartInstance.setOption(config.options, true);
@@ -221,6 +225,15 @@ export class ChartContainer {
      */
     hasChart() {
         return !!this.chartInstance;
+    }
+
+    /**
+     * Expose the live ECharts instance for view-only controls such as map roam.
+     *
+     * @returns {any|null}
+     */
+    getInstance() {
+        return this.chartInstance;
     }
 
     /**

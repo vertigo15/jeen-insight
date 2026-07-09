@@ -19,6 +19,12 @@ import re
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
+from src.api.map_locations import (
+    canonical_region,
+    infer_map_name,
+    lookup_israel_city,
+)
+
 # Measure names that belong on a combo chart's SECONDARY (right) axis as a line:
 # percentages, rates and period-over-period change metrics live on a very
 # different scale than the primary measures they're compared against.
@@ -34,6 +40,69 @@ _PERCENT_MEASURE_RE = re.compile(
 
 # Negative bars/points get a distinct (red) colour so losses read at a glance.
 _NEG_COLOR = "#d9534f"
+_MAP_PALETTES: Dict[str, List[str]] = {
+    "blue": ["#f7fbff", "#c6dbef", "#6baed6", "#2171b5", "#08306b"],
+    "green": ["#f7fcf5", "#c7e9c0", "#74c476", "#238b45", "#00441b"],
+    "purple": ["#fcfbfd", "#dadaeb", "#9e9ac8", "#6a51a3", "#3f007d"],
+    "orange": ["#fff7ec", "#fdd49e", "#fc8d59", "#d94801", "#7f2704"],
+}
+_MAP_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "world": {
+        "layoutCenter": ["50%", "50%"],
+        "layoutSize": "96%",
+        "aspectScale": 0.86,
+        "zoom": 1.02,
+        "scaleLimit": {"min": 1, "max": 8},
+        "showLabels": False,
+        "noDataColor": "#eef2f7",
+        "borderColor": "#ffffff",
+        "borderWidth": 0.65,
+    },
+    "world_detailed": {
+        "layoutCenter": ["50%", "50%"],
+        "layoutSize": "98%",
+        "aspectScale": 0.86,
+        "zoom": 1.02,
+        "scaleLimit": {"min": 1, "max": 10},
+        "showLabels": False,
+        "noDataColor": "#eef2f7",
+        "borderColor": "#ffffff",
+        "borderWidth": 0.5,
+    },
+    "israel_districts": {
+        "layoutCenter": ["50%", "51%"],
+        "layoutSize": "92%",
+        "aspectScale": 0.78,
+        "zoom": 1.15,
+        "scaleLimit": {"min": 1, "max": 12},
+        "showLabels": True,
+        "noDataColor": "#eef2f7",
+        "borderColor": "#ffffff",
+        "borderWidth": 1.1,
+    },
+}
+
+
+def _map_defaults(map_name: str) -> Dict[str, Any]:
+    return _MAP_DEFAULTS.get(map_name) or _MAP_DEFAULTS["world"]
+
+
+def _map_palette(spec: Dict[str, Any]) -> tuple[str, List[str]]:
+    name = str(spec.get("map_palette") or "blue").strip().lower()
+    if name not in _MAP_PALETTES:
+        name = "blue"
+    return name, _MAP_PALETTES[name]
+
+
+def _map_view_options(map_name: str) -> Dict[str, Any]:
+    defaults = _map_defaults(map_name)
+    return {
+        "layoutCenter": defaults["layoutCenter"],
+        "layoutSize": defaults["layoutSize"],
+        "aspectScale": defaults["aspectScale"],
+        "zoom": defaults["zoom"],
+        "scaleLimit": defaults["scaleLimit"],
+    }
 
 
 def _fmt_meta(value_format: str, symbol: str = "", scale: float = 1) -> Dict[str, Any]:
@@ -742,6 +811,264 @@ def _build_heatmap(spec, rows, ctx):
     return opt
 
 
+def _map_meta(
+    matched: int,
+    unmatched: List[str],
+    mode: str,
+    map_name: str,
+    *,
+    palette: str = "blue",
+    show_labels: bool = False,
+    show_unmatched: bool = True,
+) -> Dict[str, Any]:
+    return {
+        "mode": mode,
+        "mapName": map_name,
+        "matched": matched,
+        "unmatched": unmatched[:25],
+        "unmatchedCount": len(unmatched),
+        "palette": palette,
+        "showLabels": show_labels,
+        "showUnmatched": show_unmatched,
+        "defaultView": _map_view_options(map_name),
+    }
+
+
+def _build_map_choropleth(spec, rows, ctx):
+    map_name = spec.get("map_name") or "world"
+    defaults = _map_defaults(map_name)
+    palette_name, palette = _map_palette(spec)
+    show_labels = (
+        bool(spec["show_labels"])
+        if spec.get("show_labels") is not None
+        else bool(defaults.get("showLabels"))
+    )
+    show_unmatched = spec.get("show_unmatched")
+    show_unmatched = True if show_unmatched is None else bool(show_unmatched)
+    loc_name = spec.get("location") or ctx["x_name"]
+    loc_index = ctx["x_index"] if loc_name == ctx["x_name"] else (
+        ctx["columns"].index(loc_name) if loc_name in ctx["columns"] else -1
+    )
+    value_name = spec.get("value") or ctx["y_names"][0]
+    value_index = ctx["columns"].index(value_name) if value_name in ctx["columns"] else ctx["y_indexes"][0]
+    agg = ctx["aggregate"]
+
+    acc: Dict[str, Dict[str, Any]] = {}
+    unmatched: List[str] = []
+    matched_rows = 0
+    for row in rows:
+        raw_loc = _read_cell(row, loc_name, loc_index)
+        canonical = canonical_region(map_name, raw_loc)
+        if not canonical:
+            label = _as_label(raw_loc)
+            if label and label not in unmatched:
+                unmatched.append(label)
+            continue
+        cell = acc.setdefault(
+            canonical,
+            {"sum": 0.0, "count": 0, "rows": 0, "min": math.inf, "max": -math.inf, "first": None},
+        )
+        cell["rows"] += 1
+        matched_rows += 1
+        y_val = 1.0 if agg == "count" else _to_number(_read_cell(row, value_name, value_index))
+        if y_val is not None:
+            cell["sum"] += y_val
+            cell["count"] += 1
+            cell["min"] = min(cell["min"], y_val)
+            cell["max"] = max(cell["max"], y_val)
+            if cell["first"] is None:
+                cell["first"] = y_val
+
+    data = [
+        {"name": name, "value": _round(value)}
+        for name, cell in acc.items()
+        if (value := _reduce(cell, agg)) is not None
+    ]
+    data.sort(key=lambda item: item["value"], reverse=True)
+    values = [d["value"] for d in data if isinstance(d.get("value"), (int, float))]
+    vmin = min(values) if values else 0
+    vmax = max(values) if values else 1
+
+    opt = _base_option(spec)
+    opt.pop("grid", None)
+    opt["tooltip"] = {"trigger": "item"}
+    opt["visualMap"] = {
+        "type": "continuous",
+        "min": vmin,
+        "max": vmax if vmax != vmin else vmin + 1,
+        "left": 16,
+        "bottom": 18,
+        "calculable": True,
+        "inRange": {"color": palette},
+        "outOfRange": {"color": "#e5e7eb"},
+    }
+    opt["series"] = [{
+        "name": spec.get("y_label") or value_name,
+        "type": "map",
+        "map": map_name,
+        "roam": True,
+        **_map_view_options(map_name),
+        "data": data,
+        "nameProperty": "name",
+        "label": {
+            "show": show_labels,
+            "fontSize": 10,
+            "color": "#334155",
+            "hideOverlap": True,
+        },
+        "itemStyle": {
+            "borderColor": defaults["borderColor"],
+            "borderWidth": defaults["borderWidth"],
+            "areaColor": defaults["noDataColor"],
+        },
+        "emphasis": {"label": {"show": True}, "itemStyle": {"areaColor": palette[-2]}},
+        "select": {"label": {"show": True}, "itemStyle": {"areaColor": palette[-1]}},
+        "selectedMode": "single",
+    }]
+    opt["jeenMap"] = _map_meta(
+        matched_rows,
+        unmatched,
+        "choropleth",
+        map_name,
+        palette=palette_name,
+        show_labels=show_labels,
+        show_unmatched=show_unmatched,
+    )
+    return opt
+
+
+def _point_size(value: float, vmin: float, vmax: float) -> float:
+    if not math.isfinite(value):
+        return 8
+    if vmax <= vmin:
+        return 14
+    scaled = (value - vmin) / (vmax - vmin)
+    return round(8 + 22 * max(0, min(1, scaled)), 2)
+
+
+def _build_map_points(spec, rows, ctx):
+    loc_name = spec.get("location") or ctx["x_name"]
+    loc_index = ctx["x_index"] if loc_name == ctx["x_name"] else (
+        ctx["columns"].index(loc_name) if loc_name in ctx["columns"] else -1
+    )
+    lat_name = spec.get("latitude")
+    lng_name = spec.get("longitude")
+    lat_index = ctx["columns"].index(lat_name) if lat_name in ctx["columns"] else -1
+    lng_index = ctx["columns"].index(lng_name) if lng_name in ctx["columns"] else -1
+    value_name = spec.get("value") or ctx["y_names"][0]
+    value_index = ctx["columns"].index(value_name) if value_name in ctx["columns"] else ctx["y_indexes"][0]
+    map_name = spec.get("map_name") or "world"
+
+    raw_points: List[Dict[str, Any]] = []
+    unmatched: List[str] = []
+    for row in rows:
+        label = _as_label(_read_cell(row, loc_name, loc_index)) if loc_index >= 0 else ""
+        lat = _to_number(_read_cell(row, lat_name, lat_index)) if lat_index >= 0 else None
+        lng = _to_number(_read_cell(row, lng_name, lng_index)) if lng_index >= 0 else None
+        if lat is None or lng is None:
+            city = lookup_israel_city(label)
+            if city:
+                lat = _to_number(city.get("lat"))
+                lng = _to_number(city.get("lng"))
+                label = city.get("name") or label
+                map_name = "israel_districts"
+            else:
+                if label and label not in unmatched:
+                    unmatched.append(label)
+                continue
+        value = _to_number(_read_cell(row, value_name, value_index))
+        if value is None:
+            value = 1.0 if ctx["aggregate"] == "count" else None
+        if value is None:
+            continue
+        raw_points.append({"name": label or value_name, "lng": lng, "lat": lat, "value": value})
+
+    values = [p["value"] for p in raw_points]
+    vmin = min(values) if values else 0
+    vmax = max(values) if values else 1
+    data = [
+        {
+            "name": p["name"],
+            "value": [_round(p["lng"]), _round(p["lat"]), _round(p["value"])],
+            "symbolSize": _point_size(p["value"], vmin, vmax),
+        }
+        for p in raw_points
+    ]
+
+    inferred = infer_map_name(raw_points[0]["name"]) if raw_points else None
+    map_name = spec.get("map_name") or inferred or map_name
+    defaults = _map_defaults(map_name)
+    palette_name, palette = _map_palette(spec)
+    show_labels = (
+        bool(spec["show_labels"])
+        if spec.get("show_labels") is not None
+        else bool(defaults.get("showLabels"))
+    )
+    show_unmatched = spec.get("show_unmatched")
+    show_unmatched = True if show_unmatched is None else bool(show_unmatched)
+    top_label_names = {
+        p["name"]
+        for p in sorted(raw_points, key=lambda item: item["value"], reverse=True)[:5]
+    } if show_labels else set()
+    for item in data:
+        if item["name"] in top_label_names:
+            item["label"] = {"show": True, "formatter": "{b}", "position": "right"}
+    opt = _base_option({**spec, "title": spec.get("title")})
+    opt.pop("grid", None)
+    opt["tooltip"] = {"trigger": "item"}
+    opt["geo"] = {
+        "map": map_name,
+        "roam": True,
+        **_map_view_options(map_name),
+        "silent": False,
+        "label": {"show": show_labels, "fontSize": 10, "color": "#334155"},
+        "itemStyle": {
+            "areaColor": defaults["noDataColor"],
+            "borderColor": defaults["borderColor"],
+            "borderWidth": defaults["borderWidth"],
+        },
+        "emphasis": {"itemStyle": {"areaColor": palette[1]}},
+    }
+    opt["visualMap"] = {
+        "type": "continuous",
+        "min": vmin,
+        "max": vmax if vmax != vmin else vmin + 1,
+        "left": 16,
+        "bottom": 18,
+        "dimension": 2,
+        "calculable": True,
+        "inRange": {"color": [palette[1], palette[-1]]},
+    }
+    opt["series"] = [{
+        "name": spec.get("y_label") or value_name,
+        "type": "scatter",
+        "coordinateSystem": "geo",
+        "data": data,
+        "encode": {"value": 2},
+        "label": {"show": False, "formatter": "{b}", "position": "right"},
+        "labelLayout": {"hideOverlap": True},
+        "itemStyle": {"color": palette[-2], "opacity": 0.78, "borderColor": "#ffffff", "borderWidth": 1},
+        "emphasis": {"scale": True, "itemStyle": {"opacity": 1}},
+    }]
+    opt["jeenMap"] = _map_meta(
+        len(data),
+        unmatched,
+        "points",
+        map_name,
+        palette=palette_name,
+        show_labels=show_labels,
+        show_unmatched=show_unmatched,
+    )
+    return opt
+
+
+def _build_map(spec, rows, ctx):
+    mode = spec.get("map_mode") or "choropleth"
+    if mode == "points":
+        return _build_map_points(spec, rows, ctx)
+    return _build_map_choropleth(spec, rows, ctx)
+
+
 # ── entry point ──────────────────────────────────────────────────────────────
 
 def build_chart_option(spec: Dict[str, Any], dataset: Dict[str, Any]) -> Dict[str, Any]:
@@ -780,6 +1107,7 @@ def build_chart_option(spec: Dict[str, Any], dataset: Dict[str, Any]) -> Dict[st
     x_parts = x_parts if len(x_parts) >= 2 else None
 
     ctx = {
+        "columns": columns,
         "x_name": spec.get("x"),
         "x_index": index_of(spec.get("x")),
         "x_parts": x_parts,
@@ -793,7 +1121,9 @@ def build_chart_option(spec: Dict[str, Any], dataset: Dict[str, Any]) -> Dict[st
     }
 
     ctype = str(spec.get("chart_type") or "bar").lower()
-    if ctype == "pie":
+    if ctype == "map":
+        opt = _build_map(spec, rows, ctx)
+    elif ctype == "pie":
         opt = _build_pie(spec, _build_matrix(rows, ctx), donut=False)
     elif ctype == "donut":
         opt = _build_pie(spec, _build_matrix(rows, ctx), donut=True)

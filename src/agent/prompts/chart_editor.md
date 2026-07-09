@@ -54,6 +54,8 @@ naming one, set kind="currency" and symbol="" (a plain number, no symbol).
 - Chart type: switch between bar, line, area (line + areaStyle), scatter,
   pie, donut (pie + radius), horizontal bar, stacked bar/area (stack: 'total'),
   combo (bar + line, dual axis when needed), heatmap, gauge
+- For an existing map chart only: styling changes such as title, colors,
+  tooltip text, label visibility, and visualMap placement
 - Value formatting via jeenFormat (currency / percent / compact)
 - Sort order of category axis (asc / desc / by value)
 - Smoothing on line series, stacking, opacity
@@ -80,6 +82,11 @@ naming one, set kind="currency" and symbol="" (a plain number, no symbol).
   question box.
 - Do not change which columns are used as the X axis or Y axis values
   unless the instruction explicitly asks for a different existing column.
+- Do not create or switch to a map chart from this endpoint. Map creation needs
+  the full result set, map assets, and deterministic location matching. If the
+  user asks to "make it a map", set "out_of_scope": true, leave "chart_config"
+  equal to the input config, and tell the user to regenerate the chart as Map
+  from the chart type selector.
 
 # DERIVED SERIES RULES
 - The `operator` MUST be one of: moving_avg, cumulative_sum, percent_change,
