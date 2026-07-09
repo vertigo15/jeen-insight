@@ -27,7 +27,7 @@ from src.agent.user_resolver import SimpleUserResolver
 from src.config import settings
 from src.connections import Connection, ConnectionService
 from src.metadata import MetadataLoader
-from src.tools.sql_tool import PostgresSqlRunner
+from src.connectors import SqlRunner
 
 # Type alias — avoids a hard import of PromptCache at module level
 _PromptCache = Any
@@ -45,7 +45,7 @@ class JeenInsightsAgent:
         self,
         *,
         connection: Connection,
-        sql_runner: PostgresSqlRunner,
+        sql_runner: SqlRunner,
         llm_service: LangChainLlmService,
         router_llm_service: LangChainLlmService,
         metadata_loader: MetadataLoader,
@@ -60,6 +60,7 @@ class JeenInsightsAgent:
         self.metadata_loader = metadata_loader
         self.history = history_service
         self.user_resolver = user_resolver
+        self.sql_runner = sql_runner
         self.llm = llm_service           # used by charts.py + insights.py routes
 
         self.graph = build_graph(
@@ -120,7 +121,7 @@ class JeenInsightsAgent:
             results = await asyncio.gather(
                 self._load_catalog(self.source_key),
                 self._fetch_conversation_context(
-                    session_id, limit=runtime.conversation_context_turns
+                    session_id, user_id=str(user.id), limit=runtime.conversation_context_turns
                 ),
                 self._safe_log_query(
                     user_id=user.id,
@@ -163,6 +164,9 @@ class JeenInsightsAgent:
                 # ── Connection ──────────────────────────────────────────
                 "connection_display_name": self.display_name,
                 "database_type": self.database_type,
+                "connection_database": self.connection.connection_database,
+                "connection_catalog": self.connection.connection_catalog,
+                "connection_schema": self.connection.db_schema,
                 # ── Audit ───────────────────────────────────────────────
                 "query_id": query_id,
                 "user_id": str(user.id),
@@ -179,6 +183,7 @@ class JeenInsightsAgent:
                 "route_reason": "",
                 # ── Catalog ─────────────────────────────────────────────
                 "metadata_bundle": metadata_bundle,
+                "dialect_rules": "",
                 "known_tables": [],
                 "known_columns": [],
                 "table_columns": {},
@@ -285,11 +290,11 @@ class JeenInsightsAgent:
         )
 
     async def _fetch_conversation_context(
-        self, session_id: UUID, limit: int = 5
+        self, session_id: UUID, *, user_id: str, limit: int = 5
     ) -> List[Dict[str, Any]]:
         try:
             ctx = await self.history.get_conversation_context(
-                session_id=session_id, limit=limit
+                session_id=session_id, user_id=user_id, limit=limit
             )
             ctx.reverse()  # chronological order, oldest first
             if ctx:

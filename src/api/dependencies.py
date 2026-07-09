@@ -6,7 +6,7 @@ HTTP errors at the boundary, so route handlers can remain free of plumbing.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from fastapi import HTTPException
 
@@ -71,11 +71,20 @@ def get_prompt_cache() -> PromptCache:
 
 
 def require_user_id(value: Any) -> str:
-    """Return a non-empty authenticated user id or fail closed."""
+    """Return a non-empty authenticated user id or fail closed.
+
+    Browser requests should reach FastAPI through Flask, which stamps this value
+    from the signed UI session. Direct callers that omit it cannot safely touch
+    user-owned data.
+    """
     user_id = str(value or "").strip()
     if not user_id or user_id == "default":
         raise HTTPException(status_code=401, detail="Authenticated user is required")
     return user_id
+
+
+def require_user_context_user_id(user_context: Optional[Mapping[str, Any]]) -> str:
+    return require_user_id((user_context or {}).get("user_id"))
 
 
 async def resolve_agent(source_key: Optional[str]) -> JeenInsightsAgent:

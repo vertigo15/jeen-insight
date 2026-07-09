@@ -6,7 +6,12 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Query
 
-from src.api.dependencies import get_catalog_provider, resolve_agent
+from src.api.dependencies import (
+    get_catalog_provider,
+    get_history_service,
+    require_user_context_user_id,
+    resolve_agent,
+)
 from src.api.models import QueryRequest, QueryResponse
 from src.api.result_cache import result_cache
 
@@ -18,6 +23,13 @@ router = APIRouter(prefix="/api", tags=["query"])
 async def query_database(request: QueryRequest):
     if not request.question or not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
+    user_id = require_user_context_user_id(request.user_context)
+    if request.session_id:
+        history = get_history_service()
+        if not await history.session_belongs_to_user(
+            session_id=request.session_id, user_id=user_id
+        ):
+            raise HTTPException(status_code=404, detail="Session not found for this user")
     agent = await resolve_agent(request.connection)
     try:
         result = await agent.process_question(
@@ -34,7 +46,7 @@ async def query_database(request: QueryRequest):
         # re-uploading them. Best-effort: never fail the query over a cache hiccup.
         try:
             result_cache.put(
-                user_id=(request.user_context or {}).get("user_id"),
+                user_id=user_id,
                 connection=request.connection,
                 query_id=result.get("query_id"),
                 dataset=result.get("results"),

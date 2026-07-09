@@ -180,6 +180,7 @@ class GenerateProfileRequest(BaseModel):
 # ----------------------------------------------------------------------
 class FeedbackRequest(BaseModel):
     query_id: UUID
+    user_id: Optional[str] = None
     feedback: str
     corrected_sql: Optional[str] = None
     notes: Optional[str] = None
@@ -189,6 +190,26 @@ class PinQuestionRequest(BaseModel):
     connection: str
     user_id: str = "default"
     question: str
+
+
+class SaveAnalysisRequest(BaseModel):
+    connection: str
+    user_id: Optional[str] = None
+    name: Optional[str] = None
+    question: str
+    sql: Optional[str] = None
+    query_id: Optional[UUID] = None
+    results: Dict[str, Any]
+    chart_spec: Optional[Dict[str, Any]] = None
+    chart_config: Optional[Dict[str, Any]] = None
+    insights: Optional[Dict[str, Any]] = None
+
+
+class UpdateSavedAnalysisRequest(BaseModel):
+    user_id: Optional[str] = None
+    name: Optional[str] = None
+    chart_spec: Optional[Dict[str, Any]] = None
+    chart_config: Optional[Dict[str, Any]] = None
 
 
 # ----------------------------------------------------------------------

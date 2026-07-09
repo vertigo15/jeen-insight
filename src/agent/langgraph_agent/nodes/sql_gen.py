@@ -99,6 +99,10 @@ def make_sql_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
         error_context = state.get("error_context")
         display_name = state.get("connection_display_name", "")
         db_type = state.get("database_type", "")
+        source_key = state.get("source_key", "")
+        database = state.get("connection_database") or ""
+        catalog = state.get("connection_catalog") or ""
+        schema = state.get("connection_schema") or ""
         temperature = state.get("temperature")
 
         # Build tool schema — RunSqlTool with None runner (schema only, no execution here)
@@ -106,6 +110,9 @@ def make_sql_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
             None,  # type: ignore[arg-type]
             connection_display_name=display_name,
             database_type=db_type,
+            source_key=source_key,
+            catalog=catalog,
+            schema=schema,
         )
         tools = [sql_tool.get_schema()]
 
@@ -152,6 +159,12 @@ def make_sql_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
                 question=question,
                 error_context=error_context,
                 retry_count=retry_count,
+                connection_display_name=display_name,
+                source_key=source_key,
+                database_type=db_type,
+                connection_database=database or "not specified",
+                connection_catalog=catalog or "not specified",
+                connection_schema=schema or "not specified",
             )
         else:
             user_msg = question

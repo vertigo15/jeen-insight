@@ -83,6 +83,28 @@ def _proxy_post(path: str, payload: Dict[str, Any], timeout: float = 60) -> Any:
     return jsonify({"error": response.text}), response.status_code
 
 
+def _proxy_patch(path: str, payload: Dict[str, Any], timeout: float = 30) -> Any:
+    try:
+        response = requests.patch(f"{API_BASE_URL}{path}", json=payload, timeout=timeout)
+    except requests.exceptions.RequestException as e:
+        logger.error("Backend PATCH %s failed: %s", path, e)
+        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+    if response.status_code == 200:
+        return jsonify(response.json())
+    return jsonify({"error": response.text}), response.status_code
+
+
+def _proxy_delete(path: str, params: Dict[str, Any] | None = None, timeout: float = 30) -> Any:
+    try:
+        response = requests.delete(f"{API_BASE_URL}{path}", params=params, timeout=timeout)
+    except requests.exceptions.RequestException as e:
+        logger.error("Backend DELETE %s failed: %s", path, e)
+        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+    if response.status_code == 200:
+        return jsonify(response.json())
+    return jsonify({"error": response.text}), response.status_code
+
+
 def _session_user_id() -> str:
     """Return the logged-in user id as a string for history/audit APIs."""
     return str(session["user_id"])
@@ -572,6 +594,55 @@ def get_history_log():
     )
 
 
+@app.route("/api/saved-analyses", methods=["GET"])
+def list_saved_analyses():
+    connection = request.args.get("connection")
+    if not connection:
+        return jsonify({"items": []})
+    return _proxy_get(
+        "/api/saved-analyses",
+        params={
+            "connection": connection,
+            "user_id": _session_user_id(),
+            "limit": request.args.get("limit", "50"),
+        },
+    )
+
+
+@app.route("/api/saved-analyses", methods=["POST"])
+def save_analysis():
+    data = request.get_json() or {}
+    if not data.get("connection"):
+        return jsonify({"error": "No connection selected"}), 400
+    data["user_id"] = _session_user_id()
+    return _proxy_post("/api/saved-analyses", data, timeout=120)
+
+
+@app.route("/api/saved-analyses/<saved_id>", methods=["GET"])
+def get_saved_analysis(saved_id: str):
+    return _proxy_get(
+        f"/api/saved-analyses/{saved_id}",
+        params={"user_id": _session_user_id()},
+        timeout=30,
+    )
+
+
+@app.route("/api/saved-analyses/<saved_id>", methods=["PATCH"])
+def update_saved_analysis(saved_id: str):
+    data = request.get_json() or {}
+    data["user_id"] = _session_user_id()
+    return _proxy_patch(f"/api/saved-analyses/{saved_id}", data, timeout=30)
+
+
+@app.route("/api/saved-analyses/<saved_id>", methods=["DELETE"])
+def delete_saved_analysis(saved_id: str):
+    return _proxy_delete(
+        f"/api/saved-analyses/{saved_id}",
+        params={"user_id": _session_user_id()},
+        timeout=30,
+    )
+
+
 # ----------------------------------------------------------------------
 # Insights / charts / profile
 # ----------------------------------------------------------------------
@@ -844,12 +915,21 @@ def mcp_proxy(subpath: str):
 # ----------------------------------------------------------------------
 @app.route("/api/feedback", methods=["POST"])
 def submit_feedback():
-    return _proxy_post("/api/feedback", request.get_json() or {})
+    data = request.get_json() or {}
+    data["user_id"] = _session_user_id()
+    return _proxy_post("/api/feedback", data)
 
 
 @app.route("/api/conversation/<session_id>", methods=["GET"])
 def get_conversation_history(session_id: str):
-    return _proxy_get(f"/api/conversation/{session_id}", timeout=30)
+    return _proxy_get(
+        f"/api/conversation/{session_id}",
+        params={
+            "include_insights": request.args.get("include_insights", "true"),
+            "user_id": _session_user_id(),
+        },
+        timeout=30,
+    )
 
 
 if __name__ == "__main__":

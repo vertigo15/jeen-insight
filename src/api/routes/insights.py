@@ -9,7 +9,7 @@ import time
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from src.api.dependencies import get_history_service, resolve_agent
+from src.api.dependencies import get_history_service, require_user_id, resolve_agent
 from src.api.models import (
     GenerateInsightsRequest,
     GenerateInsightsResponse,
@@ -77,8 +77,22 @@ def _dataset_statistics(dataset: dict) -> str:
         return ""
 
 
+async def _verify_query_owner(*, query_id, user_id: str, connection: str) -> None:
+    if not query_id:
+        return
+    history = get_history_service()
+    if not await history.query_belongs_to_user(
+        query_id=query_id, user_id=user_id, source_key=connection
+    ):
+        raise HTTPException(status_code=404, detail="Query not found for this user")
+
+
 @router.post("/generate-insights", response_model=GenerateInsightsResponse)
 async def generate_insights_endpoint(request: GenerateInsightsRequest):
+    user_id = require_user_id(request.user_id)
+    await _verify_query_owner(
+        query_id=request.query_id, user_id=user_id, connection=request.connection
+    )
     agent = await resolve_agent(request.connection)
     logger.info("Generating insights for: %s", request.question[:50])
     # Resolve before the try so a 409 cache_miss propagates instead of being
@@ -86,7 +100,7 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
     # prefer_cache: insights reason over the FULL result set (the cached frame),
     # not the small sample the browser sends.
     dataset = _resolve_dataset(
-        user_id=request.user_id, connection=request.connection, query_id=request.query_id,
+        user_id=user_id, connection=request.connection, query_id=request.query_id,
         body_dataset=request.dataset, prefer_cache=True,
     )
     try:
@@ -220,6 +234,10 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
     once ``done`` fires. Real TTFT (first non-empty content chunk) is
     measured server-side and emitted as its own event.
     """
+    user_id = require_user_id(request.user_id)
+    await _verify_query_owner(
+        query_id=request.query_id, user_id=user_id, connection=request.connection
+    )
     agent = await resolve_agent(request.connection)
     logger.info("Streaming insights for: %s", request.question[:50])
 
@@ -230,7 +248,7 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
     # the client can retry (re-sending rows) rather than a mid-stream failure.
     # prefer_cache: stream insights over the FULL cached result set.
     dataset = _resolve_dataset(
-        user_id=request.user_id, connection=request.connection, query_id=request.query_id,
+        user_id=user_id, connection=request.connection, query_id=request.query_id,
         body_dataset=request.dataset, prefer_cache=True,
     )
     statistics = _dataset_statistics(dataset)
@@ -385,12 +403,17 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
 
 @router.post("/generate-profile")
 async def generate_profile_endpoint(request: GenerateProfileRequest):
+    user_id = require_user_id(request.user_id)
+    if request.query_id:
+        await _verify_query_owner(
+            query_id=request.query_id, user_id=user_id, connection=request.connection or ""
+        )
     report_type = request.report_type.lower()
     logger.info("Generating data profile report using: %s", report_type)
     # Profiling wants the FULL result set: prefer the cached frame, fall back to
     # rows in the body. Resolve before the try so a 409 cache_miss propagates.
     dataset = _resolve_dataset(
-        user_id=request.user_id, connection=request.connection, query_id=request.query_id,
+        user_id=user_id, connection=request.connection, query_id=request.query_id,
         body_dataset=request.dataset, prefer_cache=True,
     )
     try:

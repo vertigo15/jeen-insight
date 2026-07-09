@@ -40,6 +40,9 @@ class AgentState(TypedDict, total=False):
     # ── Connection info ───────────────────────────────────────────────────
     connection_display_name: str
     database_type: str
+    connection_database: Optional[str]
+    connection_catalog: Optional[str]
+    connection_schema: Optional[str]
 
     # ── Audit ─────────────────────────────────────────────────────────────
     query_id: Optional[UUID]
@@ -63,6 +66,7 @@ class AgentState(TypedDict, total=False):
     metadata_bundle: Dict[str, str]
     system_prompt: str
     structured_prompt: Dict[str, Any]   # forwarded as-is to the UI
+    dialect_rules: str
     known_tables: List[str]             # lower-cased table names from catalog
     known_columns: List[str]            # lower-cased column names from catalog (flat)
     table_columns: Dict[str, List[str]] # lower-cased {table: [columns]} from catalog

@@ -435,6 +435,16 @@ class TestExtractTableNames:
         assert "factsales" in names
         assert "description" not in names[0]
 
+    def test_strips_mcp_colon_descriptions(self):
+        tables = """
+        Tables available for querying:
+        - customers: retail customers with demographics
+        - exchange_rates: currency exchange rates by date
+        - sales: retail sales transactions
+        """
+        names = _extract_table_names(tables)
+        assert names == ["customers", "exchange_rates", "sales"]
+
     def test_empty_string_returns_empty(self):
         assert _extract_table_names("") == []
 

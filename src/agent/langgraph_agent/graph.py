@@ -77,7 +77,7 @@ from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
 from src.metadata import MetadataLoader
-from src.tools.sql_tool import PostgresSqlRunner
+from src.connectors import SqlRunner
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ def build_graph(
     *,
     llm: LangChainLlmService,
     router_llm: LangChainLlmService,
-    sql_runner: PostgresSqlRunner,
+    sql_runner: SqlRunner,
     metadata_loader: MetadataLoader,
     history_service: ConversationHistoryService,
     prompt_loader: PromptLoader,
@@ -163,7 +163,7 @@ def build_graph(
         and memory_answer_generator.  May be the same object as ``llm`` when
         no separate cheaper deployment is configured.
     sql_runner:
-        PostgreSQL query runner (already enforces read-only safety).
+        Query runner for the selected data source (already enforces read-only safety).
     metadata_loader:
         Loads and caches curated metadata from the metadata DB.
     history_service:

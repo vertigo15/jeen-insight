@@ -7,31 +7,34 @@ read-only consumer. Each row carries the connection details inside a
 `metadata_tables.source` / `metadata_columns.source` / `knowledge_pairs.source` /
 `metadata_business_terms.source` / `metadata_relationships.source`.
 
-This module also caches one `PostgresSqlRunner` per `source_key` so we don't
+This module also caches one `SqlRunner` per `source_key` so we don't
 reopen pools per request.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import asyncpg
 
-from src.tools.sql_tool import PostgresSqlRunner
+from src.connectors import SqlRunner, UnsupportedConnectionType
+from src.connectors.factory import (
+    build_sql_runner,
+    coerce_bool,
+    coerce_int,
+    coerce_str,
+    decode_config,
+    public_connection_fields,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class ConnectionNotFound(Exception):
     """Raised when a requested `source_key` is missing or inactive."""
-
-
-class UnsupportedConnectionType(Exception):
-    """Raised when `service_type` is not yet supported by Jeen Insights."""
 
 
 @dataclass
@@ -47,6 +50,8 @@ class Connection:
     connection_host: Optional[str]
     connection_port: Optional[int]
     connection_database: Optional[str]
+    connection_catalog: Optional[str]
+    connection_http_path: Optional[str]
     db_schema: Optional[str]
     enable_ssl: bool
     is_active: bool
@@ -63,6 +68,8 @@ class Connection:
             "connection_host": self.connection_host,
             "connection_port": self.connection_port,
             "connection_database": self.connection_database,
+            "connection_catalog": self.connection_catalog,
+            "connection_http_path": self.connection_http_path,
             "db_schema": self.db_schema,
             "enable_ssl": self.enable_ssl,
             "is_active": self.is_active,
@@ -77,7 +84,7 @@ class ConnectionService:
 
     def __init__(self, metadata_pool: asyncpg.Pool):
         self.pool = metadata_pool
-        self._runners: Dict[str, PostgresSqlRunner] = {}
+        self._runners: Dict[str, SqlRunner] = {}
         self._runner_locks: Dict[str, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------
@@ -113,8 +120,8 @@ class ConnectionService:
             )
         return self._row_to_connection(row)
 
-    async def get_runner(self, source_key: str) -> PostgresSqlRunner:
-        """Return a lazily-initialized `PostgresSqlRunner` for `source_key`."""
+    async def get_runner(self, source_key: str) -> SqlRunner:
+        """Return a lazily-initialized `SqlRunner` for `source_key`."""
         if source_key in self._runners:
             return self._runners[source_key]
 
@@ -157,147 +164,54 @@ class ConnectionService:
         return dict(row)
 
     def _row_to_connection(self, row) -> Connection:
-        cfg = _decode_config(row["connection_config"])
-        host = _coerce_str(cfg.get("host"))
-        port = _coerce_int(cfg.get("port"))
-        # Some service types use a combined "hostPort" string.
-        if (host is None or port is None) and cfg.get("hostPort"):
-            host_port_str = str(cfg["hostPort"])
-            if ":" in host_port_str:
-                h, p = host_port_str.rsplit(":", 1)
-                host = host or h
-                try:
-                    port = port or int(p)
-                except ValueError:
-                    pass
-            else:
-                host = host or host_port_str
-        database = _coerce_str(cfg.get("database"))
-        db_schema = _coerce_str(cfg.get("databaseSchema") or cfg.get("schema"))
-        enable_ssl = _coerce_bool(cfg.get("ssl"), default=True)
+        cfg = decode_config(row["connection_config"])
         service_type = row["service_type"] or ""
+        try:
+            fields = public_connection_fields(cfg, service_type)
+            database_type = fields["database_type"]
+        except UnsupportedConnectionType:
+            # Listing connections should remain best-effort even if an inactive
+            # future connector type is present. Selecting it still returns 501
+            # when the runner is built.
+            fields = {
+                "host": coerce_str(cfg.get("host")),
+                "port": coerce_int(cfg.get("port")),
+                "database": coerce_str(cfg.get("database")),
+                "catalog": coerce_str(cfg.get("catalog")),
+                "schema": coerce_str(cfg.get("databaseSchema") or cfg.get("schema")),
+                "http_path": coerce_str(cfg.get("httpPath") or cfg.get("http_path")),
+                "enable_ssl": coerce_bool(cfg.get("ssl"), default=True),
+            }
+            database_type = service_type.lower()
         return Connection(
             id=row["id"],
             source_key=row["name"],
             display_name=row["name"],
             description=row["description"],
             service_type=service_type,
-            database_type=service_type.lower(),
-            connection_host=host,
-            connection_port=port,
-            connection_database=database,
-            db_schema=db_schema,
-            enable_ssl=enable_ssl,
+            database_type=database_type,
+            connection_host=fields["host"],
+            connection_port=fields["port"],
+            connection_database=fields["database"],
+            connection_catalog=fields["catalog"],
+            connection_http_path=fields["http_path"],
+            db_schema=fields["schema"],
+            enable_ssl=fields["enable_ssl"],
             is_active=row["is_active"],
         )
 
-    async def _build_runner(self, row: dict) -> PostgresSqlRunner:
-        """Build a `PostgresSqlRunner` from a `settings_services` row."""
-        cfg = _decode_config(row["connection_config"])
-        service_type = (row.get("service_type") or "").strip().lower()
-        if service_type not in ("postgres", "postgresql"):
-            raise UnsupportedConnectionType(
-                f"service_type={row.get('service_type')!r} not supported yet "
-                "(Jeen Insights initial release supports PostgreSQL only)."
-            )
-
-        host = _coerce_str(cfg.get("host"))
-        port = _coerce_int(cfg.get("port")) or 5432
-        if (host is None) and cfg.get("hostPort"):
-            host_port_str = str(cfg["hostPort"])
-            if ":" in host_port_str:
-                h, p = host_port_str.rsplit(":", 1)
-                host = h
-                try:
-                    port = int(p)
-                except ValueError:
-                    pass
-            else:
-                host = host_port_str
-        username = _coerce_str(cfg.get("username")) or ""
-        password = _coerce_str(cfg.get("password")) or ""
-        database = _coerce_str(cfg.get("database")) or ""
-        enable_ssl = _coerce_bool(cfg.get("ssl"), default=True)
-
-        if not host:
-            raise UnsupportedConnectionType(
-                "connection_config is missing 'host' (or 'hostPort')."
-            )
-        if not database:
-            raise UnsupportedConnectionType(
-                "connection_config is missing 'database'."
-            )
-
-        ssl_suffix = "?sslmode=require" if enable_ssl else ""
-        connection_string = (
-            f"postgresql://{username}:{password}@{host}:{port}/{database}{ssl_suffix}"
-        )
-        runner = PostgresSqlRunner(connection_string=connection_string)
-        await runner.initialize()
+    async def _build_runner(self, row: dict) -> SqlRunner:
+        """Build a `SqlRunner` from a `settings_services` row."""
+        runner = await build_sql_runner(row)
+        cfg = decode_config(row.get("connection_config"))
+        fields = public_connection_fields(cfg, row.get("service_type"))
         logger.info(
-            "🔌 Built data-source runner for %s (%s@%s:%s/%s, ssl=%s)",
+            "Built data-source runner source_key=%s database_type=%s host=%s port=%s catalog=%s schema=%s",
             row["name"],
-            username,
-            host,
-            port,
-            database,
-            enable_ssl,
+            getattr(runner, "database_type", row.get("service_type")),
+            fields.get("host"),
+            fields.get("port"),
+            fields.get("catalog"),
+            fields.get("schema"),
         )
         return runner
-
-
-# ----------------------------------------------------------------------
-# Module-level helpers
-# ----------------------------------------------------------------------
-def _decode_config(value: Any) -> Dict[str, Any]:
-    """Convert the JSONB connection_config payload to a Python dict."""
-    if value is None:
-        return {}
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        try:
-            value = bytes(value).decode("utf-8")
-        except Exception:  # noqa: BLE001
-            return {}
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError:
-            return {}
-    return {}
-
-
-def _coerce_str(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value or None
-    return str(value)
-
-
-def _coerce_int(value: Any) -> Optional[int]:
-    if value is None or value == "":
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _coerce_bool(value: Any, *, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        v = value.strip().lower()
-        if v in ("true", "1", "yes", "on", "t"):
-            return True
-        if v in ("false", "0", "no", "off", "f", ""):
-            return False
-    return default
