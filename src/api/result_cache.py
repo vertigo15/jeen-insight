@@ -61,11 +61,16 @@ class ResultCache:
 
     @staticmethod
     def _user_prefix(user_id: Any) -> str:
-        return f"{user_id or '?'}{_SEP}"
+        return f"{str(user_id).strip()}{_SEP}"
 
     @classmethod
     def _key(cls, user_id: Any, connection: Any, query_id: Any) -> str:
-        return f"{cls._user_prefix(user_id)}{connection or '?'}{_SEP}{query_id}"
+        uid = str(user_id or "").strip()
+        conn = str(connection or "").strip()
+        qid = str(query_id or "").strip()
+        if not uid or not conn or not qid:
+            return ""
+        return f"{cls._user_prefix(uid)}{conn}{_SEP}{qid}"
 
     def put(
         self,
@@ -76,14 +81,14 @@ class ResultCache:
         dataset: Optional[Dict[str, Any]],
     ) -> None:
         """Cache a result set. No-ops on missing query_id or empty data."""
-        if not query_id or not isinstance(dataset, dict):
+        key = self._key(user_id, connection, query_id)
+        if not key or not isinstance(dataset, dict):
             return
         rows = dataset.get("rows") or dataset.get("data")
         columns = dataset.get("columns")
         if not rows or not columns:
             return
 
-        key = self._key(user_id, connection, query_id)
         now = time.monotonic()
         with self._lock:
             self._evict_expired(now)
@@ -104,9 +109,9 @@ class ResultCache:
         self, *, user_id: Any, connection: Any, query_id: Any
     ) -> Optional[Dict[str, Any]]:
         """Return the cached ``{columns, rows}`` or ``None`` on miss/expiry."""
-        if not query_id:
-            return None
         key = self._key(user_id, connection, query_id)
+        if not key:
+            return None
         now = time.monotonic()
         with self._lock:
             entry = self._store.get(key)
@@ -129,6 +134,8 @@ class ResultCache:
         ``_store`` is ordered LRU→MRU, so the user's keys are too — pop from the
         front until only ``per_user_max`` remain."""
         prefix = self._user_prefix(user_id)
+        if not str(user_id or "").strip():
+            return
         user_keys = [k for k in self._store if k.startswith(prefix)]
         for k in user_keys[: max(0, len(user_keys) - self._per_user)]:
             self._store.pop(k, None)

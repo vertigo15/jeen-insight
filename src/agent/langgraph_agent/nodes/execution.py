@@ -1,6 +1,6 @@
 """SQL execution nodes.
 
-execute_query         Async node.  Runs the SQL via PostgresSqlRunner and records
+execute_query         Async node.  Runs the SQL via SqlRunner and records
                       execution time.  The runner already enforces read-only safety.
 trivial_result_check  Sync node.  Flags single-value / small result sets so the
                       expensive eval/analytics LLM call is skipped.
@@ -13,7 +13,7 @@ import time
 from typing import Any, Dict
 
 from src.agent.langgraph_agent.state import AgentState
-from src.tools.sql_tool import PostgresSqlRunner
+from src.connectors import SqlRunner
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ _TRIVIAL_MAX_COLS = 5
 # ── execute_query ─────────────────────────────────────────────────────────────
 
 
-def make_execute_query(sql_runner: PostgresSqlRunner):
+def make_execute_query(sql_runner: SqlRunner):
     """Return an async ``execute_query`` node."""
 
     async def execute_query(state: AgentState) -> Dict[str, Any]:

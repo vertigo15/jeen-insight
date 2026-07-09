@@ -15,7 +15,9 @@ import decimal
 import json
 import logging
 import time
+from datetime import date, datetime, time as dt_time
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 from src.agent.conversation_history import ConversationHistoryService
 from src.agent.langgraph_agent.state import AgentState
@@ -23,22 +25,36 @@ from src.agent.langgraph_agent.state import AgentState
 logger = logging.getLogger(__name__)
 
 
-def _coerce_decimals(rows: List[Dict]) -> List[Dict]:
-    """Convert Decimal values to float so rows are JSON-serialisable.
+def _coerce_json_safe(rows: List[Dict]) -> List[Dict]:
+    """Convert common DB driver values so rows are JSON-serialisable.
 
-    PostgreSQL returns ``decimal.Decimal`` for NUMERIC/DECIMAL columns.
-    This causes ``json.dumps`` to raise ``TypeError`` when the history
-    service tries to store the result preview.
+    Different drivers return different Python types for warehouse values
+    (Decimal, datetime/date/time, UUID, bytes, etc.). The history service stores
+    a small result preview as JSON, so normalize those values here.
     """
     out = []
     for row in rows:
-        out.append(
-            {
-                k: float(v) if isinstance(v, decimal.Decimal) else v
-                for k, v in row.items()
-            }
-        )
+        out.append({k: _json_safe_value(v) for k, v in row.items()})
     return out
+
+
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, decimal.Decimal):
+        return float(value)
+    if isinstance(value, (datetime, date, dt_time, UUID)):
+        return str(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        try:
+            return bytes(value).decode("utf-8")
+        except UnicodeDecodeError:
+            return bytes(value).hex()
+    if isinstance(value, list):
+        return [_json_safe_value(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe_value(v) for k, v in value.items()}
+    return value
 
 
 # ── response_formatter ────────────────────────────────────────────────────────
@@ -94,10 +110,13 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
         # Only fall back to clarification / error_context when no answer has been set.
         # (from_memory route already populated `answer` via memory_answer_generator.)
         answer = state.get("clarification") or state.get("error_context")
+    elif state.get("sqlglot_error") and not answer:
+        answer = state.get("error_context") or state.get("sqlglot_error")
 
     error = (
         state.get("error")
         or state.get("exec_error")
+        or state.get("sqlglot_error")
         or state.get("governance_error")
     )
 
@@ -230,6 +249,7 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
             if err:
                 ev["detail"] = err[:100]
                 ev["status"] = "error"
+                ev["connector_error_type"] = result.get("error_type")
             else:
                 rc = result.get("row_count", len(result.get("rows") or []))
                 cols = len(result.get("columns") or [])
@@ -314,9 +334,7 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
                 )
             elif sql:
                 rows = query_result.get("rows") or []
-                # Coerce Decimal → float so the preview is JSON-serialisable.
-                # PostgreSQL returns Decimal for NUMERIC/DECIMAL columns.
-                safe_preview = _coerce_decimals(rows[:10]) if rows else None
+                safe_preview = _coerce_json_safe(rows[:10]) if rows else None
                 await history_service.update_execution(
                     query_id=query_id,
                     execution_status="success",
@@ -357,11 +375,13 @@ def observability_log(state: AgentState) -> Dict[str, Any]:
     """
     start = state.get("start_time") or time.monotonic()
     elapsed_ms = int((time.monotonic() - start) * 1000)
+    result = state.get("query_result") or {}
     has_error = bool(state.get("error") or state.get("exec_error"))
 
     event = {
         "event": "query_completed",
         "source_key": state.get("source_key"),
+        "database_type": state.get("database_type"),
         "route": state.get("route", "?"),
         "retry_count": state.get("retry_count", 0),
         "llm_call_count": state.get("llm_call_count", 0),
@@ -371,6 +391,7 @@ def observability_log(state: AgentState) -> Dict[str, Any]:
         "execution_time_ms": state.get("execution_time_ms"),
         "elapsed_ms": elapsed_ms,
         "has_error": has_error,
+        "connector_error_type": result.get("error_type"),
         "query_id": str(state.get("query_id") or ""),
     }
 
