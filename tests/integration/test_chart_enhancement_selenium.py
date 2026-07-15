@@ -72,7 +72,7 @@ def _pick_healthy_model(api_url: str) -> str:
 
 
 def _login(driver: webdriver.Chrome, wait: WebDriverWait,
-           email: str = "admin", password: str = "admin") -> None:
+           email: str = "admin", password: str = "ChangeMe123!") -> None:
     """Fill and submit the password login form; wait until the main app loads."""
     if "login" not in driver.current_url:
         return

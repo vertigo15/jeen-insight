@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import time
 from typing import Any, Dict
 
 import requests
@@ -28,6 +29,10 @@ from flask import (
     stream_with_context,
     url_for,
 )
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from flask_wtf import CSRFProtect
+from flask_wtf.csrf import CSRFError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,15 +40,113 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Parse a boolean env var safely — ``"false"``/``"0"``/``"no"`` are False."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on", "t")
+
+
+# Only send cookies over HTTPS when enabled. Default False so local HTTP dev
+# (http://localhost:8501) still logs in; set SESSION_COOKIE_SECURE=true in prod.
+SESSION_COOKIE_SECURE = _env_bool("SESSION_COOKIE_SECURE", default=False)
+
 app = Flask(__name__, template_folder="templates", static_folder="static")
-app.secret_key = (
-    os.getenv("FLASK_SECRET_KEY")
-    or os.getenv("AUTH_SECRET")
-    or "jeen-insights-change-me-in-production"
-)
+
+# Session-signing secret. Never sign sessions with a missing OR known
+# placeholder key when secure cookies are on (i.e. production): a predictable
+# key lets anyone forge sessions.
+_DEV_SECRET = "jeen-insights-dev-only-insecure-secret"  # noqa: S105 (dev only)
+_INSECURE_SECRETS = {
+    _DEV_SECRET,
+    "jeen-insights-change-me-in-production",           # old shipped fallback
+    "change-me-generate-a-random-48+-char-value",      # .env.example placeholder
+}
+_secret_key = os.getenv("FLASK_SECRET_KEY") or os.getenv("AUTH_SECRET")
+if SESSION_COOKIE_SECURE and (not _secret_key or _secret_key in _INSECURE_SECRETS):
+    raise RuntimeError(
+        "A strong, non-default FLASK_SECRET_KEY (or AUTH_SECRET) must be set "
+        "when SESSION_COOKIE_SECURE is enabled. Refusing to start with a "
+        "missing or known placeholder session key in production."
+    )
+if not _secret_key:
+    _secret_key = _DEV_SECRET
+    logger.warning(
+        "FLASK_SECRET_KEY/AUTH_SECRET not set — using an insecure dev key. "
+        "Set one before deploying."
+    )
+app.secret_key = _secret_key
+
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = SESSION_COOKIE_SECURE
 app.config["PERMANENT_SESSION_LIFETIME"] = 86_400  # 24 h
+
+# ── CSRF protection ──────────────────────────────────────────────────────────
+# Flask-WTF validates a per-session token on every mutating request
+# (POST/PUT/PATCH/DELETE; GET/HEAD/OPTIONS are exempt). The token reaches the
+# browser via the login form field and the index.html <meta> tag; static/csrf.js
+# echoes it back in the X-CSRFToken header on same-origin fetches. Tie the token
+# lifetime to the session (24 h) instead of Flask-WTF's 1 h default so a long
+# session never fails mid-use. WTF_CSRF_SSL_STRICT tracks the cookie's Secure
+# flag so the HTTPS referer check only applies once we're actually on HTTPS.
+app.config["WTF_CSRF_TIME_LIMIT"] = None
+app.config["WTF_CSRF_SSL_STRICT"] = SESSION_COOKIE_SECURE
+csrf = CSRFProtect(app)
+
+# ── Login brute-force throttling ─────────────────────────────────────────────
+# In-memory storage suits the single-process `flask run` container
+# (Dockerfile.ui). Behind multiple workers/instances or a reverse proxy, set
+# RATELIMIT_STORAGE_URI to a shared store (e.g. redis://…) and configure trusted
+# proxy handling so get_remote_address sees the real client IP (not the proxy).
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    storage_uri=os.getenv("RATELIMIT_STORAGE_URI", "memory://"),
+    default_limits=[],
+)
+
+
+@app.errorhandler(CSRFError)
+def _handle_csrf_error(exc: CSRFError):
+    """Return JSON for API callers; bounce page requests back to /login."""
+    logger.warning("CSRF validation failed for %s %s", request.method, request.path)
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "CSRF validation failed", "code": "CSRF"}), 400
+    return redirect(url_for("login"))
+
+
+@app.errorhandler(429)
+def _handle_rate_limit(exc):
+    """Friendly 429: re-render the login page for /login, JSON elsewhere.
+
+    Retry-After reflects the breached limiter's actual reset time (falling back
+    to 60s) rather than a hardcoded guess, so it's correct whether the per-minute
+    or per-hour bucket tripped.
+    """
+    retry_after = 60
+    try:
+        current = getattr(limiter, "current_limit", None)
+        reset_at = getattr(current, "reset_at", None) if current else None
+        if reset_at:
+            retry_after = max(1, int(reset_at - time.time()))
+    except Exception:  # noqa: BLE001
+        pass
+    if request.path == "/login":
+        body = render_template(
+            "login.html",
+            error="Too many sign-in attempts. Please wait a minute and try again.",
+            entra_sso_enabled=_entra_sso_enabled(),
+        )
+        response = app.make_response((body, 429))
+    else:
+        response = jsonify({"error": "Too many requests", "code": "RATE_LIMITED"})
+        response.status_code = 429
+    response.headers["Retry-After"] = str(retry_after)
+    return response
+
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://jeen-insights-api:8000")
 
@@ -167,6 +270,7 @@ def _require_login():
 # ── Auth routes ───────────────────────────────────────────────────────────────
 
 @app.route("/login", methods=["GET", "POST"])
+@limiter.limit("5 per minute; 30 per hour", methods=["POST"])
 def login():
     """Render the login page (GET) or process credentials (POST)."""
     if request.method == "GET":
@@ -311,8 +415,11 @@ def microsoft_callback():
     return redirect(next_url)
 
 
-@app.route("/logout")
+@app.route("/logout", methods=["POST"])
 def logout():
+    """Clear the session. POST-only + CSRF-protected so it can't be triggered
+    cross-site via a bare link/image. The topbar sign-out control in auth.js
+    issues a token-bearing POST and then redirects."""
     session.clear()
     return redirect(url_for("login"))
 
@@ -353,8 +460,8 @@ def users_create():
     role     = data.get("role") or "viewer"
     if not name or not email or not password:
         return jsonify({"error": "name, email, and password are required"}), 400
-    if len(password) < 4:
-        return jsonify({"error": "Password must be at least 4 characters"}), 400
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
     if role not in ("admin", "editor", "viewer"):
         return jsonify({"error": "role must be admin, editor, or viewer"}), 400
     try:
@@ -422,24 +529,26 @@ def index():
 
 @app.route("/health")
 def health():
+    """Public liveness probe. Reports only coarse status booleans — never
+    upstream error text, DB host/name, or other infra identifiers, since this
+    endpoint is unauthenticated."""
     from src.auth_db import check_connection
 
     try:
         response = requests.get(f"{API_BASE_URL}/health", timeout=5)
-        backend_status = response.json() if response.status_code == 200 else {"status": "unhealthy"}
-    except Exception as e:  # noqa: BLE001
-        backend_status = {"status": "unhealthy", "error": str(e)}
+        backend_healthy = (
+            response.status_code == 200
+            and response.json().get("status") == "healthy"
+        )
+    except Exception:  # noqa: BLE001
+        backend_healthy = False
 
-    auth_ok, auth_error = check_connection()
-    auth_status = {"status": "healthy" if auth_ok else "unhealthy"}
-    if auth_error:
-        auth_status["error"] = auth_error
-
-    ui_ok = backend_status.get("status") == "healthy" and auth_ok
+    auth_ok, _auth_error = check_connection()  # error detail intentionally dropped
+    ui_ok = backend_healthy and auth_ok
     return jsonify({
         "ui_status": "healthy" if ui_ok else "degraded",
-        "backend_status": backend_status,
-        "auth_db_status": auth_status,
+        "backend_status": "healthy" if backend_healthy else "unhealthy",
+        "auth_db_status": "healthy" if auth_ok else "unhealthy",
     })
 
 

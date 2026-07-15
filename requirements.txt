@@ -22,6 +22,8 @@ msal>=1.28.0
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 flask>=3.0.0
+flask-wtf>=1.2.0          # CSRF protection for the Flask UI
+flask-limiter>=3.5.0      # login brute-force rate limiting
 requests>=2.31.0
 httpx>=0.27.0
 

@@ -187,7 +187,16 @@ export class SettingsPage {
         logoutBtn.href = '/logout';
         logoutBtn.className = 'sp-nav-item sp-logout-btn';
         logoutBtn.innerHTML = `${ICONS.logout}<span class="sp-nav-label">Logout</span>`;
-        logoutBtn.addEventListener('click', () => this.close());
+        // /logout is POST-only + CSRF-protected. Issue a token-bearing POST
+        // (csrf.js wraps fetch to attach the header) then redirect to /login.
+        logoutBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            this.close();
+            try {
+                await fetch('/logout', { method: 'POST', credentials: 'same-origin' });
+            } catch (_err) { /* ignore — redirect regardless */ }
+            window.location.replace('/login');
+        });
         navBottom.appendChild(logoutBtn);
 
         const closeBtn = document.createElement('button');
@@ -2002,7 +2011,7 @@ export class SettingsPage {
                     <div class="sp-add-user-form" id="sp-add-user-form">
                         <input id="sp-add-name"     class="sp-add-user-input sp-add-full" type="text" placeholder="Full name" />
                         <input id="sp-add-email"    class="sp-add-user-input" type="text" placeholder="Email / username" />
-                        <input id="sp-add-password" class="sp-add-user-input" type="password" placeholder="Password (min 4 chars)" />
+                        <input id="sp-add-password" class="sp-add-user-input" type="password" placeholder="Password (min 8 chars)" />
                         <select id="sp-add-role" class="sp-add-user-select">
                             <option value="viewer">Viewer</option>
                             <option value="editor" selected>Editor</option>
@@ -2132,7 +2141,7 @@ export class SettingsPage {
             const role     =  document.getElementById('sp-add-role')?.value     || 'viewer';
 
             if (!name || !email || !password) { err.textContent = 'All fields are required.'; return; }
-            if (password.length < 4)           { err.textContent = 'Password must be at least 4 characters.'; return; }
+            if (password.length < 8)           { err.textContent = 'Password must be at least 8 characters.'; return; }
 
             btn.disabled = true; btn.textContent = 'Adding…';
             try {

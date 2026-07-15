@@ -5,7 +5,6 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from src.api import state
-from src.config import settings
 
 router = APIRouter(tags=["health"])
 
@@ -21,11 +20,13 @@ async def root():
 
 @router.get("/health")
 async def health_check():
+    # Public, unauthenticated endpoint — report only coarse status. Do NOT leak
+    # infra identifiers (DB host/name, deployment names, connection strings).
     return {
         "status": "healthy",
         "registry_ready": state.agent_registry is not None,
         "services": {
-            "llm": f"Azure OpenAI {settings.AZURE_OPENAI_DEPLOYMENT_NAME}",
-            "metadata_db": f"{settings.METADATA_DB_HOST}/{settings.METADATA_DB_NAME}",
+            "llm": "configured",
+            "metadata_db": "configured",
         },
     }

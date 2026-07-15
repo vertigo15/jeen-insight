@@ -86,6 +86,22 @@
         btn.setAttribute('aria-expanded', 'false');
       });
     }
+
+    // ── Sign out ────────────────────────────────────────────────────────────
+    // /logout is POST-only + CSRF-protected, so a bare <a href> no longer
+    // works. Issue a token-bearing POST (csrf.js adds the header) then redirect.
+    const logoutLink = document.querySelector('.user-dropdown-logout');
+    if (logoutLink) {
+      logoutLink.addEventListener('click', async (e) => {
+        e.preventDefault();
+        try {
+          await fetch('/logout', { method: 'POST', credentials: 'same-origin' });
+        } catch {
+          /* ignore network errors — redirect regardless */
+        }
+        window.location.replace('/login');
+      });
+    }
   }
 
   // Run after DOM is ready.

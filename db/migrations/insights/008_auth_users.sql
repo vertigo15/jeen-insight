@@ -6,7 +6,12 @@
 --
 -- Seeds a default admin account when missing:
 --   email: admin
---   password: admin   (change after first login)
+--   password: ChangeMe123!   (MUST be changed immediately after first login)
+--
+-- The default password meets the >=8 char UI policy. It is still a shared,
+-- publicly-documented credential — rotate it on first login. Existing
+-- deployments that were seeded with the old 4-char "admin" password should
+-- reset it manually (Settings -> Users, or update auth_users.password_hash).
 --
 -- Idempotent. Safe to run on the shared metadata DB.
 -- ============================================================================
@@ -31,12 +36,12 @@ CREATE TABLE IF NOT EXISTS auth_users (
 CREATE INDEX IF NOT EXISTS idx_auth_users_email
     ON auth_users (email);
 
--- Default admin (password: admin). Skip if email already exists.
+-- Default admin (password: ChangeMe123!). Skip if email already exists.
 INSERT INTO auth_users (name, email, password_hash, role, status, avatar_hue)
 SELECT
     'Admin',
     'admin',
-    '$2b$12$04PLmZ5VyTctiR6QODu5seF8uRExKLZkS/euG1Xg9cWEwXHwtbHYK',
+    '$2b$12$bSvlOGpdYkN44TzBs6dWx.N7Ia9LaTosYRGVQOOOzSU81QfBJlAjC',
     'admin',
     'active',
     210
