@@ -240,7 +240,7 @@ def build_graph(
     builder.add_edge("observability_log", END)
 
     compiled = builder.compile()
-    logger.info("✅ LangGraph agent compiled — %d nodes", 16)
+    logger.info("✅ LangGraph agent compiled — %d nodes", len(builder.nodes))
     return compiled
 
 

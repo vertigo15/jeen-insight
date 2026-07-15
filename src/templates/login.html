@@ -276,6 +276,8 @@
       {% endif %}
 
       <form class="login-form" method="POST" action="/login" id="login-form">
+        <!-- CSRF token (validated by Flask-WTF) -->
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <!-- Preserve redirect target -->
         <input type="hidden" name="next" value="{{ request.args.get('next', '/') }}">
 

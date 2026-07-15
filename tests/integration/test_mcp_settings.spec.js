@@ -15,7 +15,7 @@
  * Requires:
  *   - App running at http://localhost:8501
  *   - API running at http://localhost:8001
- *   - A valid account (default: admin / admin)
+ *   - A valid account (default: admin / ChangeMe123!)
  *
  * Run:
  *   npx playwright test tests/integration/test_mcp_settings.spec.js --headed
@@ -28,7 +28,7 @@ const { test, expect } = require('@playwright/test');
 const APP_URL   = 'http://localhost:8501';
 const API_URL   = 'http://localhost:8001';
 const EMAIL     = 'admin';
-const PASSWORD  = 'admin';
+const PASSWORD  = 'ChangeMe123!';
 const TIMEOUT   = 15_000;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

@@ -77,7 +77,7 @@ def _login(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     email_input.send_keys("admin")
     pw_input = driver.find_element(By.ID, "password")
     pw_input.clear()
-    pw_input.send_keys("admin")
+    pw_input.send_keys("ChangeMe123!")
     driver.find_element(By.ID, "login-btn").click()
     wait.until(EC.presence_of_element_located((By.ID, "question-input")))
 

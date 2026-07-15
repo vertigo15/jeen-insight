@@ -8,12 +8,25 @@ Requires the stack running at http://localhost:8501 with AZURE_AD_* in .env:
 from __future__ import annotations
 
 import os
+import re
 
 import pytest
 import requests
 
 APP_URL = os.getenv("JEEN_UI_URL", "http://localhost:8501")
 TIMEOUT = 10
+
+# Default seed credential (see db/migrations/insights/008_auth_users.sql).
+ADMIN_EMAIL = os.getenv("JEEN_ADMIN_EMAIL", "admin")
+ADMIN_PASSWORD = os.getenv("JEEN_ADMIN_PASSWORD", "ChangeMe123!")
+
+
+def _csrf_token(session: requests.Session) -> str:
+    """GET the login page (sets the session cookie) and return its CSRF token."""
+    html = session.get(f"{APP_URL}/login", timeout=TIMEOUT).text
+    match = re.search(r'name="csrf_token"\s+value="([^"]+)"', html)
+    assert match, "login page is missing a csrf_token field"
+    return match.group(1)
 
 
 pytestmark = pytest.mark.integration
@@ -52,9 +65,15 @@ def test_microsoft_login_starts_oauth_redirect():
 
 def test_password_login_still_works():
     session = requests.Session()
+    token = _csrf_token(session)
     resp = session.post(
         f"{APP_URL}/login",
-        data={"email": "admin", "password": "admin", "next": "/"},
+        data={
+            "email": ADMIN_EMAIL,
+            "password": ADMIN_PASSWORD,
+            "next": "/",
+            "csrf_token": token,
+        },
         timeout=TIMEOUT,
         allow_redirects=False,
     )

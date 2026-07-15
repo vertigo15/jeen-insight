@@ -20,6 +20,22 @@ def test_health_when_registry_ready(client, fake_state):
     assert "metadata_db" in body["services"]
 
 
+def test_health_does_not_leak_infra_identifiers(client, fake_state):
+    """/health is public — it must not expose DB host/name or deployment names."""
+    from src.config import settings
+
+    resp = client.get("/health")
+    body = resp.json()
+    services = body["services"]
+    # Values must be coarse status strings, not host/db/deployment identifiers.
+    assert services["metadata_db"] == "configured"
+    assert services["llm"] == "configured"
+    blob = str(body)
+    assert settings.METADATA_DB_HOST not in blob
+    assert settings.METADATA_DB_NAME not in blob
+    assert settings.AZURE_OPENAI_DEPLOYMENT_NAME not in blob
+
+
 def test_health_when_registry_missing(client, empty_state):
     resp = client.get("/health")
     assert resp.status_code == 200

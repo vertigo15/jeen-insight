@@ -12,6 +12,7 @@
     </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Jeen Insights — Data Analytics</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
     <!-- Geist fonts -->
@@ -378,13 +379,15 @@
     </div>
 </aside>
 
-<script src="{{ url_for('static', filename='auth.js') }}?v=50"></script>
+<!-- csrf.js MUST load first: it wraps window.fetch to attach the CSRF token. -->
+<script src="{{ url_for('static', filename='csrf.js') }}?v=1"></script>
+<script src="{{ url_for('static', filename='auth.js') }}?v=51"></script>
 <script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=53"></script>
 <script src="{{ url_for('static', filename='profiling/profilingManager.js') }}?v=68"></script>
 <script src="{{ url_for('static', filename='script.js') }}?v=85"></script>
 <!-- Settings page (full-screen) -->
 <script type="module">
-  import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=52';
+  import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=53';
   const _sp = new SettingsPage();
   _sp.mount({
       onApplyTheme: (t) => {

@@ -102,7 +102,7 @@ def _login(
     driver: webdriver.Chrome,
     wait: WebDriverWait,
     email: str = "admin",
-    password: str = "admin",
+    password: str = "ChangeMe123!",
 ) -> None:
     """Fill and submit the login form; wait until the main app loads."""
     # If we're already on the app page, skip.
