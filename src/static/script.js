@@ -169,6 +169,11 @@ function onConnectionChange(sourceKey) {
     setActiveConnection(newConnection);
     // Reset session and clear caches that are connection-specific.
     currentSessionId = null;
+    // Chat thread is tied to the (now-reset) session — clear it and cancel any
+    // in-flight chat/chart work so turns from different connections never mix.
+    if (window.ChatController && typeof window.ChatController.reset === 'function') {
+        window.ChatController.reset();
+    }
     allTables = [];
     activeTable = null;
     // Back to the empty/hero landing for the freshly selected connection.
@@ -224,6 +229,67 @@ function setUiState(state) {
     if (main) main.setAttribute('data-ui-state', state === 'results' ? 'results' : 'empty');
 }
 
+// ── Interaction mode (Ask vs Chat) ──────────────────────────────────────────
+// Ask mode = the classic single-result screen (unchanged). Chat mode = a
+// conversation thread that reuses the same NL->SQL pipeline per turn. The
+// header, sidebar and connection state stay mounted across both modes; only
+// the main panel swaps.
+const APP_MODE_KEY = 'jeen_app_mode'; // 'ask' | 'chat'
+let appMode = 'ask';
+
+function setAppMode(mode) {
+    const next = (mode === 'chat') ? 'chat' : 'ask';
+    appMode = next;
+    try { localStorage.setItem(APP_MODE_KEY, next); } catch (_) {}
+
+    const askBtn  = document.getElementById('mode-btn-ask');
+    const chatBtn = document.getElementById('mode-btn-chat');
+    if (askBtn)  { askBtn.classList.toggle('active', next === 'ask');   askBtn.setAttribute('aria-selected', next === 'ask' ? 'true' : 'false'); }
+    if (chatBtn) { chatBtn.classList.toggle('active', next === 'chat'); chatBtn.setAttribute('aria-selected', next === 'chat' ? 'true' : 'false'); }
+
+    const main      = document.getElementById('main-content');
+    const askInner  = document.querySelector('#main-content .main-inner');
+    const chatPanel = document.getElementById('chat-mode-panel');
+
+    if (next === 'chat') {
+        if (main) main.classList.add('mode-chat');
+        if (askInner) askInner.style.display = 'none';
+        if (chatPanel) chatPanel.hidden = false;
+        if (window.ChatController && typeof window.ChatController.activate === 'function') {
+            window.ChatController.activate();
+        }
+    } else {
+        if (main) main.classList.remove('mode-chat');
+        if (askInner) askInner.style.display = '';
+        if (chatPanel) chatPanel.hidden = true;
+        if (window.ChatController && typeof window.ChatController.deactivate === 'function') {
+            window.ChatController.deactivate();
+        }
+    }
+}
+window.setAppMode = setAppMode;
+window.getAppMode = () => appMode;
+
+// Session-id accessors shared with the Chat controller (a separate script
+// file) so both modes thread the same conversation via currentSessionId.
+window._jeenGetSessionId = () => currentSessionId;
+window._jeenSetSessionId = (v) => { currentSessionId = v || null; };
+
+// Recent/pinned sidebar question click: fill the Ask box in Ask mode, or send
+// it as a new turn when in Chat mode.
+window._jeenQuestionClick = function (q) {
+    if (appMode === 'chat' && window.ChatController && typeof window.ChatController.send === 'function') {
+        window.ChatController.send(q);
+    } else {
+        fillQuestion(q);
+    }
+};
+
+// Reusable helpers the Chat controller borrows (hoisted function decls).
+window.escapeHtml       = escapeHtml;
+window.formatNumeric    = formatNumeric;
+window.deriveResultTitle = deriveResultTitle;
+
 // Mirror the sidebar connection pill into the hero line.
 function updateHeroConnection() {
     const box = document.getElementById('hero-connection');
@@ -268,12 +334,10 @@ function _heroTableStarters() {
     return out;
 }
 
-// Render the starter chips: pinned -> recent -> table-derived, deduped.
-function renderHeroSuggestions() {
-    const wrap = document.getElementById('hero-suggestions');
-    const chips = document.getElementById('hero-suggestions-chips');
-    if (!wrap || !chips) return;
-
+// Merge starter prompts: pinned -> recent -> table-derived, deduped. Shared by
+// the Ask-mode hero chips and the Chat-mode empty state.
+function getStarterSuggestions(max) {
+    const limit = (typeof max === 'number' && max > 0) ? max : MAX_HERO_SUGGESTIONS;
     const pinned   = (pinnedQuestionsCache || []).map(q => ({ text: q, kind: 'pinned' }));
     const recent   = (recentQuestionsCache || []).map(q => ({ text: q, kind: 'recent' }));
     const starters = _heroTableStarters().map(q => ({ text: q, kind: 'table' }));
@@ -286,8 +350,19 @@ function renderHeroSuggestions() {
         if (!text || seen.has(key)) continue;
         seen.add(key);
         merged.push({ text, kind: item.kind });
-        if (merged.length >= MAX_HERO_SUGGESTIONS) break;
+        if (merged.length >= limit) break;
     }
+    return merged;
+}
+window.getStarterSuggestions = getStarterSuggestions;
+
+// Render the starter chips: pinned -> recent -> table-derived, deduped.
+function renderHeroSuggestions() {
+    const wrap = document.getElementById('hero-suggestions');
+    const chips = document.getElementById('hero-suggestions-chips');
+    if (!wrap || !chips) return;
+
+    const merged = getStarterSuggestions(MAX_HERO_SUGGESTIONS);
 
     if (merged.length === 0) {
         // Only show skeletons while a connection's data is genuinely loading.
@@ -315,6 +390,11 @@ function renderHeroSuggestions() {
             + ` onclick="fillQuestion('${js}')">`
             + `<span class="hero-chip-icon" aria-hidden="true">${icon[item.kind] || ''}</span>${safe}</button>`;
     }).join('');
+
+    // Keep the Chat-mode empty-state starter chips in sync as data loads.
+    if (window.ChatController && typeof window.ChatController.refreshStarters === 'function') {
+        window.ChatController.refreshStarters();
+    }
 }
 
 // Recompute the hero connection line + suggestions from current caches.
@@ -1944,7 +2024,7 @@ async function displayHistory() {
             html += pinnedQuestions.map(q =>
                 `<div class="history-item pinned-item">
                     <span class="pin-icon" onclick="unpinQuestion(event, '${escapeHtml(q).replace(/'/g, "\\'")}')">📌</span>
-                    <span class="question-text" onclick="fillQuestion('${escapeHtml(q).replace(/'/g, "\\'")}')"
+                    <span class="question-text" onclick="_jeenQuestionClick('${escapeHtml(q).replace(/'/g, "\\'")}')"
                           title="${escapeHtml(q)}">${escapeHtml(q)}</span>
                 </div>`
             ).join('');
@@ -1955,7 +2035,7 @@ async function displayHistory() {
             html += recentQuestions.map(q =>
                 `<div class="history-item">
                     <span class="pin-icon" onclick="pinQuestion(event, '${escapeHtml(q).replace(/'/g, "\\'")}')">📍</span>
-                    <span class="question-text" onclick="fillQuestion('${escapeHtml(q).replace(/'/g, "\\'")}')"
+                    <span class="question-text" onclick="_jeenQuestionClick('${escapeHtml(q).replace(/'/g, "\\'")}')"
                           title="${escapeHtml(q)}">${escapeHtml(q)}</span>
                 </div>`
             ).join('');
@@ -2575,6 +2655,22 @@ function _buildTraceFlowHtml(events, metrics) {
             + '</div>';
     }
 
+    // Reconcile the per-step times with the wall clock so the numbers "add up".
+    // Node cards below sum to the main-graph time; the remainder up to wall is
+    // network + proxy/serialization overhead (net), not charged to any node.
+    const graphMs = Object.values(stats).reduce((sum, s) => sum + (s.totalMs || 0), 0);
+    const wallMs  = lastQueryDurationMs;
+    if (Number.isFinite(wallMs) && wallMs > 0 && graphMs > 0) {
+        const netMs = Math.max(0, wallMs - graphMs);
+        html += '<div class="trace-flow-reconcile">'
+            + `The step times above add up to the <b>main graph</b> (${_fmtMs(graphMs)}). `
+            + `The <b>wall</b> time (${_fmtMs(wallMs)})`
+            + (netMs > 0
+                ? ` also includes <b>${_fmtMs(netMs)}</b> of network + proxy/serialization overhead (<b>net</b>) that isn\u2019t charged to any single step.`
+                : ` matches the summed step times.`)
+            + '</div>';
+    }
+
     html += '</div>';
     return html;
 }
@@ -2958,6 +3054,61 @@ function _updateSqlStats(data) {
     }
 }
 
+// ── Developer Panel: shared "Run Details" refresh ────────────────────────────
+
+/**
+ * Refresh the developer "Run Details" panel (SQL / Prompt / Trace tabs + run
+ * header + SQL stats) from a query response. Shared so both Ask mode
+ * (displayResults) and Chat mode (per assistant turn) keep the panel in sync
+ * with the most recent run.
+ *
+ * @param {Object} data   - The /api/ask response payload.
+ * @param {number} wallMs - Client-measured wall-clock duration for this run.
+ */
+function updateRunDetails(data, wallMs) {
+    if (!data) return;
+
+    // Reflect the latest run for feature modules + the trace prompt-copy button.
+    currentQueryId = data.query_id || null;
+    window.currentQueryId = currentQueryId;
+    if (data.question) {
+        currentQuestion = data.question;
+        window.currentQuestion = currentQuestion;
+    }
+
+    // Chat measures its own wall clock; use it for the wall + total chips
+    // (there's no separate post-paint measurement step as in Ask mode).
+    if (Number.isFinite(wallMs) && wallMs > 0) {
+        lastQueryDurationMs = wallMs;
+        lastTotalDurationMs = wallMs;
+    }
+
+    // SQL tab
+    currentSql = data.sql || '';
+    initCodeMirror(data.sql || '-- No SQL generated');
+
+    // Query Prompt tab
+    if (data.prompt) {
+        currentPrompt = data.prompt;
+        displayStructuredPrompt(data.prompt);
+    }
+
+    // Execution trace (also feeds "main graph" timing into the run header).
+    if (data.trace && data.trace.length) {
+        renderTrace(data.trace, data.metrics);
+    } else {
+        renderTrace([], data.metrics);
+        const badge = document.getElementById('dev-panel-badge');
+        if (badge) badge.hidden = true;
+    }
+
+    // Run header + SQL stats bar
+    _lastResultData = data;
+    _updateDevRunHeader(data);
+    _updateSqlStats(data);
+}
+window.updateRunDetails = updateRunDetails;
+
 // ── Timing chip tooltip explanations ──────────────────────────────────────────
 // Used as HTML title= attributes on all timing chips so developers can
 // hover any number to understand exactly how it was computed.
@@ -3209,7 +3360,7 @@ window._toggleTraceEvent = _toggleTraceEvent;
 async function initializeChartFeature(results) {
     // Dynamically import ChartManager if not already loaded
     if (!ChartManager) {
-        const module = await import('./chart-feature/chartManager.js?v=81');
+        const module = await import('./chart-feature/chartManager.js?v=87');
         ChartManager = module.ChartManager;
     }
 
@@ -5253,6 +5404,16 @@ document.addEventListener('DOMContentLoaded', () => {
             try { return localStorage.getItem(SIDEBAR_TAB_KEY); } catch (_) { return null; }
         })();
         switchSidebarTab(saved === 'recent' ? 'recent' : 'tables');
+    })();
+
+    // Wire the Chat controller, then restore the last-used interaction mode.
+    if (window.ChatController && typeof window.ChatController.init === 'function') {
+        window.ChatController.init();
+    }
+    (function () {
+        let savedMode = 'ask';
+        try { savedMode = localStorage.getItem(APP_MODE_KEY) || 'ask'; } catch (_) {}
+        setAppMode(savedMode === 'chat' ? 'chat' : 'ask');
     })();
 
     // ── History Drawer ──────────────────────────────────────────────────

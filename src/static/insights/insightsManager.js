@@ -4,11 +4,33 @@
  */
 
 class InsightsManager {
-    constructor() {
+    /**
+     * @param {Object} [opts]
+     * @param {HTMLElement} [opts.container]  Render target. Defaults to #insights-container (Ask mode).
+     * @param {Function}    [opts.onFollowUp] Called with the question text when a follow-up chip is clicked.
+     *                                        Defaults to window._fillFollowUp (Ask mode auto-submit).
+     * @param {boolean}     [opts.skipSummary] When true, the summary is NOT rendered inside the card;
+     *                                        instead it is passed to opts.onSummary (Chat places it above the chart).
+     * @param {Function}    [opts.onSummary]  Receives the rendered summary HTML when skipSummary is set.
+     * @param {boolean}     [opts.showPromptInDevPanel] When false, don't push the prompt to the dev panel (Chat).
+     * @param {boolean}     [opts.devTrace]   When false, don't emit post-query dev-trace events (Chat).
+     */
+    constructor(opts = {}) {
         this.state = {
             currentInsights: null,
             isLoading: false
         };
+        this.containerEl          = opts.container || null;
+        this.onFollowUp           = opts.onFollowUp || null;
+        this.skipSummary          = opts.skipSummary === true;
+        this.onSummary            = opts.onSummary || null;
+        this.showPromptInDevPanel = opts.showPromptInDevPanel !== false;
+        this.devTraceEnabled      = opts.devTrace !== false;
+    }
+
+    /** Resolve the render target: an injected element (Chat) or the shared #insights-container (Ask). */
+    _getContainer() {
+        return this.containerEl || document.getElementById('insights-container');
     }
 
     /**
@@ -26,7 +48,7 @@ class InsightsManager {
      * @param {string|null} sql - SQL that produced the results (optional)
      */
     async generateInsights(results, question, queryId = null, sql = null) {
-        const container = document.getElementById('insights-container');
+        const container = this._getContainer();
         if (!container) {
             console.error('[InsightsManager] Insights container not found');
             return;
@@ -200,6 +222,7 @@ class InsightsManager {
     }
 
     _devTrace(status, payload = {}) {
+        if (!this.devTraceEnabled) return;
         if (typeof window !== 'undefined' && typeof window._devPostQueryUpdate === 'function') {
             window._devPostQueryUpdate('insights', { status, ...payload });
         }
@@ -465,24 +488,38 @@ class InsightsManager {
             ttftLabel = ttftMs >= 1000 ? (ttftMs / 1000).toFixed(1) + 's' : ttftMs + 'ms';
         }
 
-        const hasContent = summary || findings.length || actionSuggestions.length || followups.length;
+        // Hoist the summary out of the card when the caller wants to place it
+        // elsewhere (Chat renders it above the chart, matching the mockup).
+        const summaryHtml = summary ? this.renderText(summary, 'summary') : '';
+        if (summary && this.skipSummary && typeof this.onSummary === 'function') {
+            this.onSummary(summaryHtml);
+        }
+        const showSummaryInCard = summary && !this.skipSummary;
+
+        const hasContent = showSummaryInCard || findings.length || actionSuggestions.length || followups.length;
         if (!hasContent) {
-            container.innerHTML = `<div class="ins-card">${this._headerHtml(ttftLabel, metrics)}
-                <p class="ins-empty">No significant insights found for this result.</p>
-            </div>`;
+            // If the summary was hoisted out (Chat places it above the chart),
+            // don't also render an empty "no insights" card beneath it.
+            if (summary && this.skipSummary) {
+                container.innerHTML = '';
+            } else {
+                container.innerHTML = `<div class="ins-card">${this._headerHtml(ttftLabel, metrics)}
+                    <p class="ins-empty">No significant insights found for this result.</p>
+                </div>`;
+            }
             return;
         }
 
         let html = `<div class="ins-card">${this._headerHtml(ttftLabel, metrics)}`;
 
         // ── Summary ──────────────────────────────────────────────────────────
-        if (summary) {
-            html += `<p class="ins-summary">${this.renderText(summary, 'summary')}</p>`;
+        if (showSummaryInCard) {
+            html += `<p class="ins-summary">${summaryHtml}</p>`;
         }
 
         // ── Divider (only when there are sections below) ──────────────────────
         const hasSections = findings.length || actionSuggestions.length || followups.length;
-        if (summary && hasSections) {
+        if (showSummaryInCard && hasSections) {
             html += `<div class="ins-divider"></div>`;
         }
 
@@ -521,8 +558,7 @@ class InsightsManager {
             html += `<div class="ins-followups">`;
             followups.forEach(q => {
                 const safe = this.escapeHtml(q);
-                html += `<button class="ins-followup" data-q="${safe}"
-                    onclick="window._fillFollowUp(this.dataset.q)">
+                html += `<button class="ins-followup" type="button" data-q="${safe}">
                     <span class="ins-followup-q">${safe}</span>
                     ${InsightsManager._SVG_ARROW_SM}
                 </button>`;
@@ -532,6 +568,16 @@ class InsightsManager {
 
         html += `</div>`; // close ins-card
         container.innerHTML = html;
+
+        // Wire follow-up chips. Ask mode falls back to the global auto-submit
+        // helper; Chat mode passes its own per-turn handler via opts.onFollowUp.
+        container.querySelectorAll('.ins-followup').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const q = btn.dataset.q || '';
+                if (typeof this.onFollowUp === 'function') this.onFollowUp(q);
+                else if (typeof window._fillFollowUp === 'function') window._fillFollowUp(q);
+            });
+        });
     }
 
     /**
@@ -550,6 +596,8 @@ class InsightsManager {
      * Display insights prompt in the Insights Prompt tab with collapsible sections
      */
     displayInsightsPrompt(insights) {
+        // Chat turns don't own the shared dev-panel prompt pane.
+        if (this.showPromptInDevPanel === false) return;
         const promptContent = document.getElementById('insights-prompt-content');
         if (!promptContent) {
             console.warn('[InsightsManager] Insights prompt content element not found');

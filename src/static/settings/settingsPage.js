@@ -15,7 +15,7 @@
  */
 
 import { Preferences } from './preferences.js';
-import { CHART_TYPE_OPTIONS } from '../chart-feature/chartTypes.js';
+import { CHART_TYPE_OPTIONS } from '../chart-feature/chartTypes.js?v=78';
 
 // ── Icons (inline SVG snippets, 18×18) ────────────────────────────────────────
 const ICONS = {
