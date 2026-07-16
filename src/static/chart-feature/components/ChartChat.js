@@ -1,31 +1,38 @@
 /**
- * Chart Chat component
+ * Chart Chat ("Refine this chart") component
  *
- * Renders a small panel under the chart that lets the user request
+ * Renders one slim row under the chart that lets the user request
  * visualization-only changes in natural language. Each message hits
  * /api/edit-chart, which returns a new ECharts config (and optionally a
  * list of derived-series specs computed locally from the existing data).
  *
- * UX note: the conversation transcript is intentionally NOT shown — only
- * the most recent assistant note (or error) appears in a small inline
- * status line. The internal `messages` array is still kept so we can
- * pass `recent_messages` to the LLM for short-term context.
+ * Layout (matches design handoff): a hairline-separated row with a sparkle
+ * AI icon, a single-line rounded inline input, and a small purple "Apply →"
+ * button (Enter also applies). After a refinement is applied the row swaps to
+ * "✓ Applied: <refinement> · Reset chart" (green confirmation + purple Reset
+ * link). "Reset chart" only exists once there is something to reset.
+ *
+ * UX note: the conversation transcript is intentionally NOT shown. Errors and
+ * out-of-scope requests surface in a small inline status line under the row.
+ * The internal `messages` array is still kept so we can pass `recent_messages`
+ * to the LLM for short-term context.
  *
  * Lifecycle:
  *   - mount()   — build DOM, attach listeners. Idempotent.
  *   - enable()  — turn on input after the first chart renders.
  *   - disable() — grey out (e.g. while the chart is loading).
- *   - reset()   — clear messages and the status line.
+ *   - reset()   — clear messages, revert to the input state.
  *
  * State is in-memory only. Nothing is persisted.
  *
  * @module ChartChat
  */
 
-import { buildChartSuggestions } from '../utils/chartSuggestions.js?v=72';
-
 const MAX_INSTRUCTION_LEN = 500;
 const MAX_TRANSCRIPT_MESSAGES = 30;
+
+const SPARKLE_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3zM19 16l.9 2.1L22 19l-2.1.9L19 22l-.9-2.1L16 19l2.1-.9L19 16z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+const ARROW_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 export class ChartChat {
     /**
@@ -57,144 +64,105 @@ export class ChartChat {
         if (this.mounted) return;
         this.mounted = true;
 
-        container.classList.add('chart-chat');
+        container.classList.add('chart-refine');
         container.innerHTML = '';
 
-        const header = document.createElement('div');
-        header.className = 'chart-chat-header';
+        // Slim single row: sparkle · (input + Apply) | (Applied · Reset)
+        const row = document.createElement('div');
+        row.className = 'chart-refine-row';
 
-        const title = document.createElement('div');
-        title.className = 'chart-chat-title';
-        title.textContent = 'Refine this chart';
+        const icon = document.createElement('span');
+        icon.className = 'chart-refine-icon';
+        icon.innerHTML = SPARKLE_SVG;
 
-        const subtitle = document.createElement('div');
-        subtitle.className = 'chart-chat-subtitle';
-        subtitle.textContent = 'Edits are session-only. Data is not changed.';
+        // Entry state — input + Apply
+        const entry = document.createElement('div');
+        entry.className = 'chart-refine-entry';
 
-        const titleBlock = document.createElement('div');
-        titleBlock.className = 'chart-chat-title-block';
-        titleBlock.appendChild(title);
-        titleBlock.appendChild(subtitle);
-
-        const resetBtn = document.createElement('button');
-        resetBtn.type = 'button';
-        resetBtn.className = 'chart-chat-reset-btn';
-        resetBtn.textContent = 'Reset chart';
-        resetBtn.title = 'Revert to the original chart and clear this conversation';
-        resetBtn.addEventListener('click', () => this._handleReset());
-
-        header.appendChild(titleBlock);
-        header.appendChild(resetBtn);
-
-        // Inline single-line status (latest assistant note / error). The
-        // full transcript is intentionally hidden per product decision.
-        const status = document.createElement('div');
-        status.className = 'chart-chat-status';
-        status.setAttribute('role', 'status');
-        status.setAttribute('aria-live', 'polite');
-        status.hidden = true;
-
-        const chipRow = document.createElement('div');
-        chipRow.className = 'chart-chat-chips';
-
-        const inputRow = document.createElement('div');
-        inputRow.className = 'chart-chat-input-row';
-
-        const input = document.createElement('textarea');
-        input.className = 'chart-chat-input';
-        input.rows = 1;
-        input.placeholder = 'Ask for a change… (e.g. "make it a line chart" or "add a 3-month moving average")';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'chart-refine-input';
+        input.placeholder = 'Refine this chart... e.g. "make it a line chart" or "add a 3-month moving average"';
         input.maxLength = MAX_INSTRUCTION_LEN;
         input.disabled = true;
+        input.setAttribute('aria-label', 'Refine this chart');
         input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key === 'Enter') {
                 e.preventDefault();
                 this._handleSend();
             }
         });
-        // Auto-grow up to 4 lines.
-        input.addEventListener('input', () => {
-            input.style.height = 'auto';
-            input.style.height = Math.min(input.scrollHeight, 96) + 'px';
-        });
 
-        const sendBtn = document.createElement('button');
-        sendBtn.type = 'button';
-        sendBtn.className = 'chart-chat-send-btn';
-        sendBtn.textContent = 'Send';
-        sendBtn.disabled = true;
-        sendBtn.addEventListener('click', () => this._handleSend());
+        const applyBtn = document.createElement('button');
+        applyBtn.type = 'button';
+        applyBtn.className = 'chart-refine-apply';
+        applyBtn.innerHTML = `<span>Apply</span>${ARROW_SVG}`;
+        applyBtn.disabled = true;
+        applyBtn.addEventListener('click', () => this._handleSend());
 
-        inputRow.appendChild(input);
-        inputRow.appendChild(sendBtn);
+        entry.appendChild(input);
+        entry.appendChild(applyBtn);
 
-        container.appendChild(header);
+        // Applied state — "✓ Applied: <refinement> · Reset chart"
+        const applied = document.createElement('div');
+        applied.className = 'chart-refine-applied';
+        applied.hidden = true;
+
+        const appliedLabel = document.createElement('span');
+        appliedLabel.className = 'chart-refine-applied-label';
+
+        const dot = document.createElement('span');
+        dot.className = 'chart-refine-dot';
+        dot.textContent = '·';
+
+        const resetBtn = document.createElement('button');
+        resetBtn.type = 'button';
+        resetBtn.className = 'chart-refine-reset';
+        resetBtn.textContent = 'Reset chart';
+        resetBtn.title = 'Revert to the original chart. Edits are session-only — your data is never changed.';
+        resetBtn.addEventListener('click', () => this._handleReset());
+
+        applied.appendChild(appliedLabel);
+        applied.appendChild(dot);
+        applied.appendChild(resetBtn);
+
+        row.appendChild(icon);
+        row.appendChild(entry);
+        row.appendChild(applied);
+
+        // Inline single-line status (progress / warning / error). Success is
+        // conveyed by the "Applied" state instead, so this stays hidden then.
+        const status = document.createElement('div');
+        status.className = 'chart-refine-status';
+        status.setAttribute('role', 'status');
+        status.setAttribute('aria-live', 'polite');
+        status.hidden = true;
+
+        container.appendChild(row);
         container.appendChild(status);
-        container.appendChild(chipRow);
-        container.appendChild(inputRow);
 
-        this._statusEl = status;
+        this._rowEl = row;
         this._inputEl = input;
-        this._sendBtnEl = sendBtn;
-        this._chipRowEl = chipRow;
+        this._applyBtnEl = applyBtn;
+        this._entryEl = entry;
+        this._appliedEl = applied;
+        this._appliedLabelEl = appliedLabel;
         this._resetBtnEl = resetBtn;
-
-        // Generic chips until a chart exists; refreshSuggestions() tailors them.
-        this._renderChips(buildChartSuggestions(null, null));
+        this._statusEl = status;
     }
 
     enable() {
         this.enabled = true;
         if (!this.mounted) return;
         this._inputEl.disabled = false;
-        this._sendBtnEl.disabled = false;
-        this._chipRowEl.querySelectorAll('button').forEach(b => { b.disabled = false; });
-        // The chart just (re)rendered — tailor chips to its type + data.
-        this.refreshSuggestions();
-    }
-
-    /**
-     * Rebuild the suggestion chips from the CURRENT chart config + data, so
-     * they only offer changes that make sense (e.g. moving average only for
-     * time/ordered data). Safe to call repeatedly; no-op until mounted.
-     */
-    refreshSuggestions() {
-        if (!this.mounted || !this._chipRowEl) return;
-        let list;
-        try {
-            const config = this.hooks.getCurrentConfig && this.hooks.getCurrentConfig();
-            const results = this.hooks.getCurrentResults && this.hooks.getCurrentResults();
-            list = buildChartSuggestions(config, results);
-        } catch (e) {
-            console.warn('[ChartChat] suggestion build failed', e);
-            list = buildChartSuggestions(null, null);
-        }
-        this._renderChips(list);
-    }
-
-    _renderChips(list) {
-        if (!this._chipRowEl) return;
-        this._chipRowEl.innerHTML = '';
-        (list || []).forEach((text) => {
-            const chip = document.createElement('button');
-            chip.type = 'button';
-            chip.className = 'chart-chat-chip';
-            chip.textContent = text;
-            chip.disabled = !this.enabled;
-            chip.addEventListener('click', () => {
-                this._inputEl.value = text;
-                this._inputEl.focus();
-            });
-            this._chipRowEl.appendChild(chip);
-        });
+        this._applyBtnEl.disabled = false;
     }
 
     disable() {
         this.enabled = false;
         if (!this.mounted) return;
         this._inputEl.disabled = true;
-        this._sendBtnEl.disabled = true;
-        this._chipRowEl.querySelectorAll('button').forEach(b => { b.disabled = true; });
+        this._applyBtnEl.disabled = true;
     }
 
     reset() {
@@ -206,13 +174,27 @@ export class ChartChat {
         if (!this.mounted) return;
         this._clearStatus();
         this._inputEl.value = '';
+        this._showEntry();
     }
 
     // ─────────────────────────────────────────────────────────────────────
     // Internals
     // ─────────────────────────────────────────────────────────────────────
 
-    _setStatus(role, content, kind) {
+    _showEntry() {
+        if (!this.mounted) return;
+        this._appliedEl.hidden = true;
+        this._entryEl.hidden = false;
+    }
+
+    _showApplied(label) {
+        if (!this.mounted) return;
+        this._appliedLabelEl.textContent = `Applied: ${label}`;
+        this._entryEl.hidden = true;
+        this._appliedEl.hidden = false;
+    }
+
+    _setStatus(content, kind) {
         if (!this._statusEl) return;
         const text = (content || '').toString().trim();
         if (!text) {
@@ -221,7 +203,6 @@ export class ChartChat {
         }
         // textContent — never innerHTML — to avoid XSS from LLM output.
         this._statusEl.textContent = text;
-        this._statusEl.dataset.role = role || '';
         this._statusEl.dataset.kind = kind || '';
         this._statusEl.hidden = false;
     }
@@ -230,29 +211,25 @@ export class ChartChat {
         if (!this._statusEl) return;
         this._statusEl.textContent = '';
         this._statusEl.hidden = true;
-        delete this._statusEl.dataset.role;
         delete this._statusEl.dataset.kind;
     }
 
-    _appendMessage(role, content, kind) {
+    _appendMessage(role, content) {
         const text = (content || '').toString().trim();
         if (!text) return;
         this.messages.push({ role, content: text });
         if (this.messages.length > MAX_TRANSCRIPT_MESSAGES) {
             this.messages.splice(0, this.messages.length - MAX_TRANSCRIPT_MESSAGES);
         }
-        // Only the latest assistant note is surfaced in the UI; the user's
-        // own input doesn't need to be echoed.
-        if (role === 'assistant') {
-            this._setStatus(role, text, kind);
-        }
     }
 
     _setBusy(busy) {
         if (!this.mounted) return;
         this._inputEl.disabled = busy || !this.enabled;
-        this._sendBtnEl.disabled = busy || !this.enabled;
-        this._sendBtnEl.textContent = busy ? 'Sending…' : 'Send';
+        this._applyBtnEl.disabled = busy || !this.enabled;
+        this._applyBtnEl.classList.toggle('is-busy', !!busy);
+        const label = this._applyBtnEl.querySelector('span');
+        if (label) label.textContent = busy ? 'Applying…' : 'Apply';
     }
 
     async _handleSend() {
@@ -265,19 +242,16 @@ export class ChartChat {
         const connection = this.hooks.getConnection ? this.hooks.getConnection() : '';
 
         if (!config) {
-            this._appendMessage('assistant', 'Generate a chart first, then I can refine it.', 'warn');
+            this._setStatus('Generate a chart first, then I can refine it.', 'warn');
             return;
         }
         if (!connection) {
-            this._appendMessage('assistant', 'Pick a connection first.', 'warn');
+            this._setStatus('Pick a connection first.', 'warn');
             return;
         }
 
         this._appendMessage('user', instruction);
-        // Show progress where the assistant note will land.
-        this._setStatus('assistant', 'Working on it…', 'progress');
-        this._inputEl.value = '';
-        this._inputEl.style.height = 'auto';
+        this._setStatus('Working on it…', 'progress');
         this._setBusy(true);
 
         // Cancel any in-flight request before starting a new one.
@@ -302,7 +276,7 @@ export class ChartChat {
 
             if (!resp.ok) {
                 const detail = (data && (data.detail || data.error)) || `HTTP ${resp.status}`;
-                this._appendMessage('assistant', `Couldn't apply that change: ${detail}`, 'error');
+                this._setStatus(`Couldn't apply that change: ${detail}`, 'error');
                 return;
             }
 
@@ -315,7 +289,7 @@ export class ChartChat {
 
             if (outOfScope || !newConfig) {
                 const fallback = note || 'That request needs a new query — please ask it in the main question box.';
-                this._appendMessage('assistant', fallback, 'warn');
+                this._setStatus(fallback, 'warn');
                 return;
             }
 
@@ -325,36 +299,23 @@ export class ChartChat {
                     this.hooks.onApply(newConfig, derived, note || null);
                 } catch (e) {
                     console.error('[ChartChat] onApply threw', e);
-                    this._appendMessage('assistant', 'Got a config back but failed to render it. The chart was not changed.', 'error');
+                    this._setStatus('Got a config back but failed to render it. The chart was not changed.', 'error');
                     return;
                 }
-                // The chart changed (maybe its type) — re-tailor the chips.
-                this.refreshSuggestions();
             }
 
-            const summaryParts = [];
-            if (note) summaryParts.push(note);
-            if (derived.length > 0) {
-                const labels = derived
-                    .map(d => (d && d.label) || (d && d.operator) || '')
-                    .filter(Boolean)
-                    .join(', ');
-                if (labels) summaryParts.push(`Added overlay: ${labels}.`);
-            }
-            this._appendMessage(
-                'assistant',
-                summaryParts.length ? summaryParts.join(' ') : 'Updated the chart.',
-                'ok'
-            );
+            this._appendMessage('assistant', note || 'Updated the chart.');
+            this._clearStatus();
+            this._inputEl.value = '';
+            this._showApplied(instruction);
         } catch (e) {
             if (e && e.name === 'AbortError') return; // silent — superseded or reset
             console.error('[ChartChat] send failed', e);
-            this._appendMessage('assistant', `Network error: ${e && e.message ? e.message : 'unknown'}.`, 'error');
+            this._setStatus(`Network error: ${e && e.message ? e.message : 'unknown'}.`, 'error');
         } finally {
             if (myRequestId === this.idCounter) {
                 this._setBusy(false);
                 this.inFlight = null;
-                this._inputEl.focus();
             }
         }
     }

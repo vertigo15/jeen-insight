@@ -19,7 +19,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=67">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=77">
     <!-- CodeMirror 6 via ESM — exposes window.CodeMirrorService -->
     <script type="module">
       import { EditorView, lineNumbers } from 'https://esm.sh/@codemirror/view@6';
@@ -43,6 +43,14 @@
                 <img src="{{ url_for('static', filename='images/favicon.svg') }}" alt="" class="topbar-logo" width="24" height="24" aria-hidden="true">
                 <span class="topbar-title">JEEN Insights</span>
             </span>
+
+            <!-- Interaction mode switch: Ask (single result) vs Chat (thread) -->
+            <div class="mode-switch" role="tablist" aria-label="Interaction mode">
+                <button class="mode-switch-btn active" id="mode-btn-ask" type="button"
+                        role="tab" aria-selected="true" onclick="setAppMode('ask')">Ask</button>
+                <button class="mode-switch-btn" id="mode-btn-chat" type="button"
+                        role="tab" aria-selected="false" onclick="setAppMode('chat')">Chat</button>
+            </div>
         </div>
         <div class="topbar-actions">
             <button class="topbar-icon-btn" id="dev-panel-btn" aria-label="Run Details" title="Run Details">
@@ -262,8 +270,11 @@
 
                         <!-- Chart View -->
                         <div id="chart-view-container" class="chart-view-container" style="display: none;">
-                            <div id="chart-type-selector-container" class="chart-type-selector-container" style="display: none;"></div>
-                            <div id="chart-options-panel-container" class="chart-options-panel-container" style="display: none;"></div>
+                            <!-- Slim toolbar row: chart-type dropdown + Columns disclosure + quick-option pills. -->
+                            <div id="chart-toolbar-row" class="chart-toolbar-row">
+                                <div id="chart-type-selector-container" class="chart-type-selector-container" style="display: none;"></div>
+                                <div id="chart-options-panel-container" class="chart-options-panel-container" style="display: none;"></div>
+                            </div>
                             <!-- Chart actions: Save PNG / Copy. Built dynamically by ChartManager. -->
                             <div id="chart-actions-toolbar" class="chart-actions-toolbar" style="display: none;"></div>
                             <div id="chart-display-container" class="chart-display"></div>
@@ -289,6 +300,28 @@
 
                 </div><!-- /results-section -->
             </div><!-- /main-inner -->
+
+            <!-- ── Chat Mode panel (hidden in Ask mode) ─────────────── -->
+            <section id="chat-mode-panel" class="chat-mode-panel" aria-label="Conversation" hidden>
+                <div id="chat-thread" class="chat-thread" role="log" aria-live="polite" aria-atomic="false">
+                    <div class="chat-empty" id="chat-empty">
+                        <div class="chat-empty-mark" aria-hidden="true">J</div>
+                        <div class="chat-empty-title">Start a conversation with your data</div>
+                        <div class="chat-empty-sub">Each answer keeps its own chart, insights and follow-ups.</div>
+                        <div class="chat-empty-chips" id="chat-empty-chips" role="list"></div>
+                    </div>
+                </div>
+                <div class="chat-composer-wrap">
+                    <div class="chat-composer">
+                        <textarea id="chat-input" class="chat-input" rows="1"
+                                  placeholder="Ask a follow-up question…"
+                                  aria-label="Ask a follow-up question"></textarea>
+                        <button id="chat-send-btn" class="chat-send-btn" type="button" aria-label="Send message">
+                            Ask <span class="ask-btn-kbd">↵</span>
+                        </button>
+                    </div>
+                </div>
+            </section>
         </main>
 
     </div><!-- /layout-body -->
@@ -382,12 +415,13 @@
 <!-- csrf.js MUST load first: it wraps window.fetch to attach the CSRF token. -->
 <script src="{{ url_for('static', filename='csrf.js') }}?v=1"></script>
 <script src="{{ url_for('static', filename='auth.js') }}?v=51"></script>
-<script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=53"></script>
+<script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=55"></script>
 <script src="{{ url_for('static', filename='profiling/profilingManager.js') }}?v=68"></script>
-<script src="{{ url_for('static', filename='script.js') }}?v=85"></script>
+<script src="{{ url_for('static', filename='script.js') }}?v=94"></script>
+<script src="{{ url_for('static', filename='chat/chatController.js') }}?v=9"></script>
 <!-- Settings page (full-screen) -->
 <script type="module">
-  import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=53';
+  import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=54';
   const _sp = new SettingsPage();
   _sp.mount({
       onApplyTheme: (t) => {

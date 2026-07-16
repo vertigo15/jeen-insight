@@ -1306,25 +1306,74 @@ td.cell-id {
 .chart-not-available { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100%; text-align: center; gap: var(--space-2); }
 .chart-not-available p { font-size: var(--text-md); color: var(--color-muted); }
 .chart-not-available .reason { font-size: var(--text-sm); color: var(--color-faint); font-style: italic; }
-.chart-type-selector-container {
-  margin-bottom: var(--space-4); padding: var(--space-3) var(--space-4);
-  background: var(--color-surface-2); border-radius: var(--radius-md); border: 1px solid var(--color-border);
+/* ── Chart-type dropdown (designed button + portaled floating menu) ──────── */
+/* Slim container — the old full-width gray panel is gone; the button is a
+   compact inline control that sits in the chart toolbar row. */
+.chart-type-selector-container { margin-bottom: var(--space-3); }
+
+.ctype { position: relative; display: inline-flex; }
+.ctype-btn {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  padding: 6px 10px; line-height: 1; cursor: pointer;
+  border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  background: var(--color-surface); color: var(--color-text);
+  font-family: var(--font-sans); font-size: var(--text-base); font-weight: var(--weight-semibold);
+  transition: border-color 120ms ease, background 120ms ease;
 }
-.chart-type-selector-wrapper { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
-.chart-type-label { font-weight: var(--weight-medium); color: var(--color-text); font-size: var(--text-sm); }
-.chart-type-select {
-  padding: var(--space-1) var(--space-3); border: 1px solid var(--color-border);
-  border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-text);
-  font-size: var(--text-sm); font-family: var(--font-sans); cursor: pointer; min-width: 250px;
+.ctype-btn:hover { border-color: var(--color-accent); }
+.ctype-btn:focus-visible { outline: none; border-color: var(--color-accent); box-shadow: var(--shadow-focus); }
+.ctype-btn-icon { display: inline-flex; color: var(--color-accent); }
+.ctype-btn-label { white-space: nowrap; }
+.ctype-caret { display: inline-flex; color: var(--color-faint); }
+.ctype.is-open .ctype-btn { border-color: var(--color-accent); background: var(--color-dim-bg); }
+
+/* Portaled to <body>; position:fixed so it escapes the results card
+   (overflow:hidden) and the chat thread (overflow-y:auto) clipping. */
+.ctype-menu {
+  position: fixed; z-index: 1000;
+  width: 230px; max-height: 380px; overflow-y: auto;
+  padding: var(--space-1);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
 }
-.chart-type-select:hover { border-color: var(--color-border-2); }
-.chart-type-select:focus { outline: none; border-color: var(--color-accent); box-shadow: var(--shadow-focus); }
-.chart-type-recommendation {
-  display: flex; align-items: center; gap: var(--space-2);
-  padding: var(--space-1) var(--space-3); background: var(--color-warning-bg);
-  border: 1px solid var(--color-warning); border-radius: var(--radius-md);
-  font-size: var(--text-xs); color: var(--color-warning);
+.ctype-menu[hidden] { display: none; }
+.ctype-menu::-webkit-scrollbar { width: 8px; }
+.ctype-menu::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 9999px; }
+
+.ctype-item {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 8px 10px; text-align: left; cursor: pointer;
+  border: none; background: transparent; border-radius: var(--radius-md);
+  font-family: var(--font-sans); font-size: var(--text-base);
+  font-weight: var(--weight-medium); color: var(--color-text);
 }
+.ctype-item--divider {
+  border-bottom: 1px solid var(--color-border);
+  border-radius: 0; margin-bottom: 3px; padding-bottom: 10px;
+}
+.ctype-item-icon { flex-shrink: 0; color: var(--color-muted); }
+.ctype-item-label { flex: 1; }
+.ctype-check { flex-shrink: 0; color: var(--color-accent); display: none; }
+.ctype-item:hover, .ctype-item.is-active { background: var(--color-surface-2); }
+.ctype-item.is-selected { background: var(--color-dim-bg); font-weight: var(--weight-bold); }
+.ctype-item.is-selected .ctype-item-icon { color: var(--color-accent); }
+.ctype-item.is-selected .ctype-check { display: inline-flex; }
+
+/* ── Chart toolbar row: chart-type dropdown + Columns disclosure + pills ──── */
+.chart-toolbar-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.chart-toolbar-row .chart-type-selector-container { margin-bottom: 0; }
+
+/* The real column/quick-options container melts into the toolbar row so its
+   children (Columns button, divider, pills, expand panel) become direct flex
+   items of .chart-toolbar-row. */
+#chart-options-panel-container { display: contents; }
+/* The map options panel keeps its own boxed look and spans the full row. */
+#map-options-panel-container { flex-basis: 100%; width: 100%; }
 
 .chart-options-panel-container {
   margin-bottom: var(--space-3);
@@ -1333,8 +1382,6 @@ td.cell-id {
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border);
 }
-.chart-options-panel { display: flex; flex-direction: column; gap: var(--space-3); }
-.chart-options-section { display: flex; flex-direction: column; gap: var(--space-2); }
 .map-options-panel { display: flex; flex-direction: column; gap: var(--space-3); }
 .map-options-row { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
 .map-options-section { display: flex; flex-direction: column; gap: var(--space-2); }
@@ -1349,6 +1396,7 @@ td.cell-id {
   color: var(--color-warning);
   font-size: var(--text-xs);
 }
+/* Shared by the map options panel (heading + palette field). */
 .chart-options-heading {
   font-size: var(--text-xs);
   font-weight: var(--weight-semibold);
@@ -1356,19 +1404,64 @@ td.cell-id {
   letter-spacing: 0.04em;
   color: var(--color-muted);
 }
-.chart-options-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-}
 .chart-options-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 140px;
-  flex: 1 1 140px;
-  font-size: var(--text-xs);
-  color: var(--color-muted);
+  display: flex; flex-direction: column; gap: 4px;
+  min-width: 140px; flex: 1 1 140px;
+  font-size: var(--text-xs); color: var(--color-muted);
+}
+
+/* Columns disclosure button — mirrors the chart-type dropdown button. */
+.chart-cols-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 10px; line-height: 1; cursor: pointer;
+  border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  background: var(--color-surface); color: var(--color-text);
+  font-family: var(--font-sans); font-size: var(--text-base); font-weight: var(--weight-semibold);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.chart-cols-btn:hover { border-color: var(--color-accent); }
+.chart-cols-btn:focus-visible { outline: none; border-color: var(--color-accent); box-shadow: var(--shadow-focus); }
+.chart-cols-btn.is-open { border-color: var(--color-accent); background: var(--color-dim-bg); color: var(--color-dim-text); }
+.chart-cols-caret { display: inline-flex; color: var(--color-faint); }
+.chart-cols-btn.is-open .chart-cols-caret { color: var(--color-dim-text); }
+
+.chart-opts-divider { width: 1px; height: 18px; background: var(--color-border); margin: 0 2px; }
+
+/* Quick-option pills (Labels / Legend / Zoom / Sort). */
+.chart-opts-toggles { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chart-opt-toggle {
+  padding: 5px 12px; line-height: 1.2; cursor: pointer;
+  border: 1px solid var(--color-border); border-radius: 14px;
+  background: var(--color-surface); color: var(--color-muted);
+  font-family: var(--font-sans); font-size: var(--text-sm); font-weight: var(--weight-semibold);
+  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
+}
+.chart-opt-toggle:hover { border-color: var(--color-accent); color: var(--color-text); }
+.chart-opt-toggle.is-on {
+  background: var(--color-dim-bg);
+  border-color: var(--color-accent);
+  color: var(--color-dim-text);
+  font-weight: var(--weight-bold);
+}
+
+/* Column pickers — full-width panel that expands below the toolbar row. */
+.chart-cols-expand {
+  flex-basis: 100%; width: 100%;
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3);
+  margin-top: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+.chart-cols-expand[hidden] { display: none; }
+.chart-col-field {
+  display: flex; flex-direction: column; gap: 5px;
+  flex: 1 1 150px; min-width: 150px;
+}
+.chart-col-field > span {
+  font-size: var(--text-xs); font-weight: var(--weight-bold);
+  letter-spacing: 0.05em; text-transform: uppercase; color: var(--color-faint);
 }
 .chart-options-select {
   padding: var(--space-1) var(--space-2);
@@ -1383,25 +1476,6 @@ td.cell-id {
   outline: none;
   border-color: var(--color-accent);
   box-shadow: var(--shadow-focus);
-}
-.chart-options-toggles { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.chart-opt-toggle {
-  padding: 4px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-full);
-  background: var(--color-surface);
-  color: var(--color-muted);
-  font-size: var(--text-xs);
-  font-family: var(--font-sans);
-  cursor: pointer;
-  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
-}
-.chart-opt-toggle:hover { border-color: var(--color-border-2); color: var(--color-text); }
-.chart-opt-toggle.is-on {
-  background: var(--color-accent-bg, rgba(99, 102, 241, 0.12));
-  border-color: var(--color-accent);
-  color: var(--color-accent);
-  font-weight: var(--weight-medium);
 }
 
 /* =============================================================
@@ -1526,10 +1600,10 @@ td.cell-id {
 /* Follow-up questions: 2-column grid on wide, 1-column on narrow */
 .ins-followups {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
-@media (max-width: 640px) { .ins-followups { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .ins-followups { grid-template-columns: minmax(0, 1fr); } }
 
 /* Individual follow-up chip */
 .ins-followup {
@@ -1776,7 +1850,6 @@ td.cell-id {
   .sidebar.mobile-open { transform: translateX(0); }
   .main-content { padding: var(--space-4); }
   .prompt-tabs, .stats-tabs { overflow-x: auto; }
-  .chart-type-selector-wrapper { flex-direction: column; align-items: flex-start; }
   .chart-display { height: 350px; }
   .chart-controls { flex-direction: column; gap: var(--space-2); align-items: stretch; }
 }
@@ -2353,137 +2426,116 @@ td.cell-id {
 }
 
 /* =============================================================
-   CHART CHAT — natural-language chart edits, under the chart.
+   REFINE THIS CHART — one slim row of natural-language chart edits,
+   directly under the chart (hairline-separated).
    ============================================================= */
-.chart-chat {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+.chart-refine {
+  display: block;
   margin-top: var(--space-3);
-  padding: var(--space-3) var(--space-4);
+}
+.chart-refine-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+.chart-refine-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--color-accent);
+}
+/* Entry state — input + Apply */
+.chart-refine-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 200px;
+}
+.chart-refine-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 14px;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  color: var(--color-text);
   background: var(--color-surface-2);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-}
-.chart-chat-header {
-  display: flex; align-items: flex-start; justify-content: space-between;
-  gap: var(--space-3);
-}
-.chart-chat-title-block { display: flex; flex-direction: column; gap: 2px; }
-.chart-chat-title {
-  font-size: var(--text-sm);
-  font-weight: var(--weight-semibold);
-  color: var(--color-text);
-  letter-spacing: -0.01em;
-}
-.chart-chat-subtitle {
-  font-size: var(--text-xs);
-  color: var(--color-faint);
-}
-.chart-chat-reset-btn {
-  height: 26px; padding: 0 var(--space-3);
-  font-size: var(--text-xs); font-weight: var(--weight-medium);
-  background: transparent; color: var(--color-muted);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.chart-chat-reset-btn:hover {
-  background: var(--color-surface-3);
-  color: var(--color-text);
-  border-color: var(--color-border-2);
-}
-/* Inline single-line status under the chat header. The full transcript is
-   intentionally hidden — only the latest assistant note shows up here. */
-.chart-chat-status {
-  font-size: var(--text-xs);
-  line-height: 1.4;
-  padding: 6px var(--space-3);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  color: var(--color-muted);
-  white-space: pre-wrap;
-  word-wrap: break-word;
-}
-.chart-chat-status[data-kind="ok"] {
-  border-color: var(--color-border-2);
-  color: var(--color-text);
-}
-.chart-chat-status[data-kind="warn"] {
-  border-color: var(--color-border-2);
-  color: var(--color-text);
-}
-.chart-chat-status[data-kind="error"] {
-  border-color: var(--color-error, #c0392b);
-  color: var(--color-error, #c0392b);
-}
-.chart-chat-status[data-kind="progress"] {
-  color: var(--color-faint);
-  font-style: italic;
-}
-.chart-chat-chips {
-  display: flex; flex-wrap: wrap; gap: 6px;
-}
-.chart-chat-chip {
-  height: 26px; padding: 0 var(--space-3);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-normal);
-  color: var(--color-muted);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-full);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.chart-chat-chip:hover:not(:disabled) {
-  background: var(--color-surface-3);
-  color: var(--color-text);
-  border-color: var(--color-border-2);
-}
-.chart-chat-chip:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.chart-chat-input-row {
-  display: flex; gap: var(--space-2); align-items: flex-end;
-}
-.chart-chat-input {
-  flex: 1; min-height: 36px;
-  max-height: 96px; resize: none;
-  padding: 8px var(--space-3);
-  font-family: var(--font-sans);
-  font-size: var(--text-sm);
-  color: var(--color-text);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border-radius: 14px;
   line-height: 1.4;
 }
-.chart-chat-input:focus {
+.chart-refine-input::placeholder { color: var(--color-faint); }
+.chart-refine-input:focus {
   outline: none;
   border-color: var(--color-accent);
   box-shadow: var(--shadow-focus);
 }
-.chart-chat-input:disabled {
-  background: var(--color-surface-2);
-  color: var(--color-faint);
+.chart-refine-input:disabled {
+  opacity: 0.6;
   cursor: not-allowed;
 }
-.chart-chat-send-btn {
-  height: 36px; padding: 0 var(--space-4);
-  font-size: var(--text-sm); font-weight: var(--weight-medium);
-  background: var(--color-accent); color: var(--color-accent-fg);
-  border: none; border-radius: var(--radius-md);
-  cursor: pointer; flex-shrink: 0;
+.chart-refine-apply {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 7px 14px;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: var(--weight-bold);
+  color: var(--color-accent-fg);
+  background: var(--color-accent);
+  border: none;
+  border-radius: 14px;
+  cursor: pointer;
 }
-.chart-chat-send-btn:hover:not(:disabled) { background: var(--color-accent-2); }
-.chart-chat-send-btn:disabled {
-  opacity: 0.5; cursor: not-allowed;
+.chart-refine-apply svg { display: block; }
+.chart-refine-apply:hover:not(:disabled) { background: var(--color-accent-2); }
+.chart-refine-apply:disabled { opacity: 0.5; cursor: not-allowed; }
+/* Applied state — "✓ Applied: <refinement> · Reset chart" */
+.chart-refine-applied {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 200px;
+  flex-wrap: wrap;
 }
+.chart-refine-applied-label {
+  font-size: 12.5px;
+  font-weight: var(--weight-semibold);
+  color: var(--color-success);
+}
+.chart-refine-applied-label::before { content: '✓ '; }
+.chart-refine-dot { color: var(--color-faint); font-size: 12px; }
+.chart-refine-reset {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: var(--weight-bold);
+  color: var(--color-accent);
+  cursor: pointer;
+}
+.chart-refine-reset:hover { text-decoration: underline; }
+/* Inline single-line status (progress / warning / error). Success is
+   conveyed by the "Applied" state, so this stays hidden then. */
+.chart-refine-status {
+  margin-top: 6px;
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  color: var(--color-muted);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.chart-refine-status[data-kind="warn"] { color: var(--color-text); }
+.chart-refine-status[data-kind="error"] { color: var(--color-error, #c0392b); }
+.chart-refine-status[data-kind="progress"] { color: var(--color-faint); font-style: italic; }
 @media (max-width: 600px) {
-  .chart-chat-input-row { flex-direction: column; align-items: stretch; }
-  .chart-chat-send-btn { width: 100%; }
+  .chart-refine-entry { min-width: 0; width: 100%; }
   .chart-actions-toolbar { justify-content: stretch; }
   .chart-actions-toolbar .chart-action-btn { flex: 1; justify-content: center; }
 }
@@ -4648,6 +4700,18 @@ a.sp-nav-item {
 .trace-transition-node.is-skipped {
   opacity: 0.55;
 }
+.trace-flow-reconcile {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+.trace-flow-reconcile b { color: var(--color-text); }
+
 .trace-flow-retries {
   padding: 8px 10px;
   border: 1px solid color-mix(in oklch, var(--color-warning) 40%, var(--color-border));
@@ -5193,3 +5257,488 @@ a.sp-nav-item {
   background: var(--color-surface-2);
   color: var(--color-faint);
 }
+
+/* =============================================================
+   CHAT MODE
+   A conversation thread that reuses the NL->SQL pipeline. The header
+   mode-switch toggles between the classic Ask screen and this panel.
+   ============================================================= */
+
+/* ── Header mode switch (Ask / Chat) ─────────────────────────── */
+.mode-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: var(--space-3);
+  padding: 2px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: 9999px;
+}
+.mode-switch-btn {
+  appearance: none;
+  border: 0;
+  height: 24px;
+  cursor: pointer;
+  padding: 0 12px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--color-faint);
+  background: transparent;
+  transition: color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+.mode-switch-btn:hover { color: var(--color-text); }
+.mode-switch-btn.active {
+  color: var(--color-accent);
+  background: var(--color-surface);
+  font-weight: 600;
+  box-shadow: var(--shadow-xs);
+}
+.mode-switch-btn:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
+/* ── Panel shell ─────────────────────────────────────────────── */
+/* In chat mode the main region becomes a full-height flex column so the
+   thread scrolls internally and the composer stays pinned. */
+#main-content.mode-chat {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.chat-mode-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-tertiary);
+}
+.chat-mode-panel[hidden] { display: none; }
+
+/* ── Scrollable thread ───────────────────────────────────────── */
+.chat-thread {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 28px clamp(16px, 3vw, 40px);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.chat-thread::-webkit-scrollbar { width: 10px; }
+.chat-thread::-webkit-scrollbar-track { background: transparent; }
+.chat-thread::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 9999px;
+  border: 3px solid var(--color-bg-tertiary);
+}
+
+.chat-turn { display: flex; }
+.chat-turn.chat-user { justify-content: flex-end; }
+.chat-turn.chat-assistant { justify-content: flex-start; }
+
+/* Avatar + bubble/card row */
+.chat-row { display: flex; gap: 10px; }
+.chat-row-user { align-items: flex-end; max-width: min(80%, 640px); }
+.chat-row-assistant { align-items: flex-start; width: min(94%, 1100px); max-width: 100%; }
+.chat-row-assistant > .chat-card,
+.chat-row-assistant > .chat-thinking { flex: 1; min-width: 0; }
+
+/* Turn avatars */
+.chat-avatar {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  user-select: none;
+}
+.chat-avatar-assistant {
+  border-radius: 9px;
+  background: var(--color-accent);
+  font-size: 14px;
+  font-weight: 800;
+}
+.chat-avatar-user { border-radius: 50%; background: oklch(52% 0.19 350); }
+
+/* User bubble */
+.chat-user-bubble {
+  padding: 12px 16px;
+  background: var(--color-accent);
+  color: #fff;
+  border-radius: 16px 16px 4px 16px;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  box-shadow: var(--shadow-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Assistant card */
+.chat-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px 16px 16px 16px;
+  box-shadow: var(--shadow-sm);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  animation: fadeUp 220ms ease both;
+}
+.chat-card-summary {
+  font-size: 1rem;
+  line-height: 1.55;
+  letter-spacing: -0.01em;
+  color: var(--color-text);
+}
+.chat-card-summary[hidden] { display: none; }
+
+/* Table/chart viz block */
+.chat-card-viz { display: flex; flex-direction: column; gap: 12px; }
+.chat-viz-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.chat-viz-titles { min-width: 0; }
+.chat-viz-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.chat-viz-meta {
+  font-size: 0.75rem;
+  color: var(--color-faint);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Right-hand viz actions: copy / download icons + Table/Chart toggle */
+.chat-viz-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.chat-icon-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.chat-icon-btn:hover { color: var(--color-accent); border-color: var(--color-accent); }
+.chat-icon-btn:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+.chat-copied {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-success);
+  white-space: nowrap;
+}
+.chat-copied[hidden] { display: none; }
+
+/* Per-turn Table/Chart toggle */
+.chat-view-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  flex-shrink: 0;
+}
+.chat-view-btn {
+  appearance: none;
+  border: 0;
+  cursor: pointer;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-faint);
+  background: transparent;
+  transition: color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+.chat-view-btn:hover { color: var(--color-text); }
+.chat-view-btn.active {
+  color: var(--color-accent);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-xs);
+}
+.chat-view-btn:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
+.chat-table-slot[hidden],
+.chat-chart-slot[hidden] { display: none; }
+.chat-chart-slot { min-height: 0; }
+
+/* Chat consolidates chart export into the per-turn viz-head Download button
+   (CSV for the table, PNG for the chart), so the shared Save PNG / Copy chart
+   toolbar is redundant when the chart view is relocated into a chat turn. */
+.chat-chart-slot #chart-actions-toolbar { display: none !important; }
+
+/* Compact static result table (non-interactive; sorting lives in Ask mode) */
+.chat-table-scroll {
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+}
+.chat-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+.chat-table th,
+.chat-table td {
+  padding: 8px 12px;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--color-border);
+}
+.chat-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-surface-2);
+  color: var(--color-muted);
+  font-weight: 600;
+  font-size: 0.6875rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.chat-table tbody tr:last-child td { border-bottom: 0; }
+.chat-table tbody tr:hover { background: var(--color-surface-2); }
+.chat-table .chat-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+}
+.chat-table .chat-null { color: var(--color-faint); }
+.chat-table-more {
+  padding: 8px 2px 0;
+  font-size: 0.75rem;
+  color: var(--color-faint);
+}
+.chat-no-data {
+  padding: 16px;
+  color: var(--color-faint);
+  font-size: 0.8125rem;
+}
+
+/* Per-turn insights — reuse the InsightsManager markup, drop the nested chrome */
+.chat-insights-slot {
+  border-top: 1px solid var(--color-border);
+  padding-top: 16px;
+}
+.chat-insights-slot:empty {
+  display: none;
+  border: 0;
+  padding: 0;
+}
+.chat-insights-slot .ins-card {
+  border: 0;
+  box-shadow: none;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  gap: 16px;
+}
+/* The chat card is wider than the Ask insights panel — let the follow-up chips
+   reflow to fill the available width (2–3 per row) instead of a fixed 2-up. */
+.chat-insights-slot .ins-followups {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+/* Conversational (no-SQL) answer + error card */
+.chat-answer-text {
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--color-text);
+}
+.chat-answer-text.chat-muted { color: var(--color-faint); }
+.chat-card.chat-error {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-error);
+  border-color: var(--color-error-bg);
+}
+.chat-error-icon { flex-shrink: 0; }
+
+/* ── Thinking pipeline indicator ─────────────────────────────── */
+.chat-thinking {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px 16px 16px 16px;
+  box-shadow: var(--shadow-sm);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: fadeUp 220ms ease both;
+}
+.chat-think-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.8125rem;
+  color: var(--color-faint);
+  transition: color 160ms ease, opacity 160ms ease;
+}
+.chat-think-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-border);
+  flex-shrink: 0;
+  transition: background 160ms ease;
+}
+.chat-think-step.is-pending { opacity: 0.5; }
+.chat-think-step.is-active { color: var(--color-text); font-weight: 500; }
+.chat-think-step.is-active .chat-think-dot {
+  background: var(--color-accent);
+  animation: mc-pulse 1s ease-in-out infinite;
+}
+.chat-think-step.is-done { color: var(--color-muted); }
+.chat-think-step.is-done .chat-think-dot { background: var(--color-success); }
+
+/* ── Empty state (first chat) ────────────────────────────────── */
+.chat-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  padding: 24px;
+  color: var(--color-faint);
+}
+.chat-empty[hidden] { display: none; }
+.chat-empty-mark {
+  width: 52px;
+  height: 52px;
+  border-radius: 15px;
+  background: var(--color-accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 26px;
+  box-shadow: 0 8px 20px oklch(52% 0.24 280 / 0.28);
+  margin-bottom: 8px;
+}
+.chat-empty-title {
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--color-text);
+}
+.chat-empty-sub {
+  font-size: 0.9rem;
+  color: var(--color-faint);
+  margin-bottom: 12px;
+}
+.chat-empty-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  max-width: 640px;
+}
+.chat-empty-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 0.8375rem;
+  font-weight: 600;
+  color: var(--color-text);
+  cursor: pointer;
+  box-shadow: var(--shadow-xs);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.chat-empty-chip:hover {
+  border-color: var(--color-accent);
+  background: var(--color-surface-2);
+}
+.chat-empty-chip svg { flex-shrink: 0; color: var(--color-accent); }
+.chat-empty-chip:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+
+/* ── Pinned composer ─────────────────────────────────────────── */
+.chat-composer-wrap {
+  flex-shrink: 0;
+  padding: 14px clamp(16px, 3vw, 40px) 18px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+.chat-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  max-width: 1100px;
+  margin: 0;
+  padding: 8px 8px 8px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-bg-tertiary);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.chat-composer:focus-within {
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-focus);
+}
+.chat-input {
+  flex: 1;
+  resize: none;
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  max-height: 160px;
+  padding: 6px 0;
+  outline: none;
+}
+.chat-input::placeholder { color: var(--color-faint); }
+.chat-send-btn {
+  flex-shrink: 0;
+  cursor: pointer;
+  border: 0;
+  padding: 9px 16px;
+  border-radius: 10px;
+  background: var(--color-accent);
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: filter 120ms ease, opacity 120ms ease;
+}
+.chat-send-btn:hover { filter: brightness(1.06); }
+.chat-send-btn:active { filter: brightness(0.95); }
+.chat-send-btn:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+.chat-send-btn:disabled { opacity: 0.55; cursor: default; filter: none; }
+.ask-btn-kbd { font-family: var(--font-mono); font-size: 0.8em; opacity: 0.85; }

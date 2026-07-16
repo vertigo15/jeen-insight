@@ -53,6 +53,8 @@ export class ChartOptionsPanel {
         // overrides — auto-defaults must NOT clobber the LLM's column choice.
         this.userSet = { xColumn: false, yColumn: false, seriesColumn: false };
         this.toggles = { dataLabels: false, legend: true, dataZoom: false, sortDesc: false };
+        // Column pickers are collapsed by default (mockup: "Columns ▾" disclosure).
+        this._columnsOpen = false;
         this._mounted = false;
     }
 
@@ -129,29 +131,33 @@ export class ChartOptionsPanel {
         const container = document.getElementById(this.containerId);
         if (!container) return;
 
+        const caret = '<svg class="chart-cols-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+            '<path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+        // Slim toolbar: Columns disclosure + divider + quick-option pills, with
+        // the X/Y/Series selects collapsed into an inline panel that spans the
+        // full row when expanded.
         container.innerHTML = `
-            <div class="chart-options-panel">
-                <div class="chart-options-section">
-                    <span class="chart-options-heading">Columns</span>
-                    <div class="chart-options-row">
-                        <label class="chart-options-field">
-                            <span>X / category</span>
-                            <select id="chart-opt-x" class="chart-options-select"></select>
-                        </label>
-                        <label class="chart-options-field">
-                            <span>Y / value</span>
-                            <select id="chart-opt-y" class="chart-options-select"></select>
-                        </label>
-                        <label class="chart-options-field">
-                            <span>Series (optional)</span>
-                            <select id="chart-opt-series" class="chart-options-select"></select>
-                        </label>
-                    </div>
-                </div>
-                <div class="chart-options-section">
-                    <span class="chart-options-heading">Quick options</span>
-                    <div class="chart-options-toggles" id="chart-opt-toggles"></div>
-                </div>
+            <button type="button" class="chart-cols-btn${this._columnsOpen ? ' is-open' : ''}" id="chart-cols-btn"
+                    aria-expanded="${this._columnsOpen ? 'true' : 'false'}" aria-controls="chart-cols-expand"
+                    title="Choose X / Y / Series columns">
+                <span>Columns</span>${caret}
+            </button>
+            <div class="chart-opts-divider" aria-hidden="true"></div>
+            <div class="chart-opts-toggles" id="chart-opt-toggles"></div>
+            <div class="chart-cols-expand" id="chart-cols-expand"${this._columnsOpen ? '' : ' hidden'}>
+                <label class="chart-col-field">
+                    <span>X / Category</span>
+                    <select id="chart-opt-x" class="chart-options-select"></select>
+                </label>
+                <label class="chart-col-field">
+                    <span>Y / Value</span>
+                    <select id="chart-opt-y" class="chart-options-select"></select>
+                </label>
+                <label class="chart-col-field">
+                    <span>Series (optional)</span>
+                    <select id="chart-opt-series" class="chart-options-select"></select>
+                </label>
             </div>
         `;
 
@@ -169,6 +175,7 @@ export class ChartOptionsPanel {
             ).join('');
         }
 
+        document.getElementById('chart-cols-btn')?.addEventListener('click', () => this._toggleColumns());
         document.getElementById('chart-opt-x')?.addEventListener('change', (e) => this._onColumnChange('xColumn', e.target.value));
         document.getElementById('chart-opt-y')?.addEventListener('change', (e) => this._onColumnChange('yColumn', e.target.value));
         document.getElementById('chart-opt-series')?.addEventListener('change', (e) => this._onColumnChange('seriesColumn', e.target.value));
@@ -177,6 +184,18 @@ export class ChartOptionsPanel {
         });
 
         this._mounted = true;
+    }
+
+    /** Expand/collapse the X/Y/Series column pickers. */
+    _toggleColumns() {
+        this._columnsOpen = !this._columnsOpen;
+        const btn = document.getElementById('chart-cols-btn');
+        const panel = document.getElementById('chart-cols-expand');
+        if (btn) {
+            btn.classList.toggle('is-open', this._columnsOpen);
+            btn.setAttribute('aria-expanded', this._columnsOpen ? 'true' : 'false');
+        }
+        if (panel) panel.hidden = !this._columnsOpen;
     }
 
     _fillSelect(id, cols, selected, filterFn, numericOnly = false, allowEmpty = false) {
@@ -217,8 +236,11 @@ export class ChartOptionsPanel {
     }
 
     show() {
+        // Clear the inline override so the container falls back to its CSS
+        // `display: contents` — its children (Columns button, pills, expand
+        // panel) then flow directly into the shared toolbar row.
         const el = document.getElementById(this.containerId);
-        if (el) el.style.display = 'block';
+        if (el) el.style.display = '';
     }
 
     hide() {

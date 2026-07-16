@@ -11,10 +11,10 @@ import { analyzeData } from './utils/dataAnalyzer.js';
 import { makeValueFormatter } from './utils/valueFormat.js?v=73';
 import { ChartContainer } from './components/ChartContainer.js?v=78';
 import { ChartToggle } from './components/ChartToggle.js';
-import { ChartTypeSelector } from './components/ChartTypeSelector.js?v=77';
-import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=70';
+import { ChartTypeSelector } from './components/ChartTypeSelector.js?v=78';
+import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=71';
 import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v=1';
-import { ChartChat } from './components/ChartChat.js?v=72';
+import { ChartChat } from './components/ChartChat.js?v=73';
 import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js';
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
 
@@ -47,7 +47,39 @@ export class ChartManager {
         // The current ECharts options object actually rendered.
         this.currentEchartsOptions = null;
 
+        // Per-instance query context + view elements. When set (Chat mode)
+        // these override the Ask-mode window globals / fixed element IDs so a
+        // single engine can be bound to whichever conversation turn is active.
+        this.ctx = null;          // { queryId, question, sql }
+        this.tableEl = null;      // element shown/hidden as the "table" view
+        this.chartViewEl = null;  // element shown/hidden as the "chart" view
+
+        // When false (Chat mode), skip rendering the segmented ChartToggle into
+        // the Ask-only #chart-toggle-container so a Chat engine can't overwrite
+        // Ask mode's toggle/listeners. Chat supplies its own per-turn toggle.
+        this.manageToggle = true;
+        // In-flight chart request control so a superseded / disposed engine
+        // cannot render a late response into a relocated or returned-home node.
+        this._chartAbort = null;
+        this._disposed = false;
+
         console.log('[ChartManager] Initialized');
+    }
+
+    /**
+     * Bind this engine to a specific turn's context + view elements.
+     * Call before initialize()/handleViewChange() when reusing one engine
+     * across conversation turns (Chat mode). Ask mode leaves these null and
+     * keeps reading the window globals / fixed IDs.
+     *
+     * @param {{queryId?:string, question?:string, sql?:string,
+     *          tableEl?:HTMLElement, chartViewEl?:HTMLElement}} ctx
+     */
+    setContext(ctx = {}) {
+        this.ctx = { queryId: ctx.queryId, question: ctx.question, sql: ctx.sql };
+        this.tableEl = ctx.tableEl || null;
+        this.chartViewEl = ctx.chartViewEl || null;
+        if (typeof ctx.manageToggle === 'boolean') this.manageToggle = ctx.manageToggle;
     }
 
     _devTrace(status, payload = {}) {
@@ -76,7 +108,7 @@ export class ChartManager {
         // Check if data can be charted
         if (!this.dataAnalysis.canChart) {
             console.log('[ChartManager] Data cannot be charted:', this.dataAnalysis.reason);
-            this.chartToggle.disableChartButton();
+            if (this.chartToggle) this.chartToggle.disableChartButton();
             this.showNotChartableMessage(this.dataAnalysis.reason);
             this._devTrace('skipped', { detail: `Not chartable: ${this.dataAnalysis.reason}` });
             return;
@@ -90,13 +122,21 @@ export class ChartManager {
      * Initializes UI components
      */
     initializeComponents() {
-        // Chart toggle
-        this.chartToggle = new ChartToggle('chart-toggle-container', (viewMode) => {
-            this.handleViewChange(viewMode);
-        });
-        this.chartToggle.render();
+        // Chart toggle (Ask mode only). Chat mode passes manageToggle:false and
+        // drives view changes through its own per-turn toggle, so we must NOT
+        // render into the shared Ask-only #chart-toggle-container here.
+        if (this.manageToggle) {
+            this.chartToggle = new ChartToggle('chart-toggle-container', (viewMode) => {
+                this.handleViewChange(viewMode);
+            });
+            this.chartToggle.render();
+        }
 
-        // Chart type selector
+        // Chart type selector. Destroy any prior instance first so its portaled
+        // menu + global listeners don't leak when components re-initialize.
+        if (this.chartTypeSelector && typeof this.chartTypeSelector.destroy === 'function') {
+            this.chartTypeSelector.destroy();
+        }
         this.chartTypeSelector = new ChartTypeSelector('chart-type-selector-container', (chartType) => {
             this.handleChartTypeChange(chartType);
         });
@@ -172,8 +212,8 @@ export class ChartManager {
         this.state.currentView = viewMode;
         this.saveViewPreference(viewMode);
 
-        const tableContainer = document.getElementById('results-display');
-        const chartViewContainer = document.getElementById('chart-view-container');
+        const tableContainer = this.tableEl || document.getElementById('results-display');
+        const chartViewContainer = this.chartViewEl || document.getElementById('chart-view-container');
 
         if (viewMode === 'table') {
             // Show table, hide chart
@@ -246,9 +286,20 @@ export class ChartManager {
         if (this.chartChat) this.chartChat.reset();
         this.originalConfig = null;
 
+        // On a fresh Auto request, drop any stale recommendation so the button
+        // shows "Auto" while loading (not the previous turn's "Bar · Auto").
+        if (chartType === 'auto' && this.chartTypeSelector) {
+            this.chartTypeSelector.setRecommendation(null);
+        }
+
         // Show loading state
         this.chartContainer.showLoading();
         if (this.chartChat) this.chartChat.disable();
+
+        // Per-activation abort handle so dispose() (turn switch / leaving Chat)
+        // cancels the request and no stale response renders into a moved node.
+        this._chartAbort = new AbortController();
+        const _abortSignal = this._chartAbort.signal;
 
         try {
             // Check cache first (include chart type in cache key)
@@ -257,7 +308,18 @@ export class ChartManager {
             if (cached) {
                 console.log('[ChartManager] Using cached chart config for type:', chartType);
                 this._devTrace('running', { metrics: { cache: 'browser hit' }, detail: 'Using cached chart config.' });
-                const config = JSON.parse(cached);
+                const parsed = JSON.parse(cached);
+                // New shape: { chartConfig, recommendedType }. Legacy shape: the
+                // raw ECharts config (has `series`). Read both.
+                const config = (parsed && parsed.chartConfig) ? parsed.chartConfig : parsed;
+                const cachedRec = (parsed && parsed.recommendedType) ? parsed.recommendedType : null;
+                if (this._disposed) return;
+                // Restore the "<Type> · Auto" button label from cache so it
+                // survives cache hits (setRecommendation is only called on a
+                // fresh network response otherwise).
+                if (chartType === 'auto' && cachedRec && this.chartTypeSelector) {
+                    this.chartTypeSelector.setRecommendation(cachedRec);
+                }
                 const renderStart = performance.now();
                 await this.renderChart(config);
                 this._devTrace('done', {
@@ -278,10 +340,12 @@ export class ChartManager {
             // Only fields the user explicitly picked override the LLM. On Auto
             // this is empty, so the LLM is free to choose x/y/series + combo.
             const overrides = (this.chartOptionsPanel && chartType !== 'map') ? this.chartOptionsPanel.getOverrides() : {};
+            const ctxQueryId  = (this.ctx && this.ctx.queryId != null) ? this.ctx.queryId : window.currentQueryId;
+            const ctxQuestion = (this.ctx && this.ctx.question != null) ? this.ctx.question : window.currentQuestion;
             const payload = {
                 connection,
-                query_id: window.currentQueryId || null,
-                question: window.currentQuestion || null,
+                query_id: ctxQueryId || null,
+                question: ctxQuestion || null,
                 chart_type: chartType,
             };
             if (overrides.xColumn) payload.x_column = overrides.xColumn;
@@ -291,16 +355,18 @@ export class ChartManager {
             let serverMs = 0;
             let cacheStatus = 'result hit';
             const requestStart = performance.now();
-            let data = await this._postChart(payload);
+            let data = await this._postChart(payload, _abortSignal);
             serverMs += Math.round(performance.now() - requestStart);
+            if (this._disposed || _abortSignal.aborted) return;
             if (data === '__REDIRECT__') return;
             if (data === '__CACHE_MISS__') {
                 console.log('[ChartManager] Cache miss — re-sending full rows');
                 cacheStatus = 'result miss';
                 this._devTrace('running', { metrics: { cache: 'result miss' }, detail: 'Server result cache missed; re-sending full rows for chart build.' });
                 const fallbackStart = performance.now();
-                data = await this._postChart({ ...payload, ...this._fallbackRows() });
+                data = await this._postChart({ ...payload, ...this._fallbackRows() }, _abortSignal);
                 serverMs += Math.round(performance.now() - fallbackStart);
+                if (this._disposed || _abortSignal.aborted) return;
                 if (data === '__REDIRECT__') return;
             }
 
@@ -340,8 +406,15 @@ export class ChartManager {
                 this.displayChartPrompt(data);
             }
 
-            // Cache the built config (keyed on data + type + mapping).
-            sessionStorage.setItem(cacheKey, JSON.stringify(chartConfig));
+            // Cache the built config (keyed on data + type + mapping) plus the
+            // type the LLM actually picked, so an Auto cache hit can restore the
+            // "<Type> · Auto" button label.
+            sessionStorage.setItem(cacheKey, JSON.stringify({
+                chartConfig,
+                recommendedType: data.chart_type || null,
+            }));
+
+            if (this._disposed || _abortSignal.aborted) return;
 
             // Render the chart
             const renderStart = performance.now();
@@ -357,11 +430,16 @@ export class ChartManager {
             });
 
         } catch (error) {
+            // A cancelled request (turn switch / disposed engine) is expected;
+            // don't surface it as a chart error on a node we no longer own.
+            if (this._disposed || (error && error.name === 'AbortError')) return;
             console.error('[ChartManager] Failed to generate chart with LLM:', error);
             this._devTrace('error', { detail: error.message || String(error) });
             this.chartContainer.showError(
                 'Failed to generate chart: ' + error.message
             );
+        } finally {
+            this._chartAbort = null;
         }
     }
 
@@ -370,12 +448,20 @@ export class ChartManager {
      *   '__CACHE_MISS__' when the server has no cached rows (409),
      *   '__REDIRECT__'   when the session expired (401, redirecting to login).
      */
-    async _postChart(payload) {
+    async _postChart(payload, signal = null) {
+        // Combine the caller's cancellation signal (Chat turn switch / dispose)
+        // with the hard 2-minute timeout when the platform supports it.
+        let reqSignal;
+        if (signal && typeof AbortSignal.any === 'function') {
+            reqSignal = AbortSignal.any([signal, AbortSignal.timeout(120000)]);
+        } else {
+            reqSignal = signal || AbortSignal.timeout(120000);
+        }
         const response = await fetch('/api/generate-chart', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
-            signal: AbortSignal.timeout(120000), // 2 minute timeout
+            signal: reqSignal,
         });
         if (response.status === 409) return '__CACHE_MISS__';
         if (response.status === 401) {
@@ -617,6 +703,21 @@ export class ChartManager {
     _enableChartActions(enabled) {
         if (this._chartSavePngBtn) this._chartSavePngBtn.disabled = !enabled;
         if (this._chartCopyPngBtn) this._chartCopyPngBtn.disabled = !enabled;
+    }
+
+    /**
+     * Returns a PNG data URL of the currently rendered chart, or null if no
+     * chart is ready. Used by Chat mode's single per-turn Download button.
+     *
+     * @returns {string|null}
+     */
+    getChartDataURL() {
+        if (!this.chartContainer || !this.chartContainer.hasChart()) return null;
+        try {
+            return this.chartContainer.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#ffffff' });
+        } catch (_) {
+            return null;
+        }
     }
 
     _handleSavePng() {
@@ -921,8 +1022,10 @@ export class ChartManager {
     }
 
     getCacheKey(chartType) {
-        // Use SQL as part of cache key (hash it for shorter key)
-        const sqlHash = this.simpleHash(window.currentSql || JSON.stringify(this.state.currentData));
+        // Use SQL as part of cache key (hash it for shorter key). Prefer the
+        // per-instance context SQL (Chat) over the Ask-mode global.
+        const sqlSeed = (this.ctx && this.ctx.sql) ? this.ctx.sql : window.currentSql;
+        const sqlHash = this.simpleHash(sqlSeed || JSON.stringify(this.state.currentData));
         return `chart_${sqlHash}_${chartType}`;
     }
 
@@ -933,7 +1036,11 @@ export class ChartManager {
         // LLM's columns into the panel.
         const o = this.chartOptionsPanel ? this.chartOptionsPanel.getOverrides() : {};
         const mapKey = [o.xColumn || '', o.yColumn || '', o.seriesColumn || ''].join('|');
-        return `chart_llm_${dataHash}_${chartType}_${mapKey}`;
+        // Scope to the turn (Chat) so two differently-worded turns with the same
+        // data don't reuse each other's chart. Ask mode (no ctx) is unscoped.
+        const ctxSeed = this.ctx ? String(this.ctx.queryId || this.ctx.question || '') : '';
+        const ctxKey = ctxSeed ? '_' + this.simpleHash(ctxSeed) : '';
+        return `chart_llm_${dataHash}_${chartType}_${mapKey}${ctxKey}`;
     }
 
     _withQuickToggles(config) {
@@ -944,7 +1051,58 @@ export class ChartManager {
         }
         // Apply value formatting last so it covers initial render, chat edits,
         // quick toggles, and reset uniformly.
-        return this._applyValueFormatting(out);
+        out = this._applyValueFormatting(out);
+        // Runs on the final config for every render path (initial, chat edit,
+        // quick toggle, reset) so the header/legend never overprint.
+        if (!isMapOption(out)) {
+            out = this._suppressCanvasTitle(out);
+        }
+        return out;
+    }
+
+    /**
+     * The result title is already rendered in the card header above the chart,
+     * so ECharts' own centered `title.text` only collides with the legend that
+     * sits at the same y-position. Hide the in-canvas title, and give a
+     * top-anchored legend enough vertical room that it never overprints the
+     * plot area.
+     *
+     * Shallow-clones only the properties it changes so the Reset baseline
+     * (`originalConfig`) is never mutated, even on the map/no-panel code path
+     * where `out` may still reference the incoming config.
+     */
+    _suppressCanvasTitle(config) {
+        if (!config || typeof config !== 'object') return config;
+        const out = { ...config };
+
+        if (out.title !== undefined && out.title !== null) {
+            out.title = Array.isArray(out.title)
+                ? out.title.map((t) => ({ ...(t || {}), show: false }))
+                : { ...out.title, show: false };
+        }
+
+        // Only reflow a top-anchored legend on cartesian charts (those with a
+        // `grid`). Pie/gauge/radar/vertical-side legends are left untouched —
+        // hiding the in-canvas title above already clears their overlap, and
+        // nudging their legend could move it out of place.
+        const legend = out.legend && !Array.isArray(out.legend) ? out.legend : null;
+        const legendShown = legend && legend.show !== false;
+        const legendAtBottom = legend && (legend.bottom !== undefined || legend.top === 'bottom');
+        const legendVertical = legend && (legend.orient === 'vertical' || legend.left === 'left' || legend.left === 'right' || legend.right !== undefined);
+        const hasGrid = out.grid && !Array.isArray(out.grid);
+        if (legendShown && !legendAtBottom && !legendVertical && hasGrid) {
+            out.legend = { ...legend };
+            // Anchor the legend where the removed title used to sit…
+            if (out.legend.top === undefined) out.legend.top = 8;
+            // …and push the plot area down so bars/lines clear it.
+            const t = out.grid.top;
+            const num = typeof t === 'number' ? t : Number(t);
+            const isPct = typeof t === 'string' && t.trim().endsWith('%');
+            if (isPct || !Number.isFinite(num) || num < 48) {
+                out.grid = { ...out.grid, top: 48 };
+            }
+        }
+        return out;
     }
 
     _syncMapControls(chartType) {
@@ -1212,8 +1370,19 @@ export class ChartManager {
      * Cleanup method
      */
     dispose() {
+        this._disposed = true;
+        // Cancel any in-flight chart request so its late response can't render
+        // into a node this engine no longer owns.
+        if (this._chartAbort) {
+            try { this._chartAbort.abort(); } catch (_) { /* noop */ }
+            this._chartAbort = null;
+        }
         if (this.chartContainer) {
             this.chartContainer.dispose();
+        }
+        // Remove the chart-type dropdown's portaled menu + global listeners.
+        if (this.chartTypeSelector && typeof this.chartTypeSelector.destroy === 'function') {
+            this.chartTypeSelector.destroy();
         }
         console.log('[ChartManager] Disposed');
     }
