@@ -38,3 +38,11 @@ mcp_cache_service: Optional[McpCacheService] = None
 mcp_catalog_client: Optional[McpCatalogClient] = None
 # Background task that warms the model-health cache on startup.
 health_warmup_task: "Optional[asyncio.Task]" = None
+
+# ── Connector / integration platform services ──────────────────────────────
+identity_service: Optional[object] = None
+registry_service: Optional[object] = None
+grant_service: Optional[object] = None
+snapshot_service: Optional[object] = None
+audit_service: Optional[object] = None
+action_gate: Optional[object] = None

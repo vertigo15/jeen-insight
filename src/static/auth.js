@@ -102,6 +102,30 @@
         window.location.replace('/login');
       });
     }
+
+    _surfaceConnectorResult();
+  }
+
+  // Surface OAuth connect results bounced back from /integrations/callback.
+  function _surfaceConnectorResult() {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get('connector_result');
+    if (!result) return;
+    const msg = params.get('connector_msg') || '';
+    const toast = (m, t) => {
+      if (typeof window.showToast === 'function') window.showToast(m, t);
+    };
+    if (result === 'connected') {
+      toast('Connection established', 'success');
+    } else {
+      toast('Could not connect' + (msg ? ' — ' + msg : ''), 'error');
+    }
+    // Strip the params so a refresh doesn't re-fire the toast.
+    params.delete('connector_result');
+    params.delete('connector_msg');
+    const qs = params.toString();
+    const clean = window.location.pathname + (qs ? '?' + qs : '');
+    window.history.replaceState({}, '', clean);
   }
 
   // Run after DOM is ready.

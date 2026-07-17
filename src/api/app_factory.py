@@ -13,14 +13,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.lifespan import lifespan
+from src.api.middleware import InternalAuthMiddleware
 from src.api.routes import (
+    actions as actions_routes,
     autocomplete,
     charts,
     connections,
+    connectors as connectors_routes,
     health,
     history,
     insights,
     mcp as mcp_routes,
+    me_connections,
     query,
     runtime_settings as runtime_settings_routes,
     saved_analyses,
@@ -54,6 +58,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Internal auth boundary: verify the Flask-minted token into a Principal and
+    # default-deny non-exempt routes. Added last so it runs first (outermost).
+    app.add_middleware(InternalAuthMiddleware)
+
     # Routers — order doesn't matter, but grouping mirrors the file layout.
     app.include_router(health.router)
     app.include_router(connections.router)
@@ -66,5 +74,9 @@ def create_app() -> FastAPI:
     app.include_router(runtime_settings_routes.router)
     app.include_router(mcp_routes.router)
     app.include_router(saved_analyses.router)
+    # Connector / integration platform.
+    app.include_router(connectors_routes.router)
+    app.include_router(me_connections.router)
+    app.include_router(actions_routes.router)
 
     return app

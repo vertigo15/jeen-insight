@@ -6,6 +6,12 @@ We deliberately avoid the FastAPI lifespan in unit tests:
   lifespan, so no DB pool, no Azure OpenAI client, no AgentRegistry are
   required. Tests that need services inject fakes into `src.api.state`
   via the `fake_state` fixture.
+
+Internal auth: FastAPI is fronted by ``InternalAuthMiddleware`` (default-deny).
+Every non-exempt route needs a valid internal token minted by Flask, and the
+verified :class:`Principal` — not the request body — is the source of identity.
+The default ``client`` fixture therefore carries a signed token so route tests
+exercise real handler logic; use ``anon_client`` to assert the 401 path.
 """
 
 from __future__ import annotations
@@ -23,6 +29,9 @@ os.environ.setdefault("METADATA_DB_HOST", "test")
 os.environ.setdefault("METADATA_DB_NAME", "test")
 os.environ.setdefault("METADATA_DB_USER", "test")
 os.environ.setdefault("METADATA_DB_PASSWORD", "test")
+# A fixed, strong (non-placeholder) signing secret so the same key mints and
+# verifies internal tokens across the test process.
+os.environ.setdefault("INTERNAL_API_SECRET", "unit-test-internal-secret-0123456789abcdef")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -30,9 +39,41 @@ from src.api import app  # noqa: E402
 from src.api import state as api_state  # noqa: E402
 
 
+def _mint_internal_token(**claims) -> str:
+    """Mint a valid internal token for tests (default: admin ``user-a``)."""
+    from src.security.internal_auth import issue_internal_token
+
+    base = {
+        "user_id": "user-a",
+        "role": "admin",
+        "name": "Test User",
+        "email": "user-a@test.local",
+    }
+    base.update(claims)
+    return issue_internal_token(base)
+
+
+@pytest.fixture
+def make_internal_token():
+    """Factory to mint internal tokens with custom principal claims."""
+    return _mint_internal_token
+
+
 @pytest.fixture
 def client() -> TestClient:
-    """Lifespan-free TestClient. Routes work; services come from `fake_state`."""
+    """Authenticated, lifespan-free TestClient (Principal = admin ``user-a``).
+
+    Services come from `fake_state`. Identity is taken from the signed token,
+    matching the production internal-auth boundary.
+    """
+    c = TestClient(app)
+    c.headers.update({"Authorization": f"Bearer {_mint_internal_token()}"})
+    return c
+
+
+@pytest.fixture
+def anon_client() -> TestClient:
+    """Unauthenticated TestClient — for asserting the default-deny 401 path."""
     return TestClient(app)
 
 

@@ -4,8 +4,12 @@ services:
   jeen-insights-api:
     build: .
     container_name: jeen-insights-api
-    ports:
-      - "8001:8000"
+    # The API is internal-only: it is reachable by the UI over the compose
+    # network (http://jeen-insights-api:8000) and is NOT published to the host.
+    # This is defense-in-depth for the internal auth boundary — do not add a
+    # host port mapping here.
+    expose:
+      - "8000"
     env_file:
       - .env
     volumes:

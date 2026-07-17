@@ -30,8 +30,8 @@ def test_query_returns_503_when_registry_missing(client, empty_state):
     assert resp.status_code == 503
 
 
-def test_query_requires_authenticated_user(client, fake_state):
-    resp = client.post(
+def test_query_requires_authenticated_user(anon_client, fake_state):
+    resp = anon_client.post(
         "/api/query",
         json={"question": "show all customers", "connection": "sales_db"},
     )

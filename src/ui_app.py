@@ -49,15 +49,20 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on", "t")
 
 
-# Only send cookies over HTTPS when enabled. Default False so local HTTP dev
-# (http://localhost:8501) still logs in; set SESSION_COOKIE_SECURE=true in prod.
-SESSION_COOKIE_SECURE = _env_bool("SESSION_COOKIE_SECURE", default=False)
+# Explicit development mode. Production is the DEFAULT (fail-closed): a fresh
+# install with no config refuses to start with weak/known secrets. Operators
+# running local HTTP dev opt in with JEEN_DEV_MODE=true.
+DEV_MODE = _env_bool("JEEN_DEV_MODE", default=False)
+
+# Send cookies over HTTPS only. Defaults to ON in production, OFF in dev so local
+# http://localhost:8501 still logs in.
+SESSION_COOKIE_SECURE = _env_bool("SESSION_COOKIE_SECURE", default=not DEV_MODE)
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
-# Session-signing secret. Never sign sessions with a missing OR known
-# placeholder key when secure cookies are on (i.e. production): a predictable
-# key lets anyone forge sessions.
+# Session-signing secret. A predictable key lets anyone forge an (admin) session
+# or an internal API token, so known/placeholder keys are rejected OUTRIGHT in
+# production — regardless of the cookie flag — and only tolerated in dev mode.
 _DEV_SECRET = "jeen-insights-dev-only-insecure-secret"  # noqa: S105 (dev only)
 _INSECURE_SECRETS = {
     _DEV_SECRET,
@@ -65,19 +70,30 @@ _INSECURE_SECRETS = {
     "change-me-generate-a-random-48+-char-value",      # .env.example placeholder
 }
 _secret_key = os.getenv("FLASK_SECRET_KEY") or os.getenv("AUTH_SECRET")
-if SESSION_COOKIE_SECURE and (not _secret_key or _secret_key in _INSECURE_SECRETS):
+_secret_weak = (not _secret_key) or (_secret_key in _INSECURE_SECRETS)
+if _secret_weak and not DEV_MODE:
     raise RuntimeError(
-        "A strong, non-default FLASK_SECRET_KEY (or AUTH_SECRET) must be set "
-        "when SESSION_COOKIE_SECURE is enabled. Refusing to start with a "
-        "missing or known placeholder session key in production."
+        "A strong, non-default FLASK_SECRET_KEY (or AUTH_SECRET) is required. "
+        "Refusing to start with a missing or known placeholder session key. "
+        "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(48))\" "
+        "(or set JEEN_DEV_MODE=true for local development only)."
     )
-if not _secret_key:
-    _secret_key = _DEV_SECRET
+if _secret_weak:
+    _secret_key = _secret_key or _DEV_SECRET
     logger.warning(
-        "FLASK_SECRET_KEY/AUTH_SECRET not set — using an insecure dev key. "
-        "Set one before deploying."
+        "JEEN_DEV_MODE: using a weak/known session key. NEVER do this in production."
     )
 app.secret_key = _secret_key
+
+if not DEV_MODE and not SESSION_COOKIE_SECURE:
+    logger.warning(
+        "Production mode with SESSION_COOKIE_SECURE=false — session/CSRF cookies "
+        "will be sent over plain HTTP. Terminate TLS and set SESSION_COOKIE_SECURE=true."
+    )
+
+# Fail fast if the internal Flask→API signing secret is unsafe for production.
+from src.security.internal_auth import assert_configured as _assert_internal_auth
+_assert_internal_auth()
 
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
@@ -156,17 +172,91 @@ _PUBLIC_EXACT    = {
     "/login",
     "/logout",
     "/health",
+    "/setup",
     "/auth/microsoft",
     "/auth/microsoft/callback",
 }
+
+# Cached once an admin exists so we don't hit the DB on every request forever.
+_admin_bootstrapped = False
+
+# First-run setup requires an out-of-band token so a fresh, admin-less install
+# cannot be taken over by any anonymous visitor who reaches /setup. The token is
+# operator-provided (SETUP_BOOTSTRAP_TOKEN) or, if unset, generated once and
+# printed to the server log — so only someone with server/log access (an
+# operator) can complete bootstrap.
+_generated_setup_token: str | None = None
+
+
+def _setup_bootstrap_token() -> str:
+    """Return the token required to complete first-run admin setup."""
+    global _generated_setup_token
+    env = (os.getenv("SETUP_BOOTSTRAP_TOKEN") or "").strip()
+    if env:
+        return env
+    if _generated_setup_token is None:
+        _generated_setup_token = secrets.token_urlsafe(32)
+        logger.warning(
+            "FIRST-RUN SETUP TOKEN — enter this on the /setup page to create the "
+            "first admin account (set SETUP_BOOTSTRAP_TOKEN to pin your own): %s",
+            _generated_setup_token,
+        )
+    return _generated_setup_token
+
+
+def _needs_first_run_setup() -> bool:
+    """True when no usable admin exists yet (drives the /setup screen)."""
+    global _admin_bootstrapped
+    if _admin_bootstrapped:
+        return False
+    try:
+        from src.auth_db import active_admin_exists
+
+        if active_admin_exists():
+            _admin_bootstrapped = True
+            return False
+        return True
+    except Exception:  # noqa: BLE001 - fail closed to normal login on DB error
+        return False
 
 
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
+def _session_claims() -> Dict[str, Any]:
+    """Identity claims embedded in the internal token minted for the API."""
+    return {
+        "user_id": str(session.get("user_id") or ""),
+        "role": session.get("user_role") or "viewer",
+        "name": session.get("user_name") or "",
+        "email": session.get("user_email") or "",
+        "tenant_id": session.get("tenant_id") or "",
+        "object_id": session.get("object_id") or "",
+        "groups": session.get("groups") or [],
+        "groups_complete": session.get("groups_complete", True),
+        "auth_provider": session.get("auth_provider") or "local",
+        "auth_time": int(session.get("auth_time") or 0),
+    }
+
+
+def _internal_headers() -> Dict[str, str]:
+    """Mint a short-lived, audience-bound internal token for upstream API calls.
+
+    Flask is the SOLE issuer; FastAPI verifies this into a Principal and derives
+    all identity/role/group facts from it (never from the request body).
+    """
+    if "user_id" not in session:
+        return {}
+    from src.security.internal_auth import issue_internal_token
+
+    return {"Authorization": f"Bearer {issue_internal_token(_session_claims())}"}
+
+
 def _proxy_get(path: str, params: Dict[str, Any] | None = None, timeout: float = 30) -> Any:
     try:
-        response = requests.get(f"{API_BASE_URL}{path}", params=params, timeout=timeout)
+        response = requests.get(
+            f"{API_BASE_URL}{path}", params=params, timeout=timeout, headers=_internal_headers()
+        )
     except requests.exceptions.RequestException as e:
         logger.error("Backend GET %s failed: %s", path, e)
         return jsonify({"error": f"Backend unavailable: {e}"}), 503
@@ -177,7 +267,9 @@ def _proxy_get(path: str, params: Dict[str, Any] | None = None, timeout: float =
 
 def _proxy_post(path: str, payload: Dict[str, Any], timeout: float = 60) -> Any:
     try:
-        response = requests.post(f"{API_BASE_URL}{path}", json=payload, timeout=timeout)
+        response = requests.post(
+            f"{API_BASE_URL}{path}", json=payload, timeout=timeout, headers=_internal_headers()
+        )
     except requests.exceptions.RequestException as e:
         logger.error("Backend POST %s failed: %s", path, e)
         return jsonify({"error": f"Backend unavailable: {e}"}), 503
@@ -188,7 +280,9 @@ def _proxy_post(path: str, payload: Dict[str, Any], timeout: float = 60) -> Any:
 
 def _proxy_patch(path: str, payload: Dict[str, Any], timeout: float = 30) -> Any:
     try:
-        response = requests.patch(f"{API_BASE_URL}{path}", json=payload, timeout=timeout)
+        response = requests.patch(
+            f"{API_BASE_URL}{path}", json=payload, timeout=timeout, headers=_internal_headers()
+        )
     except requests.exceptions.RequestException as e:
         logger.error("Backend PATCH %s failed: %s", path, e)
         return jsonify({"error": f"Backend unavailable: {e}"}), 503
@@ -199,7 +293,9 @@ def _proxy_patch(path: str, payload: Dict[str, Any], timeout: float = 30) -> Any
 
 def _proxy_delete(path: str, params: Dict[str, Any] | None = None, timeout: float = 30) -> Any:
     try:
-        response = requests.delete(f"{API_BASE_URL}{path}", params=params, timeout=timeout)
+        response = requests.delete(
+            f"{API_BASE_URL}{path}", params=params, timeout=timeout, headers=_internal_headers()
+        )
     except requests.exceptions.RequestException as e:
         logger.error("Backend DELETE %s failed: %s", path, e)
         return jsonify({"error": f"Backend unavailable: {e}"}), 503
@@ -236,7 +332,12 @@ def _public_base_url() -> str:
     return request.url_root.rstrip("/")
 
 
-def _write_user_session(user: Dict[str, Any], *, provider: str) -> None:
+def _write_user_session(
+    user: Dict[str, Any],
+    *,
+    provider: str,
+    directory: Dict[str, Any] | None = None,
+) -> None:
     session.permanent = True
     session["user_id"] = user["id"]
     session["user_name"] = user["name"]
@@ -244,6 +345,26 @@ def _write_user_session(user: Dict[str, Any], *, provider: str) -> None:
     session["user_role"] = user["role"]
     session["avatar_hue"] = user["avatar_hue"]
     session["auth_provider"] = provider
+    # Authoritative "as-of" time for the identity's directory claims. Group
+    # membership captured below is only trusted for a bounded TTL measured from
+    # here, so removing a user from an Entra group revokes group-gated connector
+    # access once the window lapses (and re-login re-reads current claims).
+    session["auth_time"] = int(time.time())
+    # Entra directory context (for the connector platform). Empty for local login.
+    directory = directory or {}
+    session["tenant_id"] = directory.get("tenant_id") or ""
+    session["object_id"] = directory.get("object_id") or ""
+    session["groups"] = directory.get("groups") or []
+    session["groups_complete"] = bool(directory.get("groups_complete", True))
+
+
+def _admin_required():
+    """Return an error response when the session user is not an admin, else None."""
+    if session.get("user_role") != "admin":
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "Admin role required", "code": "FORBIDDEN"}), 403
+        return redirect(url_for("index"))
+    return None
 
 
 # ── Auth guard ───────────────────────────────────────────────────────────────
@@ -257,8 +378,13 @@ def _require_login():
     * All other routes redirect to /login.
     """
     path = request.path
-    if path in _PUBLIC_EXACT or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+    if path.startswith(_PUBLIC_PREFIXES) or path in _PUBLIC_EXACT:
         return None
+    # First-run: force admin setup before anything else is reachable.
+    if _needs_first_run_setup():
+        if path.startswith("/api/"):
+            return jsonify({"error": "First-run setup required", "code": "SETUP_REQUIRED"}), 503
+        return redirect(url_for("setup"))
     if "user_id" in session:
         return None
     # Unauthenticated
@@ -319,6 +445,63 @@ def login():
         error=error,
         entra_sso_enabled=_entra_sso_enabled(),
     ), status
+
+
+@app.route("/setup", methods=["GET", "POST"])
+@limiter.limit("10 per hour", methods=["POST"])
+def setup():
+    """One-time first-run admin creation. Only reachable while no admin exists."""
+    import hmac
+
+    global _admin_bootstrapped
+    if not _needs_first_run_setup():
+        return redirect(url_for("login"))
+
+    if request.method == "GET":
+        # Ensure a token exists and is logged for the operator to read.
+        _setup_bootstrap_token()
+        return render_template("setup.html", error=None)
+
+    from src.auth_db import create_first_admin, friendly_db_error
+
+    # Out-of-band bootstrap token: blocks anonymous takeover of a fresh install.
+    provided_token = request.form.get("setup_token") or ""
+    if not hmac.compare_digest(provided_token, _setup_bootstrap_token()):
+        logger.warning("setup: rejected first-run attempt with an invalid setup token")
+        return render_template(
+            "setup.html",
+            error="Invalid setup token. Check the server logs (or set SETUP_BOOTSTRAP_TOKEN).",
+        ), 403
+
+    name     = (request.form.get("name") or "").strip()
+    email    = (request.form.get("email") or "").strip().lower()
+    password = request.form.get("password") or ""
+    confirm  = request.form.get("confirm") or ""
+
+    error = None
+    if not name or not email or not password:
+        error = "All fields are required."
+    elif len(password) < 12:
+        error = "Password must be at least 12 characters."
+    elif password != confirm:
+        error = "Passwords do not match."
+    if error:
+        return render_template("setup.html", error=error), 400
+
+    try:
+        user = create_first_admin(name, email, password)
+    except RuntimeError:
+        # An admin appeared concurrently — send them to login.
+        _admin_bootstrapped = True
+        return redirect(url_for("login"))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("setup: failed to create first admin")
+        return render_template("setup.html", error=friendly_db_error(exc)), 503
+
+    _admin_bootstrapped = True
+    _write_user_session(user, provider="local")
+    logger.info("setup: first admin created (%s)", user["email"])
+    return redirect("/")
 
 
 @app.route("/auth/microsoft")
@@ -382,6 +565,7 @@ def microsoft_callback():
         ), 401
 
     profile = entra_auth.profile_from_token_result(result)
+    directory = entra_auth.directory_claims_from_token_result(result)
     if not profile["email"]:
         return render_template(
             "login.html",
@@ -409,7 +593,7 @@ def microsoft_callback():
             entra_sso_enabled=True,
         ), 401
 
-    _write_user_session(user, provider="microsoft")
+    _write_user_session(user, provider="microsoft", directory=directory)
     touch_last_active(user["id"])
     logger.info("microsoft login: %s (%s) authenticated", user["email"], user["role"])
     return redirect(next_url)
@@ -429,19 +613,29 @@ def auth_me():
     """Return the current session user (200) or 401 if not logged in."""
     if "user_id" not in session:
         return jsonify({"error": "Not authenticated"}), 401
+    from src.security.app_flags import get_connectors_enabled_sync
+
     return jsonify({
         "id":         session["user_id"],
         "name":       session["user_name"],
         "email":      session["user_email"],
         "role":       session["user_role"],
         "avatar_hue": session["avatar_hue"],
+        # Surface flags the UI uses to gate connector surfaces.
+        "is_entra":   bool(session.get("object_id")),
+        "connectors_enabled": get_connectors_enabled_sync(),
     })
 
 
 # ── User management routes (— served by Flask, not proxied) ──────────────────
+# All mutate/list operations require an admin session (defense-in-depth on top
+# of the FastAPI Principal checks for API-served routes).
 
 @app.route("/api/users", methods=["GET"])
 def users_list():
+    guard = _admin_required()
+    if guard:
+        return guard
     from src.auth_db import list_users
     try:
         return jsonify(list_users())
@@ -452,6 +646,9 @@ def users_list():
 
 @app.route("/api/users", methods=["POST"])
 def users_create():
+    guard = _admin_required()
+    if guard:
+        return guard
     from src.auth_db import create_user, email_exists
     data = request.get_json() or {}
     name     = (data.get("name") or "").strip()
@@ -477,6 +674,9 @@ def users_create():
 
 @app.route("/api/users/<int:user_id>/role", methods=["PATCH"])
 def users_update_role(user_id: int):
+    guard = _admin_required()
+    if guard:
+        return guard
     from src.auth_db import update_user_role
     data = request.get_json() or {}
     role = data.get("role") or ""
@@ -493,6 +693,9 @@ def users_update_role(user_id: int):
 
 @app.route("/api/users/<int:user_id>", methods=["DELETE"])
 def users_delete(user_id: int):
+    guard = _admin_required()
+    if guard:
+        return guard
     from src.auth_db import delete_user
     if user_id == session.get("user_id"):
         return jsonify({"error": "You cannot delete your own account"}), 400
@@ -509,11 +712,15 @@ def users_delete(user_id: int):
 
 @app.route("/api/settings/prompts/<name>/model", methods=["PUT"])
 def settings_set_prompt_model(name: str):
+    guard = _admin_required()
+    if guard:
+        return guard
     try:
         resp = requests.put(
             f"{API_BASE_URL}/api/settings/prompts/{name}/model",
             json=request.get_json() or {},
             timeout=10,
+            headers=_internal_headers(),
         )
     except requests.exceptions.RequestException as e:
         return jsonify({"error": f"Backend unavailable: {e}"}), 503
@@ -792,6 +999,7 @@ def generate_insights_stream():
         json=data,
         stream=True,
         timeout=120,
+        headers=_internal_headers(),
     )
 
     if upstream.status_code != 200:
@@ -900,6 +1108,9 @@ def settings_list_prompts():
 
 @app.route("/api/settings/prompts/reload", methods=["POST"])
 def settings_reload_prompts():
+    guard = _admin_required()
+    if guard:
+        return guard
     return _proxy_post("/api/settings/prompts/reload", payload={}, timeout=10)
 
 
@@ -910,11 +1121,15 @@ def settings_get_prompt(name: str):
 
 @app.route("/api/settings/prompts/<name>", methods=["PUT"])
 def settings_save_prompt(name: str):
+    guard = _admin_required()
+    if guard:
+        return guard
     try:
         resp = requests.put(
             f"{API_BASE_URL}/api/settings/prompts/{name}",
             json=request.get_json() or {},
             timeout=10,
+            headers=_internal_headers(),
         )
     except requests.exceptions.RequestException as e:
         return jsonify({"error": f"Backend unavailable: {e}"}), 503
@@ -923,10 +1138,14 @@ def settings_save_prompt(name: str):
 
 @app.route("/api/settings/prompts/<name>", methods=["DELETE"])
 def settings_reset_prompt(name: str):
+    guard = _admin_required()
+    if guard:
+        return guard
     try:
         resp = requests.delete(
             f"{API_BASE_URL}/api/settings/prompts/{name}",
             timeout=10,
+            headers=_internal_headers(),
         )
     except requests.exceptions.RequestException as e:
         return jsonify({"error": f"Backend unavailable: {e}"}), 503
@@ -956,11 +1175,15 @@ def settings_get_active_model():
 
 @app.route("/api/settings/models/active", methods=["PUT"])
 def settings_set_active_model():
+    guard = _admin_required()
+    if guard:
+        return guard
     try:
         resp = requests.put(
             f"{API_BASE_URL}/api/settings/models/active",
             json=request.get_json() or {},
             timeout=10,
+            headers=_internal_headers(),
         )
     except requests.exceptions.RequestException as e:
         return jsonify({"error": f"Backend unavailable: {e}"}), 503
@@ -979,11 +1202,15 @@ def settings_get_runtime():
 
 @app.route("/api/settings/runtime", methods=["PUT"])
 def settings_update_runtime():
+    guard = _admin_required()
+    if guard:
+        return guard
     try:
         resp = requests.put(
             f"{API_BASE_URL}/api/settings/runtime",
             json=request.get_json() or {},
             timeout=10,
+            headers=_internal_headers(),
         )
     except requests.exceptions.RequestException as e:
         return jsonify({"error": f"Backend unavailable: {e}"}), 503
@@ -995,28 +1222,127 @@ def settings_update_runtime():
 # Forwards all /api/mcp/* requests verbatim to the FastAPI backend.
 # ----------------------------------------------------------------------
 
-@app.route("/api/mcp/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE"])
-def mcp_proxy(subpath: str):
-    """Generic proxy for all /api/mcp/* routes."""
-    target = f"{API_BASE_URL}/api/mcp/{subpath}"
-    qs     = request.query_string.decode()
+def _forward(api_path: str, *, timeout: float = 30) -> Any:
+    """Forward the current request (method/json/query) to the FastAPI backend."""
+    target = f"{API_BASE_URL}{api_path}"
+    qs = request.query_string.decode()
     if qs:
         target = f"{target}?{qs}"
     try:
         resp = requests.request(
-            method  = request.method,
-            url     = target,
-            json    = request.get_json(silent=True),
-            timeout = 30,
+            method=request.method,
+            url=target,
+            json=request.get_json(silent=True),
+            timeout=timeout,
+            headers=_internal_headers(),
         )
     except requests.exceptions.RequestException as e:
-        logger.error("MCP proxy %s %s failed: %s", request.method, target, e)
+        logger.error("proxy %s %s failed: %s", request.method, target, e)
         return jsonify({"error": f"Backend unavailable: {e}"}), 503
     try:
         return jsonify(resp.json()), resp.status_code
     except Exception:  # noqa: BLE001
         return Response(resp.content, status=resp.status_code,
                         content_type=resp.headers.get("Content-Type", "application/json"))
+
+
+@app.route("/api/mcp/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE"])
+def mcp_proxy(subpath: str):
+    """Generic proxy for all /api/mcp/* routes (admin-only settings surface)."""
+    guard = _admin_required()
+    if guard:
+        return guard
+    return _forward(f"/api/mcp/{subpath}")
+
+
+# ----------------------------------------------------------------------
+# Connector / integration platform proxies
+# ----------------------------------------------------------------------
+
+@app.route("/api/connectors/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def connectors_admin_proxy(subpath: str):
+    """Admin connector registry (gated in Flask AND enforced by the API)."""
+    guard = _admin_required()
+    if guard:
+        return guard
+    return _forward(f"/api/connectors/{subpath}")
+
+
+@app.route("/api/me/connections", methods=["GET"])
+@app.route("/api/me/connections/<path:subpath>", methods=["GET", "POST", "DELETE"])
+def me_connections_proxy(subpath: str = ""):
+    """Per-user connection management (any authenticated user)."""
+    tail = f"/{subpath}" if subpath else ""
+    return _forward(f"/api/me/connections{tail}", timeout=45)
+
+
+@app.route("/api/actions/<path:subpath>", methods=["POST"])
+def actions_proxy(subpath: str):
+    """Server-authorized action proposal/execution (any authenticated user)."""
+    return _forward(f"/api/actions/{subpath}", timeout=60)
+
+
+# ----------------------------------------------------------------------
+# OAuth connect flow (browser round-trip for per-user connector consent)
+# ----------------------------------------------------------------------
+
+@app.route("/integrations/<connector_id>/connect", methods=["GET"])
+def integration_connect(connector_id: str):
+    """Kick off per-user OAuth consent for a connector, then redirect to provider."""
+    redirect_uri = f"{_public_base_url()}/integrations/callback"
+    try:
+        resp = requests.post(
+            f"{API_BASE_URL}/api/me/connections/{connector_id}/authorize",
+            json={"redirect_uri": redirect_uri},
+            timeout=30,
+            headers=_internal_headers(),
+        )
+    except requests.exceptions.RequestException as e:
+        return _integration_result_redirect("error", str(e))
+    if resp.status_code != 200:
+        detail = _safe_detail(resp)
+        return _integration_result_redirect("error", detail)
+    authorize_url = resp.json().get("authorize_url")
+    if not authorize_url:
+        return _integration_result_redirect("error", "No authorize URL returned")
+    return redirect(authorize_url)
+
+
+@app.route("/integrations/callback", methods=["GET"])
+def integration_callback():
+    """Complete OAuth consent: exchange the code via the API, then bounce back."""
+    provider_error = request.args.get("error_description") or request.args.get("error")
+    if provider_error:
+        return _integration_result_redirect("error", provider_error)
+    code = request.args.get("code")
+    state = request.args.get("state")
+    if not code or not state:
+        return _integration_result_redirect("error", "Missing code/state")
+    try:
+        resp = requests.post(
+            f"{API_BASE_URL}/api/me/connections/oauth/callback",
+            json={"code": code, "state": state},
+            timeout=30,
+            headers=_internal_headers(),
+        )
+    except requests.exceptions.RequestException as e:
+        return _integration_result_redirect("error", str(e))
+    if resp.status_code != 200:
+        return _integration_result_redirect("error", _safe_detail(resp))
+    return _integration_result_redirect("connected", "")
+
+
+def _safe_detail(resp) -> str:
+    try:
+        return str(resp.json().get("detail") or resp.json().get("error") or resp.status_code)
+    except Exception:  # noqa: BLE001
+        return str(resp.status_code)
+
+
+def _integration_result_redirect(status: str, message: str) -> Any:
+    from urllib.parse import quote
+
+    return redirect(f"/?connector_result={quote(status)}&connector_msg={quote(message or '')}")
 
 
 # ----------------------------------------------------------------------

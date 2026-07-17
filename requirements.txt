@@ -17,6 +17,10 @@ databricks-sql-connector>=4.3.0
 # Auth
 bcrypt>=4.0.0
 msal>=1.28.0
+# Envelope encryption (AES-GCM) for connector secrets + per-user OAuth tokens
+cryptography>=42.0.0
+# Signed, timestamped internal service tokens (Flask -> FastAPI Principal)
+itsdangerous>=2.1.0
 
 # Web framework
 fastapi>=0.109.0
@@ -24,6 +28,7 @@ uvicorn[standard]>=0.27.0
 flask>=3.0.0
 flask-wtf>=1.2.0          # CSRF protection for the Flask UI
 flask-limiter>=3.5.0      # login brute-force rate limiting
+gunicorn>=21.2.0          # production WSGI server for the Flask UI
 requests>=2.31.0
 httpx>=0.27.0
 

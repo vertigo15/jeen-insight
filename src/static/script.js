@@ -518,6 +518,8 @@ function displayResults(data) {
     currentQuestion = data.question;
     currentQueryId = data.query_id || null;
     currentSessionId = data.session_id || null;
+    // Opaque handle authorizing outbound actions on THIS result (server snapshot).
+    window._resultHandle = data.result_handle || null;
     // Expose to feature modules (chart/profiling) so they can reference the
     // server-side cached result by query_id and pass the question as intent.
     window.currentQueryId = currentQueryId;
@@ -559,8 +561,16 @@ function displayResults(data) {
     const copyResultsBtn = document.getElementById('copy-results-btn');
     const saveAnalysisBtn = document.getElementById('save-analysis-btn');
     const rerunFreshBtn = document.getElementById('rerun-fresh-btn');
+    const sendResultBtn = document.getElementById('send-result-btn');
 
     const describeBtn = document.getElementById('describe-btn');
+
+    // The Send action needs the connector feature ON, an SSO (Entra) identity,
+    // and a server-issued result handle. Otherwise it stays hidden.
+    const _canSend = () => {
+        const me = window._currentUser || {};
+        return !!(me.connectors_enabled && me.is_entra && window._resultHandle);
+    };
 
     if (data.error) {
         resultsDisplay.innerHTML = `<div class="error-message">${data.error}</div>`;
@@ -568,6 +578,7 @@ function displayResults(data) {
         copyResultsBtn.style.display = 'none';
         if (saveAnalysisBtn) saveAnalysisBtn.style.display = 'none';
         if (rerunFreshBtn) rerunFreshBtn.style.display = 'none';
+        if (sendResultBtn) sendResultBtn.style.display = 'none';
         describeBtn.style.display = 'none';
         currentResults = null;
         window.currentResults = null;
@@ -582,6 +593,7 @@ function displayResults(data) {
         copyResultsBtn.style.display = 'inline-block';
         if (saveAnalysisBtn) saveAnalysisBtn.style.display = 'inline-block';
         if (rerunFreshBtn) rerunFreshBtn.style.display = _isRestoringSavedAnalysis ? 'inline-block' : 'none';
+        if (sendResultBtn) sendResultBtn.style.display = _canSend() ? 'inline-block' : 'none';
         describeBtn.style.display = 'inline-block';
         // Result meta line: "<n> rows · 0.3s"
         const rows = data.results.data || data.results.rows || [];
@@ -618,6 +630,7 @@ function displayResults(data) {
         copyResultsBtn.style.display = 'none';
         if (saveAnalysisBtn) saveAnalysisBtn.style.display = 'none';
         if (rerunFreshBtn) rerunFreshBtn.style.display = 'none';
+        if (sendResultBtn) sendResultBtn.style.display = 'none';
         describeBtn.style.display = 'none';
         currentResults = null;
         window.currentResults = null;
@@ -632,6 +645,7 @@ function displayResults(data) {
         copyResultsBtn.style.display = 'none';
         if (saveAnalysisBtn) saveAnalysisBtn.style.display = 'none';
         if (rerunFreshBtn) rerunFreshBtn.style.display = 'none';
+        if (sendResultBtn) sendResultBtn.style.display = 'none';
         describeBtn.style.display = 'none';
         currentResults = null;
         window.currentResults = null;
@@ -1900,6 +1914,240 @@ async function saveCurrentAnalysis() {
     }
 }
 window.saveCurrentAnalysis = saveCurrentAnalysis;
+
+// ── Send / Share a result (per-user connector action gate) ──────────────────
+//
+// The browser only proposes a NAMED action against an opaque result handle.
+// Recipients + subject are validated server-side against the connector's policy,
+// and the payload is rendered from the server-held snapshot — never from these
+// browser rows.
+
+async function openSendResult() {
+    if (!window._resultHandle) {
+        showToast('This result cannot be sent (no server snapshot).', 'error');
+        return;
+    }
+    let connections = [];
+    try {
+        const r = await fetch('/api/me/connections');
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+        connections = (await r.json()).connections || [];
+    } catch (e) {
+        showToast('Could not load your connections — ' + e.message, 'error');
+        return;
+    }
+
+    // v1 action is email; offer connected email connectors.
+    const emailConns = connections.filter(c => c.category === 'email');
+    const connected = emailConns.filter(c => c.connected);
+
+    if (!emailConns.length) {
+        showToast('No email connector is available to you. Ask an admin to grant access.', 'info');
+        return;
+    }
+    if (!connected.length) {
+        _sendResultModal({ needsConnect: true, connector: emailConns[0] });
+        return;
+    }
+    _sendResultModal({ connectors: connected });
+}
+window.openSendResult = openSendResult;
+
+function _sendResultModal(opts) {
+    document.getElementById('sr-overlay')?.remove();
+
+    const rows = (currentResults && (currentResults.data || currentResults.rows)) || [];
+    const rowCount = rows.length;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'sr-overlay';
+    overlay.id = 'sr-overlay';
+
+    if (opts.needsConnect) {
+        overlay.innerHTML = `
+            <div class="sr-modal" role="dialog" aria-modal="true" aria-labelledby="sr-title">
+                <div class="sr-head"><h3 id="sr-title">Connect ${escapeHtml(opts.connector.display_name)}</h3></div>
+                <div class="sr-body">
+                    <p class="sr-note">To email results as yourself, first connect your ${escapeHtml(opts.connector.display_name)} account. You'll be redirected to sign in and grant permission.</p>
+                </div>
+                <div class="sr-foot">
+                    <button class="sp-btn-ghost-sm" id="sr-cancel">Cancel</button>
+                    <button class="sp-btn-primary-sm" id="sr-connect">Connect</button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+        overlay.querySelector('#sr-cancel').addEventListener('click', () => overlay.remove());
+        overlay.querySelector('#sr-connect').addEventListener('click', () => {
+            window.location.href = `/integrations/${encodeURIComponent(opts.connector.connector_id)}/connect`;
+        });
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+        return;
+    }
+
+    const conns = opts.connectors;
+    const selHtml = conns.length > 1
+        ? `<select class="sp-conn-input" id="sr-conn">${conns.map(c => `<option value="${escapeHtml(c.connector_id)}">${escapeHtml(c.display_name)} — ${escapeHtml(c.external_account || '')}</option>`).join('')}</select>`
+        : `<div class="sr-note">Sending from <strong>${escapeHtml(conns[0].external_account || conns[0].display_name)}</strong></div>`;
+
+    const defaultSubject = (window.currentQuestion || 'Query results').slice(0, 120);
+
+    overlay.innerHTML = `
+        <div class="sr-modal" role="dialog" aria-modal="true" aria-labelledby="sr-title">
+            <div class="sr-head"><h3 id="sr-title">Email this result</h3></div>
+            <div class="sr-body">
+                <div class="sr-field">
+                    <label>From</label>
+                    ${selHtml}
+                </div>
+                <div class="sr-field">
+                    <label>Recipients</label>
+                    <input class="sp-conn-input" id="sr-recipients" placeholder="name@example.com, other@example.com">
+                    <div class="sr-hint">Comma-separated. Recipients are validated against your organization's policy.</div>
+                </div>
+                <div class="sr-field">
+                    <label>Subject</label>
+                    <input class="sp-conn-input" id="sr-subject" value="${escapeHtml(defaultSubject)}">
+                </div>
+                <div class="sr-field">
+                    <label>Note (optional)</label>
+                    <textarea class="sp-conn-input" id="sr-note" rows="3" placeholder="Add a short message…"></textarea>
+                </div>
+                <div class="sr-summary">
+                    A server-rendered summary of <strong>${rowCount.toLocaleString()}</strong> row${rowCount === 1 ? '' : 's'} will be sent from your mailbox. No attachments or raw data links are included.
+                </div>
+                <div class="sr-error" id="sr-error"></div>
+            </div>
+            <div class="sr-foot">
+                <button class="sp-btn-ghost-sm" id="sr-cancel">Cancel</button>
+                <button class="sp-btn-primary-sm" id="sr-send">Send email</button>
+            </div>
+        </div>`;
+    document.body.appendChild(overlay);
+
+    const err = overlay.querySelector('#sr-error');
+    const close = () => overlay.remove();
+    overlay.querySelector('#sr-cancel').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', function onEsc(e) {
+        if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onEsc); }
+    });
+
+    overlay.querySelector('#sr-send').addEventListener('click', async () => {
+        err.textContent = '';
+        const connectorId = conns.length > 1 ? overlay.querySelector('#sr-conn').value : conns[0].connector_id;
+        const recipients = (overlay.querySelector('#sr-recipients').value || '')
+            .split(',').map(s => s.trim()).filter(Boolean);
+        const subject = (overlay.querySelector('#sr-subject').value || '').trim();
+        const note = (overlay.querySelector('#sr-note').value || '').trim();
+        if (!recipients.length) { err.textContent = 'Enter at least one recipient.'; return; }
+        if (!subject) { err.textContent = 'Enter a subject.'; return; }
+
+        const btn = overlay.querySelector('#sr-send');
+        btn.disabled = true;
+        btn.textContent = 'Checking…';
+        try {
+            // 1) Propose the named action against the opaque result handle.
+            const pRes = await fetch('/api/actions/propose', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    connector_id: connectorId,
+                    action: 'send_email',
+                    result_handle: window._resultHandle,
+                }),
+            });
+            if (!pRes.ok) throw new Error((await pRes.json().catch(() => ({}))).detail || `HTTP ${pRes.status}`);
+            const proposal = await pRes.json();
+
+            // 2) Preview: the server validates recipients + policy and returns the
+            //    exact, server-derived summary (no side effects yet).
+            const vRes = await fetch(`/api/actions/${encodeURIComponent(proposal.proposal_id)}/preview`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ nonce: proposal.nonce, recipients, subject, note }),
+            });
+            if (!vRes.ok) throw new Error((await vRes.json().catch(() => ({}))).detail || `HTTP ${vRes.status}`);
+            const preview = await vRes.json();
+
+            // 3) Show the confirmation step; only on explicit confirm do we execute.
+            _renderSendConfirm(overlay, { proposal, preview, note });
+        } catch (e) {
+            err.textContent = e.message;
+            btn.disabled = false;
+            btn.textContent = 'Send email';
+        }
+    });
+}
+
+function _renderSendConfirm(overlay, { proposal, preview, note }) {
+    const recips = preview.recipients || [];
+    const external = new Set(preview.external_recipients || []);
+    const recipHtml = recips.map(r =>
+        external.has(r)
+            ? `<span class="sr-recip sr-recip-ext" title="External recipient">${escapeHtml(r)} ⚠</span>`
+            : `<span class="sr-recip">${escapeHtml(r)}</span>`
+    ).join(' ');
+    const extWarn = preview.has_external
+        ? `<div class="sr-warn" role="alert">⚠ This email includes <strong>external</strong> recipient(s) outside your organization. Review carefully before sending.</div>`
+        : '';
+    const snap = preview.snapshot || {};
+
+    overlay.innerHTML = `
+        <div class="sr-modal" role="dialog" aria-modal="true" aria-labelledby="sr-title">
+            <div class="sr-head"><h3 id="sr-title">Confirm send</h3></div>
+            <div class="sr-body">
+                ${extWarn}
+                <div class="sr-field"><label>From</label>
+                    <div class="sr-note"><strong>${escapeHtml(preview.sender || '')}</strong></div></div>
+                <div class="sr-field"><label>To</label><div class="sr-recips">${recipHtml}</div></div>
+                <div class="sr-field"><label>Subject</label>
+                    <div class="sr-note">${escapeHtml(preview.subject || '')}</div></div>
+                <div class="sr-summary">
+                    A server-rendered summary of <strong>${(snap.row_count || 0).toLocaleString()}</strong>
+                    row${snap.row_count === 1 ? '' : 's'} will be sent from your mailbox.
+                    No attachments or raw data links are included.
+                </div>
+                <div class="sr-error" id="sr-error"></div>
+            </div>
+            <div class="sr-foot">
+                <button class="sp-btn-ghost-sm" id="sr-back">Back</button>
+                <button class="sp-btn-primary-sm" id="sr-confirm">Confirm &amp; send</button>
+            </div>
+        </div>`;
+
+    const err = overlay.querySelector('#sr-error');
+    overlay.querySelector('#sr-back').addEventListener('click', () => overlay.remove());
+
+    overlay.querySelector('#sr-confirm').addEventListener('click', async () => {
+        err.textContent = '';
+        const btn = overlay.querySelector('#sr-confirm');
+        btn.disabled = true;
+        btn.textContent = 'Sending…';
+        try {
+            // 4) Execute: single-use nonce, server re-validates and sends once.
+            const eRes = await fetch(`/api/actions/${encodeURIComponent(proposal.proposal_id)}/execute`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    nonce: proposal.nonce,
+                    recipients: preview.recipients,
+                    subject: preview.subject,
+                    note,
+                    confirmed: true,
+                }),
+            });
+            if (!eRes.ok) throw new Error((await eRes.json().catch(() => ({}))).detail || `HTTP ${eRes.status}`);
+            const result = await eRes.json();
+            overlay.remove();
+            if (result.accepted) {
+                showToast('Email accepted for delivery.', 'success');
+            } else {
+                showToast('Send failed: ' + (result.message || 'unknown outcome'), 'error');
+            }
+        } catch (e) {
+            err.textContent = e.message;
+            btn.disabled = false;
+            btn.textContent = 'Confirm & send';
+        }
+    });
+}
 
 async function restoreSavedAnalysis(savedId) {
     if (!savedId) return;

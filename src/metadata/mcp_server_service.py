@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 _COLS = """
     id, is_active,
     server_name, endpoint, transport, auth_type, bearer_token,
+    token_algo, token_kek_id, token_ciphertext, token_nonce,
+    token_wrapped_dek, token_dek_nonce,
     cache_ttl_seconds, health, last_checked_at,
     created_at, updated_at
 """
@@ -140,6 +142,54 @@ class McpServer:
 
 # ── Row → dataclass ───────────────────────────────────────────────────────────
 
+class McpTokenError(RuntimeError):
+    """Raised when an MCP bearer token cannot be stored securely."""
+
+
+def _require_kek_for_token(token: Optional[str]) -> None:
+    """Fail closed: refuse to accept a bearer token when no KEK is configured."""
+    if not token:
+        return
+    from src.security import crypto
+
+    if not crypto.crypto_available():
+        raise McpTokenError(
+            "APP_ENCRYPTION_KEY must be configured before storing an MCP bearer "
+            "token — refusing to persist it in plaintext."
+        )
+
+
+def _decrypt_token(row: Any) -> Optional[str]:
+    """Return the effective (decrypted) bearer token for internal use.
+
+    New writes are always envelope-encrypted (never plaintext). The legacy
+    plaintext column is still *read* so pre-encryption rows keep working until the
+    one-time backfill migrates them, but it is never written again.
+    """
+    if row["token_ciphertext"]:
+        try:
+            from src.security import crypto
+
+            blob = crypto.EncryptedBlob(
+                algo=row["token_algo"],
+                kek_id=row["token_kek_id"],
+                ciphertext=row["token_ciphertext"],
+                nonce=row["token_nonce"],
+                wrapped_dek=row["token_wrapped_dek"],
+                dek_nonce=row["token_dek_nonce"],
+            )
+            return crypto.decrypt(blob, aad=f"mcp_server:{row['id']}:bearer")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("mcp_server: failed to decrypt bearer token id=%s (%s)", row["id"], exc)
+            return None
+    if row["bearer_token"]:
+        logger.warning(
+            "mcp_server id=%s still has a legacy plaintext bearer token; run the "
+            "encryption backfill to migrate it.", row["id"],
+        )
+    return row["bearer_token"]
+
+
 def _row_to_server(row: Any) -> McpServer:
     return McpServer(
         id=row["id"],
@@ -148,7 +198,7 @@ def _row_to_server(row: Any) -> McpServer:
         endpoint=row["endpoint"],
         transport=row["transport"],
         auth_type=row["auth_type"],
-        bearer_token=row["bearer_token"],
+        bearer_token=_decrypt_token(row),
         cache_ttl_seconds=row["cache_ttl_seconds"],
         health=_decode_health(row["health"]),
         last_checked_at=row["last_checked_at"],
@@ -260,20 +310,55 @@ class McpServerService:
         bearer_token: Optional[str] = None,
         cache_ttl_seconds: int = 900,
     ) -> McpServer:
+        # Fail closed BEFORE writing anything if we can't encrypt a supplied token.
+        _require_kek_for_token(bearer_token)
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                f"""
-                INSERT INTO insights_mcp_servers
-                    (server_name, endpoint, transport, auth_type,
-                     bearer_token, cache_ttl_seconds)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                RETURNING {_COLS}
-                """,
-                server_name, endpoint, transport, auth_type,
-                bearer_token, cache_ttl_seconds,
-            )
+            async with conn.transaction():
+                # Never persist plaintext: insert with bearer_token=NULL, then write
+                # the encrypted columns (AAD bound to the new row id).
+                row = await conn.fetchrow(
+                    f"""
+                    INSERT INTO insights_mcp_servers
+                        (server_name, endpoint, transport, auth_type,
+                         bearer_token, cache_ttl_seconds)
+                    VALUES ($1, $2, $3, $4, NULL, $5)
+                    RETURNING {_COLS}
+                    """,
+                    server_name, endpoint, transport, auth_type, cache_ttl_seconds,
+                )
+                if bearer_token:
+                    await self._store_encrypted_token(conn, row["id"], bearer_token)
+                    row = await conn.fetchrow(
+                        f"SELECT {_COLS} FROM insights_mcp_servers WHERE id = $1", row["id"]
+                    )
         logger.info("mcp_server: created id=%d (%s)", row["id"], server_name)
         return _row_to_server(row)
+
+    async def _fetch_row(self, server_id: int):
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(
+                f"SELECT {_COLS} FROM insights_mcp_servers WHERE id = $1", server_id
+            )
+
+    async def _store_encrypted_token(self, conn, server_id: int, plaintext: str) -> None:
+        """Write a bearer token to the encrypted columns (id-bound AAD), never plaintext.
+
+        Requires a configured KEK; callers must gate with ``_require_kek_for_token``.
+        """
+        from src.security import crypto
+
+        blob = crypto.encrypt(plaintext, aad=f"mcp_server:{server_id}:bearer")
+        await conn.execute(
+            """
+            UPDATE insights_mcp_servers
+               SET token_algo=$2, token_kek_id=$3, token_ciphertext=$4,
+                   token_nonce=$5, token_wrapped_dek=$6, token_dek_nonce=$7,
+                   bearer_token=NULL
+             WHERE id=$1
+            """,
+            server_id, blob.algo, blob.kek_id, blob.ciphertext,
+            blob.nonce, blob.wrapped_dek, blob.dek_nonce,
+        )
 
     async def update(self, server_id: int, **fields: Any) -> Optional[McpServer]:
         """Update connection/auth/cache fields. Saving resets health to NULL."""
@@ -285,17 +370,34 @@ class McpServerService:
         if not clean:
             return await self.get_by_id(server_id)
 
-        # Any config change invalidates the stored health (must re-test).
-        clean_with_health = {**clean}
-        set_parts = [f"{col} = ${i + 2}" for i, col in enumerate(clean_with_health)]
+        # Handle the bearer token out-of-band so plaintext is NEVER written to the
+        # column. Fail closed if a token is supplied without a configured KEK.
+        token_changed = "bearer_token" in clean
+        new_token = clean.pop("bearer_token", None) if token_changed else None
+        _require_kek_for_token(new_token)
+
+        set_parts = [f"{col} = ${i + 2}" for i, col in enumerate(clean)]
         set_parts += ["health = NULL", "last_checked_at = NULL", "updated_at = NOW()"]
+        # A token change clears both the plaintext column and any prior ciphertext.
+        if token_changed:
+            set_parts += [
+                "bearer_token = NULL",
+                "token_algo = NULL", "token_kek_id = NULL", "token_ciphertext = NULL",
+                "token_nonce = NULL", "token_wrapped_dek = NULL", "token_dek_nonce = NULL",
+            ]
         sql = (
             f"UPDATE insights_mcp_servers "
             f"SET {', '.join(set_parts)} "
             f"WHERE id = $1 RETURNING {_COLS}"
         )
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(sql, server_id, *clean_with_health.values())
+            async with conn.transaction():
+                row = await conn.fetchrow(sql, server_id, *clean.values())
+                if row and token_changed and new_token:
+                    await self._store_encrypted_token(conn, server_id, new_token)
+                    row = await conn.fetchrow(
+                        f"SELECT {_COLS} FROM insights_mcp_servers WHERE id = $1", server_id
+                    )
         return _row_to_server(row) if row else None
 
     async def set_server_ttl(

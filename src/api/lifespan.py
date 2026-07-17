@@ -103,6 +103,16 @@ async def _ensure_schema(conn) -> None:
             ON insights_mcp_servers(is_active)
             WHERE is_active = true
     """)
+    # Envelope-encryption columns for the bearer token (migration 013). Added
+    # here too so a fresh DB bootstrapped by the API stays consistent with the
+    # SELECT column list before the migration script runs.
+    for _col in (
+        "token_algo", "token_kek_id", "token_ciphertext",
+        "token_nonce", "token_wrapped_dek", "token_dek_nonce",
+    ):
+        await conn.execute(
+            f"ALTER TABLE insights_mcp_servers ADD COLUMN IF NOT EXISTS {_col} TEXT"
+        )
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS insights_mcp_cache (
             id              SERIAL PRIMARY KEY,
@@ -216,6 +226,14 @@ async def _seed_prompts(conn) -> None:
 async def lifespan(_app: FastAPI):
     """Initialise services on app startup; close them on shutdown."""
     logger.info("🚀 Starting Jeen Insights...")
+
+    # Fail fast on unsafe internal-auth config (weak/missing signing secret).
+    from src.security.internal_auth import assert_configured as _assert_internal_auth
+    _assert_internal_auth()
+    # Fail fast if APP_ENCRYPTION_KEY is set but weak.
+    from src.security.crypto import assert_kek_valid as _assert_kek
+    _assert_kek()
+
     pool = await get_metadata_pool()
 
     state.metadata_loader    = MetadataLoader(pool)
@@ -225,6 +243,28 @@ async def lifespan(_app: FastAPI):
     state.mcp_cache_service   = McpCacheService(pool)
     state.mcp_catalog_client  = McpCatalogClient(
         state.mcp_server_service, state.mcp_cache_service
+    )
+
+    # ── Connector / integration platform services ───────────────────────────
+    from src.connectors.identity_service import IdentityService
+    from src.connectors.registry_service import ConnectorRegistryService
+    from src.connectors.grant_service import GrantService
+    from src.connectors.snapshot_service import SnapshotService
+    from src.connectors.audit_service import AuditService
+    from src.connectors.action_gate import ActionGate
+
+    state.identity_service = IdentityService(pool)
+    state.registry_service = ConnectorRegistryService(pool)
+    state.grant_service    = GrantService(pool)
+    state.snapshot_service = SnapshotService(pool)
+    state.audit_service    = AuditService(pool)
+    state.action_gate      = ActionGate(
+        pool,
+        registry=state.registry_service,
+        grants=state.grant_service,
+        snapshots=state.snapshot_service,
+        identities=state.identity_service,
+        audit=state.audit_service,
     )
 
     # ── Schema + prompt seeding ─────────────────────────────────────────────
@@ -366,3 +406,9 @@ async def lifespan(_app: FastAPI):
         state.mcp_server_service    = None
         state.mcp_cache_service     = None
         state.mcp_catalog_client    = None
+        state.identity_service      = None
+        state.registry_service      = None
+        state.grant_service         = None
+        state.snapshot_service      = None
+        state.audit_service         = None
+        state.action_gate           = None
