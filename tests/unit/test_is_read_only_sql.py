@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.connectors.base import assert_read_only_query
 from src.tools.sql_tool import is_read_only_sql
 
 
@@ -38,3 +39,41 @@ from src.tools.sql_tool import is_read_only_sql
 )
 def test_is_read_only_sql(sql, expected):
     assert is_read_only_sql(sql) is expected
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT 1",
+        "SELECT * FROM users WHERE name = 'x'",
+        "WITH x AS (SELECT 1 AS a) SELECT * FROM x",
+        "SELECT a, b FROM t1 JOIN t2 ON t1.id = t2.id",
+        "SELECT 1 UNION SELECT 2",
+        # A semicolon inside a string literal must not be treated as a
+        # statement separator.
+        "SELECT * FROM t WHERE note = 'a;b'",
+        # A trailing semicolon is fine (single statement).
+        "SELECT 1;",
+    ],
+)
+def test_assert_read_only_query_allows_single_read_queries(sql):
+    assert assert_read_only_query(sql, "postgres") is None
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # Multiple statements — the leading-keyword gate alone would pass these.
+        "SELECT 1; DELETE FROM users",
+        "SELECT 1; SELECT 2",
+        # DML hidden inside a CTE (leading keyword is WITH).
+        "WITH changed AS (DELETE FROM users RETURNING id) SELECT * FROM changed",
+        "WITH x AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM x",
+        "WITH x AS (UPDATE t SET a = 1 RETURNING *) SELECT * FROM x",
+    ],
+)
+def test_assert_read_only_query_blocks_unsafe_structures(sql):
+    # Sanity: the leading-keyword gate does NOT catch these — the structural
+    # check is what protects engines without a read-only transaction.
+    assert is_read_only_sql(sql) is True
+    assert assert_read_only_query(sql, "postgres") is not None

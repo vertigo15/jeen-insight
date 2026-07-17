@@ -27,6 +27,8 @@ metadata_loader: Optional[MetadataLoader] = None
 connection_service: Optional[ConnectionService] = None
 history_service: Optional[ConversationHistoryService] = None
 llm_service: Optional[LangChainLlmService] = None
+# Optional cheaper model for router/memory nodes; falls back to llm_service.
+router_llm_service: Optional[LangChainLlmService] = None
 prompt_cache: Optional[PromptCache] = None
 # Compiled LangGraph eval subgraph; None when langgraph is not installed.
 insights_eval_graph: Optional[object] = None

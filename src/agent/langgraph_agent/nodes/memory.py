@@ -67,10 +67,11 @@ def make_memory_summarizer(llm: LangChainLlmService, prompt_loader: PromptLoader
             for qa in history
         )
 
-        system_msg = prompt_loader.render(
+        system_msg = await prompt_loader.arender(
             "memory_summarizer",
             conversation_history=history_text or "(empty)",
         )
+        model_override = await prompt_loader.model_override_for("memory_summarizer")
 
         t0 = time.monotonic()
         response = await llm.generate(
@@ -80,6 +81,7 @@ def make_memory_summarizer(llm: LangChainLlmService, prompt_loader: PromptLoader
             ],
             temperature=0.1,
             max_tokens=300,
+            model_override=model_override,
             timeout=state.get("llm_timeout_seconds"),
         )
         latency_ms = int((time.monotonic() - t0) * 1000)

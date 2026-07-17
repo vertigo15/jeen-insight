@@ -16,6 +16,7 @@ import re
 from typing import Any, Dict, List, Optional, Set
 
 from src.agent.langgraph_agent.state import AgentState
+from src.connectors.base import check_read_only_statements
 from src.connectors.dialects import sqlglot_dialect_for
 
 logger = logging.getLogger(__name__)
@@ -44,20 +45,43 @@ _DLP_RE = re.compile("|".join(_DLP_PATTERNS), re.IGNORECASE)
 # ── sqlglot_validate ──────────────────────────────────────────────────────────
 
 
-def make_sqlglot_validate(enabled: bool):
+def make_sqlglot_validate(
+    enabled: bool,
+    require_catalog: bool = False,
+    enforce_schema_qualifier: bool = True,
+):
     """Return a sync ``sqlglot_validate`` node.
 
-    Two checks are performed when *enabled* is True:
+    Checks performed when *enabled* is True:
     1. Parse check — sqlglot must be able to parse the SQL.
-    2. Table existence check — every referenced table must be in ``known_tables``.
-       (Skipped when the catalog is empty to avoid false positives during
-       early startup or unit tests.)
+    2. Structural safety — exactly one read-only query, no DML/DDL anywhere.
+    3. Schema-qualifier check — a table qualified with a schema/catalog that
+       doesn't match the connection's configured schema/catalog is rejected
+       (blocks ``private.users`` sneaking through just because ``users`` is
+       catalogued). Only enforced when the connection schema/catalog is known
+       and *enforce_schema_qualifier* is True.
+    4. Table existence check — every referenced table must be in ``known_tables``.
+    5. Column existence check — conservative, only when columns are known.
+
+    When *require_catalog* is True, an empty catalog fails closed (deny) rather
+    than skipping the table check. When False (the default, used by standalone
+    callers/tests), the table check is skipped for an empty catalog to avoid
+    false positives during early startup.
     """
 
     def sqlglot_validate(state: AgentState) -> Dict[str, Any]:
         sql = state.get("generated_sql") or ""
         if not enabled or not sql.strip():
             return {"sqlglot_error": None}
+
+        # Deny-by-default: refuse to validate/execute without a usable catalog.
+        if require_catalog and not (state.get("known_tables") or []):
+            error_msg = (
+                "No catalog metadata is available for this connection, so the "
+                "query cannot be safely validated."
+            )
+            logger.warning("sqlglot_validate: %s", error_msg)
+            return {"sqlglot_error": error_msg}
 
         try:
             import sqlglot
@@ -86,29 +110,66 @@ def make_sqlglot_validate(enabled: bool):
         if not stmts or stmts[0] is None:
             return {"sqlglot_error": "SQL could not be parsed — empty statement."}
 
-        # 2. Table existence check (only when catalog is populated)
+        # 2. Structural safety — exactly one read-only query, no DML/DDL anywhere
+        # (including inside CTEs). Mirrors the engine-level guard in the runner so
+        # the failure is caught early and fed into the retry loop.
+        structural_error = check_read_only_statements(stmts)
+        if structural_error:
+            logger.info("sqlglot_validate: %s", structural_error)
+            return {"sqlglot_error": structural_error}
+
+        # 3. Schema-qualifier check + 4. Table existence check.
         known = {t.lower() for t in (state.get("known_tables") or [])}
-        if known:
-            for stmt in stmts:
-                if stmt is None:
+        expected_schema = (state.get("connection_schema") or "").strip().lower()
+        expected_catalog = (state.get("connection_catalog") or "").strip().lower()
+        for stmt in stmts:
+            if stmt is None:
+                continue
+            # Collect CTE alias names so we don't flag them as unknown tables
+            cte_aliases = {
+                (cte.alias or "").lower()
+                for cte in stmt.find_all(sqlglot.exp.CTE)
+                if cte.alias
+            }
+            for table in stmt.find_all(sqlglot.exp.Table):
+                tname = (table.name or "").lower()
+                if not tname or tname in cte_aliases:
                     continue
-                # Collect CTE alias names so we don't flag them as unknown tables
-                cte_aliases = {
-                    (cte.alias or "").lower()
-                    for cte in stmt.find_all(sqlglot.exp.CTE)
-                    if cte.alias
-                }
-                for table in stmt.find_all(sqlglot.exp.Table):
-                    tname = (table.name or "").lower()
-                    if tname and tname not in known and tname not in cte_aliases:
+
+                # Schema-qualifier guard: a mismatched schema/catalog qualifier
+                # (e.g. private.users when the connection lives in public) is a
+                # cross-schema escape and must be rejected even if `users` is
+                # catalogued. Only enforced when we know the expected value.
+                if enforce_schema_qualifier:
+                    tschema = (table.db or "").strip().lower()      # schema part
+                    tcatalog = (table.catalog or "").strip().lower()  # catalog/db part
+                    if tschema and expected_schema and tschema != expected_schema:
                         error_msg = (
-                            f"Table '{table.name}' not found in catalog. "
-                            f"Available: {sorted(known)}"
+                            f"Table '{table.sql()}' uses schema '{table.db}', which is "
+                            f"not the allowed schema for this connection "
+                            f"('{state.get('connection_schema')}')."
                         )
-                        logger.info("sqlglot_validate: %s", error_msg)
+                        logger.warning("sqlglot_validate: %s", error_msg)
+                        return {"sqlglot_error": error_msg}
+                    if tcatalog and expected_catalog and tcatalog != expected_catalog:
+                        error_msg = (
+                            f"Table '{table.sql()}' uses catalog '{table.catalog}', which "
+                            f"is not the allowed catalog for this connection "
+                            f"('{state.get('connection_catalog')}')."
+                        )
+                        logger.warning("sqlglot_validate: %s", error_msg)
                         return {"sqlglot_error": error_msg}
 
-        # 3. Conservative column existence check (only when columns are known)
+                # Table existence check (only when catalog is populated).
+                if known and tname not in known:
+                    error_msg = (
+                        f"Table '{table.name}' not found in catalog. "
+                        f"Available: {sorted(known)}"
+                    )
+                    logger.info("sqlglot_validate: %s", error_msg)
+                    return {"sqlglot_error": error_msg}
+
+        # 5. Conservative column existence check (only when columns are known)
         table_columns = _normalise_table_columns(state.get("table_columns"))
         if table_columns:
             for stmt in stmts:
@@ -245,7 +306,18 @@ def _resolve_referenced_columns(
     return referenced
 
 
-def make_dlp_check(enabled: bool):
+def _build_dlp_regex(extra_columns: Optional[List[str]]) -> "re.Pattern[str]":
+    """Combine the built-in governed patterns with ops-provided column tags."""
+    patterns = list(_DLP_PATTERNS)
+    for col in extra_columns or []:
+        name = (col or "").strip()
+        if name:
+            # Exact governed column name (word-boundary), regex-escaped.
+            patterns.append(rf"\b{re.escape(name)}\b")
+    return re.compile("|".join(patterns), re.IGNORECASE)
+
+
+def make_dlp_check(enabled: bool, governed_columns: Optional[List[str]] = None):
     """Return a sync ``dlp_check`` node.
 
     When *enabled*, blocks queries that reference a governed column. The check
@@ -254,8 +326,13 @@ def make_dlp_check(enabled: bool):
     them matches a governed pattern. When sqlglot can't parse the SQL it falls
     back to a coarse raw-text scan so governance is never silently skipped.
 
+    *governed_columns* is an optional list of extra column names to treat as
+    governed (in addition to the built-in patterns), letting ops tag sensitive
+    columns via config without a code change.
+
     Blocked queries set ``dlp_blocked=True`` and populate ``governance_error``.
     """
+    dlp_re = _build_dlp_regex(governed_columns)
 
     def dlp_check(state: AgentState) -> Dict[str, Any]:
         if not enabled:
@@ -272,7 +349,7 @@ def make_dlp_check(enabled: bool):
         if referenced is not None:
             # Column-aware path: only block on an actual governed column.
             for col in referenced:
-                if _DLP_RE.search(col):
+                if dlp_re.search(col):
                     error = (
                         f"Query blocked by data governance policy: "
                         f"references a governed column ('{col}')."
@@ -283,7 +360,7 @@ def make_dlp_check(enabled: bool):
             return {"dlp_blocked": False, "governance_error": None}
 
         # Fallback: coarse raw-text scan when the SQL couldn't be parsed.
-        match = _DLP_RE.search(sql)
+        match = dlp_re.search(sql)
         if match:
             error = (
                 f"Query blocked by data governance policy: "

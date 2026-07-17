@@ -103,13 +103,14 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
         statistics = _profile_statistics(rows, result.get("columns") or [])
         results_sample = _build_results_block(statistics, rows, row_count)
 
-        prompt = prompt_loader.render(
+        prompt = await prompt_loader.arender(
             "fused_eval_analytics",
             question=question,
             sql=sql,
             results_sample=results_sample,
             row_count=row_count,
         )
+        model_override = await prompt_loader.model_override_for("fused_eval_analytics")
 
         t0 = time.monotonic()
         response = await llm.generate(
@@ -119,6 +120,7 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
             ],
             temperature=0.2,
             max_tokens=600,
+            model_override=model_override,
             timeout=state.get("llm_timeout_seconds"),
         )
         latency_ms = int((time.monotonic() - t0) * 1000)

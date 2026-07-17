@@ -70,6 +70,20 @@ class ConversationHistoryService:
         try:
             sequence_number = await self.get_next_sequence_number(session_id)
             async with self.pool.acquire() as conn:
+                # Link each turn to the previous one in the same session so the
+                # conversation forms a chain the router can walk for follow-ups.
+                if parent_query_id is None:
+                    parent_query_id = await conn.fetchval(
+                        """
+                        SELECT id
+                        FROM insights_conversation_sessions
+                        WHERE session_id = $1 AND user_id = $2
+                        ORDER BY sequence_number DESC
+                        LIMIT 1
+                        """,
+                        session_id,
+                        user_id,
+                    )
                 query_id = await conn.fetchval(
                     """
                     INSERT INTO insights_conversation_sessions (
@@ -140,6 +154,7 @@ class ConversationHistoryService:
         result_preview: Optional[List[Dict[str, Any]]] = None,
         error_message: Optional[str] = None,
         graph_time_ms: Optional[int] = None,
+        result_artifact: Optional[Dict[str, Any]] = None,
     ) -> None:
         try:
             if result_preview and len(result_preview) > 10:
@@ -153,8 +168,9 @@ class ConversationHistoryService:
                         row_count = $3,
                         result_preview = $4,
                         error_message = $5,
-                        graph_time_ms = $6
-                    WHERE id = $7
+                        graph_time_ms = $6,
+                        result_artifact = $7
+                    WHERE id = $8
                     """,
                     execution_status,
                     execution_time_ms,
@@ -162,6 +178,7 @@ class ConversationHistoryService:
                     json.dumps(result_preview) if result_preview else None,
                     error_message,
                     graph_time_ms,
+                    json.dumps(result_artifact) if result_artifact else None,
                     query_id,
                 )
         except Exception:
@@ -253,8 +270,10 @@ class ConversationHistoryService:
             async with self.pool.acquire() as conn:
                 rows = await conn.fetch(
                     """
-                    SELECT sequence_number, natural_language_query, generated_sql,
-                           execution_status, result_preview, created_at
+                    SELECT id, parent_query_id, sequence_number,
+                           natural_language_query, generated_sql,
+                           execution_status, row_count, result_preview,
+                           result_artifact, created_at
                     FROM insights_conversation_sessions
                     WHERE session_id = $1 AND user_id = $2
                     ORDER BY sequence_number DESC

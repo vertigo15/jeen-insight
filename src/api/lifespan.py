@@ -67,10 +67,15 @@ async def _ensure_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_insights_prompts_place
             ON insights_prompts(prompt_place)
     """)
-    # Additive column — safe to run repeatedly via IF NOT EXISTS.
+    # Additive columns — safe to run repeatedly via IF NOT EXISTS.
     await conn.execute("""
         ALTER TABLE insights_conversation_sessions
             ADD COLUMN IF NOT EXISTS graph_time_ms INT
+    """)
+    # Durable result artifact for follow-up detection (see migration 011).
+    await conn.execute("""
+        ALTER TABLE insights_conversation_sessions
+            ADD COLUMN IF NOT EXISTS result_artifact JSONB
     """)
 
     # ── MCP tables ────────────────────────────────────────────────────────────
@@ -244,6 +249,37 @@ async def lifespan(_app: FastAPI):
 
     state.llm_service = llm_service
 
+    # ── Optional cheaper router/memory model ─────────────────────────────────
+    # The router, memory-summarizer and memory-answer nodes are cheap
+    # classification/condensation calls that don't need the strong SQL model.
+    # When AZURE_OPENAI_ROUTER_DEPLOYMENT is set (and differs from the active
+    # model) route those nodes to it, saving cost/latency. Falls back to the
+    # main model whenever the cheaper one can't be built.
+    router_llm_service = llm_service
+    router_deployment = (settings.AZURE_OPENAI_ROUTER_DEPLOYMENT or "").strip()
+    if router_deployment and router_deployment != llm_service.get_deployment():
+        try:
+            router_llm_service = await LangChainLlmService.from_db(pool, router_deployment)
+            logger.info(
+                "startup: router/memory nodes using cheaper model %r (DB)", router_deployment
+            )
+        except Exception as db_exc:  # noqa: BLE001
+            try:
+                router_llm_service = LangChainLlmService.from_env_azure(
+                    pool, settings, deployment_override=router_deployment
+                )
+                logger.info(
+                    "startup: router/memory nodes using Azure deployment %r (env)",
+                    router_deployment,
+                )
+            except Exception as env_exc:  # noqa: BLE001
+                logger.warning(
+                    "startup: router model %r unavailable (%s / %s); reusing main model",
+                    router_deployment, db_exc, env_exc,
+                )
+                router_llm_service = llm_service
+    state.router_llm_service = router_llm_service
+
     # ── Warm the model-health cache in the background ────────────────────────
     # Probes every enabled model so the settings UI shows real status straight
     # away and auto-fallback has data without paying a probe cost on first
@@ -267,6 +303,7 @@ async def lifespan(_app: FastAPI):
 
     state.agent_registry = AgentRegistry(
         llm_service=llm_service,
+        router_llm_service=router_llm_service,
         prompt_cache=state.prompt_cache,
         metadata_loader=state.metadata_loader,
         connection_service=state.connection_service,
@@ -323,6 +360,7 @@ async def lifespan(_app: FastAPI):
         state.connection_service    = None
         state.history_service       = None
         state.llm_service           = None
+        state.router_llm_service    = None
         state.prompt_cache          = None
         state.insights_eval_graph   = None
         state.mcp_server_service    = None

@@ -20,6 +20,8 @@ import re
 import time
 from typing import Any, Dict
 
+from src.agent.langgraph_agent.nodes.artifacts import build_artifact_manifest
+from src.agent.langgraph_agent.nodes.safety_text import fence_untrusted
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
@@ -101,18 +103,27 @@ def make_fused_router(router_llm: LangChainLlmService, prompt_loader: PromptLoad
         # ── LLM classification ────────────────────────────────────────────
         # Prefer the condensed memory summary; otherwise fall back to a compact
         # block of the most recent turns so follow-ups still have context.
+        history = state.get("conversation_history")
         summary = state.get("memory_summary")
         if not summary:
-            summary = _format_recent_history(state.get("conversation_history"))
+            summary = _format_recent_history(history)
         summary = summary or "No prior conversation."
+        # Append a manifest of prior result sets (columns, row counts, small
+        # stats) so the router can tell when a question is a follow-up over
+        # already-retrieved data vs. one needing a fresh query.
+        manifest = build_artifact_manifest(history or [])
+        if manifest:
+            # Manifest embeds prior question text (user data) → fence it.
+            summary = f"{summary}\n\n{fence_untrusted(manifest, label='prior results')}"
         source = state.get("connection_display_name") or "the database"
 
-        system_msg = prompt_loader.render(
+        system_msg = await prompt_loader.arender(
             "fused_router",
             question=question,
             conversation_summary=summary,
             source_description=source,
         )
+        model_override = await prompt_loader.model_override_for("fused_router")
 
         t0 = time.monotonic()
         response = await router_llm.generate(
@@ -122,6 +133,7 @@ def make_fused_router(router_llm: LangChainLlmService, prompt_loader: PromptLoad
             ],
             temperature=0.0,
             max_tokens=150,
+            model_override=model_override,
             timeout=state.get("llm_timeout_seconds"),
         )
         latency_ms = int((time.monotonic() - t0) * 1000)

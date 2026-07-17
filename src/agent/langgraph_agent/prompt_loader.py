@@ -34,7 +34,19 @@ class PromptLoader:
     def __init__(self, prompts_dir: Optional[Path] = None) -> None:
         self._dir = prompts_dir or _DEFAULT_PROMPTS_DIR
         self._cache: Dict[str, str] = {}
+        # Optional DB-backed prompt store. When attached, ``arender`` and
+        # ``model_override_for`` prefer the active DB version (honouring Settings
+        # UI edits and per-prompt model assignments) and fall back to disk.
+        self._prompt_cache: Any = None
         self._load_all()
+
+    # ── DB backing ────────────────────────────────────────────────────────
+
+    def attach_cache(self, prompt_cache: Any) -> None:
+        """Attach a DB-backed ``PromptCache`` so the graph honours DB prompt
+        versions and per-prompt model overrides. Disk files remain the fallback.
+        """
+        self._prompt_cache = prompt_cache
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -76,7 +88,34 @@ class PromptLoader:
         KeyError
             If the prompt file doesn't exist or a required placeholder is missing.
         """
-        template = self.get(name)
+        return self._format(name, self.get(name), kwargs)
+
+    async def arender(self, name: str, **kwargs: object) -> str:
+        """Async render that prefers the DB version when a cache is attached.
+
+        Falls back to the disk template when no cache is attached or the DB
+        lookup fails, so the graph never breaks if the DB is unavailable.
+        """
+        template = await self._aget(name)
+        return self._format(name, template, kwargs)
+
+    async def model_override_for(self, name: str):
+        """Return the per-prompt ``ModelOverride`` for *name*, or ``None``.
+
+        ``None`` means "use the caller's default model". Requires an attached
+        DB cache; without one this always returns ``None``.
+        """
+        if self._prompt_cache is None:
+            return None
+        try:
+            return await self._prompt_cache.get_model_override(name)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("PromptLoader: no model override for %r (%s)", name, exc)
+            return None
+
+    # ── Internals ─────────────────────────────────────────────────────────
+
+    def _format(self, name: str, template: str, kwargs: dict) -> str:
         try:
             return template.format(**kwargs)
         except KeyError as exc:
@@ -85,7 +124,19 @@ class PromptLoader:
                 f"Provided keys: {sorted(kwargs)}"
             ) from exc
 
-    # ── Internals ─────────────────────────────────────────────────────────
+    async def _aget(self, name: str) -> str:
+        """Return the DB template for *name* when available, else the disk copy."""
+        if self._prompt_cache is not None:
+            try:
+                content = await self._prompt_cache.get_content(name)
+                if content:
+                    return content
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "PromptLoader: DB prompt %r unavailable (%s); using disk copy",
+                    name, exc,
+                )
+        return self.get(name)
 
     def _load_all(self) -> None:
         new_cache: Dict[str, str] = {}

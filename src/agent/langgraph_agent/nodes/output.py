@@ -57,6 +57,90 @@ def _json_safe_value(value: Any) -> Any:
     return value
 
 
+# ── Result artifact ────────────────────────────────────────────────────────────
+
+_ARTIFACT_STATS_SCAN_CAP = 2000
+
+
+def _build_result_artifact(sql: Optional[str], query_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a compact, durable summary of a result set for follow-up detection.
+
+    Shape::
+
+        {
+            "columns":      [str, ...],
+            "column_types": {col: "int"|"float"|"str"|"bool"|"datetime"|...},
+            "row_count":    int,
+            "stats":        {col: {"non_null": int, "min": ..., "max": ...}},
+            "sql":          str,
+            "created_at":   ISO-8601 str,
+        }
+
+    Cheap by design: numeric min/max and non-null counts are computed over at
+    most ``_ARTIFACT_STATS_SCAN_CAP`` rows so large results don't slow the tail.
+    """
+    columns: List[str] = list(query_result.get("columns") or [])
+    rows: List[Dict[str, Any]] = query_result.get("rows") or []
+    row_count = query_result.get("row_count")
+    if row_count is None:
+        row_count = len(rows)
+
+    if not columns and rows and isinstance(rows[0], dict):
+        columns = list(rows[0].keys())
+
+    sample = rows[:_ARTIFACT_STATS_SCAN_CAP]
+    column_types: Dict[str, str] = {}
+    stats: Dict[str, Dict[str, Any]] = {}
+
+    for col in columns:
+        non_null = 0
+        col_type = None
+        vmin: Any = None
+        vmax: Any = None
+        for row in sample:
+            if not isinstance(row, dict):
+                continue
+            val = row.get(col)
+            if val is None:
+                continue
+            non_null += 1
+            if col_type is None:
+                col_type = _type_name(val)
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                vmin = val if vmin is None or val < vmin else vmin
+                vmax = val if vmax is None or val > vmax else vmax
+        entry: Dict[str, Any] = {"non_null": non_null}
+        if vmin is not None:
+            entry["min"] = _json_safe_value(vmin)
+            entry["max"] = _json_safe_value(vmax)
+        stats[col] = entry
+        if col_type:
+            column_types[col] = col_type
+
+    return {
+        "columns": columns,
+        "column_types": column_types,
+        "row_count": row_count,
+        "stats": stats,
+        "sql": sql,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+def _type_name(value: Any) -> str:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, decimal.Decimal):
+        return "float"
+    if isinstance(value, (datetime, date, dt_time)):
+        return "datetime"
+    return "str"
+
+
 # ── response_formatter ────────────────────────────────────────────────────────
 
 
@@ -335,6 +419,9 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
             elif sql:
                 rows = query_result.get("rows") or []
                 safe_preview = _coerce_json_safe(rows[:10]) if rows else None
+                # Durable artifact: structured summary used to detect and answer
+                # follow-up questions about this result (see conversation_history).
+                result_artifact = _build_result_artifact(sql, query_result)
                 await history_service.update_execution(
                     query_id=query_id,
                     execution_status="success",
@@ -343,6 +430,7 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
                     result_preview=safe_preview,
                     error_message=None,
                     graph_time_ms=graph_time_ms,
+                    result_artifact=result_artifact,
                 )
 
         except Exception:  # noqa: BLE001
