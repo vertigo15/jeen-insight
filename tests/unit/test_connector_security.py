@@ -31,15 +31,19 @@ _STRONG_KEY_B64_ALT = base64.b64encode(b"\x22" * 32).decode("ascii")
 
 @pytest.fixture
 def prod_mode(monkeypatch):
-    """Force production posture: dev bypass off, no ambient secrets."""
+    """Force production posture: dev bypass off, no ambient secrets.
+
+    JEEN_DEV_MODE now defaults to true (POC/portable), so hardened behaviour must
+    be requested explicitly by setting it to false.
+    """
     for var in (
-        "JEEN_DEV_MODE",
         "INTERNAL_API_SECRET",
         "FLASK_SECRET_KEY",
         "AUTH_SECRET",
         "APP_ENCRYPTION_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("JEEN_DEV_MODE", "false")
     yield
 
 
@@ -255,6 +259,24 @@ class TestMcpTokenFailClosed:
 
         svc._require_kek_for_token(None)
         svc._require_kek_for_token("")
+
+    def test_dev_mode_allows_plaintext_token(self, monkeypatch):
+        # POC/portable default: a token without a KEK is allowed (stored plaintext)
+        # so the shared DB stays readable by every copy of the app.
+        from src.metadata import mcp_server_service as svc
+
+        monkeypatch.delenv("APP_ENCRYPTION_KEY", raising=False)
+        monkeypatch.setenv("JEEN_DEV_MODE", "true")
+        svc._require_kek_for_token("a-bearer-token")  # no raise
+
+    def test_dev_mode_is_the_default(self, monkeypatch):
+        # With nothing configured at all, we default to the portable POC posture.
+        from src.metadata import mcp_server_service as svc
+
+        monkeypatch.delenv("APP_ENCRYPTION_KEY", raising=False)
+        monkeypatch.delenv("JEEN_DEV_MODE", raising=False)
+        assert svc._dev_mode() is True
+        svc._require_kek_for_token("a-bearer-token")  # no raise
 
 
 # ── h3: single-tenant isolation ─────────────────────────────────────────────

@@ -85,12 +85,39 @@ async def _apply_sql_files(conn) -> int:
 
 # ── Python backfills (once-only, retry until they can complete) ──────────────
 
+def _opt_in(flag: str) -> bool:
+    """True when *flag* env var is an explicit truthy opt-in."""
+    return (os.getenv(flag) or "").strip().lower() in ("1", "true", "yes", "on", "t")
+
+
 async def _backfill_encrypt_mcp_tokens(conn) -> bool:
     """Encrypt any plaintext catalog MCP bearer tokens. Returns True when done.
 
-    Returns False (leave unrecorded, retry later) when no KEK is configured yet.
+    Returns False (leave unrecorded, retry later) when the backfill is not opted
+    in or no KEK is configured yet.
+
+    IMPORTANT — shared-DB safety: encrypting the catalog MCP token is a one-way,
+    KEK-bound operation performed in-place on a row that may be read by MULTIPLE
+    deployments sharing the same metadata DB (local dev, the regular Azure stack,
+    the defence stack). If this runs from an environment whose APP_ENCRYPTION_KEY
+    differs from (or is unknown to) the other readers, those readers can no longer
+    decrypt the token and the whole catalog silently goes empty. It also nulls the
+    plaintext column, breaking any older code that still reads it.
+
+    Because of that blast radius, the backfill is gated behind an explicit opt-in
+    (``ENCRYPT_MCP_TOKENS_BACKFILL=true``). A routine ``run_insights_migrations``
+    from a developer machine therefore can never clobber a shared token by
+    accident — you must consciously enable it once every reader of that DB shares
+    the same KEK.
     """
     from src.security import crypto
+
+    if not _opt_in("ENCRYPT_MCP_TOKENS_BACKFILL"):
+        logger.info(
+            "backfill(encrypt_mcp_tokens): skipped — set ENCRYPT_MCP_TOKENS_BACKFILL=true "
+            "to enable. Leaving the MCP token as-is so shared-DB readers keep working."
+        )
+        return False
 
     if not crypto.crypto_available():
         logger.warning(
@@ -105,15 +132,28 @@ async def _backfill_encrypt_mcp_tokens(conn) -> bool:
     )
     migrated = 0
     for r in rows:
-        blob = crypto.encrypt(r["bearer_token"], aad=f"mcp_server:{r['id']}:bearer")
         async with conn.transaction():
+            # Re-check inside the write and re-encrypt the CURRENT plaintext under
+            # a row lock so a concurrent rotation cannot be clobbered with a stale
+            # token or have its freshly-written ciphertext wiped. The AAD is bound
+            # to the row id, so re-encrypting the locked value is correct.
+            locked = await conn.fetchrow(
+                "SELECT bearer_token FROM insights_mcp_servers "
+                "WHERE id = $1 AND token_ciphertext IS NULL FOR UPDATE",
+                r["id"],
+            )
+            if not locked or not locked["bearer_token"]:
+                continue  # already encrypted/rotated by someone else — skip
+            blob = crypto.encrypt(
+                locked["bearer_token"], aad=f"mcp_server:{r['id']}:bearer"
+            )
             await conn.execute(
                 """
                 UPDATE insights_mcp_servers
                    SET token_algo=$2, token_kek_id=$3, token_ciphertext=$4,
                        token_nonce=$5, token_wrapped_dek=$6, token_dek_nonce=$7,
                        bearer_token = NULL, updated_at = NOW()
-                 WHERE id = $1
+                 WHERE id = $1 AND token_ciphertext IS NULL
                 """,
                 r["id"], blob.algo, blob.kek_id, blob.ciphertext,
                 blob.nonce, blob.wrapped_dek, blob.dek_nonce,

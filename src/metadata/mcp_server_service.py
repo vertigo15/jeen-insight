@@ -15,6 +15,7 @@ Key differences from the previous mcp_config_service:
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -146,17 +147,41 @@ class McpTokenError(RuntimeError):
     """Raised when an MCP bearer token cannot be stored securely."""
 
 
+def _dev_mode() -> bool:
+    # Default TRUE (POC/portable). Set JEEN_DEV_MODE=false to harden.
+    raw = os.getenv("JEEN_DEV_MODE")
+    if raw is None or not raw.strip():
+        return True
+    return raw.strip().lower() in ("1", "true", "yes", "on", "t")
+
+
 def _require_kek_for_token(token: Optional[str]) -> None:
-    """Fail closed: refuse to accept a bearer token when no KEK is configured."""
+    """Gate MCP bearer-token persistence.
+
+    Hardened mode (JEEN_DEV_MODE=false): refuse a token unless a KEK is
+    configured, so it is always encrypted at rest.
+
+    Dev/POC mode (default): allow it and store portable plaintext when no KEK is
+    set — this is what lets the same shared DB be read by every copy of the app
+    (local / regular Azure / defence stack) without provisioning a shared key.
+    """
     if not token:
         return
     from src.security import crypto
 
-    if not crypto.crypto_available():
-        raise McpTokenError(
-            "APP_ENCRYPTION_KEY must be configured before storing an MCP bearer "
-            "token — refusing to persist it in plaintext."
+    if crypto.crypto_available():
+        return
+    if _dev_mode():
+        logger.warning(
+            "mcp_server: storing bearer token as PLAINTEXT (no APP_ENCRYPTION_KEY). "
+            "Portable across stacks and fine for a POC; set JEEN_DEV_MODE=false and "
+            "APP_ENCRYPTION_KEY to encrypt it at rest."
         )
+        return
+    raise McpTokenError(
+        "APP_ENCRYPTION_KEY must be configured before storing an MCP bearer token "
+        "— refusing to persist it in plaintext (JEEN_DEV_MODE=false)."
+    )
 
 
 def _decrypt_token(row: Any) -> Optional[str]:
@@ -180,7 +205,31 @@ def _decrypt_token(row: Any) -> Optional[str]:
             )
             return crypto.decrypt(blob, aad=f"mcp_server:{row['id']}:bearer")
         except Exception as exc:  # noqa: BLE001
-            logger.error("mcp_server: failed to decrypt bearer token id=%s (%s)", row["id"], exc)
+            # KEK missing/mismatched (e.g. this deployment does not hold the key
+            # that encrypted the token, or the shared DB was encrypted by another
+            # env). Rather than fail the entire catalog closed — which shows up as
+            # a silent, hard-to-diagnose empty sidebar — degrade to the plaintext
+            # column when one is still present. This is exactly the failure mode
+            # that took the catalog down when the shared token was re-encrypted
+            # with a key the deployed app didn't have.
+            # Log the failure class and the (non-secret) key id, never the raw
+            # exception text or any token material.
+            err = type(exc).__name__
+            kek_id = row["token_kek_id"]
+            if row["bearer_token"]:
+                logger.error(
+                    "mcp_server id=%s: cannot decrypt bearer token (err=%s, kek_id=%s) — "
+                    "falling back to the plaintext column. Set this deployment's "
+                    "APP_ENCRYPTION_KEY to the key that encrypted it to restore "
+                    "encrypted-at-rest.",
+                    row["id"], err, kek_id,
+                )
+                return row["bearer_token"]
+            logger.error(
+                "mcp_server id=%s: cannot decrypt bearer token (err=%s, kek_id=%s) and no "
+                "plaintext fallback exists — catalog auth will fail. Fix APP_ENCRYPTION_KEY.",
+                row["id"], err, kek_id,
+            )
             return None
     if row["bearer_token"]:
         logger.warning(
@@ -310,23 +359,29 @@ class McpServerService:
         bearer_token: Optional[str] = None,
         cache_ttl_seconds: int = 900,
     ) -> McpServer:
-        # Fail closed BEFORE writing anything if we can't encrypt a supplied token.
+        from src.security import crypto
+
+        # Fail closed (hardened mode) before writing anything if we can't encrypt a
+        # supplied token; in dev/POC mode this just warns and we store plaintext.
         _require_kek_for_token(bearer_token)
+        will_encrypt = bool(bearer_token) and crypto.crypto_available()
+        # When encrypting, insert NULL then write the ciphertext columns. Otherwise
+        # store the (portable) plaintext token directly.
+        plaintext_to_store = None if will_encrypt else bearer_token
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                # Never persist plaintext: insert with bearer_token=NULL, then write
-                # the encrypted columns (AAD bound to the new row id).
                 row = await conn.fetchrow(
                     f"""
                     INSERT INTO insights_mcp_servers
                         (server_name, endpoint, transport, auth_type,
                          bearer_token, cache_ttl_seconds)
-                    VALUES ($1, $2, $3, $4, NULL, $5)
+                    VALUES ($1, $2, $3, $4, $5, $6)
                     RETURNING {_COLS}
                     """,
-                    server_name, endpoint, transport, auth_type, cache_ttl_seconds,
+                    server_name, endpoint, transport, auth_type,
+                    plaintext_to_store, cache_ttl_seconds,
                 )
-                if bearer_token:
+                if will_encrypt:
                     await self._store_encrypted_token(conn, row["id"], bearer_token)
                     row = await conn.fetchrow(
                         f"SELECT {_COLS} FROM insights_mcp_servers WHERE id = $1", row["id"]
@@ -370,21 +425,33 @@ class McpServerService:
         if not clean:
             return await self.get_by_id(server_id)
 
-        # Handle the bearer token out-of-band so plaintext is NEVER written to the
-        # column. Fail closed if a token is supplied without a configured KEK.
+        from src.security import crypto
+
+        # Handle the bearer token out-of-band. Fail closed (hardened mode) if a
+        # token is supplied without a configured KEK; in dev/POC mode store it as
+        # portable plaintext instead.
         token_changed = "bearer_token" in clean
         new_token = clean.pop("bearer_token", None) if token_changed else None
         _require_kek_for_token(new_token)
+        will_encrypt = token_changed and bool(new_token) and crypto.crypto_available()
 
         set_parts = [f"{col} = ${i + 2}" for i, col in enumerate(clean)]
         set_parts += ["health = NULL", "last_checked_at = NULL", "updated_at = NOW()"]
-        # A token change clears both the plaintext column and any prior ciphertext.
+        extra_params: List[Any] = []
+        # A token change always clears any prior ciphertext columns.
         if token_changed:
             set_parts += [
-                "bearer_token = NULL",
                 "token_algo = NULL", "token_kek_id = NULL", "token_ciphertext = NULL",
                 "token_nonce = NULL", "token_wrapped_dek = NULL", "token_dek_nonce = NULL",
             ]
+            if will_encrypt:
+                # Plaintext cleared here; ciphertext written after the row exists.
+                set_parts.append("bearer_token = NULL")
+            else:
+                # Store portable plaintext directly (or NULL to clear the token).
+                idx = 2 + len(clean) + len(extra_params)
+                set_parts.append(f"bearer_token = ${idx}")
+                extra_params.append(new_token)
         sql = (
             f"UPDATE insights_mcp_servers "
             f"SET {', '.join(set_parts)} "
@@ -392,8 +459,8 @@ class McpServerService:
         )
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                row = await conn.fetchrow(sql, server_id, *clean.values())
-                if row and token_changed and new_token:
+                row = await conn.fetchrow(sql, server_id, *clean.values(), *extra_params)
+                if row and will_encrypt:
                     await self._store_encrypted_token(conn, server_id, new_token)
                     row = await conn.fetchrow(
                         f"SELECT {_COLS} FROM insights_mcp_servers WHERE id = $1", server_id

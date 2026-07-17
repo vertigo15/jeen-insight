@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional
 
 import asyncpg
 
+from .catalog_filter import filter_tables_rich, filter_columns
+
 logger = logging.getLogger(__name__)
 
 # Cache TTL in seconds. Curated metadata changes rarely; 60s is a safe default
@@ -122,14 +124,14 @@ class MetadataLoader:
                 source_key,
             )
 
-        items: List[Dict[str, Any]] = [
+        items: List[Dict[str, Any]] = filter_tables_rich([
             {
                 "name":        r["table_name"],
                 "description": r["table_description"],
                 "col_count":   int(r["col_count"] or 0),
             }
             for r in rows
-        ]
+        ])
         self._cache[cache_key] = (now + _CACHE_TTL_SECONDS, items)
         return items
 
@@ -220,18 +222,17 @@ class MetadataLoader:
                     source_key,
                     table_name,
                 )
-        items: List[Dict[str, Any]] = []
-        for r in rows:
-            items.append(
-                {
-                    "table": r["table_name"],
-                    "column": r["column_name"],
-                    "data_type": r["data_type"],
-                    "description": r["description"],
-                    "is_pk": bool(r["is_primary_key"]),
-                    "is_nullable": bool(r["is_nullable"]),
-                }
-            )
+        items: List[Dict[str, Any]] = filter_columns([
+            {
+                "table": r["table_name"],
+                "column": r["column_name"],
+                "data_type": r["data_type"],
+                "description": r["description"],
+                "is_pk": bool(r["is_primary_key"]),
+                "is_nullable": bool(r["is_nullable"]),
+            }
+            for r in rows
+        ])
         self._cache[cache_key] = (now + _CACHE_TTL_SECONDS, items)
         return items
 

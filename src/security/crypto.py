@@ -81,8 +81,12 @@ class EncryptedBlob:
 # ── KEK resolution ──────────────────────────────────────────────────────────
 
 def _dev_mode() -> bool:
-    raw = (os.getenv("JEEN_DEV_MODE") or "").strip().lower()
-    return raw in ("1", "true", "yes", "on", "t")
+    # Default TRUE (POC/portable). Set JEEN_DEV_MODE=false to harden (then a
+    # weak/passphrase APP_ENCRYPTION_KEY is rejected instead of derived).
+    raw = os.getenv("JEEN_DEV_MODE")
+    if raw is None or not raw.strip():
+        return True
+    return raw.strip().lower() in ("1", "true", "yes", "on", "t")
 
 
 def _decode_strong_key(raw: str) -> Optional[bytes]:

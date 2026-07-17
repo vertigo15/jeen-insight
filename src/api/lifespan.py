@@ -119,11 +119,19 @@ async def _ensure_schema(conn) -> None:
             mcp_server_id   INT          NOT NULL
                                 REFERENCES insights_mcp_servers(id) ON DELETE CASCADE,
             source_key      VARCHAR(255) NOT NULL,
-            cache_key       VARCHAR(50)  NOT NULL
-                                CHECK (cache_key IN (
-                                    'connections','tables','columns',
-                                    'relationships','business_terms','knowledge_pairs'
-                                )),
+            -- Keep in sync with migration 016_mcp_cache_keys.sql. Includes the
+            -- structured autocomplete datasets (tables_rich / knowledge_questions
+            -- / columns_struct:<scope>) so fresh-DB bootstrap does not drift from
+            -- the migrated schema.
+            cache_key       VARCHAR(160) NOT NULL
+                                CHECK (
+                                    cache_key IN (
+                                        'connections','tables','columns',
+                                        'relationships','business_terms','knowledge_pairs',
+                                        'tables_rich','knowledge_questions','columns_struct'
+                                    )
+                                    OR starts_with(cache_key, 'columns_struct:')
+                                ),
             payload         JSONB        NOT NULL,
             fetched_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
             expires_at      TIMESTAMPTZ  NOT NULL,

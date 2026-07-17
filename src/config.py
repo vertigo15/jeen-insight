@@ -107,10 +107,13 @@ class Settings(BaseSettings):
     CONNECTOR_GROUP_MEMBERSHIP_TTL_SECONDS: int = 900
 
     # ── Deployment safety ───────────────────────────────────────────────────
-    # Explicit development mode. Production is the default (fail-closed): a fresh
-    # install refuses to start with weak/known signing secrets and enables secure
-    # cookies. Set true ONLY for local HTTP development.
-    JEEN_DEV_MODE: bool = False
+    # Development / POC mode. Defaults to TRUE so a fresh copy of the app + shared
+    # DB "just works" anywhere with zero secret provisioning (boots without strong
+    # signing keys and stores the MCP token as portable plaintext). Set
+    # JEEN_DEV_MODE=false to HARDEN a real deployment: then strong FLASK_SECRET_KEY
+    # / INTERNAL_API_SECRET and a valid APP_ENCRYPTION_KEY become mandatory and the
+    # MCP bearer token is encrypted at rest.
+    JEEN_DEV_MODE: bool = True
     # Out-of-band token required to complete first-run admin setup. When empty a
     # random token is generated once and printed to the server log so only an
     # operator (with log access) can bootstrap the first admin.

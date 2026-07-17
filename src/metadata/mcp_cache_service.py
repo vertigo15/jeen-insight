@@ -346,7 +346,11 @@ class McpCacheService:
         payload: Any,
         ttl_seconds: int,
     ) -> None:
-        payload_str = json.dumps(payload) if not isinstance(payload, str) else payload
+        # Always JSON-encode. A raw string payload (e.g. the pre-formatted catalog
+        # markdown bundle) is NOT valid JSON on its own, so passing it straight to
+        # $4::jsonb fails with "invalid input syntax for type json". json.dumps
+        # wraps it as a proper JSON string literal; _decode_payload reverses it.
+        payload_str = json.dumps(payload)
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """

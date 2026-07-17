@@ -137,7 +137,9 @@ code, pre, .mono { font-family: var(--font-mono); font-size: var(--text-sm); }
    APP LAYOUT
    ============================================================= */
 
-.app-layout { display: flex; flex-direction: column; min-height: 100vh; }
+/* Lock the shell to exactly one viewport tall so the sidebar + main area each
+   scroll internally instead of growing the whole page past one screen. */
+.app-layout { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 
 .topbar {
   position: sticky; top: 0; z-index: 100;
@@ -903,6 +905,15 @@ td.cell-id {
   background-clip: padding-box;
   border: 2px solid transparent;
 }
+
+/* Long table / question names stay fully readable: each list scrolls
+   horizontally instead of truncating, and vertically so it fits one screen. */
+.tables-list,
+.question-history { overflow-x: auto; }
+.tables-list .table-item { width: max-content; min-width: 100%; }
+.tables-list .table-name { overflow: visible; text-overflow: clip; }
+.question-history .history-item { width: max-content; min-width: 100%; }
+.question-history .question-text { overflow: visible; text-overflow: clip; }
 
 /* =============================================================
    CONNECTION PILL (sidebar header)
