@@ -18,5 +18,24 @@ COPY src/ ./src/
 # Expose UI port
 EXPOSE 8501
 
-# Run the UI application
-CMD ["python", "-m", "flask", "--app", "src.ui_app:app", "run", "--host", "0.0.0.0", "--port", "8501"]
+# Run the UI with gunicorn (production WSGI server).
+#
+# Single worker (Option A): identical single-process behaviour to before — global
+# rate-limit counters + per-process caches stay correct — while adding master
+# supervision, request timeouts, and worker recycling. To scale out later, raise
+# --workers and move flask-limiter to a shared store (RATELIMIT_STORAGE_URI).
+#
+# gthread + a generous --timeout keeps the streaming insights (SSE) responses
+# alive; --max-requests is checked between requests so it never cuts a stream.
+CMD ["gunicorn", "src.ui_app:app", \
+     "--bind", "0.0.0.0:8501", \
+     "--workers", "1", \
+     "--worker-class", "gthread", \
+     "--threads", "8", \
+     "--timeout", "300", \
+     "--graceful-timeout", "30", \
+     "--keep-alive", "5", \
+     "--max-requests", "1000", \
+     "--max-requests-jitter", "100", \
+     "--access-logfile", "-", \
+     "--error-logfile", "-"]

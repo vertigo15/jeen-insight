@@ -73,6 +73,49 @@ class Settings(BaseSettings):
     # immediately when the per-user limit is hit.
     QUERY_QUEUE_WAIT_SECONDS: float = 0.0
 
+    # ── Connector / integration platform ───────────────────────────────────
+    # Shared secret used by Flask (sole issuer) to mint short-lived, audience-
+    # bound internal tokens that FastAPI verifies into a Principal. When empty,
+    # falls back to FLASK_SECRET_KEY / AUTH_SECRET so a correctly-configured
+    # deployment enforces the boundary automatically. Rotating: set
+    # INTERNAL_API_SECRET to "<kid>:<secret>[,<kid>:<secret>...]"; the first
+    # entry signs, all entries verify.
+    INTERNAL_API_SECRET: str = ""
+    # When true, FastAPI rejects any non-exempt request without a valid internal
+    # token (default-deny). Auto-enabled whenever an internal secret is
+    # resolvable; set to false only for isolated unit tests.
+    INTERNAL_AUTH_ENABLED: bool = True
+    # Master key (KEK) for envelope encryption of connector secrets and per-user
+    # OAuth token material. Base64 or raw >=32 chars. REQUIRED before any
+    # connector credential can be stored; the crypto layer refuses to encrypt
+    # without it. Rotating: prepend a new "<kid>:<key>" (comma-separated); the
+    # first entry wraps new DEKs, all entries unwrap existing ones.
+    APP_ENCRYPTION_KEY: str = ""
+    # Single-tenant deployment: connectors are global and every identity/group is
+    # expected under this Entra tenant. Falls back to AZURE_AD_TENANT_ID.
+    CONNECTORS_TENANT_ID: str = ""
+    # Comma-separated recipient-domain allowlist for outbound connector actions
+    # (e.g. "example.com,partner.org"). Empty = only the sender's own domain.
+    CONNECTOR_RECIPIENT_DOMAIN_ALLOWLIST: str = ""
+    # TTL (seconds) for durable result snapshots used as the export
+    # authorization source, and for pending action proposals.
+    CONNECTOR_SNAPSHOT_TTL_SECONDS: int = 3600
+    CONNECTOR_PROPOSAL_TTL_SECONDS: int = 900
+    # Max age (seconds) that a cached Entra group-membership snapshot is trusted
+    # for authorization. Past this, entitlement checks treat the cache as stale
+    # and fail closed so removing a user from a group revokes access promptly.
+    CONNECTOR_GROUP_MEMBERSHIP_TTL_SECONDS: int = 900
+
+    # ── Deployment safety ───────────────────────────────────────────────────
+    # Explicit development mode. Production is the default (fail-closed): a fresh
+    # install refuses to start with weak/known signing secrets and enables secure
+    # cookies. Set true ONLY for local HTTP development.
+    JEEN_DEV_MODE: bool = False
+    # Out-of-band token required to complete first-run admin setup. When empty a
+    # random token is generated once and printed to the server log so only an
+    # operator (with log access) can bootstrap the first admin.
+    SETUP_BOOTSTRAP_TOKEN: str = ""
+
     # ── Schema linking (prompt-side catalog pruning / RAG) ──────────────────
     # For large catalogs, injecting every table+column into the system prompt is
     # slow, costly, and hurts accuracy. When enabled, prompt_builder selects the

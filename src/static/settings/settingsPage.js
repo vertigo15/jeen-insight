@@ -26,6 +26,7 @@ const ICONS = {
     close:    `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
     logout:   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`,
     catalog:  `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>`,
+    link:     `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
 };
 
 // ── Navigation definition ─────────────────────────────────────────────────────
@@ -39,7 +40,9 @@ const NAV = [
             { id: 'metadata-catalog',  label: 'Metadata & Catalog',   icon: ICONS.catalog,  type: 'metadata-catalog' },
             { id: 'ai-models',         label: 'AI Models',            icon: ICONS.models,   type: 'ai-models' },
             { id: 'query-safety',      label: 'Query & Safety',       icon: ICONS.general,  type: 'query-safety' },
-            { id: 'users',             label: 'Users',                icon: ICONS_USERS,    type: 'users' },
+            { id: 'my-connections',    label: 'My Connections',       icon: ICONS.link,     type: 'my-connections', gate: 'connections' },
+            { id: 'integrations',      label: 'Integrations',         icon: ICONS.link,     type: 'integrations', gate: 'admin' },
+            { id: 'users',             label: 'Users',                icon: ICONS_USERS,    type: 'users', gate: 'admin' },
         ],
     },
     {
@@ -112,7 +115,11 @@ export class SettingsPage {
         this._root.hidden = false;
         this._open = true;
         document.body.style.overflow = 'hidden';
+        this._applyNavGating();
         this._loadPrompts();
+        // If the previously-active section is now gated off, fall back to General.
+        const activeEl = this._root.querySelector(`.sp-nav-item[data-id="${this._activeId}"]`);
+        if (activeEl && activeEl.hidden) this._activeId = 'general';
         this._activate(this._activeId);
     }
 
@@ -224,9 +231,25 @@ export class SettingsPage {
         const el = document.createElement('button');
         el.className = 'sp-nav-item';
         el.dataset.id = item.id;
+        if (item.gate) el.dataset.gate = item.gate;
         el.innerHTML = `${item.icon}<span class="sp-nav-label">${_esc(item.label)}</span><span class="sp-nav-dot" hidden></span>`;
         el.addEventListener('click', () => this._activate(item.id));
         return el;
+    }
+
+    _applyNavGating() {
+        const me = window._currentUser || {};
+        const isAdmin = me.role === 'admin';
+        const connectorsEnabled = !!me.connectors_enabled;
+        const isEntra = !!me.is_entra;
+        this._root.querySelectorAll('.sp-nav-item[data-gate]').forEach(el => {
+            const gate = el.dataset.gate;
+            let show = true;
+            if (gate === 'admin') show = isAdmin;
+            // "My Connections" needs the feature ON and an Entra (SSO) identity.
+            if (gate === 'connections') show = connectorsEnabled && isEntra;
+            el.hidden = !show;
+        });
     }
 
     // ── Navigation ────────────────────────────────────────────────────────────
@@ -250,6 +273,10 @@ export class SettingsPage {
             this._renderQuerySafety();
         } else if (id === 'users') {
             this._renderUsers();
+        } else if (id === 'integrations') {
+            this._renderIntegrations();
+        } else if (id === 'my-connections') {
+            this._renderMyConnections();
         } else if (id === 'about') {
             this._renderAbout();
         } else if (id.startsWith('prompt:')) {
@@ -1989,6 +2016,457 @@ export class SettingsPage {
     }
 
     // ── Users management ───────────────────────────────────────────────────
+
+    // ── Integrations (admin: connector registry & authorization) ──────────────
+
+    async _renderIntegrations() {
+        this._content.innerHTML = `
+            <div class="sp-section-header">
+                <h2 class="sp-section-title">Integrations</h2>
+                <p class="sp-section-desc">Connect Jeen Insights to external services so members can act on their results — e.g. email a summary — using their own credentials. Every action requires the member's own OAuth consent and admin group approval.</p>
+            </div>
+            <div class="sp-card">
+                ${this._row('Enable connectors', 'Master switch for the entire per-user connector platform. While off, no connectors, sign-in flows, or actions are available to anyone.', `
+                    <label class="sp-switch"><input type="checkbox" id="sp-conn-feature"><span class="sp-switch-slider"></span></label>`)}
+            </div>
+            <div id="sp-conn-body"><div class="sp-conn-empty">Loading…</div></div>
+        `;
+
+        const chk = this._content.querySelector('#sp-conn-feature');
+        const body = this._content.querySelector('#sp-conn-body');
+
+        let enabled = false;
+        try {
+            const r = await fetch('/api/connectors/feature');
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            enabled = !!(await r.json()).enabled;
+        } catch (e) {
+            body.innerHTML = `<div class="sp-conn-empty">Could not load — ${_esc(e.message)}</div>`;
+            return;
+        }
+        chk.checked = enabled;
+
+        chk.addEventListener('change', async () => {
+            const want = chk.checked;
+            try {
+                const r = await fetch('/api/connectors/feature', {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: want }),
+                });
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                _showToast(want ? 'Connectors enabled' : 'Connectors disabled', want ? 'success' : 'info');
+                this._renderIntegrations();
+            } catch (e) {
+                chk.checked = !want;
+                _showToast('Could not update — ' + e.message, 'error');
+            }
+        });
+
+        if (enabled) {
+            await this._loadIntegrationsBody(body);
+        } else {
+            body.innerHTML = `<div class="sp-card"><div class="sp-conn-empty">Turn on the master switch to add connectors and manage group access.</div></div>`;
+        }
+    }
+
+    async _loadIntegrationsBody(body) {
+        let catalog = [], connectors = [], groupRoles = [];
+        try {
+            const [cRes, lRes, gRes] = await Promise.all([
+                fetch('/api/connectors/catalog'),
+                fetch('/api/connectors'),
+                fetch('/api/connectors/group-roles'),
+            ]);
+            if (cRes.ok) catalog = (await cRes.json()).catalog || [];
+            if (lRes.ok) connectors = (await lRes.json()).connectors || [];
+            if (gRes.ok) groupRoles = (await gRes.json()).group_roles || [];
+        } catch (e) {
+            body.innerHTML = `<div class="sp-conn-empty">Could not load connectors — ${_esc(e.message)}</div>`;
+            return;
+        }
+
+        const added = new Set(connectors.map(c => c.key));
+        const addable = catalog.filter(e => !e.coming_soon && !added.has(e.key));
+        const soon = catalog.filter(e => e.coming_soon);
+
+        body.innerHTML = `
+            <div class="sp-card">
+                <div class="sp-card-title">Connectors</div>
+                <div id="sp-conn-list">
+                    ${connectors.length ? '' : '<div class="sp-conn-empty">No connectors yet. Add one from the catalog below.</div>'}
+                </div>
+            </div>
+            <div class="sp-card">
+                <div class="sp-card-title">Add a connector</div>
+                <div class="sp-conn-row" id="sp-conn-add">
+                    ${addable.length ? `
+                        <select class="sp-conn-input" id="sp-conn-add-sel">
+                            ${addable.map(e => `<option value="${_esc(e.key)}">${_esc(e.display_name)}</option>`).join('')}
+                        </select>
+                        <button class="sp-btn-primary-sm" id="sp-conn-add-btn">Add</button>
+                    ` : `<div class="sp-conn-empty">All available connectors have been added.</div>`}
+                </div>
+                ${soon.length ? `<div class="sp-conn-sub" style="margin-top:10px">Coming soon: ${soon.map(e => _esc(e.display_name)).join(', ')}</div>` : ''}
+            </div>
+            <div class="sp-card">
+                <div class="sp-card-title">Group roles</div>
+                <p class="sp-conn-sub" style="margin-bottom:10px">Map an Entra (Azure AD) group's object ID to a capability role. A member's effective role is the highest of their base role, group role, and any local allow exception.</p>
+                <div id="sp-conn-roles"></div>
+                <div class="sp-conn-row" style="margin-top:10px">
+                    <input class="sp-conn-input" id="sp-role-group" placeholder="Group object ID (GUID)">
+                    <select class="sp-conn-input" id="sp-role-role" style="min-width:120px;flex:0 0 auto">
+                        <option value="viewer">viewer</option>
+                        <option value="editor">editor</option>
+                        <option value="admin">admin</option>
+                    </select>
+                    <button class="sp-btn-primary-sm" id="sp-role-add">Set</button>
+                </div>
+            </div>
+            <div class="sp-card">
+                <div class="sp-card-title">Recent activity</div>
+                <div id="sp-conn-audit"><div class="sp-conn-empty">Loading…</div></div>
+            </div>
+        `;
+
+        const list = body.querySelector('#sp-conn-list');
+        connectors.forEach(c => {
+            const el = document.createElement('div');
+            el.innerHTML = this._connectorItemHtml(c);
+            const item = el.firstElementChild;
+            list.appendChild(item);
+            this._wireConnectorItem(item, c);
+        });
+
+        const addBtn = body.querySelector('#sp-conn-add-btn');
+        if (addBtn) {
+            addBtn.addEventListener('click', async () => {
+                const key = body.querySelector('#sp-conn-add-sel').value;
+                try {
+                    const r = await fetch('/api/connectors', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ catalog_key: key }),
+                    });
+                    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+                    _showToast('Connector added', 'success');
+                    this._loadIntegrationsBody(body);
+                } catch (e) {
+                    _showToast('Could not add — ' + e.message, 'error');
+                }
+            });
+        }
+
+        this._renderGroupRoles(body.querySelector('#sp-conn-roles'), groupRoles, body);
+        body.querySelector('#sp-role-add')?.addEventListener('click', async () => {
+            const group = (body.querySelector('#sp-role-group').value || '').trim();
+            const role = body.querySelector('#sp-role-role').value;
+            if (!group) { _showToast('Enter a group object ID', 'error'); return; }
+            try {
+                const r = await fetch('/api/connectors/group-roles', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ group_object_id: group, role }),
+                });
+                if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+                _showToast('Group role set', 'success');
+                this._loadIntegrationsBody(body);
+            } catch (e) {
+                _showToast('Could not set role — ' + e.message, 'error');
+            }
+        });
+
+        this._loadConnectorAudit(body.querySelector('#sp-conn-audit'));
+    }
+
+    _connectorItemHtml(c) {
+        const cfg = (c.current_version && c.current_version.config) || {};
+        const allowlist = Array.isArray(cfg.recipient_domain_allowlist) ? cfg.recipient_domain_allowlist : [];
+        const allowExternal = !!cfg.allow_external_recipients;
+        const clientId = cfg.client_id || '';
+        const tenantId = cfg.tenant_id || '';
+        const secretPill = c.has_client_secret
+            ? '<span class="sp-conn-pill on">secret set</span>'
+            : '<span class="sp-conn-pill warn">no secret</span>';
+        const grants = c.group_grants || [];
+        return `
+            <div class="sp-conn-item" data-cid="${_esc(c.id)}">
+                <div class="sp-conn-head">
+                    <div>
+                        <div class="sp-conn-title">${_esc(c.display_name)}</div>
+                        <div class="sp-conn-sub">${_esc(c.provider)} · ${_esc(c.category || '')}</div>
+                    </div>
+                    <div class="sp-conn-actions">
+                        ${secretPill}
+                        <label class="sp-switch"><input type="checkbox" class="sp-conn-enabled" ${c.is_enabled ? 'checked' : ''}><span class="sp-switch-slider"></span></label>
+                        <button class="sp-btn-ghost-sm sp-conn-del" title="Remove connector">Remove</button>
+                    </div>
+                </div>
+                <div class="sp-conn-body">
+                    <div class="sp-conn-field">
+                        <label>OAuth client (Entra app registration)</label>
+                        <div class="sp-conn-row">
+                            <input class="sp-conn-input sp-cf-client" placeholder="Client ID" value="${_esc(clientId)}">
+                            <input class="sp-conn-input sp-cf-tenant" placeholder="Tenant ID (or 'common')" value="${_esc(tenantId)}">
+                        </div>
+                        <div class="sp-conn-row" style="margin-top:6px">
+                            <input class="sp-conn-input sp-cf-secret" type="password" placeholder="Client secret (write-only)">
+                            <button class="sp-btn-primary-sm sp-cf-secret-save">Save secret</button>
+                        </div>
+                    </div>
+                    <div class="sp-conn-field">
+                        <label>Recipient policy</label>
+                        <div class="sp-conn-row">
+                            <input class="sp-conn-input sp-cf-allowlist" placeholder="Allowed domains, comma-separated (blank = sender's own domain)" value="${_esc(allowlist.join(', '))}">
+                        </div>
+                        <div class="sp-conn-row" style="margin-top:6px">
+                            <label class="sp-conn-sub" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                                <input type="checkbox" class="sp-cf-external" ${allowExternal ? 'checked' : ''}> Allow recipients outside the allowlist
+                            </label>
+                            <button class="sp-btn-ghost-sm sp-cf-policy-save" style="margin-left:auto">Save policy</button>
+                        </div>
+                    </div>
+                    <div class="sp-conn-field">
+                        <label>Allowed Entra groups</label>
+                        <div class="sp-conn-row sp-cf-grants">
+                            ${grants.length ? grants.map(g => `<span class="sp-chip" data-g="${_esc(g)}">${_esc(g)}<button class="sp-grant-del" title="Remove">×</button></span>`).join('') : '<span class="sp-conn-empty" style="padding:0">No groups — nobody can connect yet.</span>'}
+                        </div>
+                        <div class="sp-conn-row" style="margin-top:6px">
+                            <input class="sp-conn-input sp-cf-grant-input" placeholder="Group object ID (GUID)">
+                            <button class="sp-btn-ghost-sm sp-cf-grant-add">Add group</button>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+    }
+
+    _wireConnectorItem(item, c) {
+        const cid = c.id;
+        const body = this._content.querySelector('#sp-conn-body');
+        const reload = () => this._loadIntegrationsBody(body);
+
+        item.querySelector('.sp-conn-enabled')?.addEventListener('change', async (e) => {
+            const enabled = e.target.checked;
+            try {
+                const r = await fetch(`/api/connectors/${cid}/enabled`, {
+                    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled }),
+                });
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                _showToast(enabled ? 'Connector enabled' : 'Connector disabled', 'success');
+            } catch (err) {
+                e.target.checked = !enabled;
+                _showToast('Could not update — ' + err.message, 'error');
+            }
+        });
+
+        item.querySelector('.sp-conn-del')?.addEventListener('click', async () => {
+            if (!confirm(`Remove ${c.display_name}? Members will lose their connections.`)) return;
+            try {
+                const r = await fetch(`/api/connectors/${cid}`, { method: 'DELETE' });
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                _showToast('Connector removed', 'info');
+                reload();
+            } catch (err) {
+                _showToast('Could not remove — ' + err.message, 'error');
+            }
+        });
+
+        item.querySelector('.sp-cf-secret-save')?.addEventListener('click', async () => {
+            const secret = item.querySelector('.sp-cf-secret').value;
+            const client_id = item.querySelector('.sp-cf-client').value.trim();
+            const tenant_id = item.querySelector('.sp-cf-tenant').value.trim();
+            if (!secret) { _showToast('Enter a client secret', 'error'); return; }
+            try {
+                const r = await fetch(`/api/connectors/${cid}/client-secret`, {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ secret, client_id, tenant_id }),
+                });
+                if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+                _showToast('Client secret saved', 'success');
+                reload();
+            } catch (err) {
+                _showToast('Could not save secret — ' + err.message, 'error');
+            }
+        });
+
+        item.querySelector('.sp-cf-policy-save')?.addEventListener('click', async () => {
+            const allowlist = item.querySelector('.sp-cf-allowlist').value
+                .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+            const allow_external_recipients = item.querySelector('.sp-cf-external').checked;
+            const existing = (c.current_version && c.current_version.config) || {};
+            const config = {
+                ...existing,
+                recipient_domain_allowlist: allowlist,
+                allow_external_recipients,
+            };
+            try {
+                const r = await fetch(`/api/connectors/${cid}/config`, {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ config }),
+                });
+                if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+                _showToast('Policy saved', 'success');
+                reload();
+            } catch (err) {
+                _showToast('Could not save policy — ' + err.message, 'error');
+            }
+        });
+
+        item.querySelector('.sp-cf-grant-add')?.addEventListener('click', async () => {
+            const group_object_id = (item.querySelector('.sp-cf-grant-input').value || '').trim();
+            if (!group_object_id) { _showToast('Enter a group object ID', 'error'); return; }
+            try {
+                const r = await fetch(`/api/connectors/${cid}/groups`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ group_object_id }),
+                });
+                if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+                _showToast('Group added', 'success');
+                reload();
+            } catch (err) {
+                _showToast('Could not add group — ' + err.message, 'error');
+            }
+        });
+
+        item.querySelectorAll('.sp-grant-del').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const gid = btn.closest('.sp-chip')?.dataset.g;
+                if (!gid) return;
+                try {
+                    const r = await fetch(`/api/connectors/${cid}/groups/${encodeURIComponent(gid)}`, { method: 'DELETE' });
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    _showToast('Group removed', 'info');
+                    reload();
+                } catch (err) {
+                    _showToast('Could not remove group — ' + err.message, 'error');
+                }
+            });
+        });
+    }
+
+    _renderGroupRoles(container, roles, body) {
+        if (!container) return;
+        if (!roles.length) {
+            container.innerHTML = '<div class="sp-conn-empty" style="padding:0">No group roles configured.</div>';
+            return;
+        }
+        container.innerHTML = roles.map(r => `
+            <div class="sp-conn-row" style="justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--color-border)">
+                <span class="sp-chip" style="background:none;border:none;padding:0">${_esc(r.group_object_id)}</span>
+                <span class="sp-conn-row" style="gap:8px">
+                    <span class="sp-conn-pill on">${_esc(r.role)}</span>
+                    <button class="sp-btn-ghost-sm sp-role-del" data-rid="${_esc(r.id)}">Remove</button>
+                </span>
+            </div>`).join('');
+        container.querySelectorAll('.sp-role-del').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                try {
+                    const r = await fetch(`/api/connectors/group-roles/${encodeURIComponent(btn.dataset.rid)}`, { method: 'DELETE' });
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    _showToast('Group role removed', 'info');
+                    this._loadIntegrationsBody(body);
+                } catch (e) {
+                    _showToast('Could not remove — ' + e.message, 'error');
+                }
+            });
+        });
+    }
+
+    async _loadConnectorAudit(container) {
+        if (!container) return;
+        try {
+            const r = await fetch('/api/connectors/audit?limit=50');
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            const events = (await r.json()).events || [];
+            if (!events.length) {
+                container.innerHTML = '<div class="sp-conn-empty" style="padding:0">No activity yet.</div>';
+                return;
+            }
+            container.innerHTML = events.map(ev => {
+                const ts = ev.event_time ? new Date(ev.event_time).toLocaleString() : '';
+                return `<div class="sp-audit-row">
+                    <span class="sp-audit-ts">${_esc(ts)}</span>
+                    <span class="sp-audit-ev">${_esc(ev.event_type || '')}</span>
+                    <span class="sp-audit-out">${_esc(ev.outcome || '')}</span>
+                </div>`;
+            }).join('');
+        } catch (e) {
+            container.innerHTML = `<div class="sp-conn-empty" style="padding:0">Could not load activity — ${_esc(e.message)}</div>`;
+        }
+    }
+
+    // ── My Connections (user: connect/disconnect personal integrations) ───────
+
+    async _renderMyConnections() {
+        this._content.innerHTML = `
+            <div class="sp-section-header">
+                <h2 class="sp-section-title">My Connections</h2>
+                <p class="sp-section-desc">Connect your own accounts so you can act on results — for example, email a summary from your own mailbox. You control each connection and can disconnect at any time.</p>
+            </div>
+            <div id="sp-myconn-list"><div class="sp-conn-empty">Loading…</div></div>
+        `;
+        await this._loadMyConnections();
+    }
+
+    async _loadMyConnections() {
+        const list = this._content.querySelector('#sp-myconn-list');
+        if (!list) return;
+        let connections = [];
+        try {
+            const r = await fetch('/api/me/connections');
+            if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+            connections = (await r.json()).connections || [];
+        } catch (e) {
+            list.innerHTML = `<div class="sp-card"><div class="sp-conn-empty">Could not load — ${_esc(e.message)}</div></div>`;
+            return;
+        }
+        if (!connections.length) {
+            list.innerHTML = `<div class="sp-card"><div class="sp-conn-empty">No connections are available to you yet. Ask an administrator to grant your group access.</div></div>`;
+            return;
+        }
+        list.innerHTML = `<div class="sp-card">${connections.map(c => this._myConnectionHtml(c)).join('')}</div>`;
+        connections.forEach(c => this._wireMyConnection(list, c));
+    }
+
+    _myConnectionHtml(c) {
+        const connected = !!c.connected;
+        const pill = connected
+            ? `<span class="sp-conn-pill on">connected</span>`
+            : `<span class="sp-conn-pill off">not connected</span>`;
+        const acct = connected && c.external_account ? `<div class="sp-conn-sub">${_esc(c.external_account)}</div>` : '';
+        const action = connected
+            ? `<button class="sp-btn-ghost-sm sp-myconn-revoke" data-cid="${_esc(c.connector_id)}">Disconnect</button>`
+            : `<button class="sp-btn-primary-sm sp-myconn-connect" data-cid="${_esc(c.connector_id)}">Connect</button>`;
+        return `
+            <div class="sp-conn-item" data-cid="${_esc(c.connector_id)}" style="margin-bottom:10px">
+                <div class="sp-conn-head">
+                    <div>
+                        <div class="sp-conn-title">${_esc(c.display_name)}</div>
+                        <div class="sp-conn-sub">${_esc(c.category || '')}</div>
+                        ${acct}
+                    </div>
+                    <div class="sp-conn-actions">${pill}${action}</div>
+                </div>
+            </div>`;
+    }
+
+    _wireMyConnection(root, c) {
+        const item = root.querySelector(`.sp-conn-item[data-cid="${CSS.escape(c.connector_id)}"]`);
+        if (!item) return;
+        item.querySelector('.sp-myconn-connect')?.addEventListener('click', () => {
+            // Full-page redirect: browser round-trip to the provider for consent.
+            window.location.href = `/integrations/${encodeURIComponent(c.connector_id)}/connect`;
+        });
+        item.querySelector('.sp-myconn-revoke')?.addEventListener('click', async () => {
+            if (!confirm(`Disconnect ${c.display_name}?`)) return;
+            try {
+                const r = await fetch(`/api/me/connections/${encodeURIComponent(c.connector_id)}/revoke`, { method: 'POST' });
+                if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+                _showToast('Disconnected', 'info');
+                this._loadMyConnections();
+            } catch (e) {
+                _showToast('Could not disconnect — ' + e.message, 'error');
+            }
+        });
+    }
 
     async _renderUsers() {
         const me = window._currentUser || {};

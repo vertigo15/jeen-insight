@@ -230,6 +230,9 @@ def _server_row(server_name="jeen-catalog-mcp", is_active=True, health=None):
         "server_name": server_name,
         "endpoint": "https://mcp.jeen.internal/catalog",
         "transport": "http", "auth_type": "none", "bearer_token": None,
+        # Envelope-encryption columns (NULL when no bearer token is stored).
+        "token_algo": None, "token_kek_id": None, "token_ciphertext": None,
+        "token_nonce": None, "token_wrapped_dek": None, "token_dek_nonce": None,
         "cache_ttl_seconds": 900,
         "health": health, "last_checked_at": None,
         "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),

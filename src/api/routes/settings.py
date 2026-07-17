@@ -24,12 +24,18 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+
+from src.api.dependencies import require_admin
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+# Mutating settings routes are admin-only. Read-only GETs stay available to any
+# authenticated Principal (the settings UI shows a read subset to non-admins).
+_ADMIN = [Depends(require_admin)]
 
 # ── Prompt file registry ──────────────────────────────────────────────────────────────────
 
@@ -661,7 +667,7 @@ async def resolve_prompt(
     }
 
 
-@router.put("/prompts/{name}", response_model=PromptDetail)
+@router.put("/prompts/{name}", response_model=PromptDetail, dependencies=_ADMIN)
 async def save_prompt(name: str, body: PromptUpdate):
     """Save a custom prompt (new DB version)."""
     entry = _entry_for(name)
@@ -687,7 +693,7 @@ async def save_prompt(name: str, body: PromptUpdate):
     )
 
 
-@router.delete("/prompts/{name}", response_model=PromptDetail)
+@router.delete("/prompts/{name}", response_model=PromptDetail, dependencies=_ADMIN)
 async def reset_prompt(name: str):
     """Reset a prompt to its file default (inserts a new DB version)."""
     entry = _entry_for(name)
@@ -713,7 +719,7 @@ async def reset_prompt(name: str):
     )
 
 
-@router.post("/prompts/reload")
+@router.post("/prompts/reload", dependencies=_ADMIN)
 def reload_prompts():
     """Clear the in-process prompt cache so every prompt is re-read from DB."""
     try:
@@ -726,7 +732,7 @@ def reload_prompts():
     return {"reloaded": False}
 
 
-@router.put("/prompts/{name}/model")
+@router.put("/prompts/{name}/model", dependencies=_ADMIN)
 async def set_prompt_model(name: str, body: SetPromptModelRequest):
     """Assign a specific model to this prompt (or clear with ``model_name=null``).
 
@@ -850,7 +856,7 @@ async def get_prompt_version(name: str, version_id: int):
     )
 
 
-@router.post("/prompts/{name}/restore/{version_id}", response_model=PromptDetail)
+@router.post("/prompts/{name}/restore/{version_id}", response_model=PromptDetail, dependencies=_ADMIN)
 async def restore_prompt_version(name: str, version_id: int):
     """Restore a past version as a new active version row."""
     entry = _entry_for(name)
@@ -1057,7 +1063,7 @@ async def get_active_model():
     return {"name": active, "current_deployment": current}
 
 
-@router.put("/models/active")
+@router.put("/models/active", dependencies=_ADMIN)
 async def set_active_model(body: SetModelRequest):
     """Switch to a different model live and persist the choice."""
     from src.api import state

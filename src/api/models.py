@@ -54,6 +54,10 @@ class QueryResponse(BaseModel):
     metrics: Optional[Dict[str, Any]] = None
     # Per-node execution trace. Each entry: {node, elapsed_ms, icon, type, detail, ...}
     trace: Optional[List[Dict[str, Any]]] = None
+    # Opaque handle to a durable, server-held encrypted snapshot of this result.
+    # Present only when the connector platform is enabled; used as the sole
+    # authorization source for outbound actions (send/share).
+    result_handle: Optional[str] = None
 
 
 class ColumnInfo(BaseModel):

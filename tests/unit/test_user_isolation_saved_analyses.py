@@ -17,8 +17,8 @@ def test_result_cache_requires_user_scope():
     assert cache.get(user_id="u2", connection="sales", query_id="q1") is None
 
 
-def test_history_feedback_requires_user_id(client, fake_state):
-    resp = client.post(
+def test_history_feedback_requires_user_id(anon_client, fake_state):
+    resp = anon_client.post(
         "/api/feedback",
         json={"query_id": "11111111-1111-1111-1111-111111111111", "feedback": "thumbs_up"},
     )

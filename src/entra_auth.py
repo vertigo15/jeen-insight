@@ -70,3 +70,39 @@ def profile_from_token_result(result: Dict[str, Any]) -> Dict[str, str]:
     ).strip().lower()
     name = (claims.get("name") or (email.split("@")[0] if email else "") or "User").strip()
     return {"email": email, "name": name}
+
+
+def directory_claims_from_token_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract Entra identity + group claims for the connector platform.
+
+    Returns ``tenant_id``, ``object_id``, ``groups`` (object ids) and
+    ``groups_complete``. When the token carries a group *overage* pointer
+    (``_claim_names``/``_claim_sources`` instead of an inline ``groups`` list),
+    membership is marked INCOMPLETE so downstream authorization fails closed
+    rather than silently treating the user as having no groups.
+
+    Emitting the ``groups`` claim requires configuring ``groupMembershipClaims``
+    on the Entra app registration; without it, ``groups`` is empty and complete.
+    """
+    claims = result.get("id_token_claims") or {}
+    tenant_id = str(claims.get("tid") or "").strip()
+    object_id = str(claims.get("oid") or "").strip()
+
+    groups = claims.get("groups") or []
+    if not isinstance(groups, list):
+        groups = []
+    groups = [str(g) for g in groups if g]
+
+    # Overage: AAD replaces the inline list with a pointer when the user is in
+    # too many groups (~200). We cannot enumerate them from the token alone.
+    overage = False
+    claim_names = claims.get("_claim_names") or {}
+    if isinstance(claim_names, dict) and "groups" in claim_names:
+        overage = True
+
+    return {
+        "tenant_id": tenant_id,
+        "object_id": object_id,
+        "groups": groups,
+        "groups_complete": not overage,
+    }

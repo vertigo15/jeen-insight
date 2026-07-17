@@ -4,14 +4,10 @@
 -- Stores UI login accounts. The Flask UI reads/writes this table directly via
 -- psycopg (see src/auth_db.py). The FastAPI API does not use it.
 --
--- Seeds a default admin account when missing:
---   email: admin
---   password: ChangeMe123!   (MUST be changed immediately after first login)
---
--- The default password meets the >=8 char UI policy. It is still a shared,
--- publicly-documented credential — rotate it on first login. Existing
--- deployments that were seeded with the old 4-char "admin" password should
--- reset it manually (Settings -> Users, or update auth_users.password_hash).
+-- No default admin is seeded. On first run (no usable admin account) the Flask
+-- UI shows a one-time admin setup screen (/setup) so the operator creates the
+-- first admin with their own password. See migration 014, which removes any
+-- legacy seeded default-admin credential that was never customized.
 --
 -- Idempotent. Safe to run on the shared metadata DB.
 -- ============================================================================
@@ -35,16 +31,3 @@ CREATE TABLE IF NOT EXISTS auth_users (
 
 CREATE INDEX IF NOT EXISTS idx_auth_users_email
     ON auth_users (email);
-
--- Default admin (password: ChangeMe123!). Skip if email already exists.
-INSERT INTO auth_users (name, email, password_hash, role, status, avatar_hue)
-SELECT
-    'Admin',
-    'admin',
-    '$2b$12$bSvlOGpdYkN44TzBs6dWx.N7Ia9LaTosYRGVQOOOzSU81QfBJlAjC',
-    'admin',
-    'active',
-    210
-WHERE NOT EXISTS (
-    SELECT 1 FROM auth_users WHERE email = 'admin'
-);

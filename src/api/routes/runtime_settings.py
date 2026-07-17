@@ -10,9 +10,10 @@ from __future__ import annotations
 import logging
 from typing import Dict
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from src.api.dependencies import require_admin
 from src.metadata import runtime_settings as rs
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ async def get_runtime():
     )
 
 
-@router.put("/runtime", response_model=RuntimeSettingsResponse)
+@router.put("/runtime", response_model=RuntimeSettingsResponse, dependencies=[Depends(require_admin)])
 async def update_runtime(body: RuntimeSettingsUpdate):
     """Upsert any provided runtime guardrail(s); values are clamped to bounds."""
     updates = {

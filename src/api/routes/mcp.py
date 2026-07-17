@@ -21,19 +21,23 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from src.api import state
+from src.api.dependencies import require_admin
 from src.metadata.mcp_server_service import (
     CATALOG_NEEDS,
     REQUIRED_NEEDS,
     REQUIRED_NEED_LABELS,
+    McpTokenError,
 )
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/mcp", tags=["mcp"])
+# MCP catalog management is an admin-only surface. Gate every route on a verified
+# admin Principal (defense in depth alongside the Flask admin proxy guard).
+router = APIRouter(prefix="/api/mcp", tags=["mcp"], dependencies=[Depends(require_admin)])
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -189,14 +193,17 @@ async def list_servers():
 @router.post("/servers")
 async def create_server(body: CreateServerRequest):
     svc = _srv_svc()
-    server = await svc.create(
-        server_name=body.server_name,
-        endpoint=body.endpoint,
-        transport=body.transport,
-        auth_type=body.auth_type,
-        bearer_token=body.bearer_token or None,
-        cache_ttl_seconds=body.cache_ttl_seconds,
-    )
+    try:
+        server = await svc.create(
+            server_name=body.server_name,
+            endpoint=body.endpoint,
+            transport=body.transport,
+            auth_type=body.auth_type,
+            bearer_token=body.bearer_token or None,
+            cache_ttl_seconds=body.cache_ttl_seconds,
+        )
+    except McpTokenError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return server.to_dict()
 
 
@@ -213,7 +220,10 @@ async def update_server(server_id: int, body: UpdateServerRequest):
     if body.bearer_token  is not None: fields["bearer_token"]      = body.bearer_token
     if body.cache_ttl_seconds is not None: fields["cache_ttl_seconds"] = body.cache_ttl_seconds
 
-    server = await svc.update(server_id, **fields)
+    try:
+        server = await svc.update(server_id, **fields)
+    except McpTokenError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not server:
         raise HTTPException(404, f"Server {server_id} not found")
 
@@ -233,18 +243,9 @@ async def delete_server(server_id: int):
     return {"ok": True, "deleted_id": server_id}
 
 
-@router.get("/servers/{server_id}/token")
-async def get_server_token(server_id: int):
-    """Return a server's stored bearer token so the settings UI can reveal it.
-
-    The token is stored server-side (plain text in v1) and is never sent to the
-    LLM. This endpoint exists only to back the "show token" control in settings.
-    """
-    svc    = _srv_svc()
-    server = await svc.get_by_id(server_id)
-    if not server:
-        raise HTTPException(404, f"Server {server_id} not found")
-    return {"server_id": server_id, "bearer_token": server.bearer_token}
+# NOTE: the previous GET /servers/{id}/token endpoint (which revealed the stored
+# bearer token to the UI) has been removed. Tokens are envelope-encrypted at rest
+# and are never returned by the API.
 
 
 # ── Activation ────────────────────────────────────────────────────────────────

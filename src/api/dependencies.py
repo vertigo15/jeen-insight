@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException, Request
 
 from src.agent import AgentRegistry, JeenInsightsAgent
+from src.security.internal_auth import Principal
 from src.agent.conversation_history import ConversationHistoryService
 from src.api import state
 from src.connections import (
@@ -85,6 +86,152 @@ def require_user_id(value: Any) -> str:
 
 def require_user_context_user_id(user_context: Optional[Mapping[str, Any]]) -> str:
     return require_user_id((user_context or {}).get("user_id"))
+
+
+# ── Internal Principal (verified by InternalAuthMiddleware) ─────────────────
+
+def get_principal(request: Request) -> Principal:
+    """Return the verified server-side Principal or fail closed with 401.
+
+    The Principal is attached by ``InternalAuthMiddleware`` from the Flask-minted
+    internal token. All identity/role/group facts come from here — never from the
+    request body or query string.
+    """
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return principal  # type: ignore[return-value]
+
+
+def require_admin(principal: Principal = Depends(get_principal)) -> Principal:
+    if not principal.is_admin:
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return principal
+
+
+async def require_connectors_enabled() -> None:
+    """Fail with 404 when the global connector master switch is off."""
+    from src.security.app_flags import get_connectors_enabled
+
+    if not await get_connectors_enabled():
+        raise HTTPException(status_code=404, detail="Connectors feature is disabled")
+
+
+# ── Connector service getters ───────────────────────────────────────────────
+
+def get_identity_service():
+    return _require(state.identity_service, "IdentityService")
+
+
+def get_registry_service():
+    return _require(state.registry_service, "ConnectorRegistryService")
+
+
+def get_grant_service():
+    return _require(state.grant_service, "GrantService")
+
+
+def get_snapshot_service():
+    return _require(state.snapshot_service, "SnapshotService")
+
+
+def get_audit_service():
+    return _require(state.audit_service, "AuditService")
+
+
+def get_action_gate():
+    return _require(state.action_gate, "ActionGate")
+
+
+def _configured_tenant() -> str:
+    from src.config import settings
+
+    return (
+        (settings.CONNECTORS_TENANT_ID or "").strip()
+        or __import__("os").getenv("AZURE_AD_TENANT_ID", "").strip()
+    )
+
+
+def resolve_tenant_id(principal: Principal) -> str:
+    """Single-tenant isolation: the principal's tenant must match the deployment.
+
+    In a single-tenant deployment every connector identity/group belongs to one
+    Entra tenant. A principal presenting a different tenant is rejected (403) so a
+    foreign-tenant token can never be bound to a local identity or entitlement.
+    """
+    configured = _configured_tenant()
+    ptid = (principal.tenant_id or "").strip()
+    if configured and ptid and ptid != configured:
+        raise HTTPException(
+            status_code=403,
+            detail="Your Microsoft tenant is not authorized for this deployment.",
+        )
+    return ptid or configured
+
+
+# Shared app-only Graph client for authoritative membership revalidation. Cheap
+# to construct; token is cached internally.
+_graph_directory = None
+
+
+def _get_graph_directory():
+    global _graph_directory
+    if _graph_directory is None:
+        from src.connectors.graph_directory import GraphDirectoryClient
+
+        _graph_directory = GraphDirectoryClient()
+    return _graph_directory
+
+
+async def ensure_identity(principal: Principal):
+    """Upsert the caller's canonical identity + refresh group membership.
+
+    Requires an Entra (SSO) principal — per-user connectors are Entra-bound.
+    Returns the identity dict.
+
+    Membership freshness: if we already hold *authoritative* (Graph-sourced) and
+    still-fresh membership we keep it; otherwise we refresh the cache from the
+    token's group claims stamped with the interactive login time (so the TTL is
+    measured from login, not from this request) and then best-effort revalidate
+    against Graph. This bounds how long a removed group keeps granting access.
+    """
+    if not principal.is_entra:
+        raise HTTPException(
+            status_code=403,
+            detail="Sign in with Microsoft to use connectors (Entra identity required).",
+        )
+    identities = get_identity_service()
+    tenant_id = resolve_tenant_id(principal)
+    try:
+        auth_user_id = int(principal.user_id)
+    except (TypeError, ValueError):
+        auth_user_id = None
+    identity = await identities.upsert_identity(
+        tenant_id=tenant_id,
+        object_id=principal.object_id,
+        upn=principal.email,
+        display_name=principal.name,
+        auth_user_id=auth_user_id,
+    )
+
+    current = await identities.get_membership(identity["id"])
+    if not (current.get("source") == "graph" and current.get("fresh")):
+        from datetime import datetime, timezone
+
+        login_at = (
+            datetime.fromtimestamp(principal.auth_time, tz=timezone.utc)
+            if principal.auth_time
+            else None
+        )
+        await identities.sync_memberships(
+            identity["id"],
+            [{"object_id": g, "display_name": None} for g in principal.groups],
+            complete=principal.groups_complete,
+            source="token",
+            synced_at=login_at,
+        )
+        await identities.maybe_refresh_from_graph(identity, _get_graph_directory())
+    return identity
 
 
 async def resolve_agent(source_key: Optional[str]) -> JeenInsightsAgent:

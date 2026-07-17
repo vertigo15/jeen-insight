@@ -219,3 +219,64 @@ def email_exists(email: str) -> bool:
             "SELECT 1 FROM auth_users WHERE email = %s LIMIT 1", (email,)
         ).fetchone()
     return row is not None
+
+
+def active_admin_exists() -> bool:
+    """Return True when at least one usable (active) admin account exists.
+
+    Used to drive the first-run admin setup screen. Fails closed (returns True)
+    on DB errors so a transient outage can't expose the unauthenticated setup
+    flow — the operator will just see the normal login error instead.
+    """
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM auth_users WHERE role = 'admin' AND status = 'active' LIMIT 1"
+            ).fetchone()
+        return row is not None
+    except Exception:  # noqa: BLE001
+        return True
+
+
+# Fixed advisory-lock key that serializes concurrent first-run admin creation
+# across sessions/processes. Any constant works; it just needs to be stable.
+_SETUP_ADVISORY_LOCK_KEY = 0x4A45454E5F535550  # "JEEN_SUP"
+
+
+def create_first_admin(name: str, email: str, password: str) -> Dict[str, Any]:
+    """Create the very first admin. Refuses if any active admin already exists.
+
+    Concurrency-safe: a transaction-scoped Postgres advisory lock serializes
+    concurrent setup requests so only ONE admin can ever be created via this
+    bootstrap path — the re-check inside the lock is authoritative even under a
+    burst of simultaneous /setup POSTs.
+    """
+    hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(12)).decode("utf-8")
+    avatar_hue = abs(hash(email)) % 360
+    with _connect() as conn:
+        with conn.transaction():
+            # Serialize with every other setup attempt for the lock's lifetime
+            # (released automatically at transaction end).
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SETUP_ADVISORY_LOCK_KEY,))
+            exists = conn.execute(
+                "SELECT 1 FROM auth_users WHERE role = 'admin' AND status = 'active' LIMIT 1"
+            ).fetchone()
+            if exists:
+                raise RuntimeError("An admin account already exists")
+            row = conn.execute(
+                """
+                INSERT INTO auth_users (name, email, password_hash, role, status, avatar_hue)
+                VALUES (%s, %s, %s, 'admin', 'active', %s)
+                RETURNING id, name, email, role, status, avatar_hue, created_at
+                """,
+                (name, email, hashed, avatar_hue),
+            ).fetchone()
+    return {
+        "id":         row[0],
+        "name":       row[1],
+        "email":      row[2],
+        "role":       row[3],
+        "status":     row[4],
+        "avatar_hue": row[5],
+        "created_at": row[6].isoformat() if row[6] else None,
+    }
