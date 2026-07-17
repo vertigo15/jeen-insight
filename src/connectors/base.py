@@ -102,6 +102,100 @@ def is_read_only_sql(sql: str) -> bool:
     return bool(_ALLOWED_LEAD_KEYWORDS.match(cleaned))
 
 
+# ── Structural single-statement enforcement ───────────────────────────────────
+# The leading-keyword gate above is necessary but not sufficient: statements
+# like ``SELECT 1; DELETE FROM t`` or ``WITH x AS (DELETE ... RETURNING *)
+# SELECT * FROM x`` also start with SELECT/WITH. Postgres blocks these via its
+# READ ONLY transaction, but Trino/Databricks have no equivalent, so we enforce
+# the invariant structurally (parse-based) for every engine: exactly one
+# top-level read query, with no DML/DDL anywhere in the tree (incl. CTEs).
+
+#: sqlglot expression types that represent a data mutation or DDL.
+_MUTATION_EXP_NAMES = (
+    "Insert", "Update", "Delete", "Merge",
+    "Create", "Drop", "Alter", "AlterTable", "TruncateTable",
+    "Command", "Copy",
+)
+#: sqlglot expression types allowed as the single top-level statement.
+_QUERY_EXP_NAMES = ("Select", "Union", "Intersect", "Except", "Subquery")
+
+# Conservative textual fallback used only when sqlglot is unavailable/unparseable.
+_FORBIDDEN_KEYWORD_RE = re.compile(
+    r"(?is)\b(insert|update|delete|merge|upsert|create|drop|alter|truncate|"
+    r"grant|revoke|copy|call|vacuum|reindex|attach|detach)\b"
+)
+
+
+def _sqlglot_exp_types(names: Tuple[str, ...]) -> tuple:
+    try:
+        from sqlglot import exp
+    except ImportError:
+        return ()
+    return tuple(t for t in (getattr(exp, n, None) for n in names) if t is not None)
+
+
+def check_read_only_statements(statements: List[Any]) -> Optional[str]:
+    """Validate a list of parsed sqlglot statements as one read-only query.
+
+    Returns an error message when the SQL is not exactly one read query with no
+    mutation/DDL anywhere (including inside CTEs), else ``None``. Shared by the
+    ``sqlglot_validate`` graph node and the runner so the rule can't drift.
+    """
+    real = [s for s in statements if s is not None]
+    if not real:
+        return "No executable SQL statement was found."
+    if len(real) > 1:
+        return (
+            "Only a single SQL statement may be executed. "
+            "Multiple statements are not allowed."
+        )
+    stmt = real[0]
+    query_types = _sqlglot_exp_types(_QUERY_EXP_NAMES)
+    if query_types and not isinstance(stmt, query_types):
+        return "Only read-only SELECT queries are allowed."
+    mutation_types = _sqlglot_exp_types(_MUTATION_EXP_NAMES)
+    if mutation_types and any(True for _ in stmt.find_all(*mutation_types)):
+        return (
+            "Data-modifying statements (INSERT/UPDATE/DELETE/MERGE/DDL) are not "
+            "allowed, including inside CTEs."
+        )
+    return None
+
+
+def _assert_read_only_query_textual(sql: str) -> Optional[str]:
+    """Conservative structural check for when sqlglot can't parse the SQL."""
+    cleaned = _strip_leading_noise(sql or "")
+    without_trailing = cleaned.rstrip().rstrip(";").rstrip()
+    if ";" in without_trailing:
+        return (
+            "Only a single SQL statement may be executed. "
+            "Multiple statements are not allowed."
+        )
+    if _FORBIDDEN_KEYWORD_RE.search(cleaned):
+        return "Data-modifying statements (INSERT/UPDATE/DELETE/DDL) are not allowed."
+    return None
+
+
+def assert_read_only_query(sql: str, dialect: Optional[str] = None) -> Optional[str]:
+    """Return an error message if *sql* is not exactly one read-only query.
+
+    Parses with sqlglot when available; falls back to a conservative textual
+    scan otherwise. Engine-agnostic and safe to call before every execution.
+    """
+    try:
+        import sqlglot
+        import sqlglot.errors
+    except ImportError:
+        return _assert_read_only_query_textual(sql)
+    try:
+        statements = sqlglot.parse(
+            sql, dialect=dialect, error_level=sqlglot.errors.ErrorLevel.RAISE
+        )
+    except Exception:  # noqa: BLE001 — unparseable → conservative textual fallback
+        return _assert_read_only_query_textual(sql)
+    return check_read_only_statements(statements)
+
+
 # ── Result helpers ────────────────────────────────────────────────────────────
 def empty_result() -> Dict[str, Any]:
     return {"columns": [], "rows": [], "row_count": 0}
@@ -191,6 +285,16 @@ class SqlRunner(abc.ABC):
                 "with SELECT or WITH.",
                 error_type="read_only_blocked",
             )
+
+        structural_error = assert_read_only_query(sql, self.sqlglot_dialect)
+        if structural_error:
+            logger.warning(
+                "run_sql[%s]: blocked unsafe SQL structure (%s): %s",
+                self.database_type,
+                structural_error,
+                (sql or "").strip()[:120],
+            )
+            return error_result(structural_error, error_type="read_only_blocked")
 
         capped_sql = self._apply_row_cap(sql, limit, max_rows)
         t0 = time.monotonic()

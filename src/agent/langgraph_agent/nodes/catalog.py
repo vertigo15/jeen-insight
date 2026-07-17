@@ -17,8 +17,9 @@ from typing import Any, Dict, List, Tuple
 
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
+from src.config import settings
 from src.connectors.dialects import dialect_rules_for
-from src.metadata import MetadataLoader
+from src.metadata import MetadataLoader, link_bundle
 
 logger = logging.getLogger(__name__)
 
@@ -79,22 +80,39 @@ async def _load_catalog_bundle(
 # ── catalog_lookup ───────────────────────────────────────────────────────────────────────
 
 
-def make_catalog_lookup(metadata_loader: MetadataLoader):
-    """Return an async node that loads the metadata bundle for the active source."""
+def make_catalog_lookup(metadata_loader: MetadataLoader, require_catalog: bool = True):
+    """Return an async node that loads the metadata bundle for the active source.
+
+    When *require_catalog* is True (the default), a failed or empty catalog
+    fails closed: the node sets ``catalog_blocked`` so the graph short-circuits
+    to a clear error instead of letting the model query arbitrary, unvalidated
+    tables.
+    """
 
     async def catalog_lookup(state: AgentState) -> Dict[str, Any]:
         source_key = state["source_key"]
         logger.info("catalog_lookup: loading metadata for source_key=%s", source_key)
         t0 = time.monotonic()
-        bundle, meta = await _load_catalog_bundle(source_key, metadata_loader)
+        catalog_error: str = ""
+        try:
+            bundle, meta = await _load_catalog_bundle(source_key, metadata_loader)
+        except Exception as exc:  # noqa: BLE001 — fail closed rather than query blindly
+            logger.error(
+                "catalog_lookup: metadata load failed for source_key=%s: %s",
+                source_key, exc,
+            )
+            bundle, meta = {}, {"source": "db", "cache": None}
+            catalog_error = "Failed to load catalog metadata for this connection."
         load_ms = round((time.monotonic() - t0) * 1000)
         known_tables = _extract_table_names(bundle.get("tables", ""))
         table_columns, known_columns = _extract_columns(bundle.get("columns", ""))
+        catalog_available = bool(known_tables)
         logger.info(
             "catalog_lookup: %d known tables, %d known columns via %s (cache=%s, %dms)",
             len(known_tables), len(known_columns), meta["source"], meta["cache"], load_ms,
         )
-        return {
+
+        updates: Dict[str, Any] = {
             "metadata_bundle": bundle,
             "known_tables": known_tables,
             "known_columns": known_columns,
@@ -102,7 +120,32 @@ def make_catalog_lookup(metadata_loader: MetadataLoader):
             "catalog_source_used": meta["source"],
             "catalog_cache": meta["cache"],
             "catalog_load_ms": load_ms,
+            "catalog_available": catalog_available,
+            "catalog_error": catalog_error or None,
+            "catalog_blocked": False,
         }
+
+        if require_catalog and not catalog_available:
+            display = state.get("connection_display_name") or source_key
+            reason = catalog_error or (
+                f"No catalog metadata is registered for '{display}'."
+            )
+            updates["catalog_blocked"] = True
+            updates["error"] = (
+                f"{reason} Queries are blocked until the schema (tables and columns) "
+                "is registered in Settings."
+            )
+            updates["answer"] = (
+                f"I don't have any catalog metadata for {display} yet, so I can't "
+                "safely build a query. Please register the tables and columns in "
+                "Settings (or ask an admin), then try again."
+            )
+            logger.warning(
+                "catalog_lookup: blocking query for source_key=%s — no usable catalog",
+                source_key,
+            )
+
+        return updates
 
     return catalog_lookup
 
@@ -111,9 +154,13 @@ def make_catalog_lookup(metadata_loader: MetadataLoader):
 
 
 def make_prompt_builder(prompt_loader: PromptLoader):
-    """Return a sync node that builds the system prompt and structured_prompt."""
+    """Return a node that builds the system prompt and structured_prompt.
 
-    def prompt_builder(state: AgentState) -> Dict[str, Any]:
+    Async so it can pull the active DB prompt version (Settings-UI edits) via
+    ``PromptLoader.arender``; falls back to the disk template automatically.
+    """
+
+    async def prompt_builder(state: AgentState) -> Dict[str, Any]:
         bundle = state.get("metadata_bundle") or {}
         display_name = state.get("connection_display_name", "")
         db_type = state.get("database_type", "")
@@ -125,7 +172,28 @@ def make_prompt_builder(prompt_loader: PromptLoader):
         question = state.get("question", "")
         history = state.get("conversation_history") or []
 
-        system_prompt = prompt_loader.render(
+        # Schema linking: for large catalogs, inject only the tables/columns most
+        # relevant to the question instead of the whole catalog. Validation still
+        # uses the full allowlist (set in catalog_lookup), so pruning the prompt
+        # never blocks a valid query. Small schemas pass through unchanged.
+        prompt_bundle = bundle
+        schema_pruned = False
+        if settings.SCHEMA_LINK_ENABLED and question:
+            try:
+                prompt_bundle, schema_pruned = link_bundle(
+                    bundle,
+                    question,
+                    min_columns=settings.SCHEMA_LINK_MIN_COLUMNS,
+                    max_tables=settings.SCHEMA_LINK_MAX_TABLES,
+                    max_columns=settings.SCHEMA_LINK_MAX_COLUMNS,
+                    max_columns_per_table=settings.SCHEMA_LINK_MAX_COLUMNS_PER_TABLE,
+                )
+            except Exception:  # noqa: BLE001 — never fail a query over linking
+                logger.warning("prompt_builder: schema linking failed; using full catalog",
+                               exc_info=True)
+                prompt_bundle, schema_pruned = bundle, False
+
+        system_prompt = await prompt_loader.arender(
             "jeen_insights_system",
             connection_display_name=display_name,
             source_key=source_key,
@@ -134,22 +202,24 @@ def make_prompt_builder(prompt_loader: PromptLoader):
             connection_catalog=catalog or "not specified",
             connection_schema=schema or "not specified",
             dialect_rules=dialect_rules,
-            tables=bundle.get("tables", ""),
-            columns=bundle.get("columns", ""),
-            relationships=bundle.get("relationships", ""),
-            sources=bundle.get("sources", ""),
-            knowledge_pairs=bundle.get("knowledge_pairs", ""),
-            business_terms=bundle.get("business_terms", ""),
+            tables=prompt_bundle.get("tables", ""),
+            columns=prompt_bundle.get("columns", ""),
+            relationships=prompt_bundle.get("relationships", ""),
+            sources=prompt_bundle.get("sources", ""),
+            knowledge_pairs=prompt_bundle.get("knowledge_pairs", ""),
+            business_terms=prompt_bundle.get("business_terms", ""),
         )
 
-        # structured_prompt is forwarded as-is to the UI "Show Prompt" panel
+        # structured_prompt is forwarded as-is to the UI "Show Prompt" panel.
+        # Mirror the pruned bundle so the panel shows exactly what the model saw.
         structured_prompt: Dict[str, Any] = {
-            "tables": bundle.get("tables", ""),
-            "columns": bundle.get("columns", ""),
-            "relationships": bundle.get("relationships", ""),
-            "sources": bundle.get("sources", ""),
-            "knowledge_pairs": bundle.get("knowledge_pairs", ""),
-            "business_terms": bundle.get("business_terms", ""),
+            "tables": prompt_bundle.get("tables", ""),
+            "columns": prompt_bundle.get("columns", ""),
+            "relationships": prompt_bundle.get("relationships", ""),
+            "sources": prompt_bundle.get("sources", ""),
+            "knowledge_pairs": prompt_bundle.get("knowledge_pairs", ""),
+            "business_terms": prompt_bundle.get("business_terms", ""),
+            "schema_pruned": schema_pruned,
             "dialect_rules": dialect_rules,
             "conversation_history": [
                 {

@@ -226,13 +226,20 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
 
 @router.post("/generate-insights/stream")
 async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
-    """Streaming version of /api/generate-insights using Server-Sent Events.
+    """Insights over Server-Sent Events.
 
-    The response is ``text/event-stream`` with named events: ``open``,
-    ``ttft``, ``delta``, ``done``, ``error``. The client renders deltas as
-    they arrive and replaces the placeholder with the structured insights
-    once ``done`` fires. Real TTFT (first non-empty content chunk) is
-    measured server-side and emitted as its own event.
+    Two delivery modes share one ``text/event-stream`` contract:
+
+    * **Legacy path** — *true token streaming*: emits ``open`` → ``ttft`` →
+      ``delta`` (many) → ``done``. The client renders deltas as they arrive.
+    * **LangGraph eval path** (preferred when SQL is available) — *async
+      completion*, not token streaming: the structured evaluator runs to
+      completion, then emits a single ``status`` (accepted) followed by ``done``.
+      It does not produce token ``delta`` events. This is intentional — the
+      evaluator returns structured JSON, not a text stream.
+
+    Both paths terminate with ``done`` (or ``error``); unknown events are safely
+    ignored by the client.
     """
     user_id = require_user_id(request.user_id)
     await _verify_query_owner(
@@ -264,8 +271,13 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
         final_metrics: dict = {}
 
         # ── LangGraph eval path (preferred when SQL is available) ──────────
+        # This is async completion, not token streaming: the structured
+        # evaluator runs to completion and emits a single `done`. We send a
+        # `status` event up front so the client has an honest lifecycle signal
+        # (rather than implying token deltas are coming).
         if request.sql and app_state.insights_eval_graph is not None:
-            logger.info("insights/stream: using LangGraph eval node")
+            logger.info("insights/stream: using LangGraph eval node (async completion)")
+            yield _sse("status", {"state": "evaluating", "mode": "async_completion"})
             try:
                 from src.agent.langgraph_agent import run_eval
 

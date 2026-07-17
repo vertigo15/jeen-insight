@@ -225,6 +225,58 @@ class TestSqlglotValidate:
         result = validate(state)
         assert result["sqlglot_error"] is None
 
+    def test_mismatched_schema_qualifier_rejected(self):
+        """A cross-schema reference (private.users) is rejected even when the
+        bare table name is catalogued."""
+        validate = make_sqlglot_validate(enabled=True)
+        state = {
+            "generated_sql": "SELECT id FROM private.users",
+            "known_tables": ["users"],
+            "connection_schema": "public",
+        }
+        result = validate(state)
+        assert result["sqlglot_error"] is not None
+        assert "schema" in result["sqlglot_error"].lower()
+
+    def test_matching_schema_qualifier_passes(self):
+        validate = make_sqlglot_validate(enabled=True)
+        state = {
+            "generated_sql": "SELECT id FROM public.users",
+            "known_tables": ["users"],
+            "connection_schema": "public",
+        }
+        assert validate(state)["sqlglot_error"] is None
+
+    def test_mismatched_catalog_qualifier_rejected(self):
+        validate = make_sqlglot_validate(enabled=True)
+        state = {
+            "generated_sql": "SELECT id FROM otherdb.public.users",
+            "known_tables": ["users"],
+            "connection_schema": "public",
+            "connection_catalog": "maindb",
+        }
+        result = validate(state)
+        assert result["sqlglot_error"] is not None
+        assert "catalog" in result["sqlglot_error"].lower()
+
+    def test_schema_qualifier_check_disabled(self):
+        validate = make_sqlglot_validate(enabled=True, enforce_schema_qualifier=False)
+        state = {
+            "generated_sql": "SELECT id FROM private.users",
+            "known_tables": ["users"],
+            "connection_schema": "public",
+        }
+        assert validate(state)["sqlglot_error"] is None
+
+    def test_schema_qualifier_no_expected_schema_allows(self):
+        """Without a known connection schema we can't enforce → don't false-positive."""
+        validate = make_sqlglot_validate(enabled=True)
+        state = {
+            "generated_sql": "SELECT id FROM private.users",
+            "known_tables": ["users"],
+        }
+        assert validate(state)["sqlglot_error"] is None
+
 
 # ── dlp_check ─────────────────────────────────────────────────────────────────
 
@@ -257,6 +309,24 @@ class TestDlpCheck:
         check = make_dlp_check(enabled=True)
         result = check({"generated_sql": "SELECT PASSWORD FROM accounts"})
         assert result["dlp_blocked"] is True
+
+    def test_config_governed_columns_blocked(self):
+        """Extra ops-tagged columns are governed in addition to the built-ins."""
+        check = make_dlp_check(enabled=True, governed_columns=["salary", "home_address"])
+        result = check({
+            "generated_sql": "SELECT salary FROM employees",
+            "table_columns": {"employees": ["salary", "name"]},
+        })
+        assert result["dlp_blocked"] is True
+        assert "salary" in result["governance_error"].lower()
+
+    def test_config_governed_columns_do_not_overblock(self):
+        check = make_dlp_check(enabled=True, governed_columns=["salary"])
+        result = check({
+            "generated_sql": "SELECT name FROM employees",
+            "table_columns": {"employees": ["salary", "name"]},
+        })
+        assert result["dlp_blocked"] is False
 
 
 # ── trivial_result_check ──────────────────────────────────────────────────────

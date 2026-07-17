@@ -49,7 +49,7 @@ import asyncio
 import inspect
 import logging
 import time
-from typing import Any
+from typing import Any, List, Optional
 
 from langgraph.graph import END, START, StateGraph
 
@@ -150,6 +150,9 @@ def build_graph(
     dlp_enabled: bool = True,
     sqlglot_validation_enabled: bool = True,
     eval_analytics_enabled: bool = True,
+    require_catalog_for_query: bool = True,
+    enforce_schema_qualifier: bool = True,
+    dlp_governed_columns: Optional[List[str]] = None,
 ) -> Any:
     """Build and compile the LangGraph text-to-SQL agent.
 
@@ -196,11 +199,11 @@ def build_graph(
     n("memory_summarizer",       make_memory_summarizer(router_llm, prompt_loader))
     n("fused_router",            make_fused_router(router_llm, prompt_loader))
     n("memory_answer_generator", make_memory_answer_generator(router_llm, prompt_loader))
-    n("catalog_lookup",          make_catalog_lookup(metadata_loader))
+    n("catalog_lookup",          make_catalog_lookup(metadata_loader, require_catalog_for_query))
     n("prompt_builder",          make_prompt_builder(prompt_loader))
     n("sql_generator",           make_sql_generator(llm, prompt_loader))
-    n("sqlglot_validate",        make_sqlglot_validate(sqlglot_validation_enabled))
-    n("dlp_check",               make_dlp_check(dlp_enabled))
+    n("sqlglot_validate",        make_sqlglot_validate(sqlglot_validation_enabled, require_catalog_for_query, enforce_schema_qualifier))
+    n("dlp_check",               make_dlp_check(dlp_enabled, dlp_governed_columns))
     n("execute_query",           make_execute_query(sql_runner))
     n("trivial_result_check",    trivial_result_check)
     n("fused_eval_analytics",    make_fused_eval_analytics(llm, prompt_loader))
@@ -221,7 +224,7 @@ def build_graph(
     builder.add_conditional_edges("fused_router", _route_from_router)
     builder.add_conditional_edges("memory_answer_generator", _route_from_memory_answer)
 
-    builder.add_edge("catalog_lookup", "prompt_builder")
+    builder.add_conditional_edges("catalog_lookup", _route_from_catalog)
     builder.add_edge("prompt_builder", "sql_generator")
 
     builder.add_conditional_edges("sql_generator", _route_from_sql_gen)
@@ -262,6 +265,14 @@ def _route_from_memory_answer(state: AgentState) -> str:
     if state.get("route") == "needs_query":
         return "catalog_lookup"
     return "response_formatter"
+
+
+def _route_from_catalog(state: AgentState) -> str:
+    # Deny-by-default: when no usable catalog is available, skip SQL generation
+    # entirely and return a clear error rather than querying blindly.
+    if state.get("catalog_blocked"):
+        return "response_formatter"
+    return "prompt_builder"
 
 
 def _route_from_sql_gen(state: AgentState) -> str:

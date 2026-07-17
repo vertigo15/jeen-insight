@@ -123,10 +123,10 @@ def test_sql_validation_uses_selected_dialect(monkeypatch):
     assert seen["dialect"] == "trino"
 
 
-def test_prompt_builder_includes_active_connection_context():
+async def test_prompt_builder_includes_active_connection_context():
     prompt_builder = make_prompt_builder(PromptLoader())
 
-    result = prompt_builder(
+    result = await prompt_builder(
         {
             "source_key": "sales_trino",
             "connection_display_name": "Sales Lake",

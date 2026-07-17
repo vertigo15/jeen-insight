@@ -73,6 +73,9 @@ class AgentState(TypedDict, total=False):
     catalog_source_used: str            # 'mcp' | 'db' — provider that served the catalog
     catalog_cache: Optional[str]        # 'hit' | 'miss' | None (DB path has no MCP cache)
     catalog_load_ms: int                # wall time spent loading the catalog bundle
+    catalog_available: bool             # True when the catalog loaded with >=1 table
+    catalog_error: Optional[str]        # set when the catalog failed to load
+    catalog_blocked: bool               # True → deny-by-default (no usable catalog)
 
     # ── SQL generation loop ───────────────────────────────────────────────
     retry_count: int

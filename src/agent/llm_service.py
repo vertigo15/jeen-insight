@@ -43,6 +43,22 @@ class LLMUnavailableError(RuntimeError):
     """
 
 
+def _default_llm_timeout() -> Optional[float]:
+    """Return the configured per-call LLM timeout in seconds, or None.
+
+    Read lazily from :data:`src.config.settings` so importing this module does
+    not require the app's environment to be present (e.g. in unit tests). A
+    value of ``0`` (or unset) means "no deadline".
+    """
+    try:
+        from src.config import settings
+
+        val = getattr(settings, "LLM_TIMEOUT_SECONDS", 0)
+        return float(val) if val and val > 0 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def classify_llm_error(exc: BaseException) -> str:
     """Map a provider exception to a short, actionable message.
 
@@ -412,15 +428,23 @@ class LangChainLlmService:
         return cls(pool, actual_name, chat_model, provider_name=row["provider_name"])
 
     @classmethod
-    def from_env_azure(cls, pool: Any, settings: Any) -> "LangChainLlmService":
+    def from_env_azure(
+        cls,
+        pool: Any,
+        settings: Any,
+        deployment_override: Optional[str] = None,
+    ) -> "LangChainLlmService":
         """Fallback factory: build an Azure service from environment variables.
 
-        Used when the DB has no model rows (e.g. a fresh install without seed data).
+        Used when the DB has no model rows (e.g. a fresh install without seed
+        data). Pass *deployment_override* to pin a specific Azure deployment
+        (e.g. a cheaper router/summarizer deployment).
         """
         from langchain_openai import AzureChatOpenAI
 
+        deployment = deployment_override or settings.AZURE_OPENAI_DEPLOYMENT_NAME
         chat_model = AzureChatOpenAI(
-            azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
+            azure_deployment=deployment,
             azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
             api_version=settings.AZURE_OPENAI_API_VERSION,
             api_key=settings.AZURE_OPENAI_API_KEY,
@@ -428,9 +452,9 @@ class LangChainLlmService:
         logger.warning(
             "llm_service: DB credentials unavailable; using env-var Azure creds "
             "(deployment=%s)",
-            settings.AZURE_OPENAI_DEPLOYMENT_NAME,
+            deployment,
         )
-        return cls(pool, settings.AZURE_OPENAI_DEPLOYMENT_NAME, chat_model, provider_name="azure_openai")
+        return cls(pool, deployment, chat_model, provider_name="azure_openai")
 
     # ── Global model helpers ────────────────────────────────────────────
 
@@ -549,21 +573,36 @@ class LangChainLlmService:
         temperature: float,
         tools: Optional[List[Dict]],
         promote: bool,
+        timeout: Optional[float] = None,
     ) -> Any:
         """Invoke *base*; on failure retry on healthy fallback models.
 
         ``promote`` swaps the service's active model to the first fallback that
         succeeds so later calls don't keep hitting the dead one.
+        ``timeout`` bounds every provider call (primary and each fallback) with
+        an ``asyncio`` deadline so one hung request can't stall the graph.
         Raises the original exception when no fallback works.
         """
+
+        async def _invoke(m: Any) -> Any:
+            if timeout and timeout > 0:
+                return await asyncio.wait_for(m.ainvoke(lc_messages), timeout=timeout)
+            return await m.ainvoke(lc_messages)
+
         model = self._bind_model(base, provider_name, model_name, max_tokens, temperature, tools)
         try:
-            return await model.ainvoke(lc_messages)
+            return await _invoke(model)
         except Exception as primary_exc:  # noqa: BLE001
-            logger.warning(
-                "llm_service: model %r failed (%s); trying healthy fallback(s)",
-                model_name or "(override)", primary_exc,
-            )
+            if isinstance(primary_exc, asyncio.TimeoutError):
+                logger.warning(
+                    "llm_service: model %r timed out after %ss; trying healthy fallback(s)",
+                    model_name or "(override)", timeout,
+                )
+            else:
+                logger.warning(
+                    "llm_service: model %r failed (%s); trying healthy fallback(s)",
+                    model_name or "(override)", primary_exc,
+                )
             for cand in await self._healthy_candidates(exclude=model_name):
                 try:
                     row = await _fetch_model_row(self._pool, cand)
@@ -574,7 +613,7 @@ class LangChainLlmService:
                     cand_model = self._bind_model(
                         cand_base, cand_provider, cand, max_tokens, temperature, tools
                     )
-                    ai_msg = await cand_model.ainvoke(lc_messages)
+                    ai_msg = await _invoke(cand_model)
                     logger.warning(
                         "llm_service: fell back %r → %r", model_name or "(override)", cand
                     )
@@ -584,7 +623,13 @@ class LangChainLlmService:
                 except Exception as cand_exc:  # noqa: BLE001
                     logger.warning("llm_service: fallback %r also failed (%s)", cand, cand_exc)
                     continue
-            reason = classify_llm_error(primary_exc)
+            if isinstance(primary_exc, asyncio.TimeoutError):
+                reason = (
+                    f"the model request exceeded the {timeout}s timeout. "
+                    "The provider may be slow or unreachable."
+                )
+            else:
+                reason = classify_llm_error(primary_exc)
             raise LLMUnavailableError(
                 f"Model {model_name or '(override)'} failed and no healthy fallback "
                 f"was available — {reason}"
@@ -633,6 +678,7 @@ class LangChainLlmService:
         max_tokens: int = 4096,
         tools: Optional[List[Dict]] = None,
         model_override: Optional[ModelOverride] = None,
+        timeout: Optional[float] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """Generate a non-streaming response.
@@ -642,7 +688,14 @@ class LangChainLlmService:
         active model.  When ``None`` the global model is used.
         ``tools`` should be OpenAI-format tool definitions; LangChain converts
         them to the wire format expected by each provider automatically.
+        ``timeout`` bounds the provider call (and every fallback attempt) with
+        a hard deadline; when ``None`` the configured ``LLM_TIMEOUT_SECONDS``
+        default applies, and ``0`` disables the deadline.
         """
+        effective_timeout = timeout if timeout is not None else _default_llm_timeout()
+        if effective_timeout is not None and effective_timeout <= 0:
+            effective_timeout = None
+
         lc_messages = _to_lc_messages(messages)
 
         if model_override is not None:
@@ -669,6 +722,7 @@ class LangChainLlmService:
             temperature=temperature,
             tools=tools,
             promote=promote,
+            timeout=effective_timeout,
         )
         return _from_lc_response(ai_msg)
 

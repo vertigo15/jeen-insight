@@ -325,6 +325,39 @@ class TestGovernanceRoutes:
         assert resp["error"] is None
 
 
+class TestCatalogDenyByDefault:
+    @pytest.mark.asyncio
+    async def test_empty_catalog_blocks_query(self, mock_services, prompt_loader):
+        """No catalog metadata → deny-by-default: no SQL generated, no DB call."""
+        mock_services.metadata_loader.load_all = AsyncMock(
+            return_value={"tables": "", "columns": ""}
+        )
+        mock_services.llm.generate.side_effect = [_router_resp("needs_query")]
+        graph = _build(mock_services, prompt_loader)
+        result = await graph.ainvoke(_initial_state())
+        resp = result["formatted_response"]
+
+        assert resp["sql"] is None
+        assert resp["error"] is not None
+        assert "catalog" in resp["error"].lower() or "schema" in resp["error"].lower()
+        mock_services.sql_runner.run_sql.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_catalog_load_blocks_query(self, mock_services, prompt_loader):
+        """Metadata load raising → fail closed rather than querying blindly."""
+        mock_services.metadata_loader.load_all = AsyncMock(
+            side_effect=RuntimeError("metadata DB unreachable")
+        )
+        mock_services.llm.generate.side_effect = [_router_resp("needs_query")]
+        graph = _build(mock_services, prompt_loader)
+        result = await graph.ainvoke(_initial_state())
+        resp = result["formatted_response"]
+
+        assert resp["sql"] is None
+        assert resp["error"] is not None
+        mock_services.sql_runner.run_sql.assert_not_called()
+
+
 class TestClarificationPath:
     @pytest.mark.asyncio
     async def test_clarification_returned_as_answer(self, mock_services, prompt_loader):

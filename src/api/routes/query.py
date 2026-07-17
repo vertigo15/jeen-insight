@@ -12,6 +12,7 @@ from src.api.dependencies import (
     require_user_context_user_id,
     resolve_agent,
 )
+from src.api.concurrency import ConcurrencyLimitExceeded, query_limiter
 from src.api.models import QueryRequest, QueryResponse
 from src.api.result_cache import result_cache
 
@@ -31,6 +32,16 @@ async def query_database(request: QueryRequest):
         ):
             raise HTTPException(status_code=404, detail="Session not found for this user")
     agent = await resolve_agent(request.connection)
+
+    # Cost governor: cap concurrent queries per user (prevents one user from
+    # pinning the LLM / exhausting the DB pool). No-op when disabled.
+    try:
+        await query_limiter.acquire(user_id)
+    except ConcurrencyLimitExceeded:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many concurrent queries. Please wait for the current one to finish.",
+        )
     try:
         result = await agent.process_question(
             question=request.question,
@@ -59,6 +70,8 @@ async def query_database(request: QueryRequest):
     except Exception as e:  # noqa: BLE001
         logger.exception("Error processing question")
         raise HTTPException(status_code=500, detail=str(e)) from e
+    finally:
+        await query_limiter.release(user_id)
 
 
 @router.get("/tables")

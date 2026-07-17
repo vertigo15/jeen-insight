@@ -17,12 +17,65 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from src.agent.answer_cache import answer_cache
+from src.agent.langgraph_agent.nodes.artifacts import latest_result_ref
+from src.agent.langgraph_agent.nodes.safety_text import fence_untrusted
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
 from src.tools.sql_tool import RunSqlTool
 
 logger = logging.getLogger(__name__)
+
+# How many cached rows to expose to the memory-answer model so it can recompute
+# (sort/filter/aggregate) over already-retrieved data without a new DB query.
+_RECOMPUTE_SAMPLE_ROWS = 50
+_RECOMPUTE_JSON_CAP = 6000
+
+
+def _cached_rows_for(user_id: Any, source_key: Any, query_id: Any) -> Optional[Dict[str, Any]]:
+    """Best-effort fetch of a prior result's full rows from the result cache."""
+    if not query_id:
+        return None
+    try:
+        from src.api.result_cache import result_cache  # lazy: avoids import cycle
+
+        return result_cache.get(user_id=user_id, connection=source_key, query_id=query_id)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _recompute_block(state: AgentState) -> str:
+    """Build a context block of the most recent result's cached rows + stats.
+
+    Lets the model answer follow-ups ("sort by X", "what was the max?", "how many
+    over 100?") by computing locally over the already-retrieved rows instead of
+    guessing from a tiny preview or issuing a new query.
+    """
+    ref = latest_result_ref(state.get("conversation_history") or [])
+    if not ref:
+        return ""
+    artifact = ref.get("artifact") or {}
+    cached = _cached_rows_for(state.get("user_id"), state.get("source_key"), ref.get("query_id"))
+    if not cached or not cached.get("rows"):
+        return ""
+    rows = cached["rows"][:_RECOMPUTE_SAMPLE_ROWS]
+    try:
+        rows_json = json.dumps(rows, ensure_ascii=False, default=str)[:_RECOMPUTE_JSON_CAP]
+    except Exception:  # noqa: BLE001
+        rows_json = str(rows)[:_RECOMPUTE_JSON_CAP]
+    total = artifact.get("row_count")
+    stats = artifact.get("stats") or {}
+    parts = [
+        f'Most recent result for "{(ref.get("question") or "").strip()[:80]}" '
+        f"({total} rows total, showing up to {len(rows)}):",
+        f"columns: {artifact.get('columns')}",
+    ]
+    if stats:
+        parts.append(f"full-data stats: {json.dumps(stats, default=str)[:1500]}")
+    parts.append(f"rows: {rows_json}")
+    # Result rows are user data → fence against prompt injection.
+    return fence_untrusted("\n".join(parts), label="prior query result")
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -154,7 +207,7 @@ def make_sql_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
 
         # Current question — inject error context on retries
         if retry_count > 0 and error_context:
-            user_msg = prompt_loader.render(
+            user_msg = await prompt_loader.arender(
                 "sql_generator",
                 question=question,
                 error_context=error_context,
@@ -175,12 +228,17 @@ def make_sql_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
             temperature if temperature is not None else QUERY_PARAMS.temperature
         )
 
+        # Honour a per-prompt model override assigned to the system prompt
+        # (the SQL generator's primary prompt place).
+        model_override = await prompt_loader.model_override_for("jeen_insights_system")
+
         t0 = time.monotonic()
         response = await llm.generate(
             messages=messages,
             temperature=effective_temperature,
             max_tokens=QUERY_PARAMS.max_tokens,
             tools=tools,
+            model_override=model_override,
             timeout=state.get("llm_timeout_seconds"),
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
@@ -245,6 +303,17 @@ def make_memory_answer_generator(llm: LangChainLlmService, prompt_loader: Prompt
     async def memory_answer_generator(state: AgentState) -> Dict[str, Any]:
         question = state.get("question", "")
         history = state.get("conversation_history") or []
+
+        # Return a previously computed answer for an identical follow-up in this
+        # session (bounded TTL) — avoids repeating the LLM call.
+        cache_key = answer_cache.key(
+            state.get("session_id"), state.get("source_key"), question
+        )
+        cached_answer = answer_cache.get(cache_key)
+        if cached_answer:
+            logger.info("memory_answer_generator: served cached answer")
+            return {"answer": cached_answer, "route": state.get("route", "from_memory")}
+
         history_text = "\n".join(
             f"Q: {qa.get('natural_language_query', '')}\n"
             f"SQL: {qa.get('generated_sql', '')}\n"
@@ -252,11 +321,18 @@ def make_memory_answer_generator(llm: LangChainLlmService, prompt_loader: Prompt
             for qa in history
         )
 
-        prompt = prompt_loader.render(
+        # Fold in the most recent result's cached rows so the model can recompute
+        # (sort/filter/aggregate) locally instead of guessing from the preview.
+        recompute = _recompute_block(state)
+        if recompute:
+            history_text = f"{history_text}\n\n{recompute}" if history_text else recompute
+
+        prompt = await prompt_loader.arender(
             "memory_answer",
             question=question,
             conversation_history=history_text or "No prior conversation.",
         )
+        model_override = await prompt_loader.model_override_for("memory_answer")
 
         t0 = time.monotonic()
         response = await llm.generate(
@@ -266,6 +342,7 @@ def make_memory_answer_generator(llm: LangChainLlmService, prompt_loader: Prompt
             ],
             temperature=0.1,
             max_tokens=400,
+            model_override=model_override,
             timeout=state.get("llm_timeout_seconds"),
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
@@ -299,6 +376,11 @@ def make_memory_answer_generator(llm: LangChainLlmService, prompt_loader: Prompt
             bool(answer),
             route,
         )
+
+        # Cache real from-memory answers (not the needs_query escape hatch) so an
+        # identical repeated follow-up in this session skips the LLM call.
+        if answer and route != "needs_query":
+            answer_cache.put(cache_key, answer)
 
         return {
             "answer": answer,

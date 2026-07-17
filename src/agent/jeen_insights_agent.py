@@ -35,6 +35,13 @@ _PromptCache = Any
 logger = logging.getLogger(__name__)
 
 
+def _parse_governed_columns(raw: Optional[str]) -> List[str]:
+    """Split the comma-separated DLP_GOVERNED_COLUMNS setting into a clean list."""
+    if not raw:
+        return []
+    return [c.strip() for c in raw.split(",") if c.strip()]
+
+
 # ----------------------------------------------------------------------
 # Agent
 # ----------------------------------------------------------------------
@@ -76,6 +83,9 @@ class JeenInsightsAgent:
             dlp_enabled=settings.DLP_ENABLED,
             sqlglot_validation_enabled=settings.SQLGLOT_VALIDATION_ENABLED,
             eval_analytics_enabled=settings.EVAL_ANALYTICS_ENABLED,
+            require_catalog_for_query=settings.REQUIRE_CATALOG_FOR_QUERY,
+            enforce_schema_qualifier=settings.SCHEMA_QUALIFIER_VALIDATION_ENABLED,
+            dlp_governed_columns=_parse_governed_columns(settings.DLP_GOVERNED_COLUMNS),
         )
         logger.info(
             "✅ LangGraph agent ready for source_key=%s", self.source_key
@@ -187,6 +197,9 @@ class JeenInsightsAgent:
                 "known_tables": [],
                 "known_columns": [],
                 "table_columns": {},
+                "catalog_available": False,
+                "catalog_error": None,
+                "catalog_blocked": False,
                 # ── SQL loop ────────────────────────────────────────────
                 "retry_count": 0,
                 "generated_sql": None,
@@ -207,7 +220,9 @@ class JeenInsightsAgent:
                 "feedback_type": None,
                 # ── Per-request overrides ──────────────────────────────────────
                 "eval_analytics_override": eval_analytics,
-                "llm_timeout_seconds": llm_timeout,
+                "llm_timeout_seconds": (
+                    llm_timeout if llm_timeout is not None else settings.LLM_TIMEOUT_SECONDS
+                ),
                 "max_result_rows": runtime.max_result_rows,
                 "statement_timeout_ms": runtime.db_statement_timeout_ms,
                 # Empty list — operator.add in AgentState accumulates across nodes
@@ -351,8 +366,13 @@ class AgentRegistry:
         self.history = history_service
         self.user_resolver = user_resolver
         # Prefer an explicitly supplied PromptLoader; otherwise build one from disk.
-        # The graph nodes call prompt_loader.render() so they always need this.
+        # The graph nodes call prompt_loader.arender() so they always need this.
         self.prompt_loader = prompt_loader or PromptLoader()
+        # When a DB-backed PromptCache is available, attach it so the main graph
+        # honours Settings-UI prompt edits and per-prompt model overrides (the
+        # graph previously read disk files only, diverging from the DB).
+        if prompt_cache is not None:
+            self.prompt_loader.attach_cache(prompt_cache)
         self._agents: Dict[str, JeenInsightsAgent] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
 
