@@ -795,14 +795,18 @@ def get_connection(source_key: str):
 
 
 @app.route("/api/connections/<source_key>/access", methods=["GET"])
-@_admin_required()
 def list_connection_access(source_key: str):
+    guard = _admin_required()
+    if guard:
+        return guard
     return _proxy_get(f"/api/connections/{source_key}/access", timeout=15)
 
 
 @app.route("/api/connections/<source_key>/access", methods=["PUT"])
-@_admin_required()
 def grant_connection_access(source_key: str):
+    guard = _admin_required()
+    if guard:
+        return guard
     return _proxy_put(
         f"/api/connections/{source_key}/access",
         payload=request.get_json(silent=True) or {},
@@ -811,8 +815,10 @@ def grant_connection_access(source_key: str):
 
 
 @app.route("/api/connections/<source_key>/access", methods=["DELETE"])
-@_admin_required()
 def revoke_connection_access(source_key: str):
+    guard = _admin_required()
+    if guard:
+        return guard
     return _proxy_delete(
         f"/api/connections/{source_key}/access",
         params=request.args.to_dict(),
