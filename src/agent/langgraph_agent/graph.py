@@ -252,6 +252,8 @@ def build_graph(
 
 
 def _route_from_router(state: AgentState) -> str:
+    if state.get("pending_clarification"):
+        return "response_formatter"
     route = state.get("route", "needs_query")
     if route == "from_memory":
         return "memory_answer_generator"
@@ -310,12 +312,9 @@ def _route_from_trivial(state: AgentState) -> str:  # kept for direct test impor
 
 
 def _route_from_eval(state: AgentState) -> str:
-    eval_result = state.get("eval_result") or {}
-    return (
-        "response_formatter"
-        if eval_result.get("answers_intent", True)
-        else "feedback_classifier"
-    )
+    # Semantic evaluation is advisory: expose a user-approved refinement
+    # proposal instead of silently issuing another database query.
+    return "response_formatter"
 
 
 def _route_from_feedback(state: AgentState) -> str:

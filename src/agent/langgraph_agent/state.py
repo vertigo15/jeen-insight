@@ -28,6 +28,18 @@ from uuid import UUID
 from typing_extensions import TypedDict
 
 
+class QueryIntent(TypedDict, total=False):
+    """Structured interpretation of a question returned by the router."""
+    metric: Optional[str]
+    dimensions: List[str]
+    filters: List[str]
+    time_range: Optional[str]
+    comparison: Optional[str]
+    referenced_result: Optional[int]
+    confidence: float
+    assumptions: List[str]
+
+
 class AgentState(TypedDict, total=False):
     # ── Input ─────────────────────────────────────────────────────────────
     question: str
@@ -61,6 +73,14 @@ class AgentState(TypedDict, total=False):
     # Values: needs_query | from_memory | out_of_scope | unsafe
     route: str
     route_reason: str
+    resolved_intent: QueryIntent
+    disclosed_assumptions: List[str]
+    pending_clarification: Optional[Dict[str, Any]]
+    prior_pending_clarification: Optional[Dict[str, Any]]
+    schema_link_widened: bool
+    catalog_preloaded: bool
+    column_entitlements: Dict[str, Dict[str, Any]]
+    governed_columns_by_table: Dict[str, List[str]]
 
     # ── Catalog / prompt ──────────────────────────────────────────────────
     metadata_bundle: Dict[str, str]
@@ -70,7 +90,7 @@ class AgentState(TypedDict, total=False):
     known_tables: List[str]             # lower-cased table names from catalog
     known_columns: List[str]            # lower-cased column names from catalog (flat)
     table_columns: Dict[str, List[str]] # lower-cased {table: [columns]} from catalog
-    catalog_source_used: str            # 'mcp' | 'db' — provider that served the catalog
+    catalog_source_used: str            # 'mcp' | 'db' | 'preloaded' — catalog provider
     catalog_cache: Optional[str]        # 'hit' | 'miss' | None (DB path has no MCP cache)
     catalog_load_ms: int                # wall time spent loading the catalog bundle
     catalog_available: bool             # True when the catalog loaded with >=1 table

@@ -41,6 +41,13 @@ def prod_mode(monkeypatch):
         "FLASK_SECRET_KEY",
         "AUTH_SECRET",
         "APP_ENCRYPTION_KEY",
+        "JEEN_ENV",
+        "JEEN_DEPLOYMENT_ENV",
+        "APP_ENV",
+        "ENVIRONMENT",
+        "JEEN_PUBLIC_URL",
+        "PUBLIC_URL",
+        "PUBLIC_APP_URL",
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("JEEN_DEV_MODE", "false")
@@ -139,6 +146,48 @@ class TestSecretStrength:
         ia.assert_configured()
         secrets = ia._load_secrets()
         assert secrets and secrets[0][1] == ia._DEV_SECRET
+
+    def test_dev_credentials_rejected_for_explicit_production_deployment(
+        self, monkeypatch, prod_mode
+    ):
+        from src.security import internal_auth as ia
+
+        monkeypatch.setenv("JEEN_DEV_MODE", "true")
+        monkeypatch.setenv("JEEN_ENV", "production")
+        with pytest.raises(ia.InternalAuthConfigError, match="only permitted for local"):
+            ia.assert_configured()
+
+    def test_dev_credentials_allowed_for_explicit_local_url(self, monkeypatch, prod_mode):
+        from src.security import internal_auth as ia
+
+        monkeypatch.setenv("JEEN_DEV_MODE", "true")
+        monkeypatch.setenv("PUBLIC_APP_URL", "http://localhost:8501")
+        ia.assert_configured()
+
+    def test_dev_credentials_rejected_for_public_app_url(self, monkeypatch, prod_mode):
+        from src.security import internal_auth as ia
+
+        monkeypatch.setenv("JEEN_DEV_MODE", "true")
+        monkeypatch.setenv("PUBLIC_APP_URL", "https://insights.example.test")
+        with pytest.raises(ia.InternalAuthConfigError, match="only permitted for local"):
+            ia.assert_configured()
+
+    def test_dev_credentials_rejected_for_malformed_public_app_url(self, monkeypatch, prod_mode):
+        from src.security import internal_auth as ia
+
+        monkeypatch.setenv("JEEN_DEV_MODE", "true")
+        monkeypatch.setenv("PUBLIC_APP_URL", "insights.example.test")
+        with pytest.raises(ia.InternalAuthConfigError, match="only permitted for local"):
+            ia.assert_configured()
+
+    def test_public_url_alias_cannot_mask_a_public_app_url(self, monkeypatch, prod_mode):
+        from src.security import internal_auth as ia
+
+        monkeypatch.setenv("JEEN_DEV_MODE", "true")
+        monkeypatch.setenv("PUBLIC_URL", "http://localhost:8501")
+        monkeypatch.setenv("PUBLIC_APP_URL", "https://insights.example.test")
+        with pytest.raises(ia.InternalAuthConfigError, match="only permitted for local"):
+            ia.assert_configured()
 
     def test_strong_secret_accepted_in_prod(self, monkeypatch, prod_mode):
         from src.security import internal_auth as ia

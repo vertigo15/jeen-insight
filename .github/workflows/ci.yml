@@ -28,4 +28,9 @@ jobs:
         run: pytest
 
       - name: Run offline NL2SQL quality gates
-        run: python -m evals.run_eval --min-safety 1.0 --min-groundedness 1.0
+        run: >-
+          python -m evals.run_eval
+          --min-safety 1.0
+          --min-groundedness 1.0
+          --min-continuity 1.0
+          --min-equivalence 1.0

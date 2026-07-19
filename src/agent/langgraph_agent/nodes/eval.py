@@ -22,9 +22,11 @@ from __future__ import annotations
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, List
 
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
+from src.agent.langgraph_agent.nodes.safety_text import fence_untrusted
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
 
@@ -40,6 +42,12 @@ def _merge_usage(current: Dict[str, int], new: Dict[str, Any]) -> Dict[str, int]
 
 
 _SAMPLE_ROWS = 12
+_PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
+
+
+def _default_prompt(name: str) -> str:
+    """Read a packaged prompt when the DB cache is unavailable."""
+    return (_PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
 
 
 def _build_results_block(statistics: str, rows: List[Any], row_count: int) -> str:
@@ -58,7 +66,7 @@ def _build_results_block(statistics: str, rows: List[Any], row_count: int) -> st
             f"Full-data statistics (computed over all {row_count} rows):\n{statistics}"
         )
     parts.append(f"Sample rows (first {len(sample)} of {row_count}):\n{sample_json}")
-    return "\n\n".join(parts)
+    return fence_untrusted("\n\n".join(parts), label="query result sample")
 
 
 def _profile_statistics(rows: List[Any], columns: List[str]) -> str:
@@ -103,20 +111,23 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
         statistics = _profile_statistics(rows, result.get("columns") or [])
         results_sample = _build_results_block(statistics, rows, row_count)
 
-        prompt = await prompt_loader.arender(
+        detail_prompt = await prompt_loader.arender(
             "fused_eval_analytics",
             question=question,
             sql=sql,
             results_sample=results_sample,
             row_count=row_count,
         )
+        system_instruction = await prompt_loader.arender("fused_eval_analytics_system")
+        user_prompt = await prompt_loader.arender("fused_eval_analytics_user")
         model_override = await prompt_loader.model_override_for("fused_eval_analytics")
+        system_prompt = f"{system_instruction}\n\n{detail_prompt}"
 
         t0 = time.monotonic()
         response = await llm.generate(
             messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": "Evaluate the results and respond with JSON."},
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
             ],
             temperature=0.2,
             max_tokens=600,
@@ -134,6 +145,7 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
             "summary": "",
             "insights": [],
             "follow_up_questions": [],
+            "refinement_proposal": None,
         }
 
         try:
@@ -156,6 +168,14 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
                     "summary": parsed.get("summary", ""),
                     "insights": list(parsed.get("insights", [])),
                     "follow_up_questions": follow_ups,
+                    "refinement_proposal": (
+                        {
+                            "reason": "The result may not fully answer your question.",
+                            "question": str(parsed.get("refinement_question") or question),
+                        }
+                        if not bool(parsed.get("answers_intent", True))
+                        else None
+                    ),
                 }
             )
         except (json.JSONDecodeError, TypeError, AttributeError) as exc:
@@ -177,7 +197,10 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
             "llm_call_count": (state.get("llm_call_count") or 0) + 1,
             "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
             "token_usage": _merge_usage(state.get("token_usage") or {}, usage),
-            "node_prompts": {**(state.get("node_prompts") or {}), "fused_eval_analytics": prompt},
+            "node_prompts": {
+                **(state.get("node_prompts") or {}),
+                "fused_eval_analytics": system_prompt,
+            },
         }
 
     return fused_eval_analytics
@@ -187,13 +210,6 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
 # Used by ``build_insights_eval_graph`` when the insights API endpoint calls the
 # eval node directly (outside the full pipeline).  Uses PromptCache (DB-backed)
 # instead of PromptLoader and InsightsState instead of AgentState.
-
-_SYSTEM_MESSAGE = (
-    "You are a senior data analyst. "
-    "Respond with valid JSON only — no markdown, no prose before or after "
-    "the JSON object."
-)
-
 
 def make_fused_eval_analytics_subgraph(
     llm_service: Any,
@@ -209,11 +225,21 @@ def make_fused_eval_analytics_subgraph(
         statistics = state.get("statistics") or ""
 
         try:
-            template       = await prompt_cache.get_content("fused_eval_analytics")
+            template = await prompt_cache.get_content("fused_eval_analytics")
+        except Exception:  # noqa: BLE001
+            template = _default_prompt("fused_eval_analytics")
+        try:
+            system_message = await prompt_cache.get_content("fused_eval_analytics_system")
+        except Exception:  # noqa: BLE001
+            system_message = _default_prompt("fused_eval_analytics_system")
+        try:
             model_override = await prompt_cache.get_model_override("fused_eval_analytics")
-        except (KeyError, Exception):  # noqa: BLE001
-            template       = _FALLBACK_PROMPT
+        except Exception:  # noqa: BLE001
             model_override = None
+        try:
+            user_prompt = await prompt_cache.get_content("fused_eval_analytics_user")
+        except Exception:  # noqa: BLE001
+            user_prompt = _default_prompt("fused_eval_analytics_user")
 
         # Data context = full-data statistics (the model's window onto ALL rows)
         # + a small verbatim sample for shape. Folded into results_sample so it
@@ -234,8 +260,8 @@ def make_fused_eval_analytics_subgraph(
         try:
             response = await llm_service.generate(
                 messages=[
-                    {"role": "system", "content": _SYSTEM_MESSAGE},
-                    {"role": "user",   "content": prompt_text},
+                    {"role": "system", "content": f"{system_message}\n\n{prompt_text}"},
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature    = 0.2,
                 max_tokens     = QUERY_PARAMS.max_tokens,
@@ -298,43 +324,3 @@ def _parse_response(text: str) -> dict:
     except json.JSONDecodeError:
         logger.debug("eval_subgraph: JSON decode failed for: %.200s", text)
         return {}
-
-
-_FALLBACK_PROMPT = """\
-You are a senior data analyst reviewing a query result.
-
-**Original question:** {question}
-
-**SQL executed:**
-```sql
-{sql}
-```
-
-**Row count:** {row_count}
-
-**Sample results (first 5 rows):**
-```json
-{results_sample}
-```
-
-Tasks:
-1. Evaluate whether the result genuinely answers the original question.
-2. Summarize what the data shows in 1-2 sentences for a business user.
-3. Extract 2-3 key insights with specific numbers from the data.
-4. Generate 3-5 short follow-up questions the user might want to ask next.
-
-Rules:
-- `answers_intent` is false only when results are empty or clearly wrong.
-- `summary` must be ≤ 60 words.
-- Each `insights` item must be ≤ 30 words and include a specific number.
-- Each `follow_up_questions` item must be ≤ 15 words and end with "?".
-- Match the language of the original question.
-
-Respond with valid JSON only.
-
-{{
-  "answers_intent": true,
-  "summary": "...",
-  "insights": ["...", "..."],
-  "follow_up_questions": ["...?", "...?", "...?"]
-}}"""

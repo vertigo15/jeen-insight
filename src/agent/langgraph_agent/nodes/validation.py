@@ -267,6 +267,7 @@ def _resolve_referenced_columns(
     sql: str,
     table_columns: Dict[str, Set[str]],
     database_type: Optional[str] = None,
+    governed_columns_by_table: Optional[Dict[str, List[str]]] = None,
 ) -> Optional[Set[str]]:
     """Return the set of column names a query actually references, or None.
 
@@ -303,6 +304,13 @@ def _resolve_referenced_columns(
                 tname = (t.name or "").lower()
                 if tname in table_columns:
                     referenced |= table_columns[tname]
+                # Restricted columns may deliberately be absent from the
+                # LLM-facing catalog. They must still be expanded for SELECT *
+                # governance checks, or star queries could bypass entitlement.
+                referenced |= {
+                    str(column).lower()
+                    for column in (governed_columns_by_table or {}).get(tname, [])
+                }
     return referenced
 
 
@@ -320,7 +328,8 @@ def _build_dlp_regex(extra_columns: Optional[List[str]]) -> "re.Pattern[str]":
 def make_dlp_check(enabled: bool, governed_columns: Optional[List[str]] = None):
     """Return a sync ``dlp_check`` node.
 
-    When *enabled*, blocks queries that reference a governed column. The check
+    Classified-column entitlements are always enforced. When *enabled*, the
+    keyword/configured-column DLP backstop is enforced as well. The check
     is catalog/column-aware: it resolves the columns a query actually touches
     (expanding ``SELECT *`` against the catalog) and only blocks when one of
     them matches a governed pattern. When sqlglot can't parse the SQL it falls
@@ -335,19 +344,37 @@ def make_dlp_check(enabled: bool, governed_columns: Optional[List[str]] = None):
     dlp_re = _build_dlp_regex(governed_columns)
 
     def dlp_check(state: AgentState) -> Dict[str, Any]:
-        if not enabled:
-            return {"dlp_blocked": False, "governance_error": None}
-
         sql = state.get("generated_sql") or ""
         table_columns = _normalise_table_columns(state.get("table_columns"))
+        entitlements = state.get("column_entitlements") or {}
+        user_role = str((state.get("user_context") or {}).get("user_role") or "viewer").lower()
 
         referenced = _resolve_referenced_columns(
             sql,
             table_columns,
             state.get("database_type"),
+            state.get("governed_columns_by_table"),
         )
         if referenced is not None:
             # Column-aware path: only block on an actual governed column.
+            for col in referenced:
+                policy = entitlements.get(col.lower())
+                if policy:
+                    allowed_roles = {
+                        str(role).lower()
+                        for role in (policy.get("allowed_roles") or [])
+                    }
+                    if user_role not in allowed_roles:
+                        classification = policy.get("classification") or "restricted"
+                        error = (
+                            "Query blocked by column entitlement policy: "
+                            f"'{col}' is classified as {classification}."
+                        )
+                        logger.warning("dlp_check: BLOCKED — %s", error)
+                        return {"dlp_blocked": True, "governance_error": error}
+            if not enabled:
+                logger.info("dlp_check: keyword DLP disabled; entitlement check passed")
+                return {"dlp_blocked": False, "governance_error": None}
             for col in referenced:
                 if dlp_re.search(col):
                     error = (
@@ -360,6 +387,23 @@ def make_dlp_check(enabled: bool, governed_columns: Optional[List[str]] = None):
             return {"dlp_blocked": False, "governance_error": None}
 
         # Fallback: coarse raw-text scan when the SQL couldn't be parsed.
+        for column, policy in entitlements.items():
+            if not re.search(rf"\b{re.escape(str(column))}\b", sql, re.IGNORECASE):
+                continue
+            allowed_roles = {
+                str(role).lower() for role in (policy.get("allowed_roles") or [])
+            }
+            if user_role not in allowed_roles:
+                classification = policy.get("classification") or "restricted"
+                error = (
+                    "Query blocked by column entitlement policy: "
+                    f"'{column}' is classified as {classification}."
+                )
+                logger.warning("dlp_check: BLOCKED (raw scan) — %s", error)
+                return {"dlp_blocked": True, "governance_error": error}
+        if not enabled:
+            logger.info("dlp_check: keyword DLP disabled; entitlement check passed")
+            return {"dlp_blocked": False, "governance_error": None}
         match = dlp_re.search(sql)
         if match:
             error = (

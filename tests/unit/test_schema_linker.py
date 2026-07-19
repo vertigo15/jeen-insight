@@ -111,6 +111,20 @@ class TestLinkBundleLargeSchema:
         )
         assert pruned is False
 
+    def test_typed_intent_guides_linking_when_question_is_underspecified(self):
+        bundle = _make_bundle(30, 5)
+        bundle["tables"] += "\n- SalesOrders - commercial revenue"
+        bundle["columns"] += "\n- SalesOrders.revenue - Type: float, Description: net revenue"
+        out, pruned = link_bundle(
+            bundle,
+            "show it",
+            intent={"metric": "revenue", "dimensions": ["sales orders"]},
+            min_columns=60,
+            max_tables=5,
+        )
+        assert pruned is True
+        assert "SalesOrders" in out["tables"]
+
     def test_global_column_cap(self):
         bundle = _make_bundle(30, 50)  # 1500 columns
         bundle["tables"] += "\n- SalesOrders - revenue"

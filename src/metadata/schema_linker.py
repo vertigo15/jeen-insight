@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +205,7 @@ def link_bundle(
     bundle: Dict[str, str],
     question: str,
     *,
+    intent: Optional[Dict[str, Any]] = None,
     min_columns: int = 60,
     max_tables: int = 20,
     max_columns: int = 300,
@@ -224,6 +225,15 @@ def link_bundle(
         return bundle, False  # small schema → inject in full
 
     q_tokens = _tokenize(question)
+    # Router-derived intent adds canonical metric/dimension/filter terminology
+    # that may not occur verbatim in the user's wording. It only improves prompt
+    # ranking; validation continues to use the full catalog allowlist.
+    for key in ("metric", "dimensions", "filters", "time_range", "comparison"):
+        value = (intent or {}).get(key)
+        if isinstance(value, list):
+            q_tokens |= _tokenize(" ".join(str(item) for item in value))
+        elif value:
+            q_tokens |= _tokenize(str(value))
     if not q_tokens:
         return bundle, False  # nothing to link against; keep full catalog
 

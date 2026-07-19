@@ -120,9 +120,9 @@ class PromptCache:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(_FETCH_ACTIVE, prompt_place)
 
-        if not row:
+        if not row or not str(row["content"] or "").strip():
             raise KeyError(
-                f"No active prompt found for place {prompt_place!r}. "
+                f"No usable active prompt found for place {prompt_place!r}. "
                 "Check that insights_prompts was seeded on startup."
             )
 

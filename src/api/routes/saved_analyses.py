@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from src.api.dependencies import get_history_service, require_user_id
+from src.api.dependencies import (
+    get_history_service,
+    get_principal,
+    require_principal_user_id,
+    require_source_access,
+)
 from src.api.models import SaveAnalysisRequest, UpdateSavedAnalysisRequest
+from src.security.internal_auth import Principal
 
 router = APIRouter(prefix="/api", tags=["saved-analyses"])
 
@@ -21,10 +27,12 @@ def _rows_from_results(results: dict) -> tuple[list, list]:
 @router.get("/saved-analyses")
 async def list_saved_analyses(
     connection: str = Query(...),
-    user_id: str = Query(...),
+    user_id: str = Query(None),
     limit: int = Query(50, ge=1, le=200),
+    principal: Principal = Depends(get_principal),
 ):
-    user_id = require_user_id(user_id)
+    user_id = require_principal_user_id(principal, user_id)
+    await require_source_access(principal, connection)
     history = get_history_service()
     entries = await history.list_saved_analyses(
         user_id=user_id, source_key=connection, limit=limit
@@ -33,8 +41,12 @@ async def list_saved_analyses(
 
 
 @router.post("/saved-analyses")
-async def save_analysis(request: SaveAnalysisRequest):
-    user_id = require_user_id(request.user_id)
+async def save_analysis(
+    request: SaveAnalysisRequest,
+    principal: Principal = Depends(get_principal),
+):
+    user_id = require_principal_user_id(principal, request.user_id)
+    await require_source_access(principal, request.connection)
     columns, rows = _rows_from_results(request.results or {})
     if not columns or not rows:
         raise HTTPException(status_code=400, detail="Cannot save an empty result set")
@@ -61,8 +73,12 @@ async def save_analysis(request: SaveAnalysisRequest):
 
 
 @router.get("/saved-analyses/{saved_id}")
-async def get_saved_analysis(saved_id: UUID, user_id: str = Query(...)):
-    user_id = require_user_id(user_id)
+async def get_saved_analysis(
+    saved_id: UUID,
+    user_id: str = Query(None),
+    principal: Principal = Depends(get_principal),
+):
+    user_id = require_principal_user_id(principal, user_id)
     history = get_history_service()
     item = await history.get_saved_analysis(saved_id=saved_id, user_id=user_id)
     if not item:
@@ -71,8 +87,12 @@ async def get_saved_analysis(saved_id: UUID, user_id: str = Query(...)):
 
 
 @router.patch("/saved-analyses/{saved_id}")
-async def update_saved_analysis(saved_id: UUID, request: UpdateSavedAnalysisRequest):
-    user_id = require_user_id(request.user_id)
+async def update_saved_analysis(
+    saved_id: UUID,
+    request: UpdateSavedAnalysisRequest,
+    principal: Principal = Depends(get_principal),
+):
+    user_id = require_principal_user_id(principal, request.user_id)
     history = get_history_service()
     ok = await history.update_saved_analysis(
         saved_id=saved_id,
@@ -87,8 +107,12 @@ async def update_saved_analysis(saved_id: UUID, request: UpdateSavedAnalysisRequ
 
 
 @router.delete("/saved-analyses/{saved_id}")
-async def delete_saved_analysis(saved_id: UUID, user_id: str = Query(...)):
-    user_id = require_user_id(user_id)
+async def delete_saved_analysis(
+    saved_id: UUID,
+    user_id: str = Query(None),
+    principal: Principal = Depends(get_principal),
+):
+    user_id = require_principal_user_id(principal, user_id)
     history = get_history_service()
     ok = await history.delete_saved_analysis(saved_id=saved_id, user_id=user_id)
     if not ok:

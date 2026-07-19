@@ -64,12 +64,18 @@ class DatabricksSqlRunner(SqlRunner):
         self, sql: str, statement_timeout_ms: int
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
         timeout = _timeout_seconds(statement_timeout_ms, self.timeout_seconds)
+        cursor_holder: Dict[str, Any] = {}
+        task = asyncio.create_task(
+            self._run_blocking(lambda cur: _fetch_rows(cur, sql), cursor_holder)
+        )
         try:
             return await asyncio.wait_for(
-                self._run_blocking(lambda cur: _fetch_rows(cur, sql)),
+                asyncio.shield(task),
                 timeout=timeout,
             )
         except asyncio.TimeoutError as exc:
+            await self._cancel_cursor(cursor_holder.get("cursor"))
+            task.add_done_callback(_consume_task_exception)
             raise QueryTimeout(
                 "Databricks SQL query exceeded the configured timeout."
             ) from exc
@@ -106,18 +112,22 @@ class DatabricksSqlRunner(SqlRunner):
         except Exception:
             return []
 
-    async def _run_blocking(self, fn):
+    async def _run_blocking(self, fn, cursor_holder: Optional[Dict[str, Any]] = None):
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._executor, self._with_cursor, fn)
+        return await loop.run_in_executor(self._executor, self._with_cursor, fn, cursor_holder)
 
-    def _with_cursor(self, fn):
+    def _with_cursor(self, fn, cursor_holder: Optional[Dict[str, Any]] = None):
         try:
             conn = self._connect()
             try:
                 cur = conn.cursor()
                 try:
+                    if cursor_holder is not None:
+                        cursor_holder["cursor"] = cur
                     return fn(cur)
                 finally:
+                    if cursor_holder is not None:
+                        cursor_holder.pop("cursor", None)
                     cur.close()
             finally:
                 conn.close()
@@ -125,6 +135,13 @@ class DatabricksSqlRunner(SqlRunner):
             raise
         except Exception as exc:  # noqa: BLE001
             raise _classify_databricks_error(exc) from exc
+
+    async def _cancel_cursor(self, cursor: Any) -> None:
+        """Use the connector's cursor.cancel API for the timed-out query only."""
+        if cursor is None:
+            return
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _cancel_cursor, cursor)
 
     def _connect(self):
         try:
@@ -158,6 +175,24 @@ def _fetch_rows(cur, sql: str) -> Tuple[List[str], List[Dict[str, Any]]]:
     columns = [col[0] for col in (cur.description or [])]
     rows = [dict(zip(columns, row)) for row in cur.fetchall()]
     return columns, rows
+
+
+def _cancel_cursor(cursor: Any) -> None:
+    cancel = getattr(cursor, "cancel", None)
+    if callable(cancel):
+        try:
+            cancel()
+        except Exception:
+            # The original timeout is the useful error; a race with normal
+            # completion or a closed cursor must not mask it.
+            pass
+
+
+def _consume_task_exception(task: "asyncio.Task[Any]") -> None:
+    try:
+        task.exception()
+    except (asyncio.CancelledError, Exception):
+        pass
 
 
 def _timeout_seconds(statement_timeout_ms: int, default_timeout: float) -> float:

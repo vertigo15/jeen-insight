@@ -265,28 +265,60 @@ class ConversationHistoryService:
         session_id: UUID,
         user_id: str,
         limit: int = 5,
+        exclude_query_id: Optional[UUID] = None,
     ) -> List[Dict[str, Any]]:
         try:
             async with self.pool.acquire() as conn:
                 rows = await conn.fetch(
                     """
-                    SELECT id, parent_query_id, sequence_number,
-                           natural_language_query, generated_sql,
-                           execution_status, row_count, result_preview,
-                           result_artifact, created_at
-                    FROM insights_conversation_sessions
-                    WHERE session_id = $1 AND user_id = $2
-                    ORDER BY sequence_number DESC
-                    LIMIT $3
+                    SELECT *
+                    FROM (
+                        SELECT id, parent_query_id, sequence_number,
+                               natural_language_query, generated_sql,
+                               execution_status, row_count, result_preview,
+                               result_artifact, created_at
+                        FROM insights_conversation_sessions
+                        WHERE session_id = $1
+                          AND user_id = $2
+                          AND execution_status = 'success'
+                          AND ($3::uuid IS NULL OR id != $3)
+                        ORDER BY sequence_number DESC
+                        LIMIT $4
+                    ) recent
+                    ORDER BY sequence_number ASC
                     """,
                     session_id,
                     user_id,
+                    exclude_query_id,
                     limit,
                 )
                 return [dict(r) for r in rows]
         except Exception:
             logger.exception("Failed to get conversation context")
             return []
+
+    async def get_pending_clarification(
+        self, *, session_id: UUID, user_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return the latest unanswered clarification request for context."""
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT id, natural_language_query, error_message, result_artifact
+                    FROM insights_conversation_sessions
+                    WHERE session_id = $1 AND user_id = $2
+                      AND execution_status = 'clarification_pending'
+                    ORDER BY sequence_number DESC
+                    LIMIT 1
+                    """,
+                    session_id,
+                    user_id,
+                )
+            return dict(row) if row else None
+        except Exception:
+            logger.exception("Failed to load pending clarification")
+            return None
 
     async def get_conversation_history(
         self,

@@ -529,7 +529,7 @@ class TestResponseFormatter:
             "governance_error": None,
             "route": "needs_query",
             "connection_display_name": "Test DB",
-            "eval_result": {"summary": "Sales total is $1,000.", "insights": ["Revenue is stable"], "follow_up": "", "answers_intent": True},
+            "eval_result": {"summary": "Sales total is $1,000.", "insights": ["Revenue is stable"], "follow_up_questions": [], "answers_intent": True},
             "structured_prompt": {},
             "error": None,
             "exec_error": None,
@@ -588,8 +588,20 @@ class TestResponseFormatter:
         result = response_formatter(self._state())["formatted_response"]
         assert result.get("insights") == ["Revenue is stable"]
 
+    def test_followups_and_refinement_proposal_use_api_contract(self):
+        state = self._state(eval_result={
+            "summary": "Partial result.",
+            "insights": [],
+            "answers_intent": False,
+            "follow_up_questions": ["Break this down by month?"],
+            "refinement_proposal": {"question": "Show monthly sales", "reason": "missing period"},
+        })
+        result = response_formatter(state)["formatted_response"]
+        assert result["follow_up_questions"] == ["Break this down by month?"]
+        assert result["refinement_proposal"]["question"] == "Show monthly sales"
+
     def test_no_insights_key_when_absent(self):
-        state = self._state(eval_result={"summary": "ok", "insights": [], "answers_intent": True, "follow_up": ""})
+        state = self._state(eval_result={"summary": "ok", "insights": [], "answers_intent": True, "follow_up_questions": []})
         result = response_formatter(state)["formatted_response"]
         assert "insights" not in result
 

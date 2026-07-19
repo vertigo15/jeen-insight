@@ -14,6 +14,7 @@ import time
 from typing import Any, Dict
 
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
+from src.agent.langgraph_agent.nodes.safety_text import fence_untrusted
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
 
@@ -69,15 +70,20 @@ def make_memory_summarizer(llm: LangChainLlmService, prompt_loader: PromptLoader
 
         system_msg = await prompt_loader.arender(
             "memory_summarizer",
-            conversation_history=history_text or "(empty)",
+            conversation_history=(
+                fence_untrusted(history_text, label="conversation history")
+                if history_text
+                else "(empty)"
+            ),
         )
+        user_msg = await prompt_loader.arender("memory_summarizer_user")
         model_override = await prompt_loader.model_override_for("memory_summarizer")
 
         t0 = time.monotonic()
         response = await llm.generate(
             messages=[
                 {"role": "system", "content": system_msg},
-                {"role": "user", "content": "Summarize the conversation above concisely."},
+                {"role": "user", "content": user_msg},
             ],
             temperature=0.1,
             max_tokens=300,

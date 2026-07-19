@@ -1,33 +1,19 @@
-"""Settings API routes.
-
-Provides CRUD for prompt templates and read-only app info.
-
-Prompt storage strategy
------------------------
-Default prompts live as ``.md`` / ``.txt`` files in ``src/agent/prompts/``
-and ``templates/``.  When the user saves a custom version:
-
-1. The original file is backed up to ``src/agent/prompts/.defaults/{name}.{ext}``
-   (only on the very first save, so the default is never overwritten again).
-2. The custom text is written directly to the main prompt file so the
-   running PromptLoader picks it up on the next ``/api/settings/prompts/reload``
-   call (or container restart).
-
-Reset restores the backed-up original and removes the backup.
-"""
+"""Settings routes for DB-backed, versioned production LLM prompts."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.api.dependencies import require_admin
+from src.security.internal_auth import Principal
 
 logger = logging.getLogger(__name__)
 
@@ -146,16 +132,185 @@ PROMPT_REGISTRY: List[Dict[str, Any]] = [
         ),
         "path": _PROMPTS_DIR / "autocomplete_suggestions.md",
     },
+    {
+        "name": "memory_summarizer_user",
+        "label": "Memory Summary Instruction",
+        "group": "AI Agent",
+        "description": "User instruction paired with the memory-summary system prompt.",
+        "path": _PROMPTS_DIR / "memory_summarizer_user.md",
+    },
+    {
+        "name": "fused_eval_analytics_system",
+        "label": "Eval JSON System",
+        "group": "AI Agent",
+        "description": "JSON-only system instruction used by the standalone result evaluator.",
+        "path": _PROMPTS_DIR / "fused_eval_analytics_system.md",
+    },
+    {
+        "name": "fused_eval_analytics_user",
+        "label": "Eval User Instruction",
+        "group": "AI Agent",
+        "description": "User instruction paired with the pipeline result-evaluation prompt.",
+        "path": _PROMPTS_DIR / "fused_eval_analytics_user.md",
+    },
+    {
+        "name": "generate_chart_system",
+        "label": "Chart Generation System",
+        "group": "Other Features",
+        "description": "Selects a safe, valid chart specification from the result profile.",
+        "path": _PROMPTS_DIR / "generate_chart_system.md",
+    },
+    {
+        "name": "generate_chart_user",
+        "label": "Chart Generation Context",
+        "group": "Other Features",
+        "description": "Formats the dataset profile, optional chart instructions, and sample rows.",
+        "path": _PROMPTS_DIR / "generate_chart_user.md",
+    },
+    {
+        "name": "enhance_chart_system",
+        "label": "Chart Enhancement System",
+        "group": "Other Features",
+        "description": "System instruction for improving an existing ECharts configuration.",
+        "path": _PROMPTS_DIR / "enhance_chart_system.md",
+    },
+    {
+        "name": "enhance_chart_user",
+        "label": "Chart Enhancement Context",
+        "group": "Other Features",
+        "description": "Formats the chart configuration, columns, and sample data for enhancement.",
+        "path": _PROMPTS_DIR / "enhance_chart_user.md",
+    },
+    {
+        "name": "insights_system",
+        "label": "Insights System",
+        "group": "Other Features",
+        "description": "System instruction for the legacy insights generator.",
+        "path": _PROMPTS_DIR / "insights_system.md",
+    },
+    {
+        "name": "read_continuation_system",
+        "label": "Read Continuation System",
+        "group": "Other Features",
+        "description": "Safety instruction for the tools-disabled response after a read action.",
+        "path": _PROMPTS_DIR / "read_continuation_system.md",
+    },
+    {
+        "name": "read_continuation_user",
+        "label": "Read Continuation Context",
+        "group": "Other Features",
+        "description": "Formats the question and fenced untrusted read-tool artifact.",
+        "path": _PROMPTS_DIR / "read_continuation_user.md",
+    },
 ]
 
 _PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 _ESCAPED_RE = re.compile(r"\{\{[^}]*\}\}")  # {{ }} — literal braces in output
+
+# Every runtime template's contract is explicit. Save-time validation prevents
+# an administrator from silently removing necessary context or introducing a
+# placeholder that no production call site can supply.
+PROMPT_REQUIRED_PLACEHOLDERS: Dict[str, frozenset[str]] = {
+    "jeen_insights_system": frozenset({
+        "connection_display_name", "source_key", "database_type",
+        "connection_database", "connection_catalog", "connection_schema",
+        "dialect_rules", "knowledge_pairs", "business_terms", "columns",
+        "relationships", "sources", "tables",
+    }),
+    "fused_router": frozenset({"question", "conversation_summary", "source_description"}),
+    "fused_eval_analytics": frozenset({"question", "sql", "results_sample", "row_count"}),
+    "memory_answer": frozenset({"question", "conversation_history"}),
+    "memory_summarizer": frozenset({"conversation_history"}),
+    "sql_generator": frozenset({
+        "question", "error_context", "retry_count", "connection_display_name",
+        "source_key", "database_type", "connection_database", "connection_catalog",
+        "connection_schema",
+    }),
+    "chart_editor": frozenset({
+        "instruction", "column_names", "column_types", "sample_rows",
+        "current_config", "recent_messages",
+    }),
+    "insights": frozenset({
+        "original_question", "business_rules", "row_count", "column_names",
+        "data_sample", "column_stats",
+    }),
+    "autocomplete_suggestions": frozenset({
+        "connection_display_name", "database_type", "partial", "available_tables",
+        "recent_questions",
+    }),
+    "memory_summarizer_user": frozenset(),
+    "fused_eval_analytics_system": frozenset(),
+    "fused_eval_analytics_user": frozenset(),
+    "generate_chart_system": frozenset(),
+    "generate_chart_user": frozenset({
+        "row_count", "profile_blob", "instruction_blob", "sample_count", "sample_rows",
+    }),
+    "enhance_chart_system": frozenset(),
+    "enhance_chart_user": frozenset({
+        "chart_type", "columns", "sample_data", "current_config",
+    }),
+    "insights_system": frozenset(),
+    "read_continuation_system": frozenset(),
+    "read_continuation_user": frozenset({"question", "fenced_data"}),
+}
+
+# A single LLM call can combine several prompt fragments, but it can only use
+# one model. Keep that ownership explicit so Settings never accepts an override
+# that the runtime cannot honor.
+PROMPT_MODEL_OWNERS = frozenset({
+    "jeen_insights_system",
+    "fused_router",
+    "fused_eval_analytics",
+    "memory_answer",
+    "memory_summarizer",
+    "chart_editor",
+    "insights",
+    "autocomplete_suggestions",
+    "generate_chart_system",
+    "enhance_chart_system",
+    "read_continuation_system",
+})
 
 
 def _extract_placeholders(text: str) -> List[str]:
     """Return unique {placeholder} names, ignoring {{ escaped }} literals."""
     cleaned = _ESCAPED_RE.sub("", text)
     return sorted(set(_PLACEHOLDER_RE.findall(cleaned)))
+
+
+def _validate_prompt_content(name: str, content: str) -> None:
+    """Reject prompt contracts that cannot be rendered safely at runtime."""
+    expected = PROMPT_REQUIRED_PLACEHOLDERS.get(name)
+    if expected is None:
+        raise HTTPException(status_code=404, detail=f"Prompt '{name}' not found")
+    if not content.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Prompt content cannot be blank or whitespace only.",
+        )
+    actual = set(_extract_placeholders(content))
+    missing = sorted(expected - actual)
+    unknown = sorted(actual - expected)
+    if missing or unknown:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Prompt placeholders do not match this prompt's runtime contract.",
+                "missing": missing,
+                "unknown": unknown,
+                "required": sorted(expected),
+            },
+        )
+    try:
+        content.format_map({placeholder: "" for placeholder in expected})
+    except (IndexError, KeyError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Prompt is not a valid Python format template.",
+                "format_error": str(exc),
+            },
+        ) from exc
 
 
 def _entry_for(name: str) -> Optional[Dict[str, Any]]:
@@ -168,6 +323,11 @@ def _read_file(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _has_usable_content(content: Any) -> bool:
+    """Match PromptCache's definition of a runtime-usable template."""
+    return bool(str(content or "").strip())
+
+
 # ── Response models ──────────────────────────────────────────────────────────────────
 
 class PromptMeta(BaseModel):
@@ -177,6 +337,8 @@ class PromptMeta(BaseModel):
     description: str
     is_custom: bool
     placeholders: List[str]
+    required_placeholders: List[str]
+    model_override_supported: bool
     version: int = 1
     model_id: Optional[int] = None
     model_name: Optional[str] = None
@@ -187,7 +349,7 @@ class PromptDetail(PromptMeta):
 
 
 class PromptUpdate(BaseModel):
-    content: str
+    content: str = Field(min_length=1, max_length=200_000)
 
 
 class SetPromptModelRequest(BaseModel):
@@ -209,6 +371,7 @@ _LIST_PROMPTS_SQL = """
     FROM insights_prompts ip
     LEFT JOIN admin_models am ON am.id = ip.model_id
     WHERE ip.is_active = true
+      AND NULLIF(BTRIM(ip.content), '') IS NOT NULL
 """
 
 
@@ -232,7 +395,9 @@ async def _db_get_prompt(place: str) -> Optional[Dict[str, Any]]:
                    am.name AS model_name, ip.content
             FROM insights_prompts ip
             LEFT JOIN admin_models am ON am.id = ip.model_id
-            WHERE ip.prompt_place = $1 AND ip.is_active = true
+            WHERE ip.prompt_place = $1
+              AND ip.is_active = true
+              AND NULLIF(BTRIM(ip.content), '') IS NOT NULL
             LIMIT 1
             """,
             place,
@@ -240,40 +405,106 @@ async def _db_get_prompt(place: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
-async def _db_save_prompt(place: str, content: str) -> int:
-    """Deactivate current active row, insert new version (preserving model_id).
-    Returns the new version number.
-    """
+_KEEP_CURRENT = object()
+
+
+async def _record_prompt_audit(
+    conn: Any,
+    *,
+    place: str,
+    action: str,
+    actor: Optional[Principal],
+    version: int,
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Persist an immutable prompt-governance event in the same transaction."""
+    await conn.execute(
+        """
+        INSERT INTO insights_prompt_audit
+            (prompt_place, action, actor_user_id, actor_email, version, details)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+        """,
+        place,
+        action,
+        str(actor.user_id) if actor else None,
+        actor.email if actor else None,
+        version,
+        json.dumps(details or {}),
+    )
+
+
+async def _db_save_prompt(
+    place: str,
+    content: Optional[str] = None,
+    *,
+    model_id: Any = _KEEP_CURRENT,
+    is_custom: Any = _KEEP_CURRENT,
+    actor: Optional[Principal] = None,
+    action: str = "save",
+    details: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Insert a new immutable active version and audit the mutation."""
     from src.metadata import get_metadata_pool
     pool = await get_metadata_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
             current = await conn.fetchrow(
-                "SELECT version, model_id FROM insights_prompts "
+                "SELECT version, content, model_id, is_custom FROM insights_prompts "
                 "WHERE prompt_place = $1 AND is_active = true",
                 place,
             )
             if not current:
                 raise HTTPException(404, f"No active prompt row for '{place}'. Restart to re-seed.")
             new_version = current["version"] + 1
-            model_id = current["model_id"]
+            next_content = current["content"] if content is None else content
+            next_model_id = current["model_id"] if model_id is _KEEP_CURRENT else model_id
+            next_is_custom = current["is_custom"] if is_custom is _KEEP_CURRENT else is_custom
+            if not _has_usable_content(next_content):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Prompt '{place}' has unusable active content. "
+                        "Reset or save valid content before changing its model."
+                    ),
+                )
             await conn.execute(
                 "UPDATE insights_prompts SET is_active = false, updated_at = NOW() "
                 "WHERE prompt_place = $1 AND is_active = true",
                 place,
             )
-            await conn.execute(
-                """
-                INSERT INTO insights_prompts
-                    (prompt_place, content, version, is_active, is_custom, model_id)
-                VALUES ($1, $2, $3, true, true, $4)
-                """,
-                place, content, new_version, model_id,
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO insights_prompts
+                        (prompt_place, content, version, is_active, is_custom, model_id)
+                    VALUES ($1, $2, $3, true, $4, $5)
+                    """,
+                    place, next_content, new_version, next_is_custom, next_model_id,
+                )
+            except Exception as exc:  # asyncpg errors remain optional at import time
+                if exc.__class__.__name__ == "UniqueViolationError":
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Prompt was changed concurrently; reload and try again.",
+                    ) from exc
+                raise
+            await _record_prompt_audit(
+                conn,
+                place=place,
+                action=action,
+                actor=actor,
+                version=new_version,
+                details=details,
             )
     return new_version
 
 
-async def _db_reset_prompt(place: str, default_content: str) -> int:
+async def _db_reset_prompt(
+    place: str,
+    default_content: str,
+    *,
+    actor: Optional[Principal] = None,
+) -> int:
     """Deactivate current row, insert file default (is_custom=false, model_id=NULL)."""
     from src.metadata import get_metadata_pool
     pool = await get_metadata_pool()
@@ -294,13 +525,29 @@ async def _db_reset_prompt(place: str, default_content: str) -> int:
                 "WHERE prompt_place = $1 AND is_active = true",
                 place,
             )
-            await conn.execute(
-                """
-                INSERT INTO insights_prompts
-                    (prompt_place, content, version, is_active, is_custom, model_id)
-                VALUES ($1, $2, $3, true, false, NULL)
-                """,
-                place, default_content, new_version,
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO insights_prompts
+                        (prompt_place, content, version, is_active, is_custom, model_id)
+                    VALUES ($1, $2, $3, true, false, NULL)
+                    """,
+                    place, default_content, new_version,
+                )
+            except Exception as exc:  # asyncpg errors remain optional at import time
+                if exc.__class__.__name__ == "UniqueViolationError":
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Prompt was changed concurrently; reload and try again.",
+                    ) from exc
+                raise
+            await _record_prompt_audit(
+                conn,
+                place=place,
+                action="reset",
+                actor=actor,
+                version=new_version,
+                details={"source": "packaged_default"},
             )
     return new_version
 
@@ -479,14 +726,14 @@ def _placeholder_meta(values: Dict[str, str], sources: Dict[str, str]) -> List[D
 
 
 def _render_prompt_template(content: str, values: Dict[str, str]) -> str:
-    """Render placeholders while tolerating custom prompts with stray braces."""
+    """Render a syntactically valid prompt without hiding malformed braces."""
     try:
         return content.format_map(_SafeFormatDict(values))
-    except Exception:
-        rendered = content
-        for key, value in values.items():
-            rendered = rendered.replace("{" + key + "}", value)
-        return rendered.replace("{{", "{").replace("}}", "}")
+    except (IndexError, KeyError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Active prompt is malformed: {exc}",
+        ) from exc
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────────
@@ -499,6 +746,8 @@ async def list_prompts():
     for entry in PROMPT_REGISTRY:
         place = entry["name"]
         row = db_rows.get(place, {})
+        if not _has_usable_content(row.get("content")):
+            row = {}
         content = row.get("content") or _read_file(entry["path"])
         result.append(PromptMeta(
             name=place,
@@ -507,6 +756,8 @@ async def list_prompts():
             description=entry["description"],
             is_custom=row.get("is_custom", False),
             placeholders=_extract_placeholders(content),
+            required_placeholders=sorted(PROMPT_REQUIRED_PLACEHOLDERS[place]),
+            model_override_supported=place in PROMPT_MODEL_OWNERS,
             version=row.get("version", 1),
             model_id=row.get("model_id"),
             model_name=row.get("model_name"),
@@ -521,7 +772,7 @@ async def get_prompt(name: str):
     if not entry:
         raise HTTPException(status_code=404, detail=f"Prompt '{name}' not found")
     row = await _db_get_prompt(name)
-    if row:
+    if row and _has_usable_content(row.get("content")):
         content   = row["content"]
         is_custom = row["is_custom"]
         version   = row["version"]
@@ -540,6 +791,8 @@ async def get_prompt(name: str):
         description=entry["description"],
         is_custom=is_custom,
         placeholders=_extract_placeholders(content),
+        required_placeholders=sorted(PROMPT_REQUIRED_PLACEHOLDERS[name]),
+        model_override_supported=name in PROMPT_MODEL_OWNERS,
         content=content,
         version=version,
         model_id=model_id,
@@ -547,13 +800,13 @@ async def get_prompt(name: str):
     )
 
 
-@router.get("/prompt-contexts")
+@router.get("/prompt-contexts", dependencies=_ADMIN)
 async def list_prompt_contexts():
     """Connection choices for prompt resolved view."""
     return await _list_prompt_context_connections()
 
 
-@router.get("/prompts/{name}/resolved")
+@router.get("/prompts/{name}/resolved", dependencies=_ADMIN)
 async def resolve_prompt(
     name: str,
     connection: str = Query(..., description="source_key/catalog to resolve against"),
@@ -569,7 +822,11 @@ async def resolve_prompt(
         raise HTTPException(status_code=404, detail=f"Prompt '{name}' not found")
 
     row = await _db_get_prompt(name)
-    content = (row or {}).get("content") or _read_file(entry["path"])
+    content = (
+        row.get("content")
+        if row and _has_usable_content(row.get("content"))
+        else _read_file(entry["path"])
+    )
     placeholders = _extract_placeholders(content)
 
     info = await _connection_info(connection)
@@ -613,6 +870,12 @@ async def resolve_prompt(
         "row_count": "{runtime: result row count}",
         "data_sample": "{runtime: data sample}",
         "column_stats": "{runtime: column statistics}",
+        "profile_blob": "{runtime: dataset profile}",
+        "instruction_blob": "{runtime: chart instruction}",
+        "sample_count": "{runtime: sample row count}",
+        "chart_type": "{runtime: chart type}",
+        "sample_data": "{runtime: chart sample data}",
+        "fenced_data": "{runtime: fenced read-tool data}",
         "sql": "{runtime: generated SQL}",
         "results_sample": "{runtime: result sample}",
         "error_context": "{runtime: SQL error context}",
@@ -667,14 +930,24 @@ async def resolve_prompt(
     }
 
 
-@router.put("/prompts/{name}", response_model=PromptDetail, dependencies=_ADMIN)
-async def save_prompt(name: str, body: PromptUpdate):
+@router.put("/prompts/{name}", response_model=PromptDetail)
+async def save_prompt(
+    name: str,
+    body: PromptUpdate,
+    principal: Principal = Depends(require_admin),
+):
     """Save a custom prompt (new DB version)."""
     entry = _entry_for(name)
     if not entry:
         raise HTTPException(status_code=404, detail=f"Prompt '{name}' not found")
 
-    new_version = await _db_save_prompt(name, body.content)
+    _validate_prompt_content(name, body.content)
+    new_version = await _db_save_prompt(
+        name,
+        body.content,
+        actor=principal,
+        details={"content_length": len(body.content)},
+    )
     _invalidate_cache(name)
     logger.info("settings: saved prompt '%s' v%d (%d chars)", name, new_version, len(body.content))
 
@@ -686,6 +959,8 @@ async def save_prompt(name: str, body: PromptUpdate):
         description=entry["description"],
         is_custom=True,
         placeholders=_extract_placeholders(body.content),
+        required_placeholders=sorted(PROMPT_REQUIRED_PLACEHOLDERS[name]),
+        model_override_supported=name in PROMPT_MODEL_OWNERS,
         content=body.content,
         version=new_version,
         model_id=row["model_id"] if row else None,
@@ -693,15 +968,16 @@ async def save_prompt(name: str, body: PromptUpdate):
     )
 
 
-@router.delete("/prompts/{name}", response_model=PromptDetail, dependencies=_ADMIN)
-async def reset_prompt(name: str):
+@router.delete("/prompts/{name}", response_model=PromptDetail)
+async def reset_prompt(name: str, principal: Principal = Depends(require_admin)):
     """Reset a prompt to its file default (inserts a new DB version)."""
     entry = _entry_for(name)
     if not entry:
         raise HTTPException(status_code=404, detail=f"Prompt '{name}' not found")
 
     default_content = _read_file(entry["path"])
-    new_version = await _db_reset_prompt(name, default_content)
+    _validate_prompt_content(name, default_content)
+    new_version = await _db_reset_prompt(name, default_content, actor=principal)
     _invalidate_cache(name)
     logger.info("settings: reset prompt '%s' to default (v%d)", name, new_version)
 
@@ -712,6 +988,8 @@ async def reset_prompt(name: str):
         description=entry["description"],
         is_custom=False,
         placeholders=_extract_placeholders(default_content),
+        required_placeholders=sorted(PROMPT_REQUIRED_PLACEHOLDERS[name]),
+        model_override_supported=name in PROMPT_MODEL_OWNERS,
         content=default_content,
         version=new_version,
         model_id=None,
@@ -732,8 +1010,12 @@ def reload_prompts():
     return {"reloaded": False}
 
 
-@router.put("/prompts/{name}/model", dependencies=_ADMIN)
-async def set_prompt_model(name: str, body: SetPromptModelRequest):
+@router.put("/prompts/{name}/model")
+async def set_prompt_model(
+    name: str,
+    body: SetPromptModelRequest,
+    principal: Principal = Depends(require_admin),
+):
     """Assign a specific model to this prompt (or clear with ``model_name=null``).
 
     ``null`` removes the override — the prompt will use the global active model.
@@ -741,6 +1023,14 @@ async def set_prompt_model(name: str, body: SetPromptModelRequest):
     entry = _entry_for(name)
     if not entry:
         raise HTTPException(status_code=404, detail=f"Prompt '{name}' not found")
+    if name not in PROMPT_MODEL_OWNERS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Prompt '{name}' is a companion template and cannot select a model. "
+                "Set the model on the LLM call's owning prompt instead."
+            ),
+        )
 
     from src.metadata import get_metadata_pool
     pool = await get_metadata_pool()
@@ -759,21 +1049,25 @@ async def set_prompt_model(name: str, body: SetPromptModelRequest):
             )
         model_id = row["id"]
 
-    async with pool.acquire() as conn:
-        result = await conn.execute(
-            "UPDATE insights_prompts SET model_id = $1, updated_at = NOW() "
-            "WHERE prompt_place = $2 AND is_active = true",
-            model_id, name,
-        )
-    if result == "UPDATE 0":
-        raise HTTPException(status_code=404, detail=f"No active prompt row for '{name}'")
+    new_version = await _db_save_prompt(
+        name,
+        model_id=model_id,
+        actor=principal,
+        action="set_model",
+        details={"model_name": body.model_name},
+    )
 
     _invalidate_cache(name)
     logger.info(
         "settings: prompt '%s' model → %s",
         name, body.model_name or "global default",
     )
-    return {"name": name, "model_id": model_id, "model_name": body.model_name}
+    return {
+        "name": name,
+        "model_id": model_id,
+        "model_name": body.model_name,
+        "version": new_version,
+    }
 
 
 # ── Prompt version history endpoints ─────────────────────────────────────────
@@ -791,7 +1085,21 @@ class PromptVersionDetail(PromptVersionMeta):
     content: str
 
 
-@router.get("/prompts/{name}/versions", response_model=List[PromptVersionMeta])
+class PromptAuditMeta(BaseModel):
+    id: int
+    action: str
+    actor_user_id: Optional[str] = None
+    actor_email: Optional[str] = None
+    version: int
+    details: Dict[str, Any]
+    created_at: str
+
+
+@router.get(
+    "/prompts/{name}/versions",
+    response_model=List[PromptVersionMeta],
+    dependencies=_ADMIN,
+)
 async def list_prompt_versions(name: str):
     """Return all saved version rows for *name*, newest first."""
     if not _entry_for(name):
@@ -823,7 +1131,11 @@ async def list_prompt_versions(name: str):
     ]
 
 
-@router.get("/prompts/{name}/versions/{version_id}", response_model=PromptVersionDetail)
+@router.get(
+    "/prompts/{name}/versions/{version_id}",
+    response_model=PromptVersionDetail,
+    dependencies=_ADMIN,
+)
 async def get_prompt_version(name: str, version_id: int):
     """Return full content for a specific version row by its DB id."""
     if not _entry_for(name):
@@ -856,8 +1168,12 @@ async def get_prompt_version(name: str, version_id: int):
     )
 
 
-@router.post("/prompts/{name}/restore/{version_id}", response_model=PromptDetail, dependencies=_ADMIN)
-async def restore_prompt_version(name: str, version_id: int):
+@router.post("/prompts/{name}/restore/{version_id}", response_model=PromptDetail)
+async def restore_prompt_version(
+    name: str,
+    version_id: int,
+    principal: Principal = Depends(require_admin),
+):
     """Restore a past version as a new active version row."""
     entry = _entry_for(name)
     if not entry:
@@ -866,7 +1182,8 @@ async def restore_prompt_version(name: str, version_id: int):
     pool = await get_metadata_pool()
     async with pool.acquire() as conn:
         src = await conn.fetchrow(
-            "SELECT content FROM insights_prompts WHERE prompt_place = $1 AND id = $2",
+            "SELECT content, model_id, is_custom, version "
+            "FROM insights_prompts WHERE prompt_place = $1 AND id = $2",
             name, version_id,
         )
     if not src:
@@ -874,7 +1191,16 @@ async def restore_prompt_version(name: str, version_id: int):
             status_code=404, detail=f"Version id={version_id} not found for '{name}'"
         )
 
-    new_version = await _db_save_prompt(name, src["content"])
+    _validate_prompt_content(name, src["content"])
+    new_version = await _db_save_prompt(
+        name,
+        src["content"],
+        model_id=src["model_id"],
+        is_custom=src["is_custom"],
+        actor=principal,
+        action="restore",
+        details={"restored_version_id": version_id, "restored_version": src["version"]},
+    )
     _invalidate_cache(name)
     logger.info(
         "settings: restored prompt '%s' from version_id=%d → new v%d",
@@ -887,13 +1213,47 @@ async def restore_prompt_version(name: str, version_id: int):
         label=entry["label"],
         group=entry["group"],
         description=entry["description"],
-        is_custom=True,
+        is_custom=src["is_custom"],
         placeholders=_extract_placeholders(src["content"]),
+        required_placeholders=sorted(PROMPT_REQUIRED_PLACEHOLDERS[name]),
+        model_override_supported=name in PROMPT_MODEL_OWNERS,
         content=src["content"],
         version=new_version,
         model_id=active_row["model_id"] if active_row else None,
         model_name=active_row["model_name"] if active_row else None,
     )
+
+
+@router.get("/prompts/{name}/audit", response_model=List[PromptAuditMeta], dependencies=_ADMIN)
+async def list_prompt_audit(name: str):
+    """Return the immutable operational audit trail for a prompt."""
+    if not _entry_for(name):
+        raise HTTPException(status_code=404, detail=f"Prompt '{name}' not found")
+    from src.metadata import get_metadata_pool
+
+    pool = await get_metadata_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, action, actor_user_id, actor_email, version, details, created_at
+            FROM insights_prompt_audit
+            WHERE prompt_place = $1
+            ORDER BY id DESC
+            """,
+            name,
+        )
+    return [
+        PromptAuditMeta(
+            id=row["id"],
+            action=row["action"],
+            actor_user_id=row["actor_user_id"],
+            actor_email=row["actor_email"],
+            version=row["version"],
+            details=dict(row["details"] or {}),
+            created_at=row["created_at"].isoformat() if row["created_at"] else "",
+        )
+        for row in rows
+    ]
 
 
 # ── AI Model endpoints ───────────────────────────────────────────────────────

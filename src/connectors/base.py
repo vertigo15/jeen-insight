@@ -75,6 +75,12 @@ class ConnectorSyntaxError(ConnectorError):
     error_type = "syntax_error"
 
 
+class QueryComplexityViolation(ConnectorError):
+    """Raised when a query exceeds deterministic engine cost guardrails."""
+
+    error_type = "query_complexity_blocked"
+
+
 # ── Read-only gate (engine-agnostic) ──────────────────────────────────────────
 # Only SQL whose first keyword (after stripping comments) is SELECT or WITH is
 # allowed through. Everything else — INSERT/UPDATE/DELETE/DDL/COPY/GRANT — is
@@ -118,6 +124,17 @@ _MUTATION_EXP_NAMES = (
 )
 #: sqlglot expression types allowed as the single top-level statement.
 _QUERY_EXP_NAMES = ("Select", "Union", "Intersect", "Except", "Subquery")
+
+# The limits are intentionally structural rather than planner-cost estimates:
+# every engine can enforce them before a query reaches its driver. Warehouse
+# engines get tighter join/subquery budgets because their distributed plans make
+# accidental fan-out more costly.
+_QUERY_COMPLEXITY_LIMITS = {
+    "postgres": {"max_joins": 10, "max_subqueries": 8, "max_set_ops": 4},
+    "trino": {"max_joins": 6, "max_subqueries": 5, "max_set_ops": 3},
+    "databricks": {"max_joins": 6, "max_subqueries": 5, "max_set_ops": 3},
+    "sql": {"max_joins": 6, "max_subqueries": 5, "max_set_ops": 3},
+}
 
 # Conservative textual fallback used only when sqlglot is unavailable/unparseable.
 _FORBIDDEN_KEYWORD_RE = re.compile(
@@ -194,6 +211,46 @@ def assert_read_only_query(sql: str, dialect: Optional[str] = None) -> Optional[
     except Exception:  # noqa: BLE001 — unparseable → conservative textual fallback
         return _assert_read_only_query_textual(sql)
     return check_read_only_statements(statements)
+
+
+def assert_query_complexity(
+    sql: str, *, database_type: str = "sql", dialect: Optional[str] = None
+) -> Optional[str]:
+    """Return an error when query complexity exceeds the engine's hard budget."""
+    try:
+        import sqlglot
+        from sqlglot import exp
+    except ImportError:
+        return None
+    try:
+        statements = sqlglot.parse(sql, dialect=dialect)
+    except Exception:
+        # Syntax validation provides the actionable error later in the pipeline.
+        return None
+    if not statements or statements[0] is None:
+        return None
+    statement = statements[0]
+    limits = _QUERY_COMPLEXITY_LIMITS.get(
+        (database_type or "sql").lower(), _QUERY_COMPLEXITY_LIMITS["sql"]
+    )
+    counts = {
+        "joins": sum(1 for _ in statement.find_all(exp.Join)),
+        "subqueries": sum(1 for _ in statement.find_all(exp.Subquery)),
+        "set operations": sum(
+            1 for _ in statement.find_all(exp.Union, exp.Intersect, exp.Except)
+        ),
+    }
+    for label, limit_key in (
+        ("joins", "max_joins"),
+        ("subqueries", "max_subqueries"),
+        ("set operations", "max_set_ops"),
+    ):
+        if counts[label] > limits[limit_key]:
+            return (
+                f"Query exceeds the {database_type} complexity limit: "
+                f"{counts[label]} {label} (maximum {limits[limit_key]})."
+            )
+    return None
 
 
 # ── Result helpers ────────────────────────────────────────────────────────────
@@ -295,6 +352,15 @@ class SqlRunner(abc.ABC):
                 (sql or "").strip()[:120],
             )
             return error_result(structural_error, error_type="read_only_blocked")
+
+        complexity_error = assert_query_complexity(
+            sql, database_type=self.database_type, dialect=self.sqlglot_dialect
+        )
+        if complexity_error:
+            logger.warning("run_sql[%s]: %s", self.database_type, complexity_error)
+            return error_result(
+                complexity_error, error_type=QueryComplexityViolation.error_type
+            )
 
         capped_sql = self._apply_row_cap(sql, limit, max_rows)
         t0 = time.monotonic()

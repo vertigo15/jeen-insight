@@ -163,6 +163,53 @@ class ResultExecutor(Protocol):
         ...
 
 
+def make_fixture_continuity_resolver() -> ContinuityResolver:
+    """Resolve deterministic artifact references for offline continuity gates.
+
+    This exercises the persisted-result contract without calling an LLM. Live
+    evaluations still exercise the router, while CI can fail if fixture follow-up
+    artifacts stop carrying enough information for safe planning.
+    """
+
+    async def resolve(
+        question: str, *, history: Optional[List[Dict[str, Any]]] = None
+    ) -> Mapping[str, Any]:
+        lowered = (question or "").lower()
+        references_result = any(
+            token in lowered
+            for token in ("those", "these", "that result", "previous result", "prior result", "sort")
+        )
+        artifact: Dict[str, Any] = {}
+        for turn in reversed(history or []):
+            candidate = turn.get("artifact") or turn.get("result_artifact") or {}
+            if isinstance(candidate, Mapping):
+                artifact = dict(candidate)
+                break
+        columns = [str(column) for column in artifact.get("columns") or []]
+        metric = next(
+            (
+                column
+                for column in columns
+                if any(token in column.lower() for token in ("total", "sum", "revenue", "amount"))
+            ),
+            columns[-1] if columns else None,
+        )
+        dimensions = [column for column in columns if column != metric]
+        comparison = (
+            "descending"
+            if any(token in lowered for token in ("descending", "desc", "highest", "largest"))
+            else None
+        )
+        return {
+            "referenced_result": references_result and bool(artifact),
+            "metric": metric,
+            "dimensions": dimensions,
+            "comparison": comparison,
+        }
+
+    return resolve
+
+
 # ── Dataset loading ────────────────────────────────────────────────────────
 
 

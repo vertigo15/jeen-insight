@@ -14,6 +14,7 @@ deployment shares the secret across both containers automatically.
 from __future__ import annotations
 
 import os
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -43,6 +44,51 @@ def _dev_mode() -> bool:
     if raw is None or not raw.strip():
         return True
     return raw.strip().lower() in ("1", "true", "yes", "on", "t")
+
+
+def _is_non_local_deployment() -> bool:
+    """Whether deployment configuration explicitly marks this as non-local.
+
+    A plain bind address is not enough to infer exposure (containers commonly
+    bind ``0.0.0.0`` during local development), so this gate relies on an
+    explicit production environment or public URL.
+    """
+    environment = (
+        os.getenv("JEEN_ENV")
+        or os.getenv("JEEN_DEPLOYMENT_ENV")
+        or os.getenv("APP_ENV")
+        or os.getenv("ENVIRONMENT")
+        or ""
+    ).strip().lower()
+    if environment in {"prod", "production", "staging", "stage"}:
+        return True
+    public_urls = [
+        value.strip()
+        for value in (
+            os.getenv("JEEN_PUBLIC_URL"),
+            os.getenv("PUBLIC_URL"),
+            os.getenv("PUBLIC_APP_URL"),
+        )
+        if value and value.strip()
+    ]
+    for public_url in public_urls:
+        host = (urlparse(public_url).hostname or "").lower()
+        if not host:
+            # A public URL is an explicit deployment signal. A malformed value
+            # must never downgrade the process to local-dev safety assumptions.
+            return True
+        if host not in {"localhost", "127.0.0.1", "::1"}:
+            return True
+    return False
+
+
+def assert_deployment_safe() -> None:
+    """Refuse to run development credential mode on a non-local deployment."""
+    if _dev_mode() and _is_non_local_deployment():
+        raise InternalAuthConfigError(
+            "JEEN_DEV_MODE=true is only permitted for local development. "
+            "Set JEEN_DEV_MODE=false and configure production secrets before deployment."
+        )
 
 
 class PrincipalError(Exception):
@@ -81,6 +127,7 @@ class Principal:
             "user_id": self.user_id,
             "user_name": self.name,
             "user_email": self.email,
+            "user_role": self.role,
         }
 
 
@@ -119,6 +166,7 @@ def _load_secrets() -> List[Tuple[str, str]]:
 
 def assert_configured() -> None:
     """Validate secret configuration at startup (raises InternalAuthConfigError)."""
+    assert_deployment_safe()
     _load_secrets()
 
 

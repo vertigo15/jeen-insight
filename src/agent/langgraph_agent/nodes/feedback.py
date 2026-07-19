@@ -80,10 +80,20 @@ def make_feedback_classifier(max_retries: int):
             (error_context or "")[:120],
         )
 
-        return {
+        updates: Dict[str, Any] = {
             "feedback_type": feedback_type,
             "retry_count": new_retry_count,
             "error_context": error_context,
         }
+        # Prompt-side pruning occasionally causes the model to select an
+        # unlinked table. Retry once with the complete catalog; the second
+        # failure follows the regular bounded repair path.
+        if (
+            feedback_type == "missing_table"
+            and (state.get("structured_prompt") or {}).get("schema_pruned")
+            and not state.get("schema_link_widened")
+        ):
+            updates["schema_link_widened"] = True
+        return updates
 
     return feedback_classifier

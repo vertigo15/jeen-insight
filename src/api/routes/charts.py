@@ -8,10 +8,15 @@ import re
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from src.api.chart_builder import build_chart_option, profile_dataset
-from src.api.dependencies import get_history_service, require_user_id, resolve_agent
+from src.api.dependencies import (
+    get_history_service,
+    get_principal,
+    require_principal_user_id,
+    resolve_agent,
+)
 from src.api.llm_json import (
     extract_chart_type,
     extract_json_object,
@@ -32,6 +37,8 @@ from src.api.models import (
     GenerateChartResponse,
 )
 from src.api.result_cache import result_cache
+from src.security.internal_auth import Principal
+from src.agent.langgraph_agent.nodes.safety_text import fence_untrusted
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["charts"])
@@ -50,21 +57,47 @@ async def _verify_query_owner(*, query_id: Optional[str], user_id: str, connecti
 # ----------------------------------------------------------------------
 # Chart-edit (chart chat) prompt + budgets
 # ----------------------------------------------------------------------
-_CHART_EDITOR_PROMPT_PATH = (
+_PROMPTS_DIR = (
     Path(__file__).resolve().parent.parent.parent
     / "agent"
     / "prompts"
-    / "chart_editor.md"
 )
 _CHART_EDITOR_MAX_INSTRUCTION_CHARS = 500
 _CHART_EDITOR_MAX_RECENT_MESSAGES = 6
 _CHART_EDITOR_MAX_RECENT_CHARS = 1500
 
 
+def _load_packaged_prompt(name: str) -> str:
+    """Read a registry-backed prompt from disk for outage-safe fallback."""
+    return (_PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
+
+
 def _load_chart_editor_prompt() -> str:
-    """Re-read the externalised prompt on every call so editing the .md file
-    has zero deploy cost in dev."""
-    return _CHART_EDITOR_PROMPT_PATH.read_text(encoding="utf-8")
+    return _load_packaged_prompt("chart_editor")
+
+
+async def _get_runtime_prompt(
+    name: str,
+    *,
+    render_static: bool = False,
+) -> tuple[str, object]:
+    """Prefer Settings' active DB version, preserving a packaged fallback."""
+    from src.api import state as app_state
+
+    if app_state.prompt_cache:
+        try:
+            content = await app_state.prompt_cache.get_content(name)
+            if content:
+                if render_static:
+                    content = content.format()
+                return (
+                    content,
+                    await app_state.prompt_cache.get_model_override(name),
+                )
+        except Exception:
+            logger.warning("charts: prompt cache lookup failed for %s", name, exc_info=True)
+    content = _load_packaged_prompt(name)
+    return (content.format() if render_static else content), None
 
 
 def _format_recent_messages(messages: Optional[List[ChatMessage]]) -> str:
@@ -138,120 +171,6 @@ def _profile_blob(profile: dict) -> str:
     return "\n".join(lines)
 
 
-_GENERATE_SYSTEM_PROMPT = (
-    "You are a senior data-visualization expert. Given a dataset's schema and a\n"
-    "statistical profile, choose the SINGLE best chart and return a compact JSON\n"
-    "SPEC describing how to encode it. You DO NOT draw the chart or echo data\n"
-    "values — the application renders the full dataset from your spec and handles\n"
-    "all number formatting. Decide the encoding; the app builds it.\n\n"
-    "Return ONLY valid JSON (no markdown fences, no comments, no prose). Schema:\n"
-    "{\n"
-    '  "chart_type": "bar|line|area|pie|donut|scatter|horizontal_bar|stacked_bar|stacked_area|combo|heatmap|gauge|map",\n'
-    '  "x": "<column for the category or time axis (pie/donut label dimension)>",\n'
-    '  "x_parts": ["<col>", "<col>"]  // OPTIONAL: 2+ columns to join into one ordered axis label, e.g. ["year","month"]. Omit or null otherwise.,\n'
-    '  "y": ["<one or more numeric measure columns>"],\n'
-    '  "secondary_y": ["<subset of y to draw on a right-hand axis as a line; combo only>"]  // OPTIONAL,\n'
-    '  "series": "<column to split into multiple series/segments, or null>",\n'
-    '  "aggregate": "sum|avg|count|min|max|none",\n'
-    '  "sort": "asc|desc|none",\n'
-    '  "top_n": <integer or null>,\n'
-    '  "title": "<concise human title>",\n'
-    '  "x_label": "<axis label or null>",\n'
-    '  "y_label": "<axis label or null>",\n'
-    '  "value_format": "number|currency|percent|none",\n'
-    '  "currency_symbol": "<currency symbol like $, €, £, ₪ — ONLY if the currency is known; else null>",\n'
-    '  "map_mode": "choropleth|points|null",\n'
-    '  "map_name": "world|world_detailed|israel_districts|null",\n'
-    '  "location": "<country/region/district/city column for map charts, or null>",\n'
-    '  "latitude": "<latitude column for point maps, or null>",\n'
-    '  "longitude": "<longitude/lng column for point maps, or null>",\n'
-    '  "value": "<numeric measure column for map charts, or null>",\n'
-    '  "map_quality": "standard|detailed|null",\n'
-    '  "map_palette": "blue|green|purple|orange|null",\n'
-    '  "show_labels": <true|false|null>,\n'
-    '  "show_unmatched": <true|false|null>,\n'
-    '  "map_focus": "world|israel|auto|null",\n'
-    '  "stacked": <true|false>,\n'
-    '  "smooth": <true|false>,\n'
-    '  "reason": "<one short sentence>"\n'
-    "}\n\n"
-    "CHOOSING THE BEST CHART (follow these viz best practices):\n"
-    "- TIME / ORDERED x (a date column, OR separate year/month/quarter columns) →\n"
-    "  LINE (use area only for volume/cumulative magnitude). Time is continuous,\n"
-    "  so a line shows the trend; do NOT use a pie/donut for time.\n"
-    "- DISCRETE categories compared by a measure → BAR. If labels are long or there\n"
-    "  are many categories (>12) → horizontal_bar with sort=desc and top_n (~15).\n"
-    "- Parts of a whole, few categories (≤6) → pie or donut. Never a pie for >8\n"
-    "  slices or for time — use bar/line instead.\n"
-    "- One measure split by a second category → stacked_bar / stacked_area\n"
-    "  (set series and stacked=true).\n"
-    "- Correlation between two numeric measures → scatter (x and y both numeric).\n"
-    "- Single headline KPI → gauge. Two categorical dims + one measure → heatmap.\n\n"
-    "MAPS / GEOGRAPHY:\n"
-    "- If the dataset has a country/region/district/location column plus a numeric\n"
-    "  measure, you may choose chart_type \"map\" with map_mode \"choropleth\".\n"
-    "- If the dataset has latitude and longitude columns plus a numeric measure,\n"
-    "  choose chart_type \"map\" with map_mode \"points\".\n"
-    "- For Israeli district-level data, use map_name \"israel_districts\" and\n"
-    "  map_mode \"choropleth\". For Israeli city data with lat/lng or known city\n"
-    "  names, use map_name \"israel_districts\" and map_mode \"points\".\n"
-    "- For country-level data, use map_name \"world\".\n"
-    "- Use map_quality \"detailed\" only when the user asks for a higher quality\n"
-    "  map; otherwise use \"standard\" or null. Use map_palette only for style\n"
-    "  requests. Use show_labels=true for small district maps or top city points.\n"
-    "- Never invent coordinates. If city names have no lat/lng and are not clearly\n"
-    "  Israeli city names, prefer horizontal_bar instead of a map.\n\n"
-    "WIDE / PERIOD-COMPARISON DATA (e.g. revenue_2006 vs revenue_2007):\n"
-    "- When the SAME metric is split across columns by period/group (revenue_2006,\n"
-    "  revenue_2007; sales_q1..q4; this_year/last_year), put ALL those columns in y\n"
-    "  so they render as GROUPED BARS — do NOT chart just one of them.\n"
-    "- If a change/percentage/difference column is also present (e.g. yoy_change_pct,\n"
-    "  growth, delta), use chart_type \"combo\": keep the period columns in y as bars\n"
-    "  and list the change/% column in BOTH y and secondary_y so it draws as a line\n"
-    "  on a second right-hand axis. This is the classic bars + diff-line view.\n\n"
-    "DATES & TIME AXES:\n"
-    "- A real date/timestamp column → use it as x with chart_type line; the app\n"
-    "  sorts chronologically automatically.\n"
-    "- SEPARATE year & month (or year & quarter) columns → set x_parts:[\"year\",\"month\"]\n"
-    "  (year first) and chart_type line. The app joins them into ordered labels\n"
-    "  like \"2024-01\" and sorts them in time order. Do NOT put month on x and year\n"
-    "  on series for a single trend line.\n\n"
-    "VALUE FORMATTING:\n"
-    "- Set value_format by the measure's MEANING: currency for money/sales/revenue,\n"
-    "  percent for rates/ratios/shares, number otherwise.\n"
-    "- CURRENCY: do NOT assume US dollars. Set currency_symbol ONLY when the data\n"
-    "  actually tells you the currency — e.g. a column named amount_usd/price_eur,\n"
-    "  a currency/iso code column, or symbols present in the sample values. If the\n"
-    "  currency is unknown, keep value_format=currency but leave currency_symbol\n"
-    "  null; the app then shows a plain number with no symbol.\n"
-    "- Do NOT pre-scale or round values and do NOT add K/M/$/%% yourself. The app\n"
-    "  abbreviates large numbers (1.2K, 3.4M, 1.1B) and picks sensible decimals.\n\n"
-    "MORE VIZ BEST PRACTICES:\n"
-    "- Keep it to ONE message: pick the single most relevant measure for y unless a\n"
-    "  combo/stack is clearly needed. Avoid >2 measures on one chart.\n"
-    "- Limit series: if splitting by `series` would create many lines/segments\n"
-    "  (>~6), instead set top_n (~15) on x and drop series, or keep the few biggest.\n"
-    "- Bars encode magnitude from a zero baseline — never start a bar's value axis\n"
-    "  above zero. Lines may use a fitted range to show trend.\n"
-    "- Use combo for measures with different units/scales (e.g. revenue as bars +\n"
-    "  margin %% as line, or two period columns as bars + their %% change as line);\n"
-    "  otherwise prefer a single type.\n"
-    "- Don't put high-cardinality IDs/keys (order id, customer id) on x — aggregate\n"
-    "  to a meaningful category or time instead.\n"
-    "- For ranking questions (top/bottom/most/least) use horizontal_bar + sort=desc.\n\n"
-    "IDENTIFIERS ARE NOT MEASURES:\n"
-    "- Numeric columns that are really labels/ordinals — month_number, year, quarter,\n"
-    "  week, day, rank, *_id, *_number — are DIMENSIONS. Never put them in y. Use\n"
-    "  them on x (or to order/label x), e.g. month_number orders the months but the\n"
-    "  measure on y is revenue/sales, not the month number itself.\n\n"
-    "RULES:\n"
-    "- x, x_parts[], y[], secondary_y[] and series MUST be exact column names.\n"
-    "- y must be numeric MEASURES (values you'd sum/average), not id/ordinal columns;\n"
-    "  aggregate when x (and series) repeats. Prefer sum for additive quantities and\n"
-    "  avg for rates/ratios/prices.\n"
-    "- Sort categorical charts by the measure desc unless x is time (chronological).\n"
-    "- Use the sample rows ONLY to understand shape/meaning, never to copy values."
-)
 
 
 def _coerce_columns(value, lowered: dict[str, str]) -> list[str]:
@@ -552,12 +471,15 @@ def _dataset_from_request(request: GenerateChartRequest) -> Optional[dict]:
 # row, and the LLM never transcribes values.
 # ----------------------------------------------------------------------
 @router.post("/generate-chart", response_model=GenerateChartResponse)
-async def generate_chart(request: GenerateChartRequest):
-    user_id = require_user_id(request.user_id)
+async def generate_chart(
+    request: GenerateChartRequest,
+    principal: Principal = Depends(get_principal),
+):
+    user_id = require_principal_user_id(principal, request.user_id)
     await _verify_query_owner(
         query_id=request.query_id, user_id=user_id, connection=request.connection
     )
-    agent = await resolve_agent(request.connection)
+    agent = await resolve_agent(request.connection, principal)
     chart_type_param = (request.chart_type or "auto").strip().lower()
 
     # 1. Resolve the dataset: cache first, then client-sent fallback.
@@ -606,24 +528,32 @@ async def generate_chart(request: GenerateChartRequest):
     instruction_blob = ("\n\n" + "\n".join(instruction_parts)) if instruction_parts else ""
 
     sample = list((dataset.get("rows") or [])[:50])
-    user_prompt = (
-        "Choose the best chart for this dataset and return the JSON spec.\n\n"
-        f"Dataset profile (computed over ALL {profile.get('row_count', 0)} rows):\n"
-        f"{_profile_blob(profile)}{instruction_blob}\n\n"
-        f"Sample rows (first {len(sample)} of {profile.get('row_count', 0)}, for "
-        "SHAPE/MEANING ONLY — do not copy these values into the chart):\n"
-        + json.dumps(sample, indent=2, default=str)
-        + "\n\nReturn ONLY the JSON spec."
+    system_prompt, model_override = await _get_runtime_prompt(
+        "generate_chart_system",
+        render_static=True,
     )
-
+    user_template, _ = await _get_runtime_prompt("generate_chart_user")
+    try:
+        user_prompt = user_template.format(
+            row_count=profile.get("row_count", 0),
+            profile_blob=fence_untrusted(_profile_blob(profile), label="result profile"),
+            instruction_blob=instruction_blob,
+            sample_count=len(sample),
+            sample_rows=fence_untrusted(
+                json.dumps(sample, indent=2, default=str), label="result sample"
+            ),
+        )
+    except (KeyError, IndexError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail="Chart generation prompt is malformed") from exc
     try:
         response = await agent.llm.generate(
             messages=[
-                {"role": "system", "content": _GENERATE_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=GENERATE_CHART_PARAMS.temperature,
             max_tokens=GENERATE_CHART_PARAMS.max_tokens,
+            model_override=model_override,
         )
         raw = response.get("content") or ""
         parsed = extract_json_object(raw)
@@ -665,7 +595,7 @@ async def generate_chart(request: GenerateChartRequest):
             chart_type=spec["chart_type"],
             chart_spec=spec,
             prompt=user_prompt,
-            system_message=_GENERATE_SYSTEM_PROMPT,
+            system_message=system_prompt,
         )
     except HTTPException:
         raise
@@ -678,7 +608,10 @@ async def generate_chart(request: GenerateChartRequest):
 # Chart chat: per-session, natural-language edits
 # ----------------------------------------------------------------------
 @router.post("/edit-chart", response_model=EditChartResponse)
-async def edit_chart(request: EditChartRequest):
+async def edit_chart(
+    request: EditChartRequest,
+    principal: Principal = Depends(get_principal),
+):
     """Apply a natural-language edit to the current ECharts config.
 
     The endpoint never touches the SQL result set. It returns a new chart
@@ -692,16 +625,29 @@ async def edit_chart(request: EditChartRequest):
     if not request.current_config:
         raise HTTPException(status_code=400, detail="`current_config` is required")
 
-    agent = await resolve_agent(request.connection)
+    agent = await resolve_agent(request.connection, principal)
     instruction = instruction[:_CHART_EDITOR_MAX_INSTRUCTION_CHARS]
 
-    column_types_blob = (
-        "\n".join(f"- {c.name} ({c.type})" for c in request.columns) or "(unknown)"
+    column_types_blob = fence_untrusted(
+        "\n".join(f"- {c.name} ({c.type})" for c in request.columns) or "(unknown)",
+        label="result columns",
     )
-    sample_blob = json.dumps(request.sample_data[:5], ensure_ascii=False, indent=2)
-    config_blob = json.dumps(request.current_config, ensure_ascii=False)
-    column_names_blob = json.dumps(request.column_names, ensure_ascii=False)
-    recent_blob = _format_recent_messages(request.recent_messages)
+    sample_blob = fence_untrusted(
+        json.dumps(request.sample_data[:5], ensure_ascii=False, indent=2),
+        label="result sample",
+    )
+    config_blob = fence_untrusted(
+        json.dumps(request.current_config, ensure_ascii=False),
+        label="current chart configuration",
+    )
+    column_names_blob = fence_untrusted(
+        json.dumps(request.column_names, ensure_ascii=False),
+        label="result columns",
+    )
+    recent_blob = fence_untrusted(
+        _format_recent_messages(request.recent_messages),
+        label="chart conversation history",
+    )
 
     from src.api import state as app_state
     if app_state.prompt_cache:
@@ -810,24 +756,34 @@ async def edit_chart(request: EditChartRequest):
 # One-shot enhancement of an existing chart config
 # ----------------------------------------------------------------------
 @router.post("/enhance-chart")
-async def enhance_chart_endpoint(request: EnhanceChartRequest):
-    agent = await resolve_agent(request.connection)
-    system_prompt = (
-        "You are a data visualization expert specializing in Apache ECharts. "
-        "Enhance the provided basic ECharts config: meaningful title, smart "
-        "number formatting (K/M/B), better colors, clear axis labels, polished "
-        "tooltips. Return ONLY valid JSON, no markdown fences, no explanations."
+async def enhance_chart_endpoint(
+    request: EnhanceChartRequest,
+    principal: Principal = Depends(get_principal),
+):
+    agent = await resolve_agent(request.connection, principal)
+    system_prompt, model_override = await _get_runtime_prompt(
+        "enhance_chart_system",
+        render_static=True,
     )
-    user_prompt = (
-        f"Enhance this {request.chart_type} chart configuration.\n\n"
-        "Column Information:\n"
-        + "\n".join(f"- {c.name} ({c.type})" for c in request.columns)
-        + "\n\nSample Data (first few rows):\n"
-        + json.dumps(request.sample_data[:5], indent=2)
-        + "\n\nCurrent Basic Configuration:\n"
-        + json.dumps(request.current_config, indent=2)
-        + "\n\nReturn ONLY the JSON configuration, no other text."
-    )
+    user_template, _ = await _get_runtime_prompt("enhance_chart_user")
+    try:
+        user_prompt = user_template.format(
+            chart_type=request.chart_type,
+            columns=fence_untrusted(
+                "\n".join(f"- {c.name} ({c.type})" for c in request.columns),
+                label="result columns",
+            ),
+            sample_data=fence_untrusted(
+                json.dumps(request.sample_data[:5], indent=2),
+                label="result sample",
+            ),
+            current_config=fence_untrusted(
+                json.dumps(request.current_config, indent=2),
+                label="current chart configuration",
+            ),
+        )
+    except (KeyError, IndexError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail="Chart enhancement prompt is malformed") from exc
     try:
         response = await agent.llm.generate(
             messages=[
@@ -836,6 +792,7 @@ async def enhance_chart_endpoint(request: EnhanceChartRequest):
             ],
             temperature=ENHANCE_CHART_PARAMS.temperature,
             max_tokens=ENHANCE_CHART_PARAMS.max_tokens,
+            model_override=model_override,
         )
         raw = response.get("content") or ""
         enhanced_config = extract_json_object(raw)

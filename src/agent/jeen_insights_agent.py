@@ -120,19 +120,11 @@ class JeenInsightsAgent:
             from src.metadata.runtime_settings import get_runtime_settings
             runtime = await get_runtime_settings()
 
-            # ── Parallel DB round-trips ──────────────────────────────────────
-            # metadata_loader, conversation history, and query audit log are
-            # all independent — run them concurrently to save ~1-2s of Azure
-            # network latency on every request.
-            #
-            # log_query is non-fatal: if the audit insert fails (e.g. DB
-            # hiccup) the flow continues with query_id=None and the error is
-            # surfaced in the UI via formatted_response["error"].
+            # The catalog load and audit insert are independent. History is read
+            # only after the audit insert so the current in-flight row can be
+            # deterministically excluded from multi-turn context.
             results = await asyncio.gather(
                 self._load_catalog(self.source_key),
-                self._fetch_conversation_context(
-                    session_id, user_id=str(user.id), limit=runtime.conversation_context_turns
-                ),
                 self._safe_log_query(
                     user_id=user.id,
                     session_id=session_id,
@@ -145,11 +137,19 @@ class JeenInsightsAgent:
             metadata_bundle: Dict[str, str] = (
                 results[0] if not isinstance(results[0], Exception) else {}
             )
-            conversation_context: List[Dict[str, Any]] = (
-                results[1] if not isinstance(results[1], Exception) else []
-            )
             query_id = (
-                results[2] if not isinstance(results[2], Exception) else None
+                results[1] if not isinstance(results[1], Exception) else None
+            )
+            conversation_context, pending_clarification = await asyncio.gather(
+                self._fetch_conversation_context(
+                    session_id,
+                    user_id=str(user.id),
+                    limit=runtime.conversation_context_turns,
+                    exclude_query_id=query_id,
+                ),
+                self.history.get_pending_clarification(
+                    session_id=session_id, user_id=str(user.id)
+                ),
             )
 
             # Surface non-fatal pre-graph errors for observability
@@ -158,10 +158,8 @@ class JeenInsightsAgent:
                 pre_graph_error = f"Metadata load failed: {results[0]}"
                 logger.error("metadata_loader.load_all failed: %s", results[0])
             if isinstance(results[1], Exception):
-                logger.warning("_fetch_conversation_context failed: %s", results[1])
-            if isinstance(results[2], Exception):
-                pre_graph_error = pre_graph_error or f"Audit log failed: {results[2]}"
-                logger.warning("log_query failed (non-fatal): %s", results[2])
+                pre_graph_error = pre_graph_error or f"Audit log failed: {results[1]}"
+                logger.warning("log_query failed (non-fatal): %s", results[1])
 
             initial_state: AgentState = {
                 # ── Input ───────────────────────────────────────────────
@@ -188,11 +186,16 @@ class JeenInsightsAgent:
                 "conversation_history": conversation_context,
                 "memory_summary": None,
                 "is_over_budget": False,
+                "pending_clarification": None,
+                "prior_pending_clarification": pending_clarification,
                 # ── Routing ─────────────────────────────────────────────
                 "route": "needs_query",
                 "route_reason": "",
+                "resolved_intent": {},
+                "disclosed_assumptions": [],
                 # ── Catalog ─────────────────────────────────────────────
                 "metadata_bundle": metadata_bundle,
+                "catalog_preloaded": not isinstance(results[0], Exception),
                 "dialect_rules": "",
                 "known_tables": [],
                 "known_columns": [],
@@ -305,13 +308,20 @@ class JeenInsightsAgent:
         )
 
     async def _fetch_conversation_context(
-        self, session_id: UUID, *, user_id: str, limit: int = 5
+        self,
+        session_id: UUID,
+        *,
+        user_id: str,
+        limit: int = 5,
+        exclude_query_id: Optional[UUID] = None,
     ) -> List[Dict[str, Any]]:
         try:
             ctx = await self.history.get_conversation_context(
-                session_id=session_id, user_id=user_id, limit=limit
+                session_id=session_id,
+                user_id=user_id,
+                limit=limit,
+                exclude_query_id=exclude_query_id,
             )
-            ctx.reverse()  # chronological order, oldest first
             if ctx:
                 logger.info(
                     "🧠 Short-term memory: %d previous Q&As loaded for %s",

@@ -67,6 +67,77 @@ async def _ensure_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_insights_prompts_place
             ON insights_prompts(prompt_place)
     """)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS insights_source_access (
+            source_key   VARCHAR(255) NOT NULL,
+            subject_type VARCHAR(16)  NOT NULL
+                CHECK (subject_type IN ('user', 'role', 'group')),
+            subject_id   TEXT         NOT NULL,
+            created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (source_key, subject_type, subject_id)
+        )
+    """)
+    await conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_insights_source_access_subject
+            ON insights_source_access(subject_type, subject_id)
+    """)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS insights_column_entitlements (
+            source_key     TEXT NOT NULL,
+            table_name     TEXT NOT NULL,
+            column_name    TEXT NOT NULL,
+            classification TEXT NOT NULL DEFAULT 'internal',
+            allowed_roles  TEXT[] NOT NULL DEFAULT ARRAY['admin']::TEXT[],
+            created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (source_key, table_name, column_name)
+        )
+    """)
+    await conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_column_entitlements_source
+            ON insights_column_entitlements(source_key)
+    """)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS insights_prompt_audit (
+            id              SERIAL PRIMARY KEY,
+            prompt_place    VARCHAR(100) NOT NULL,
+            action          VARCHAR(32)  NOT NULL,
+            actor_user_id   TEXT,
+            actor_email     TEXT,
+            version         INTEGER      NOT NULL,
+            details         JSONB        NOT NULL DEFAULT '{}'::jsonb,
+            created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        )
+    """)
+    await conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_insights_prompt_audit_place_created
+            ON insights_prompt_audit(prompt_place, created_at DESC)
+    """)
+    await conn.execute("""
+        CREATE OR REPLACE FUNCTION prevent_insights_prompt_audit_mutation()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+            RAISE EXCEPTION 'insights_prompt_audit is append-only';
+        END;
+        $$
+    """)
+    await conn.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_trigger
+                WHERE tgname = 'trg_insights_prompt_audit_append_only'
+            ) THEN
+                CREATE TRIGGER trg_insights_prompt_audit_append_only
+                    BEFORE UPDATE OR DELETE ON insights_prompt_audit
+                    FOR EACH ROW
+                    EXECUTE FUNCTION prevent_insights_prompt_audit_mutation();
+            END IF;
+        END;
+        $$
+    """)
     # Additive columns — safe to run repeatedly via IF NOT EXISTS.
     await conn.execute("""
         ALTER TABLE insights_conversation_sessions
@@ -196,38 +267,103 @@ async def _seed_prompts(conn) -> None:
         path  = entry["path"]
         file_content = path.read_text(encoding="utf-8") if path.exists() else ""
 
-        row = await conn.fetchrow(
-            "SELECT id, content, is_custom "
-            "FROM insights_prompts WHERE prompt_place = $1 AND is_active = true",
-            place,
-        )
-
-        if not row:
-            # New prompt — insert default v1 row.
-            await conn.execute(
-                """
-                INSERT INTO insights_prompts
-                    (prompt_place, content, version, is_active, is_custom, model_id)
-                VALUES ($1, $2, 1, true, false, NULL)
-                """,
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT id, content, is_custom, version, model_id "
+                "FROM insights_prompts WHERE prompt_place = $1 AND is_active = true "
+                "FOR UPDATE",
                 place,
-                file_content,
             )
-            seeded += 1
-        elif not row["is_custom"] and row["content"] != file_content:
-            # Default row whose source file was updated — refresh in place.
-            await conn.execute(
-                "UPDATE insights_prompts SET content = $1, updated_at = NOW() "
-                "WHERE id = $2",
-                file_content,
-                row["id"],
-            )
-            updated += 1
+
+            if not row:
+                # New prompt — insert default v1 row.
+                insert_result = await conn.execute(
+                    """
+                    INSERT INTO insights_prompts
+                        (prompt_place, content, version, is_active, is_custom, model_id)
+                    VALUES ($1, $2, 1, true, false, NULL)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    place,
+                    file_content,
+                )
+                if insert_result != "INSERT 0 0":
+                    seeded += 1
+            elif not row["is_custom"] and row["content"] != file_content:
+                # Code defaults changed. Preserve history and a prompt-level model
+                # override instead of overwriting the current version in place.
+                await conn.execute(
+                    "UPDATE insights_prompts SET is_active = false, updated_at = NOW() "
+                    "WHERE id = $1",
+                    row["id"],
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO insights_prompts
+                        (prompt_place, content, version, is_active, is_custom, model_id)
+                    VALUES ($1, $2, $3, true, false, $4)
+                    """,
+                    place,
+                    file_content,
+                    row["version"] + 1,
+                    row["model_id"],
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO insights_prompt_audit
+                        (prompt_place, action, version, details)
+                    VALUES ($1, 'seed_default', $2, '{"source":"packaged_default"}'::jsonb)
+                    """,
+                    place,
+                    row["version"] + 1,
+                )
+                updated += 1
 
     if seeded:
         logger.info("startup: seeded %d prompt row(s) in insights_prompts", seeded)
     if updated:
         logger.info("startup: refreshed %d default prompt row(s) from updated files", updated)
+
+
+async def _bootstrap_source_access(conn) -> None:
+    """Preserve existing viewer access once when source ACLs are introduced.
+
+    The first upgrade grants the legacy broad viewer/editor audience access to
+    sources that were already active, then records completion. Administrators can
+    immediately replace those grants with narrower user/group grants; subsequent
+    startups never recreate revoked grants and newly registered sources remain
+    deny-by-default.
+    """
+    marker = await conn.fetchval(
+        "SELECT value FROM app_settings WHERE key = 'source_access_bootstrapped'"
+    )
+    if marker == "true":
+        return
+    async with conn.transaction():
+        marker = await conn.fetchval(
+            "SELECT value FROM app_settings WHERE key = 'source_access_bootstrapped' FOR UPDATE"
+        )
+        if marker == "true":
+            return
+        result = await conn.execute(
+            """
+            INSERT INTO insights_source_access (source_key, subject_type, subject_id)
+            SELECT name, 'role', roles.role
+            FROM public.settings_services
+            CROSS JOIN (VALUES ('viewer'), ('editor')) AS roles(role)
+            WHERE category = 'database' AND is_active = TRUE
+            ON CONFLICT DO NOTHING
+            """
+        )
+        await conn.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES ('source_access_bootstrapped', 'true', NOW())
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+            """
+        )
+    logger.info("startup: bootstrapped legacy viewer/editor source access (%s)", result)
 
 
 @asynccontextmanager
@@ -284,6 +420,7 @@ async def lifespan(_app: FastAPI):
     # ── Schema + prompt seeding ─────────────────────────────────────────────
     async with pool.acquire() as conn:
         await _ensure_schema(conn)
+        await _bootstrap_source_access(conn)
         await _seed_prompts(conn)
 
     # ── Build LLM service from DB credentials ─────────────────────────────────

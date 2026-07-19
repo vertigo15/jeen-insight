@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.connectors.base import assert_read_only_query
+from src.connectors.base import assert_query_complexity, assert_read_only_query
 from src.tools.sql_tool import is_read_only_sql
 
 
@@ -77,3 +77,13 @@ def test_assert_read_only_query_blocks_unsafe_structures(sql):
     # check is what protects engines without a read-only transaction.
     assert is_read_only_sql(sql) is True
     assert assert_read_only_query(sql, "postgres") is not None
+
+
+def test_complexity_limit_blocks_warehouse_join_fanout():
+    sql = "SELECT 1 FROM source " + " ".join(
+        f"JOIN table_{index} ON 1 = 1" for index in range(7)
+    )
+
+    assert assert_query_complexity(sql, database_type="trino", dialect="trino")
+    assert assert_query_complexity("SELECT 1", database_type="trino", dialect="trino") is None
+    assert assert_query_complexity(sql, database_type="postgres", dialect="postgres") is None

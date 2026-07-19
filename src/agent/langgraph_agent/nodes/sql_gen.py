@@ -19,7 +19,10 @@ import time
 from typing import Any, Dict, List, Optional
 
 from src.agent.answer_cache import answer_cache
-from src.agent.langgraph_agent.nodes.artifacts import latest_result_ref
+from src.agent.langgraph_agent.nodes.artifacts import (
+    build_sql_planning_context,
+    latest_result_ref,
+)
 from src.agent.langgraph_agent.nodes.safety_text import fence_untrusted
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
@@ -32,6 +35,7 @@ logger = logging.getLogger(__name__)
 # (sort/filter/aggregate) over already-retrieved data without a new DB query.
 _RECOMPUTE_SAMPLE_ROWS = 50
 _RECOMPUTE_JSON_CAP = 6000
+REPLAY_SIMILARITY_FLOOR = 0.85
 
 
 def _cached_rows_for(user_id: Any, source_key: Any, query_id: Any) -> Optional[Dict[str, Any]]:
@@ -120,7 +124,7 @@ def _reuse_prior_result(state: AgentState, question: str) -> Optional[Dict[str, 
         if sim >= best_sim:
             best_sim = sim
             best = qa
-    if not best:
+    if not best or best_sim < REPLAY_SIMILARITY_FLOOR:
         return None
     cached = _cached_rows_for(state.get("user_id"), state.get("source_key"), best.get("id"))
     if not cached or not cached.get("rows"):
@@ -237,7 +241,15 @@ def make_sql_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
         for i, qa in enumerate(history):
             if qa.get("natural_language_query") and qa.get("generated_sql"):
                 call_id = f"prev_call_{i}"  # unique per turn
-                messages.append({"role": "user", "content": qa["natural_language_query"]})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": fence_untrusted(
+                            str(qa["natural_language_query"]),
+                            label="prior conversation question",
+                        ),
+                    }
+                )
                 messages.append(
                     {
                         "role": "assistant",
@@ -269,7 +281,7 @@ def make_sql_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
             user_msg = await prompt_loader.arender(
                 "sql_generator",
                 question=question,
-                error_context=error_context,
+                error_context=fence_untrusted(str(error_context), label="query error context"),
                 retry_count=retry_count,
                 connection_display_name=display_name,
                 source_key=source_key,
@@ -280,6 +292,15 @@ def make_sql_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
             )
         else:
             user_msg = question
+
+        if retry_count == 0:
+            planning_context = build_sql_planning_context(
+                history,
+                memory_summary=state.get("memory_summary"),
+                intent=state.get("resolved_intent"),
+            )
+            if planning_context:
+                user_msg = f"{planning_context}\n\nCurrent question:\n{user_msg}"
 
         messages.append({"role": "user", "content": user_msg})
 
@@ -379,6 +400,8 @@ def make_memory_answer_generator(llm: LangChainLlmService, prompt_loader: Prompt
             f"Result sample: {qa.get('result_preview', '')}"
             for qa in history
         )
+        if history_text:
+            history_text = fence_untrusted(history_text, label="conversation history")
 
         # Fold in the most recent result's cached rows so the model can recompute
         # (sort/filter/aggregate) locally instead of guessing from the preview.

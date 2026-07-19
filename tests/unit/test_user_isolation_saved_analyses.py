@@ -40,9 +40,11 @@ def test_history_feedback_scopes_update_to_user(client, fake_state):
     assert fake_state.history_service.record_feedback.await_args.kwargs["user_id"] == "user-a"
 
 
-def test_saved_analyses_list_requires_user(client, fake_state):
+def test_saved_analyses_list_uses_verified_principal(client, fake_state):
+    fake_state.history_service.list_saved_analyses = AsyncMock(return_value=[])
     resp = client.get("/api/saved-analyses?connection=sales")
-    assert resp.status_code == 422  # missing required user_id query param
+    assert resp.status_code == 200
+    assert fake_state.history_service.list_saved_analyses.await_args.kwargs["user_id"] == "user-a"
 
 
 def test_saved_analyses_save_and_restore_are_user_scoped(client, fake_state):
@@ -68,9 +70,8 @@ def test_saved_analyses_save_and_restore_are_user_scoped(client, fake_state):
     missing = client.get(
         "/api/saved-analyses/22222222-2222-2222-2222-222222222222?user_id=user-b"
     )
-    assert missing.status_code == 404
-    fake_state.history_service.get_saved_analysis.assert_awaited_once()
-    assert fake_state.history_service.get_saved_analysis.await_args.kwargs["user_id"] == "user-b"
+    assert missing.status_code == 403
+    fake_state.history_service.get_saved_analysis.assert_not_awaited()
 
 
 def test_chart_generation_rejects_foreign_query_id(client, fake_state):

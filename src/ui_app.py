@@ -33,6 +33,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_wtf import CSRFProtect
 from flask_wtf.csrf import CSRFError
+from src.security.internal_auth import assert_deployment_safe as _assert_deployment_safe
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,6 +54,8 @@ def _env_bool(name: str, default: bool = False) -> bool:
 # "just works" anywhere with zero secret provisioning. Harden a real deployment
 # with JEEN_DEV_MODE=false, which then requires strong, non-default secrets.
 DEV_MODE = _env_bool("JEEN_DEV_MODE", default=True)
+
+_assert_deployment_safe()
 
 # Send cookies over HTTPS only. Defaults to ON in production, OFF in dev so local
 # http://localhost:8501 still logs in.
@@ -272,6 +275,19 @@ def _proxy_post(path: str, payload: Dict[str, Any], timeout: float = 60) -> Any:
         )
     except requests.exceptions.RequestException as e:
         logger.error("Backend POST %s failed: %s", path, e)
+        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+    if response.status_code == 200:
+        return jsonify(response.json())
+    return jsonify({"error": response.text}), response.status_code
+
+
+def _proxy_put(path: str, payload: Dict[str, Any], timeout: float = 30) -> Any:
+    try:
+        response = requests.put(
+            f"{API_BASE_URL}{path}", json=payload, timeout=timeout, headers=_internal_headers()
+        )
+    except requests.exceptions.RequestException as e:
+        logger.error("Backend PUT %s failed: %s", path, e)
         return jsonify({"error": f"Backend unavailable: {e}"}), 503
     if response.status_code == 200:
         return jsonify(response.json())
@@ -778,6 +794,32 @@ def get_connection(source_key: str):
     return _proxy_get(f"/api/connections/{source_key}", timeout=15)
 
 
+@app.route("/api/connections/<source_key>/access", methods=["GET"])
+@_admin_required()
+def list_connection_access(source_key: str):
+    return _proxy_get(f"/api/connections/{source_key}/access", timeout=15)
+
+
+@app.route("/api/connections/<source_key>/access", methods=["PUT"])
+@_admin_required()
+def grant_connection_access(source_key: str):
+    return _proxy_put(
+        f"/api/connections/{source_key}/access",
+        payload=request.get_json(silent=True) or {},
+        timeout=15,
+    )
+
+
+@app.route("/api/connections/<source_key>/access", methods=["DELETE"])
+@_admin_required()
+def revoke_connection_access(source_key: str):
+    return _proxy_delete(
+        f"/api/connections/{source_key}/access",
+        params=request.args.to_dict(),
+        timeout=15,
+    )
+
+
 @app.route("/api/connections/<source_key>/refresh-metadata", methods=["POST"])
 def refresh_metadata(source_key: str):
     return _proxy_post(f"/api/connections/{source_key}/refresh-metadata", payload={}, timeout=15)
@@ -1123,6 +1165,65 @@ def settings_reload_prompts():
 @app.route("/api/settings/prompts/<name>", methods=["GET"])
 def settings_get_prompt(name: str):
     return _proxy_get(f"/api/settings/prompts/{name}", timeout=10)
+
+
+@app.route("/api/settings/prompt-contexts", methods=["GET"])
+def settings_list_prompt_contexts():
+    guard = _admin_required()
+    if guard:
+        return guard
+    return _proxy_get("/api/settings/prompt-contexts", timeout=20)
+
+
+@app.route("/api/settings/prompts/<name>/resolved", methods=["GET"])
+def settings_resolve_prompt(name: str):
+    guard = _admin_required()
+    if guard:
+        return guard
+    connection = request.args.get("connection")
+    if not connection:
+        return jsonify({"error": "connection is required"}), 400
+    return _proxy_get(
+        f"/api/settings/prompts/{name}/resolved",
+        params={"connection": connection},
+        timeout=30,
+    )
+
+
+@app.route("/api/settings/prompts/<name>/versions", methods=["GET"])
+def settings_list_prompt_versions(name: str):
+    guard = _admin_required()
+    if guard:
+        return guard
+    return _proxy_get(f"/api/settings/prompts/{name}/versions", timeout=10)
+
+
+@app.route("/api/settings/prompts/<name>/versions/<int:version_id>", methods=["GET"])
+def settings_get_prompt_version(name: str, version_id: int):
+    guard = _admin_required()
+    if guard:
+        return guard
+    return _proxy_get(f"/api/settings/prompts/{name}/versions/{version_id}", timeout=10)
+
+
+@app.route("/api/settings/prompts/<name>/restore/<int:version_id>", methods=["POST"])
+def settings_restore_prompt_version(name: str, version_id: int):
+    guard = _admin_required()
+    if guard:
+        return guard
+    return _proxy_post(
+        f"/api/settings/prompts/{name}/restore/{version_id}",
+        payload={},
+        timeout=10,
+    )
+
+
+@app.route("/api/settings/prompts/<name>/audit", methods=["GET"])
+def settings_list_prompt_audit(name: str):
+    guard = _admin_required()
+    if guard:
+        return guard
+    return _proxy_get(f"/api/settings/prompts/{name}/audit", timeout=10)
 
 
 @app.route("/api/settings/prompts/<name>", methods=["PUT"])

@@ -29,6 +29,7 @@ from src.agent.llm_service import LangChainLlmService
 logger = logging.getLogger(__name__)
 
 _VALID_ROUTES = frozenset({"needs_query", "from_memory", "out_of_scope", "unsafe"})
+_INTENT_CONFIDENCE_FLOOR = 0.6
 
 # ── Greeting short-circuit ────────────────────────────────────────────────────
 # Simple inputs that are clearly social/conversational are caught locally before
@@ -85,6 +86,32 @@ def _merge_usage(current: Dict[str, int], new: Dict[str, Any]) -> Dict[str, int]
     }
 
 
+def _normalise_intent(value: Any) -> Dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    confidence = raw.get("confidence", 0.0)
+    try:
+        confidence = max(0.0, min(1.0, float(confidence)))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    assumptions = raw.get("assumptions") or []
+    return {
+        "metric": str(raw["metric"]).strip() if raw.get("metric") else None,
+        "dimensions": [str(v).strip() for v in raw.get("dimensions", []) if str(v).strip()][:8],
+        "filters": [str(v).strip() for v in raw.get("filters", []) if str(v).strip()][:8],
+        "time_range": str(raw["time_range"]).strip() if raw.get("time_range") else None,
+        "comparison": str(raw["comparison"]).strip() if raw.get("comparison") else None,
+        "referenced_result": raw.get("referenced_result")
+        if (
+            isinstance(raw.get("referenced_result"), int)
+            and not isinstance(raw.get("referenced_result"), bool)
+            and raw["referenced_result"] > 0
+        )
+        else None,
+        "confidence": confidence,
+        "assumptions": [str(v).strip() for v in assumptions if str(v).strip()][:4],
+    }
+
+
 def make_fused_router(router_llm: LangChainLlmService, prompt_loader: PromptLoader):
     """Return an async ``fused_router`` node."""
 
@@ -108,6 +135,13 @@ def make_fused_router(router_llm: LangChainLlmService, prompt_loader: PromptLoad
         if not summary:
             summary = _format_recent_history(history)
         summary = summary or "No prior conversation."
+        prior_pending = state.get("prior_pending_clarification")
+        if prior_pending and isinstance(prior_pending, dict):
+            prior_question = prior_pending.get("error_message") or prior_pending.get("question")
+            if prior_question:
+                summary = f"{summary}\n\n{fence_untrusted(str(prior_question), label='pending clarification')}"
+        if summary != "No prior conversation.":
+            summary = fence_untrusted(summary, label="conversation history")
         # Append a manifest of prior result sets (columns, row counts, small
         # stats) so the router can tell when a question is a follow-up over
         # already-retrieved data vs. one needing a fresh query.
@@ -141,6 +175,7 @@ def make_fused_router(router_llm: LangChainLlmService, prompt_loader: PromptLoad
         content = (response.get("content") or "").strip()
         route = "needs_query"
         reason = ""
+        intent: Dict[str, Any] = _normalise_intent({})
 
         # Strip possible markdown fences before JSON parsing
         json_str = content
@@ -161,6 +196,11 @@ def make_fused_router(router_llm: LangChainLlmService, prompt_loader: PromptLoad
                     "fused_router: unknown route %r — defaulting to needs_query", candidate
                 )
             reason = str(parsed.get("reason", ""))
+            intent = (
+                _normalise_intent(parsed.get("intent"))
+                if isinstance(parsed.get("intent"), dict)
+                else _normalise_intent({"confidence": 1.0})
+            )
         except (json.JSONDecodeError, AttributeError, TypeError):
             logger.warning(
                 "fused_router: could not parse JSON response %r — defaulting to needs_query",
@@ -170,9 +210,24 @@ def make_fused_router(router_llm: LangChainLlmService, prompt_loader: PromptLoad
         logger.info("fused_router: route=%s | reason=%s", route, reason)
 
         usage = response.get("usage") or {}
+        pending_clarification = None
+        assumptions = intent["assumptions"]
+        if route == "needs_query" and intent["confidence"] < _INTENT_CONFIDENCE_FLOOR and not assumptions:
+            pending_clarification = {
+                "question": (
+                    "I need one detail before querying: which metric, time range, or "
+                    "dimension should I use?"
+                ),
+                "intent": intent,
+            }
+
         return {
             "route": route,
             "route_reason": reason,
+            "resolved_intent": intent,
+            "disclosed_assumptions": assumptions,
+            "pending_clarification": pending_clarification,
+            "clarification": pending_clarification["question"] if pending_clarification else None,
             "llm_call_count": (state.get("llm_call_count") or 0) + 1,
             "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
             "token_usage": _merge_usage(state.get("token_usage") or {}, usage),

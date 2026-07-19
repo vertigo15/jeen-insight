@@ -44,6 +44,7 @@ class MetadataLoader:
         # Whether `metadata_sources` exposes `connection_schema` or `database_schema`.
         # Probed lazily on first use.
         self._schema_column: Optional[str] = None
+        self._column_policy_cache: Dict[str, tuple[float, Dict[str, Dict[str, Any]]]] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -83,13 +84,63 @@ class MetadataLoader:
         """Drop the cache for a single source (or everything if None)."""
         if source_key is None:
             self._cache.clear()
+            self._column_policy_cache.clear()
         else:
             self._cache.pop(source_key, None)
             self._cache.pop(f"kq::{source_key}", None)
             self._cache.pop(f"tables_rich::{source_key}", None)
+            self._column_policy_cache.pop(source_key, None)
             # Drop column caches (per-table and ALL).
             for k in [k for k in self._cache if k.startswith(f"cols::{source_key}::")]:
                 self._cache.pop(k, None)
+
+    async def load_column_entitlements(self, source_key: str) -> Dict[str, Dict[str, Any]]:
+        """Load enforced column classifications keyed by lower-case column name.
+
+        Entitlements are curated metadata, not prompt text. A missing entry is
+        intentionally non-sensitive; classified entries are enforced by the
+        deterministic DLP node before SQL reaches any connector.
+        """
+        now = time.monotonic()
+        cached = self._column_policy_cache.get(source_key)
+        if cached and cached[0] > now:
+            return cached[1]
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT table_name, column_name, classification, allowed_roles
+                    FROM insights_column_entitlements
+                    WHERE source_key = $1
+                    """,
+                    source_key,
+                )
+        except Exception:
+            logger.exception("Failed to load column entitlements for %s", source_key)
+            return {}
+        policies: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            column = str(row["column_name"]).lower()
+            table = str(row["table_name"]).lower()
+            roles = {str(role).lower() for role in (row["allowed_roles"] or [])}
+            existing = policies.get(column)
+            if existing is None:
+                policies[column] = {
+                    "classification": str(row["classification"]).lower(),
+                    "allowed_roles": sorted(roles),
+                    "tables": [table],
+                }
+                continue
+            # A bare/aliased column reference is ambiguous across tables. Keep
+            # the intersection of privileges so ambiguity cannot widen access.
+            existing["allowed_roles"] = sorted(
+                set(existing.get("allowed_roles") or []) & roles
+            )
+            existing["tables"] = sorted(set(existing.get("tables") or []) | {table})
+            if existing.get("classification") != str(row["classification"]).lower():
+                existing["classification"] = "restricted"
+        self._column_policy_cache[source_key] = (now + _CACHE_TTL_SECONDS, policies)
+        return policies
 
     async def load_tables_rich(
         self, source_key: str

@@ -171,6 +171,7 @@ async def continue_read_action(
             session_id=body.session_id,
             tool_results=tool_results,
             llm=llm,
+            prompt_cache=api_state.prompt_cache,
         )
     except ValueError as exc:
         raise HTTPException(status_code=410, detail=str(exc)) from exc

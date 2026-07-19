@@ -6,10 +6,16 @@ import json
 import logging
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from src.api.dependencies import get_history_service, require_user_id, resolve_agent
+from src.api.dependencies import (
+    get_history_service,
+    get_principal,
+    require_principal_user_id,
+    require_source_access,
+    resolve_agent,
+)
 from src.api.models import (
     GenerateInsightsRequest,
     GenerateInsightsResponse,
@@ -18,6 +24,7 @@ from src.api.models import (
 from src.api.chart_builder import profile_dataset, summarize_profile
 from src.api.result_cache import result_cache
 from src.config import settings
+from src.security.internal_auth import Principal
 
 # Stats for insights are computed over (essentially) the whole result set, not a
 # 5k sample, so figures like sums/averages reflect all the data.
@@ -88,12 +95,15 @@ async def _verify_query_owner(*, query_id, user_id: str, connection: str) -> Non
 
 
 @router.post("/generate-insights", response_model=GenerateInsightsResponse)
-async def generate_insights_endpoint(request: GenerateInsightsRequest):
-    user_id = require_user_id(request.user_id)
+async def generate_insights_endpoint(
+    request: GenerateInsightsRequest,
+    principal: Principal = Depends(get_principal),
+):
+    user_id = require_principal_user_id(principal, request.user_id)
     await _verify_query_owner(
         query_id=request.query_id, user_id=user_id, connection=request.connection
     )
-    agent = await resolve_agent(request.connection)
+    agent = await resolve_agent(request.connection, principal)
     logger.info("Generating insights for: %s", request.question[:50])
     # Resolve before the try so a 409 cache_miss propagates instead of being
     # swallowed into a generic "Unable to generate insights" response.
@@ -170,10 +180,15 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
 
         prompt_template = None
         model_override  = None
+        system_template = None
         if app_state.prompt_cache:
             try:
                 prompt_template = await app_state.prompt_cache.get_content("insights")
                 model_override  = await app_state.prompt_cache.get_model_override("insights")
+            except Exception:
+                pass
+            try:
+                system_template = await app_state.prompt_cache.get_content("insights_system")
             except Exception:
                 pass
 
@@ -184,6 +199,7 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
             original_question=request.question,
             llm_service=agent.llm,
             prompt_template=prompt_template,
+            system_template=system_template,
             model_override=model_override,
         )
         exec_time_ms = int((time.time() - start) * 1000)
@@ -225,7 +241,10 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
 
 
 @router.post("/generate-insights/stream")
-async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
+async def generate_insights_stream_endpoint(
+    request: GenerateInsightsRequest,
+    principal: Principal = Depends(get_principal),
+):
     """Insights over Server-Sent Events.
 
     Two delivery modes share one ``text/event-stream`` contract:
@@ -241,11 +260,11 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
     Both paths terminate with ``done`` (or ``error``); unknown events are safely
     ignored by the client.
     """
-    user_id = require_user_id(request.user_id)
+    user_id = require_principal_user_id(principal, request.user_id)
     await _verify_query_owner(
         query_id=request.query_id, user_id=user_id, connection=request.connection
     )
-    agent = await resolve_agent(request.connection)
+    agent = await resolve_agent(request.connection, principal)
     logger.info("Streaming insights for: %s", request.question[:50])
 
     from src.api import state as app_state
@@ -323,10 +342,15 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
             # ── Legacy streaming path ──────────────────────────────────────
             prompt_template = None
             model_override   = None
+            system_template  = None
             if app_state.prompt_cache:
                 try:
                     prompt_template = await app_state.prompt_cache.get_content("insights")
                     model_override   = await app_state.prompt_cache.get_model_override("insights")
+                except Exception:
+                    pass
+                try:
+                    system_template = await app_state.prompt_cache.get_content("insights_system")
                 except Exception:
                     pass
 
@@ -338,6 +362,7 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
                     original_question=request.question,
                     llm_service=agent.llm,
                     prompt_template=prompt_template,
+                    system_template=system_template,
                     model_override=model_override,
                 ):
                     kind = ev.get("type")
@@ -414,8 +439,14 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
 
 
 @router.post("/generate-profile")
-async def generate_profile_endpoint(request: GenerateProfileRequest):
-    user_id = require_user_id(request.user_id)
+async def generate_profile_endpoint(
+    request: GenerateProfileRequest,
+    principal: Principal = Depends(get_principal),
+):
+    user_id = require_principal_user_id(principal, request.user_id)
+    if not request.connection:
+        raise HTTPException(status_code=400, detail="`connection` is required for profiling")
+    await require_source_access(principal, request.connection)
     if request.query_id:
         await _verify_query_owner(
             query_id=request.query_id, user_id=user_id, connection=request.connection or ""

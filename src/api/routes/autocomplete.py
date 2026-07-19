@@ -6,12 +6,19 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from src.api.dependencies import get_catalog_provider, resolve_agent
+from src.api.dependencies import (
+    get_catalog_provider,
+    get_principal,
+    require_source_access,
+    resolve_agent,
+)
 from src.api.llm_json import extract_json_object, normalise_corrections
 from src.api.llm_params import AUTOCOMPLETE_PARAMS
 from src.api.models import SuggestQuestionsRequest
+from src.agent.langgraph_agent.nodes.safety_text import fence_untrusted
+from src.security.internal_auth import Principal
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["autocomplete"])
@@ -43,7 +50,9 @@ def _load_autocomplete_prompt() -> str:
 @router.get("/knowledge-questions")
 async def get_knowledge_questions(
     connection: str = Query(..., description="source_key of the active connection"),
+    principal: Principal = Depends(get_principal),
 ):
+    connection = await require_source_access(principal, connection)
     provider = await get_catalog_provider(connection)
     items = await provider.load_knowledge_questions(connection)
     return {
@@ -60,7 +69,9 @@ async def get_knowledge_questions(
 async def get_knowledge_columns(
     connection: str = Query(..., description="source_key of the active connection"),
     table: Optional[str] = Query(None, description="Optional: scope to one table"),
+    principal: Principal = Depends(get_principal),
 ):
+    connection = await require_source_access(principal, connection)
     provider = await get_catalog_provider(connection)
     items = await provider.load_columns(connection, table)
     return {
@@ -75,7 +86,10 @@ async def get_knowledge_columns(
 # Tier 3 LLM
 # ----------------------------------------------------------------------
 @router.post("/suggest-questions")
-async def suggest_questions(request: SuggestQuestionsRequest):
+async def suggest_questions(
+    request: SuggestQuestionsRequest,
+    principal: Principal = Depends(get_principal),
+):
     """Tier 3 autocomplete: ask the LLM for completions when the cheap tiers
     returned nothing. Server-side guards: connection required, partial must be
     >= 10 chars (mirrors client gate), small token budget, JSON-only output.
@@ -87,7 +101,7 @@ async def suggest_questions(request: SuggestQuestionsRequest):
             detail="`partial` must be at least 10 characters.",
         )
 
-    agent = await resolve_agent(request.connection)
+    agent = await resolve_agent(request.connection, principal)
 
     # Build the table list. Trust the client's hint if it sent one (already
     # filtered to the active connection); otherwise derive from the metadata
@@ -127,8 +141,8 @@ async def suggest_questions(request: SuggestQuestionsRequest):
 
     prompt = template.format(
         partial=partial[:_MAX_PARTIAL_CHARS],
-        available_tables=available_tables_blob,
-        recent_questions=recent_blob,
+        available_tables=fence_untrusted(available_tables_blob, label="catalog tables"),
+        recent_questions=fence_untrusted(recent_blob, label="recent questions"),
         connection_display_name=agent.display_name,
         database_type=agent.database_type,
     )

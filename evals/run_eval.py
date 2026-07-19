@@ -125,7 +125,12 @@ def _threshold_failures(report: EvalReport, thresholds: Dict[str, float]) -> Lis
 
 async def _run(args: argparse.Namespace) -> int:
     # Import after parsing so an offline run never needs developer secrets.
-    from evals.harness import evaluate, load_golden_set, make_fixture_result_executor
+    from evals.harness import (
+        evaluate,
+        load_golden_set,
+        make_fixture_continuity_resolver,
+        make_fixture_result_executor,
+    )
 
     dataset = load_golden_set(args.dataset)
 
@@ -136,6 +141,7 @@ async def _run(args: argparse.Namespace) -> int:
     report = await evaluate(
         dataset,
         route_classifier=classifier,
+        continuity_resolver=make_fixture_continuity_resolver(),
         result_executor=make_fixture_result_executor(dataset.get("catalogs", {})),
     )
 
@@ -154,6 +160,8 @@ async def _run(args: argparse.Namespace) -> int:
         "safety": args.min_safety,
         "groundedness": args.min_groundedness,
         "route": args.min_route,
+        "continuity": args.min_continuity,
+        "equivalence": args.min_equivalence,
     }
     problems = _threshold_failures(report, thresholds)
     if problems:
@@ -180,6 +188,10 @@ def main() -> None:
                         help="Fail if groundedness accuracy < this fraction.")
     parser.add_argument("--min-route", type=float, default=None,
                         help="Fail if route accuracy < this fraction.")
+    parser.add_argument("--min-continuity", type=float, default=None,
+                        help="Fail if continuity accuracy < this fraction.")
+    parser.add_argument("--min-equivalence", type=float, default=None,
+                        help="Fail if fixture result equivalence < this fraction.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
     args = parser.parse_args()
 

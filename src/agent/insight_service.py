@@ -4,6 +4,14 @@ from typing import Any, Dict, List, Optional
 import json
 import pandas as pd
 from pathlib import Path
+from src.agent.langgraph_agent.nodes.safety_text import fence_untrusted
+
+
+_INSIGHTS_SYSTEM_PATH = Path(__file__).parent / "prompts" / "insights_system.md"
+
+
+def _default_insights_system_prompt() -> str:
+    return _INSIGHTS_SYSTEM_PATH.read_text(encoding="utf-8")
 
 
 async def generate_insights(
@@ -12,6 +20,7 @@ async def generate_insights(
     original_question: str,
     llm_service: Any = None,
     prompt_template: Optional[str] = None,
+    system_template: Optional[str] = None,
     model_override: Any = None,
 ) -> Dict[str, Any]:
     """
@@ -32,7 +41,7 @@ async def generate_insights(
             "system_message": str (the system message used)
         }
     """
-    system_message = "You are a senior data analyst specialized in finding actionable insights."
+    system_message = system_template or _default_insights_system_prompt()
     
     try:
         # Convert dataset to DataFrame if needed
@@ -181,11 +190,15 @@ def _build_insight_prompt(
 
     return template.format(
         original_question=original_question,
-        business_rules=business_rules,
+        business_rules=fence_untrusted(business_rules, label="business rules"),
         row_count=dataset_summary["row_count"],
-        column_names=", ".join(dataset_summary["column_names"]),
-        data_sample=dataset_summary["data_sample"],
-        column_stats=dataset_summary["column_stats"],
+        column_names=fence_untrusted(
+            ", ".join(dataset_summary["column_names"]), label="result columns"
+        ),
+        data_sample=fence_untrusted(dataset_summary["data_sample"], label="result sample"),
+        column_stats=fence_untrusted(
+            dataset_summary["column_stats"], label="result statistics"
+        ),
     )
 
 
@@ -334,6 +347,7 @@ async def generate_insights_stream(
     original_question: str,
     llm_service: Any = None,
     prompt_template: Optional[str] = None,
+    system_template: Optional[str] = None,
     model_override: Any = None,
 ):
     """Streaming variant of ``generate_insights``.
@@ -352,7 +366,7 @@ async def generate_insights_stream(
     """
     import time as _time
 
-    system_message = "You are a senior data analyst specialized in finding actionable insights."
+    system_message = system_template or _default_insights_system_prompt()
 
     # ----- early-out paths (mirror generate_insights) -----
     try:

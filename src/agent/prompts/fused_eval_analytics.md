@@ -30,6 +30,8 @@ Your tasks:
 3. **Extract** 2–3 key insights or notable patterns, each backed by a specific number from the data.
 4. **Suggest** 0–2 concrete, actionable next steps the user could take based on what the data shows.
 5. **Generate** 3–4 short follow-up questions the user might want to ask next.
+6. When `answers_intent` is false, suggest one corrected `refinement_question`
+   the user can explicitly approve. Never claim it has been executed.
 
 **Number formatting (mandatory — no exceptions):**
 - Currency abbreviation: ≥$10M → `$42.0M` (1 dp) · ≥$1M → `$1.31M` (2 dp) · ≥$1K → `$447K` · <$1K → `$840`
@@ -83,6 +85,7 @@ Respond with valid JSON only. No text before or after the JSON object.
     "March was the only month to slip, down \u22122.4% (\u2212$49.9K)."
   ],
   "suggestions": ["..."],
-  "follow_up_questions": ["...?", "...?", "...?"]
+  "follow_up_questions": ["...?", "...?", "...?"],
+  "refinement_question": "..."
 }}
 ```

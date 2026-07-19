@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, List, Tuple
 
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
+from src.agent.langgraph_agent.nodes.safety_text import fence_untrusted
 from src.agent.langgraph_agent.state import AgentState
 from src.config import settings
 from src.connectors.dialects import dialect_rules_for
@@ -91,18 +92,31 @@ def make_catalog_lookup(metadata_loader: MetadataLoader, require_catalog: bool =
 
     async def catalog_lookup(state: AgentState) -> Dict[str, Any]:
         source_key = state["source_key"]
+        preloaded_bundle = state.get("metadata_bundle") or {}
         logger.info("catalog_lookup: loading metadata for source_key=%s", source_key)
         t0 = time.monotonic()
         catalog_error: str = ""
+        if state.get("catalog_preloaded") and preloaded_bundle.get("tables"):
+            bundle, meta = preloaded_bundle, {"source": "preloaded", "cache": "hit"}
+        else:
+            try:
+                bundle, meta = await _load_catalog_bundle(source_key, metadata_loader)
+            except Exception as exc:  # noqa: BLE001 — fail closed rather than query blindly
+                logger.error(
+                    "catalog_lookup: metadata load failed for source_key=%s: %s",
+                    source_key, exc,
+                )
+                bundle, meta = {}, {"source": "db", "cache": None}
+                catalog_error = "Failed to load catalog metadata for this connection."
         try:
-            bundle, meta = await _load_catalog_bundle(source_key, metadata_loader)
-        except Exception as exc:  # noqa: BLE001 — fail closed rather than query blindly
-            logger.error(
-                "catalog_lookup: metadata load failed for source_key=%s: %s",
-                source_key, exc,
-            )
-            bundle, meta = {}, {"source": "db", "cache": None}
-            catalog_error = "Failed to load catalog metadata for this connection."
+            column_entitlements = await metadata_loader.load_column_entitlements(source_key)
+        except Exception:  # noqa: BLE001
+            logger.exception("catalog_lookup: column entitlement load failed")
+            column_entitlements = {}
+        governed_columns_by_table: Dict[str, List[str]] = {}
+        for column, policy in column_entitlements.items():
+            for table in policy.get("tables") or []:
+                governed_columns_by_table.setdefault(str(table).lower(), []).append(column)
         load_ms = round((time.monotonic() - t0) * 1000)
         known_tables = _extract_table_names(bundle.get("tables", ""))
         table_columns, known_columns = _extract_columns(bundle.get("columns", ""))
@@ -123,6 +137,8 @@ def make_catalog_lookup(metadata_loader: MetadataLoader, require_catalog: bool =
             "catalog_available": catalog_available,
             "catalog_error": catalog_error or None,
             "catalog_blocked": False,
+            "column_entitlements": column_entitlements,
+            "governed_columns_by_table": governed_columns_by_table,
         }
 
         if require_catalog and not catalog_available:
@@ -178,11 +194,13 @@ def make_prompt_builder(prompt_loader: PromptLoader):
         # never blocks a valid query. Small schemas pass through unchanged.
         prompt_bundle = bundle
         schema_pruned = False
-        if settings.SCHEMA_LINK_ENABLED and question:
+        intent = state.get("resolved_intent") or {}
+        if settings.SCHEMA_LINK_ENABLED and question and not state.get("schema_link_widened"):
             try:
                 prompt_bundle, schema_pruned = link_bundle(
                     bundle,
                     question,
+                    intent=intent,
                     min_columns=settings.SCHEMA_LINK_MIN_COLUMNS,
                     max_tables=settings.SCHEMA_LINK_MAX_TABLES,
                     max_columns=settings.SCHEMA_LINK_MAX_COLUMNS,
@@ -202,12 +220,18 @@ def make_prompt_builder(prompt_loader: PromptLoader):
             connection_catalog=catalog or "not specified",
             connection_schema=schema or "not specified",
             dialect_rules=dialect_rules,
-            tables=prompt_bundle.get("tables", ""),
-            columns=prompt_bundle.get("columns", ""),
-            relationships=prompt_bundle.get("relationships", ""),
-            sources=prompt_bundle.get("sources", ""),
-            knowledge_pairs=prompt_bundle.get("knowledge_pairs", ""),
-            business_terms=prompt_bundle.get("business_terms", ""),
+            tables=fence_untrusted(prompt_bundle.get("tables", ""), label="catalog tables"),
+            columns=fence_untrusted(prompt_bundle.get("columns", ""), label="catalog columns"),
+            relationships=fence_untrusted(
+                prompt_bundle.get("relationships", ""), label="catalog relationships"
+            ),
+            sources=fence_untrusted(prompt_bundle.get("sources", ""), label="catalog sources"),
+            knowledge_pairs=fence_untrusted(
+                prompt_bundle.get("knowledge_pairs", ""), label="catalog examples"
+            ),
+            business_terms=fence_untrusted(
+                prompt_bundle.get("business_terms", ""), label="catalog business terms"
+            ),
         )
 
         # structured_prompt is forwarded as-is to the UI "Show Prompt" panel.
@@ -220,6 +244,7 @@ def make_prompt_builder(prompt_loader: PromptLoader):
             "knowledge_pairs": prompt_bundle.get("knowledge_pairs", ""),
             "business_terms": prompt_bundle.get("business_terms", ""),
             "schema_pruned": schema_pruned,
+            "schema_link_widened": bool(state.get("schema_link_widened")),
             "dialect_rules": dialect_rules,
             "conversation_history": [
                 {

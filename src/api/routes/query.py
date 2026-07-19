@@ -11,6 +11,7 @@ from src.api.dependencies import (
     get_catalog_provider,
     get_history_service,
     get_principal,
+    require_source_access,
     resolve_agent,
 )
 from src.api.concurrency import ConcurrencyLimitExceeded, query_limiter
@@ -38,7 +39,7 @@ async def query_database(
             session_id=request.session_id, user_id=user_id
         ):
             raise HTTPException(status_code=404, detail="Session not found for this user")
-    agent = await resolve_agent(request.connection)
+    agent = await resolve_agent(request.connection, principal)
 
     # Cost governor: cap concurrent queries per user (prevents one user from
     # pinning the LLM / exhausting the DB pool). No-op when disabled.
@@ -52,8 +53,7 @@ async def query_database(
     # Trusted identity propagation: the agent's user context is derived from the
     # verified Principal, never from the request body. A client cannot spoof a
     # user_id to read another user's history/cache or own a result snapshot.
-    user_context = dict(request.user_context or {})
-    user_context["user_id"] = user_id
+    user_context = principal.to_user_context()
     try:
         result = await agent.process_question(
             question=request.question,
@@ -204,8 +204,9 @@ async def _maybe_propose_tool(result: dict, *, principal: Principal) -> Optional
 @router.get("/tables")
 async def list_tables(
     connection: str = Query(..., description="source_key of the active connection"),
+    principal: Principal = Depends(get_principal),
 ):
-    agent = await resolve_agent(connection)
+    agent = await resolve_agent(connection, principal)
     try:
         tables = await agent.sql_runner.list_tables()
         return {"tables": tables}
@@ -217,6 +218,7 @@ async def list_tables(
 @router.get("/tables-rich")
 async def list_tables_rich(
     connection: str = Query(..., description="source_key of the active connection"),
+    principal: Principal = Depends(get_principal),
 ):
     """Return all catalogued tables with descriptions and column counts.
 
@@ -226,6 +228,7 @@ async def list_tables_rich(
     """
     # Resolve the provider outside the try so its 503 (e.g. loader not yet
     # initialised) propagates intact instead of being masked as a 500.
+    connection = await require_source_access(principal, connection)
     provider = await get_catalog_provider(connection)
     try:
         tables = await provider.load_tables_rich(connection)
@@ -241,8 +244,9 @@ async def list_tables_rich(
 async def get_table_schema(
     table_name: str,
     connection: str = Query(..., description="source_key of the active connection"),
+    principal: Principal = Depends(get_principal),
 ):
-    agent = await resolve_agent(connection)
+    agent = await resolve_agent(connection, principal)
     try:
         schema = await agent.sql_runner.get_table_schema(table_name)
         if not schema:

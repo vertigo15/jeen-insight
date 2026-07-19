@@ -301,6 +301,18 @@
                 results,
                 answer: data.answer || null,
             };
+            const assumptions = Array.isArray(data.assumptions) ? data.assumptions : [];
+            const assumptionsHtml = assumptions.length
+                ? `<div class="chat-muted">Assumption: ${esc(assumptions.join('; '))}</div>`
+                : '';
+            const followUps = Array.isArray(data.follow_up_questions) ? data.follow_up_questions : [];
+            const followUpsHtml = followUps.length
+                ? `<div class="chat-muted">${followUps.map((q) => `<button class="chat-icon-btn" type="button" data-act="follow-up" data-question="${esc(q)}">${esc(q)}</button>`).join(' ')}</div>`
+                : '';
+            const refinementQuestion = data.refinement_proposal && data.refinement_proposal.question;
+            const refinementHtml = refinementQuestion
+                ? `<button class="chat-icon-btn" type="button" data-act="refine" data-question="${esc(refinementQuestion)}">Refine this query</button>`
+                : '';
             this.messages.push(turn);
 
             const wrap = document.createElement('div');
@@ -342,7 +354,7 @@
                             <div class="chat-table-slot" data-role="table">${this._buildTableHtml(results)}</div>
                             <div class="chat-chart-slot" data-role="chart" hidden></div>
                         </div>
-                        <div class="chat-insights-slot" data-role="insights"></div>
+                        ${assumptionsHtml}${refinementHtml}${followUpsHtml}<div class="chat-insights-slot" data-role="insights"></div>
                     </div>`);
 
                 this.threadEl.appendChild(wrap);
@@ -364,6 +376,9 @@
                 const copiedEl  = wrap.querySelector('[data-role="copied"]');
                 if (copyBtn) copyBtn.addEventListener('click', () => this._copyTurn(turn, copiedEl));
                 if (dlBtn)   dlBtn.addEventListener('click', () => this._downloadTurn(turn));
+                wrap.querySelectorAll('[data-act="follow-up"], [data-act="refine"]').forEach((button) => {
+                    button.addEventListener('click', () => this.send(button.dataset.question || ''));
+                });
 
                 // Stream insights into this turn (gated by the AI Analytics preference).
                 const aiAnalytics = (window.JeenPreferences && window.JeenPreferences.getAll().aiAnalytics) || 'on';
@@ -383,8 +398,11 @@
                 // Conversational text answer (no SQL executed) — e.g. a derived
                 // follow-up computed from memory. Show the real steps trail so it
                 // is clear no query ran.
-                wrap.innerHTML = this._wrapAssistant(`<div class="chat-card">${this._buildStepsHtml(data)}<div class="chat-answer-text">${esc(turn.answer).replace(/\n/g, '<br>')}</div></div>`);
+                wrap.innerHTML = this._wrapAssistant(`<div class="chat-card">${this._buildStepsHtml(data)}<div class="chat-answer-text">${esc(turn.answer).replace(/\n/g, '<br>')}</div>${assumptionsHtml}${refinementHtml}${followUpsHtml}</div>`);
                 this.threadEl.appendChild(wrap);
+                wrap.querySelectorAll('[data-act="follow-up"], [data-act="refine"]').forEach((button) => {
+                    button.addEventListener('click', () => this.send(button.dataset.question || ''));
+                });
             } else {
                 wrap.innerHTML = this._wrapAssistant(`<div class="chat-card"><div class="chat-answer-text chat-muted">${esc(data.error || 'No results to display.')}</div></div>`);
                 this.threadEl.appendChild(wrap);

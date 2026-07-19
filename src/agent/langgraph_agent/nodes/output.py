@@ -227,8 +227,14 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
 
     if eval_result.get("insights"):
         formatted["insights"] = eval_result["insights"]
-    if eval_result.get("follow_up"):
-        formatted["follow_up"] = eval_result["follow_up"]
+    if eval_result.get("follow_up_questions"):
+        formatted["follow_up_questions"] = eval_result["follow_up_questions"]
+    if eval_result.get("refinement_proposal"):
+        formatted["refinement_proposal"] = eval_result["refinement_proposal"]
+    if state.get("disclosed_assumptions"):
+        formatted["assumptions"] = state["disclosed_assumptions"]
+    if state.get("pending_clarification"):
+        formatted["pending_clarification"] = state["pending_clarification"]
 
     # ── Execution trace ───────────────────────────────────────────────────────────────────
     # NOTE: the trace is intentionally NOT attached here. response_formatter
@@ -397,6 +403,28 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
         graph_time_ms = int((time.monotonic() - start_time) * 1000) if start_time else None
 
         try:
+            prior_pending = state.get("prior_pending_clarification")
+            if (
+                prior_pending
+                and not state.get("pending_clarification")
+                and prior_pending.get("id")
+            ):
+                await history_service.update_execution(
+                    query_id=prior_pending["id"],
+                    execution_status="clarification_resolved",
+                    error_message=None,
+                )
+            if state.get("pending_clarification"):
+                await history_service.update_execution(
+                    query_id=query_id,
+                    execution_status="clarification_pending",
+                    execution_time_ms=None,
+                    row_count=0,
+                    result_preview=None,
+                    error_message=state["pending_clarification"].get("question"),
+                    graph_time_ms=graph_time_ms,
+                    result_artifact={"pending_clarification": state["pending_clarification"]},
+                )
             if sql:
                 await history_service.update_llm_response(
                     query_id=query_id,
@@ -431,6 +459,16 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
                     error_message=None,
                     graph_time_ms=graph_time_ms,
                     result_artifact=result_artifact,
+                )
+            elif state.get("route") == "from_memory":
+                await history_service.update_execution(
+                    query_id=query_id,
+                    execution_status="success",
+                    execution_time_ms=0,
+                    row_count=0,
+                    result_preview=None,
+                    error_message=None,
+                    graph_time_ms=graph_time_ms,
                 )
 
         except Exception:  # noqa: BLE001
@@ -471,6 +509,10 @@ def observability_log(state: AgentState) -> Dict[str, Any]:
         "source_key": state.get("source_key"),
         "database_type": state.get("database_type"),
         "route": state.get("route", "?"),
+        "route_reason": state.get("route_reason"),
+        "intent_confidence": (state.get("resolved_intent") or {}).get("confidence"),
+        "assumption_count": len(state.get("disclosed_assumptions") or []),
+        "clarification_pending": bool(state.get("pending_clarification")),
         "retry_count": state.get("retry_count", 0),
         "llm_call_count": state.get("llm_call_count", 0),
         "total_tokens": (state.get("token_usage") or {}).get("total_tokens", 0),
@@ -480,6 +522,14 @@ def observability_log(state: AgentState) -> Dict[str, Any]:
         "elapsed_ms": elapsed_ms,
         "has_error": has_error,
         "connector_error_type": result.get("error_type"),
+        "catalog_source": state.get("catalog_source_used"),
+        "catalog_cache": state.get("catalog_cache"),
+        "catalog_load_ms": state.get("catalog_load_ms"),
+        "schema_link_widened": bool(state.get("schema_link_widened")),
+        "semantic_mismatch_proposed": bool(
+            (state.get("eval_result") or {}).get("refinement_proposal")
+        ),
+        "prompt_places": sorted((state.get("node_prompts") or {}).keys()),
         "query_id": str(state.get("query_id") or ""),
     }
 

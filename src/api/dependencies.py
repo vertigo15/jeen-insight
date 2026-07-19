@@ -6,7 +6,7 @@ HTTP errors at the boundary, so route handlers can remain free of plumbing.
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Set
 
 from fastapi import Depends, HTTPException, Request
 
@@ -107,6 +107,14 @@ def require_admin(principal: Principal = Depends(get_principal)) -> Principal:
     if not principal.is_admin:
         raise HTTPException(status_code=403, detail="Admin role required")
     return principal
+
+
+def require_principal_user_id(principal: Principal, supplied_user_id: Any = None) -> str:
+    """Return the verified user id and reject explicit impersonation attempts."""
+    supplied = str(supplied_user_id or "").strip()
+    if supplied and supplied != principal.user_id:
+        raise HTTPException(status_code=403, detail="User identity does not match the authenticated principal")
+    return principal.user_id
 
 
 async def require_connectors_enabled() -> None:
@@ -238,7 +246,63 @@ async def ensure_identity(principal: Principal):
     return identity
 
 
-async def resolve_agent(source_key: Optional[str]) -> JeenInsightsAgent:
+async def authorized_source_keys(principal: Principal) -> Optional[Set[str]]:
+    """Return the source keys visible to *principal*; ``None`` means all (admin)."""
+    if principal.is_admin:
+        return None
+    from src.metadata import get_metadata_pool
+
+    pool = await get_metadata_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT source_key, subject_type, subject_id
+            FROM insights_source_access
+            """
+        )
+    direct = {
+        str(row["source_key"])
+        for row in rows
+        if (row["subject_type"] == "user" and row["subject_id"] == principal.user_id)
+        or (row["subject_type"] == "role" and row["subject_id"] == principal.role)
+    }
+    group_grants = [row for row in rows if row["subject_type"] == "group"]
+    if not group_grants or not principal.is_entra or not principal.groups_complete:
+        return direct
+
+    # Group claims in the Flask session can be stale or truncated. Reuse the
+    # connector platform's login-bounded/Graph-refreshed membership cache and
+    # fail closed unless it is complete and fresh.
+    try:
+        identity = await ensure_identity(principal)
+        membership = await get_identity_service().get_membership(identity["id"])
+        group_ids = set(membership.get("group_ids") or []) if (
+            membership.get("fresh") and membership.get("complete")
+        ) else set()
+    except Exception:  # noqa: BLE001
+        group_ids = set()
+    return direct | {
+        str(row["source_key"])
+        for row in group_grants
+        if row["subject_id"] in group_ids
+    }
+
+
+async def require_source_access(principal: Principal, source_key: Optional[str]) -> str:
+    """Fail closed unless the verified principal has a grant for this source."""
+    key = str(source_key or "").strip()
+    if not key:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing 'connection' (source_key). Pick one from /api/connections.",
+        )
+    allowed = await authorized_source_keys(principal)
+    if allowed is not None and key not in allowed:
+        raise HTTPException(status_code=403, detail="You are not authorized to use this connection")
+    return key
+
+
+async def resolve_agent(source_key: Optional[str], principal: Principal) -> JeenInsightsAgent:
     """Resolve the per-connection agent or raise the appropriate HTTPException.
 
     - 400 if `source_key` is empty / missing.
@@ -247,11 +311,7 @@ async def resolve_agent(source_key: Optional[str]) -> JeenInsightsAgent:
     - 503 if the registry isn't ready.
     """
     registry = get_agent_registry()
-    if not source_key:
-        raise HTTPException(
-            status_code=400,
-            detail="Missing 'connection' (source_key). Pick one from /api/connections.",
-        )
+    source_key = await require_source_access(principal, source_key)
     try:
         return await registry.get_agent(source_key)
     except ConnectionNotFound as e:

@@ -27,5 +27,23 @@ Your task is to classify the user's question into exactly one of these routes:
 Respond with valid JSON only. No text before or after the JSON object.
 
 ```json
-{{"route": "<needs_query|from_memory|out_of_scope|unsafe>", "reason": "<one sentence>"}}
+{{
+  "route": "<needs_query|from_memory|out_of_scope|unsafe>",
+  "reason": "<one sentence>",
+  "intent": {{
+    "metric": "<requested measure or null>",
+    "dimensions": ["<grouping>"],
+    "filters": ["<constraint>"],
+    "time_range": "<time range or null>",
+    "comparison": "<comparison or null>",
+    "referenced_result": "<1-based prior-result manifest index or null>",
+    "confidence": 0.0,
+    "assumptions": ["<only safe, disclosed defaults>"]
+  }}
+}}
 ```
+
+For `needs_query`, fill every intent field. Use a confidence below 0.6 when a
+missing detail would materially change the answer. Add an assumption only for a
+safe default that can be disclosed to the user; otherwise leave assumptions
+empty so the application can ask a clarification question.

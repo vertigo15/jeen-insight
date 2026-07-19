@@ -63,6 +63,10 @@ class QueryResponse(BaseModel):
     # intent. The UI renders a confirm card and drives preview -> execute; the
     # proposal is already recorded server-side (origin=agent) and hash-bound.
     tool_proposal: Optional[Dict[str, Any]] = None
+    assumptions: Optional[List[str]] = None
+    pending_clarification: Optional[Dict[str, Any]] = None
+    follow_up_questions: Optional[List[str]] = None
+    refinement_proposal: Optional[Dict[str, Any]] = None
 
 
 class ColumnInfo(BaseModel):

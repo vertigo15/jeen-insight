@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, Dict, List, Optional
+from src.agent.langgraph_agent.nodes.safety_text import fence_untrusted
 
 logger = logging.getLogger(__name__)
 
@@ -111,3 +112,24 @@ def latest_result_ref(history: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]
                 "artifact": artifact,
             }
     return None
+
+
+def build_sql_planning_context(
+    history: List[Dict[str, Any]],
+    *,
+    memory_summary: Optional[str] = None,
+    intent: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Build bounded, fenced continuity context for SQL planning."""
+    parts: List[str] = []
+    if memory_summary:
+        parts.append(f"Session summary:\n{memory_summary[:2000]}")
+    manifest = build_artifact_manifest(history)
+    if manifest:
+        parts.append(manifest)
+    if intent:
+        try:
+            parts.append(f"Resolved intent:\n{json.dumps(intent, ensure_ascii=False, default=str)[:1500]}")
+        except Exception:  # noqa: BLE001
+            pass
+    return fence_untrusted("\n\n".join(parts), label="conversation planning context") if parts else ""

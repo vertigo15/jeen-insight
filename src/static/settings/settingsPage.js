@@ -53,15 +53,25 @@ const NAV = [
             { id: 'prompt:fused_eval_analytics', label: 'Eval & Analytics', icon: ICONS.prompt, type: 'prompt' },
             { id: 'prompt:memory_answer',        label: 'Memory Answer',  icon: ICONS.prompt, type: 'prompt' },
             { id: 'prompt:memory_summarizer',    label: 'Memory Summary', icon: ICONS.prompt, type: 'prompt' },
+            { id: 'prompt:memory_summarizer_user', label: 'Memory Summary Instruction', icon: ICONS.prompt, type: 'prompt' },
             { id: 'prompt:sql_generator',        label: 'SQL Retry',      icon: ICONS.prompt, type: 'prompt' },
+            { id: 'prompt:fused_eval_analytics_system', label: 'Eval JSON System', icon: ICONS.prompt, type: 'prompt' },
+            { id: 'prompt:fused_eval_analytics_user', label: 'Eval User Instruction', icon: ICONS.prompt, type: 'prompt' },
         ],
     },
     {
         group: 'OTHER FEATURES',
         items: [
             { id: 'prompt:chart_editor',             label: 'Chart Editor',  icon: ICONS.prompt, type: 'prompt' },
+            { id: 'prompt:generate_chart_system',    label: 'Chart Generation System', icon: ICONS.prompt, type: 'prompt' },
+            { id: 'prompt:generate_chart_user',      label: 'Chart Generation Context', icon: ICONS.prompt, type: 'prompt' },
+            { id: 'prompt:enhance_chart_system',     label: 'Chart Enhancement System', icon: ICONS.prompt, type: 'prompt' },
+            { id: 'prompt:enhance_chart_user',       label: 'Chart Enhancement Context', icon: ICONS.prompt, type: 'prompt' },
             { id: 'prompt:insights',                 label: 'Insights',      icon: ICONS.prompt, type: 'prompt' },
+            { id: 'prompt:insights_system',          label: 'Insights System', icon: ICONS.prompt, type: 'prompt' },
             { id: 'prompt:autocomplete_suggestions', label: 'Autocomplete',  icon: ICONS.prompt, type: 'prompt' },
+            { id: 'prompt:read_continuation_system', label: 'Read Continuation System', icon: ICONS.prompt, type: 'prompt' },
+            { id: 'prompt:read_continuation_user',   label: 'Read Continuation Context', icon: ICONS.prompt, type: 'prompt' },
         ],
     },
 ];
@@ -1711,6 +1721,7 @@ export class SettingsPage {
         const isDirty = entry.dirty || false;
         const isEditing = entry.editing || false;
         const currentModelName = meta.model_name || null;
+        const modelOverrideSupported = meta.model_override_supported !== false;
         entry.viewMode = entry.viewMode || 'template';
         const viewMode = isEditing ? 'template' : entry.viewMode;
         const promptBodyHtml = isEditing
@@ -1737,10 +1748,14 @@ export class SettingsPage {
                     <span class="sp-badge ${isCustom ? 'sp-badge-custom' : 'sp-badge-default'}">${isCustom ? 'Custom' : 'Default'}</span>
                 </div>
                 <p class="sp-section-desc">${_esc(meta.description || '')}</p>
-                <div class="sp-prompt-model-row">
-                    <span class="sp-prompt-model-label">Run with model:</span>
-                    <select class="settings-select sp-prompt-model-sel" id="sp-prompt-model-${_esc(name)}">${modelOptions}</select>
-                </div>
+                ${modelOverrideSupported ? `
+                    <div class="sp-prompt-model-row">
+                        <span class="sp-prompt-model-label">Run with model:</span>
+                        <select class="settings-select sp-prompt-model-sel" id="sp-prompt-model-${_esc(name)}">${modelOptions}</select>
+                    </div>
+                ` : `
+                    <p class="sp-section-desc">This template is combined with another prompt for one LLM call; its model is selected by that call's primary prompt.</p>
+                `}
             </div>
 
             ${placeholders.length ? `
@@ -1843,7 +1858,7 @@ export class SettingsPage {
 
         // Model selector
         const modelSel = this._content.querySelector(`#sp-prompt-model-${name}`);
-        if (modelSel) {
+        if (modelOverrideSupported && modelSel) {
             modelSel.addEventListener('change', async () => {
                 await this._setPromptModel(name, modelSel.value || null);
             });
