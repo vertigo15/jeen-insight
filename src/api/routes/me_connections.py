@@ -54,6 +54,10 @@ async def list_my_connections(
     for c in connectors:
         if not c["is_enabled"]:
             continue
+        # API-key connectors (e.g. Tavily) are admin-configured and have no
+        # per-user OAuth "Connect"; they never appear in this list.
+        if c.get("auth_kind") == "api_key":
+            continue
         grant_ids = c.get("group_grants") or []
         allowed, reason = await identities.can_use_connector(
             identity_id, c["id"], group_grant_ids=grant_ids
@@ -90,6 +94,13 @@ async def authorize(
     connector = await registry.get_connector(connector_id)
     if not connector or not connector["is_enabled"]:
         raise HTTPException(status_code=404, detail="Connector unavailable")
+
+    # API-key connectors are configured by an admin and have no per-user OAuth.
+    if connector.get("auth_kind") == "api_key":
+        raise HTTPException(
+            status_code=400,
+            detail="This integration does not use per-user sign-in.",
+        )
 
     grant_ids = connector.get("group_grants") or []
     allowed, reason = await identities.can_use_connector(

@@ -613,7 +613,10 @@ def auth_me():
     """Return the current session user (200) or 401 if not logged in."""
     if "user_id" not in session:
         return jsonify({"error": "Not authenticated"}), 401
-    from src.security.app_flags import get_connectors_enabled_sync
+    from src.security.app_flags import (
+        get_agent_tools_enabled_sync,
+        get_connectors_enabled_sync,
+    )
 
     return jsonify({
         "id":         session["user_id"],
@@ -624,6 +627,9 @@ def auth_me():
         # Surface flags the UI uses to gate connector surfaces.
         "is_entra":   bool(session.get("object_id")),
         "connectors_enabled": get_connectors_enabled_sync(),
+        # Independent switch for agent-initiated tool calls (requires connectors
+        # to also be enabled). Surfaced so the UI can reflect/gate the feature.
+        "agent_tools_enabled": get_agent_tools_enabled_sync(),
     })
 
 

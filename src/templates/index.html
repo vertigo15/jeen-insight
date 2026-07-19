@@ -19,7 +19,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=77">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=82">
     <!-- CodeMirror 6 via ESM — exposes window.CodeMirrorService -->
     <script type="module">
       import { EditorView, lineNumbers } from 'https://esm.sh/@codemirror/view@6';
@@ -419,10 +419,10 @@
 <script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=55"></script>
 <script src="{{ url_for('static', filename='profiling/profilingManager.js') }}?v=68"></script>
 <script src="{{ url_for('static', filename='script.js') }}?v=94"></script>
-<script src="{{ url_for('static', filename='chat/chatController.js') }}?v=9"></script>
+<script src="{{ url_for('static', filename='chat/chatController.js') }}?v=13"></script>
 <!-- Settings page (full-screen) -->
 <script type="module">
-  import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=54';
+  import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=57';
   const _sp = new SettingsPage();
   _sp.mount({
       onApplyTheme: (t) => {

@@ -38,6 +38,16 @@ _DIALECT_RULES: dict[str, str] = {
         "unquoted identifiers are folded to lowercase. Strings use single quotes.\n"
         "- Cast with value::type or CAST(value AS type).\n"
         "- Use ILIKE for case-insensitive matching and LIMIT n for row limits.\n"
+        "- Money handling: `money`<->numeric/integer casts are NOT implicit in "
+        "expressions, so mixing a `money` column with a plain number raises "
+        '"cannot convert type money to integer" (or the reverse). Before mixing a '
+        "money column with numeric values or using it in CASE, COALESCE, AVG, ROUND, "
+        "or ratios, cast the money inputs to numeric (never integer, to preserve "
+        'precision): CAST("SalesAmount" AS numeric) or "SalesAmount"::numeric. Keep '
+        'every CASE/COALESCE branch numeric, e.g. COALESCE("SalesAmount"::numeric, 0). '
+        'Ratios: ("cur"::numeric - "prev"::numeric) / NULLIF("prev"::numeric, 0); '
+        "rounding: ROUND(value::numeric, 2). Note: SUM(money), money +/- money, and "
+        "money-to-money comparisons work natively without casting.\n"
         '- Example: SELECT "ProductKey" FROM "DimProduct" LIMIT 10'
     ),
     "trino": (

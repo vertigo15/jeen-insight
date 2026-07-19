@@ -217,6 +217,100 @@ class ConnectorRegistryService:
             )
         return bool(val)
 
+    # ── API key (encrypted; never returned) — for api_key providers (Tavily) ──
+    # Reuses connector_client_secrets with a DISTINCT purpose + AAD namespace so an
+    # API key can never be decrypted with the OAuth-client-secret context and vice
+    # versa. Versioned (rotation) with only the newest marked active.
+
+    async def set_api_key(
+        self, connector_id: str, key_plaintext: str, *, created_by: Optional[str]
+    ) -> None:
+        if not crypto.crypto_available():
+            raise RegistryError(
+                "APP_ENCRYPTION_KEY is not configured — cannot store a connector API key."
+            )
+        secret_id = uuid.uuid4()
+        blob = crypto.encrypt(key_plaintext, aad=f"connector_api_key:{secret_id}")
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                nextver = await conn.fetchval(
+                    "SELECT COALESCE(MAX(version),0)+1 FROM connector_client_secrets "
+                    "WHERE connector_id=$1 AND purpose='api_key'",
+                    connector_id,
+                )
+                await conn.execute(
+                    "UPDATE connector_client_secrets SET is_active=FALSE "
+                    "WHERE connector_id=$1 AND purpose='api_key'",
+                    connector_id,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO connector_client_secrets
+                        (id, connector_id, purpose, version, is_active,
+                         algo, kek_id, ciphertext, nonce, wrapped_dek, dek_nonce, created_by)
+                    VALUES ($1,$2,'api_key',$3,TRUE,$4,$5,$6,$7,$8,$9,$10)
+                    """,
+                    secret_id, connector_id, nextver,
+                    blob.algo, blob.kek_id, blob.ciphertext, blob.nonce,
+                    blob.wrapped_dek, blob.dek_nonce, created_by,
+                )
+        logger.info("registry: stored api key v%s for connector %s", nextver, connector_id)
+
+    async def get_api_key(self, connector_id: str) -> Optional[str]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, algo, kek_id, ciphertext, nonce, wrapped_dek, dek_nonce "
+                "FROM connector_client_secrets "
+                "WHERE connector_id=$1 AND purpose='api_key' AND is_active=TRUE "
+                "ORDER BY version DESC LIMIT 1",
+                connector_id,
+            )
+        if not row:
+            return None
+        blob = crypto.EncryptedBlob.from_row(dict(row))
+        return crypto.decrypt(blob, aad=f"connector_api_key:{row['id']}")
+
+    async def has_api_key(self, connector_id: str) -> bool:
+        async with self.pool.acquire() as conn:
+            val = await conn.fetchval(
+                "SELECT 1 FROM connector_client_secrets "
+                "WHERE connector_id=$1 AND purpose='api_key' AND is_active=TRUE LIMIT 1",
+                connector_id,
+            )
+        return bool(val)
+
+    async def get_health(self, connector_id: str) -> Dict[str, Any]:
+        """Redacted, versioned CONNECTOR APP-CONFIG health (not per-user grant).
+
+        Distinguishes app configuration (client secret / API key present, config
+        parseable) from any per-user grant. Never returns secret material.
+        """
+        from datetime import datetime, timezone
+
+        connector = await self.get_connector(connector_id)
+        if not connector:
+            return {"ok": False, "reason": "not_found"}
+        entry = get_catalog_entry(connector["key"])
+        auth_kind = "oauth"
+        if entry is not None:
+            from src.connectors.providers import get_provider
+
+            provider = get_provider(entry.provider)
+            auth_kind = getattr(provider, "auth_kind", "oauth") if provider else "oauth"
+        if auth_kind == "api_key":
+            configured = await self.has_api_key(connector_id)
+        else:
+            configured = await self.has_client_secret(connector_id)
+        version = (connector.get("current_version") or {}).get("version")
+        return {
+            "ok": bool(connector["is_enabled"] and configured),
+            "auth_kind": auth_kind,
+            "configured": configured,
+            "enabled": bool(connector["is_enabled"]),
+            "version": version,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+
     # ── group -> connector gating ──────────────────────────────────────────
 
     async def add_group_grant(
@@ -264,6 +358,17 @@ class ConnectorRegistryService:
             "WHERE connector_id=$1 AND purpose='oauth_client_secret' AND is_active=TRUE LIMIT 1",
             row["id"],
         )
+        api_key = await conn.fetchval(
+            "SELECT 1 FROM connector_client_secrets "
+            "WHERE connector_id=$1 AND purpose='api_key' AND is_active=TRUE LIMIT 1",
+            row["id"],
+        )
+        auth_kind = "oauth"
+        if entry is not None:
+            from src.connectors.providers import get_provider
+
+            provider = get_provider(entry.provider)
+            auth_kind = getattr(provider, "auth_kind", "oauth") if provider else "oauth"
         version = None
         if row["current_version_id"]:
             vrow = await conn.fetchrow(
@@ -277,7 +382,9 @@ class ConnectorRegistryService:
             "display_name": row["display_name"],
             "is_enabled": row["is_enabled"],
             "category": entry.category if entry else None,
+            "auth_kind": auth_kind,
             "has_client_secret": bool(secret),
+            "has_api_key": bool(api_key),
             "group_grants": [g["group_object_id"] for g in grants],
             "current_version": version,
             "created_at": row["created_at"].isoformat() if row["created_at"] else None,

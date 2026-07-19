@@ -259,6 +259,8 @@ async def lifespan(_app: FastAPI):
     from src.connectors.grant_service import GrantService
     from src.connectors.snapshot_service import SnapshotService
     from src.connectors.audit_service import AuditService
+    from src.connectors.tool_result_service import ToolResultService
+    from src.connectors.rate_limiter import RateLimiter
     from src.connectors.action_gate import ActionGate
 
     state.identity_service = IdentityService(pool)
@@ -266,6 +268,8 @@ async def lifespan(_app: FastAPI):
     state.grant_service    = GrantService(pool)
     state.snapshot_service = SnapshotService(pool)
     state.audit_service    = AuditService(pool)
+    state.tool_result_service = ToolResultService(pool)
+    state.rate_limiter     = RateLimiter(pool)
     state.action_gate      = ActionGate(
         pool,
         registry=state.registry_service,
@@ -273,6 +277,8 @@ async def lifespan(_app: FastAPI):
         snapshots=state.snapshot_service,
         identities=state.identity_service,
         audit=state.audit_service,
+        tool_results=state.tool_result_service,
+        rate_limiter=state.rate_limiter,
     )
 
     # ── Schema + prompt seeding ─────────────────────────────────────────────
@@ -419,4 +425,6 @@ async def lifespan(_app: FastAPI):
         state.grant_service         = None
         state.snapshot_service      = None
         state.audit_service         = None
+        state.tool_result_service   = None
+        state.rate_limiter          = None
         state.action_gate           = None

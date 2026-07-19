@@ -31,7 +31,11 @@ from src.agent.langgraph_agent.nodes.feedback import make_feedback_classifier
 from src.agent.langgraph_agent.nodes.memory import make_memory_shrink_check, make_memory_summarizer
 from src.agent.langgraph_agent.nodes.output import response_formatter
 from src.agent.langgraph_agent.nodes.router import make_fused_router
-from src.agent.langgraph_agent.nodes.sql_gen import _extract_sql
+from src.agent.langgraph_agent.nodes.sql_gen import (
+    _extract_sql,
+    _similarity,
+    make_memory_answer_generator,
+)
 from src.agent.langgraph_agent.nodes.validation import make_dlp_check, make_sqlglot_validate
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 
@@ -72,6 +76,105 @@ class TestMemoryShrinkCheck:
         check = make_memory_shrink_check(max_history_tokens=1)
         result = check({"conversation_history": []})
         assert result["is_over_budget"] is False
+
+
+# ── memory_answer_generator (from_memory replay + classification) ───────────────
+
+class TestMemoryAnswerGenerator:
+    def test_similarity_signal(self):
+        assert _similarity("show sales per month", "show sales per month") == 1.0
+        # "how ..." vs "show ..." is essentially the same request (1 word differs).
+        assert _similarity(
+            "how yoy sales per month for 2006 2007",
+            "show yoy sales per month for 2006 2007",
+        ) > 0.7
+        assert _similarity("totally unrelated ask", "show sales per month") < 0.3
+
+    @pytest.mark.asyncio
+    async def test_reuse_prior_replays_cached_result(self, mock_llm, prompt_loader):
+        """reuse_prior + cached rows → the node returns the SAME table (no prose)."""
+        from src.api.result_cache import result_cache
+
+        result_cache.put(
+            user_id="u1", connection="conn1", query_id="qid-1",
+            dataset={"columns": ["month", "sales"], "rows": [{"month": 1, "sales": 100}]},
+        )
+        mock_llm.generate.return_value = {
+            "content": '{"reuse_prior": true}', "finish_reason": "stop", "usage": {},
+        }
+        node = make_memory_answer_generator(mock_llm, prompt_loader)
+        state = {
+            "question": "show sales per month",
+            "conversation_history": [{
+                "id": "qid-1", "natural_language_query": "show sales per month",
+                "generated_sql": "SELECT month, sales FROM t",
+                "result_artifact": {"columns": ["month", "sales"], "row_count": 1},
+            }],
+            "user_id": "u1", "source_key": "conn1", "session_id": "s-reuse",
+            "route": "from_memory", "llm_call_count": 0, "llm_latency_ms": 0, "token_usage": {},
+        }
+        result = await node(state)
+        assert result["route"] == "from_memory"
+        assert result["generated_sql"] == "SELECT month, sales FROM t"
+        assert result["query_result"]["columns"] == ["month", "sales"]
+        assert result["query_result"]["row_count"] == 1
+        assert result.get("answer") is None
+
+    @pytest.mark.asyncio
+    async def test_reuse_prior_without_cache_falls_back_to_needs_query(self, mock_llm, prompt_loader):
+        """reuse_prior but rows evicted → re-run (needs_query) so the table is reproduced."""
+        mock_llm.generate.return_value = {
+            "content": '{"reuse_prior": true}', "finish_reason": "stop", "usage": {},
+        }
+        node = make_memory_answer_generator(mock_llm, prompt_loader)
+        state = {
+            "question": "show sales per month",
+            "conversation_history": [{
+                "id": "qid-gone", "natural_language_query": "show sales per month",
+                "generated_sql": "SELECT 1",
+            }],
+            "user_id": "u1", "source_key": "conn-empty", "session_id": "s-evict",
+            "route": "from_memory", "llm_call_count": 0, "llm_latency_ms": 0, "token_usage": {},
+        }
+        result = await node(state)
+        assert result["route"] == "needs_query"
+        assert result.get("query_result") is None
+
+    @pytest.mark.asyncio
+    async def test_needs_query_escape_hatch(self, mock_llm, prompt_loader):
+        mock_llm.generate.return_value = {
+            "content": '{"needs_query": true}', "finish_reason": "stop", "usage": {},
+        }
+        node = make_memory_answer_generator(mock_llm, prompt_loader)
+        state = {
+            "question": "sales for a brand new year", "conversation_history": [],
+            "user_id": "u", "source_key": "c", "session_id": "s-nq",
+            "route": "from_memory", "llm_call_count": 0, "llm_latency_ms": 0, "token_usage": {},
+        }
+        result = await node(state)
+        assert result["route"] == "needs_query"
+        assert result.get("query_result") is None
+
+    @pytest.mark.asyncio
+    async def test_derived_question_returns_prose(self, mock_llm, prompt_loader):
+        """A computed follow-up stays a prose answer (no table replay)."""
+        mock_llm.generate.return_value = {
+            "content": "The maximum was 200.", "finish_reason": "stop", "usage": {},
+        }
+        node = make_memory_answer_generator(mock_llm, prompt_loader)
+        state = {
+            "question": "what was the max?",
+            "conversation_history": [{
+                "id": "q", "natural_language_query": "sales per month",
+                "generated_sql": "SELECT 1", "result_preview": "[]",
+            }],
+            "user_id": "u", "source_key": "c", "session_id": "s-derived",
+            "route": "from_memory", "llm_call_count": 0, "llm_latency_ms": 0, "token_usage": {},
+        }
+        result = await node(state)
+        assert result["route"] == "from_memory"
+        assert result["answer"] == "The maximum was 200."
+        assert result.get("query_result") is None
 
 
 # ── memory_summarizer ──────────────────────────────────────────────────────────

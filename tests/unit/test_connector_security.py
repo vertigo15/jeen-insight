@@ -503,6 +503,192 @@ class TestRecipientPolicy:
         assert len(res.invalid) >= 1
 
 
+# ── p1: typed server-owned action policy ────────────────────────────────────
+
+class TestActionPolicy:
+    def test_unknown_action_fails_closed(self):
+        from src.connectors.action_policy import get_action_policy
+
+        assert get_action_policy("microsoft-graph-mail", "delete_everything") is None
+        assert get_action_policy("some-other-connector", "send_email") is None
+
+    def test_send_email_policy_shape(self):
+        from src.connectors.action_policy import get_action_policy
+
+        p = get_action_policy("microsoft-graph-mail", "send_email")
+        assert p is not None
+        # These authorization facts come from the server, never a manifest/LLM arg.
+        assert p.auth_kind == "oauth"
+        assert p.requires_snapshot is True
+        assert p.requires_grant is True
+
+    def _grant(self, sender="me@corp.com"):
+        return {"external_account": sender, "status": "active"}
+
+    def test_validator_requires_subject(self):
+        from src.connectors.action_policy import ActionPolicyError, get_action_policy
+
+        p = get_action_policy("microsoft-graph-mail", "send_email")
+        with pytest.raises(ActionPolicyError):
+            p.validate({"recipients": ["a@corp.com"], "subject": " "}, {}, self._grant())
+
+    def test_validator_requires_recipients(self):
+        from src.connectors.action_policy import ActionPolicyError, get_action_policy
+
+        p = get_action_policy("microsoft-graph-mail", "send_email")
+        with pytest.raises(ActionPolicyError):
+            p.validate({"recipients": [], "subject": "Hi"}, {}, self._grant())
+
+    def test_validator_rejects_external_by_default(self):
+        from src.connectors.action_policy import ActionPolicyError, get_action_policy
+
+        p = get_action_policy("microsoft-graph-mail", "send_email")
+        with pytest.raises(ActionPolicyError):
+            p.validate(
+                {"recipients": ["a@corp.com", "b@external.com"], "subject": "Hi"},
+                {},
+                self._grant(),
+            )
+
+    def test_validator_allows_external_when_config_permits(self):
+        from src.connectors.action_policy import get_action_policy
+
+        p = get_action_policy("microsoft-graph-mail", "send_email")
+        out = p.validate(
+            {"recipients": ["a@corp.com", "b@external.com"], "subject": "Hi", "note": "n"},
+            {"allow_external_recipients": True},
+            self._grant(),
+        )
+        assert set(out["recipients"]) == {"a@corp.com", "b@external.com"}
+        assert out["_external"] == ["b@external.com"]
+        assert out["subject"] == "Hi"
+
+    def test_validator_allowlist_permits_named_domain(self):
+        from src.connectors.action_policy import get_action_policy
+
+        p = get_action_policy("microsoft-graph-mail", "send_email")
+        out = p.validate(
+            {"recipients": ["a@corp.com", "b@partner.com"], "subject": "Hi"},
+            {"recipient_domain_allowlist": ["partner.com"]},
+            self._grant(),
+        )
+        assert set(out["recipients"]) == {"a@corp.com", "b@partner.com"}
+
+    def test_validator_rejects_invalid_syntax(self):
+        from src.connectors.action_policy import ActionPolicyError, get_action_policy
+
+        p = get_action_policy("microsoft-graph-mail", "send_email")
+        with pytest.raises(ActionPolicyError):
+            p.validate({"recipients": ["not-an-email"], "subject": "Hi"}, {}, self._grant())
+
+
+# ── p1: approval hash binds the exact approved payload + immutable context ───
+
+class TestApprovalHash:
+    def _args(self, **over):
+        base = dict(
+            action="send_email",
+            connector_id="c1",
+            connector_version_id="v1",
+            snapshot_id="s1",
+            snapshot_hash="deadbeef",
+            params={"recipients": ["a@corp.com"], "subject": "Hi"},
+        )
+        base.update(over)
+        return base
+
+    def test_deterministic(self):
+        from src.connectors.action_gate import _approval_hash
+
+        assert _approval_hash(**self._args()) == _approval_hash(**self._args())
+
+    def test_internal_keys_do_not_change_hash(self):
+        from src.connectors.action_gate import _approval_hash
+
+        base = _approval_hash(**self._args())
+        withint = _approval_hash(
+            **self._args(params={"recipients": ["a@corp.com"], "subject": "Hi", "_external": ["x@y.com"]})
+        )
+        assert base == withint  # underscore-prefixed keys are excluded
+
+    def test_params_change_hash(self):
+        from src.connectors.action_gate import _approval_hash
+
+        a = _approval_hash(**self._args())
+        b = _approval_hash(**self._args(params={"recipients": ["a@corp.com"], "subject": "Bye"}))
+        assert a != b
+
+    def test_version_and_snapshot_change_hash(self):
+        from src.connectors.action_gate import _approval_hash
+
+        base = _approval_hash(**self._args())
+        assert base != _approval_hash(**self._args(connector_version_id="v2"))
+        assert base != _approval_hash(**self._args(snapshot_hash="cafebabe"))
+
+
+# ── p1: agent-tools master switch enforced inside the gate + fail-closed ─────
+
+class _StubRegistry:
+    async def get_connector(self, connector_id):
+        return None  # forces a 404 once the flag check has passed
+
+
+class TestAgentToolsGate:
+    def _gate(self):
+        from src.connectors.action_gate import ActionGate
+
+        return ActionGate(
+            pool=None, registry=_StubRegistry(), grants=None,
+            snapshots=None, identities=None, audit=None,
+        )
+
+    async def test_agent_origin_blocked_when_flag_off(self, monkeypatch):
+        from src.connectors import action_gate as ag
+
+        async def _off(*a, **k):
+            return False
+
+        monkeypatch.setattr(ag, "get_connectors_enabled", _off)
+        monkeypatch.setattr(ag, "get_agent_tools_enabled", _off)
+
+        with pytest.raises(ag.ActionError) as exc:
+            await self._gate().propose(
+                owner_user_id="1", identity_id="i1", connector_id="c1",
+                action="send_email", snapshot_id="s1", origin="agent",
+            )
+        assert exc.value.status_code == 403
+
+    async def test_user_origin_skips_agent_flag(self, monkeypatch):
+        from src.connectors import action_gate as ag
+
+        async def _off(*a, **k):
+            return False
+
+        # Even with both switches off, a USER-origin proposal is not blocked by the
+        # agent-tools gate here; it proceeds and fails later (stub connector -> 404).
+        monkeypatch.setattr(ag, "get_connectors_enabled", _off)
+        monkeypatch.setattr(ag, "get_agent_tools_enabled", _off)
+
+        with pytest.raises(ag.ActionError) as exc:
+            await self._gate().propose(
+                owner_user_id="1", identity_id="i1", connector_id="c1",
+                action="send_email", snapshot_id="s1", origin="user",
+            )
+        assert exc.value.status_code == 404  # got past the flag gate
+
+    async def test_agent_tools_flag_fails_closed_without_pool(self, monkeypatch):
+        import src.metadata as metadata
+        from src.security import app_flags
+
+        app_flags.invalidate_cache()
+
+        async def _boom():
+            raise RuntimeError("no pool")
+
+        monkeypatch.setattr(metadata, "get_metadata_pool", _boom)
+        assert await app_flags.get_agent_tools_enabled(use_cache=False) is False
+
+
 # ── m4: keyed recipient redaction in the audit log ──────────────────────────
 
 class TestAuditRedaction:

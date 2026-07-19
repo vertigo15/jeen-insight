@@ -12,6 +12,13 @@ services:
       - "8000"
     env_file:
       - .env
+    # Resolve data-source hostnames via public DNS. The host's default resolver
+    # is the defence-stack VPN DNS (10.42.x), which does NOT answer for the
+    # regular (public) Azure DB FQDNs — so the container must use a public
+    # resolver to reach public data sources during local development.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     volumes:
       - ./src:/app/src
       - ./scripts:/app/scripts
@@ -33,6 +40,9 @@ services:
       - API_BASE_URL=http://jeen-insights-api:8000
       - UI_PORT=8501
       - PUBLIC_APP_URL=http://localhost:8501
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     depends_on:
       - jeen-insights-api
     volumes:
