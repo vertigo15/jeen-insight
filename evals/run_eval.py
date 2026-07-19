@@ -24,14 +24,36 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from evals.harness import EvalReport, evaluate, load_golden_set
+if TYPE_CHECKING:
+    from evals.harness import EvalReport
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_DATASET = Path(__file__).parent / "datasets" / "golden_set.yaml"
+_OFFLINE_SETTINGS = {
+    "AZURE_OPENAI_API_KEY": "offline-eval",
+    "AZURE_OPENAI_ENDPOINT": "https://offline-eval.invalid",
+    "METADATA_DB_HOST": "offline-eval",
+    "METADATA_DB_NAME": "offline-eval",
+    "METADATA_DB_USER": "offline-eval",
+    "METADATA_DB_PASSWORD": "offline-eval",
+}
+
+
+def _prepare_offline_environment() -> None:
+    """Supply inert settings before production guardrails are imported.
+
+    The offline harness executes no database or LLM call, but importing the
+    guardrail modules currently constructs the application settings object.
+    These defaults make the documented offline command runnable in a clean
+    checkout while preserving explicitly supplied settings.
+    """
+    for key, value in _OFFLINE_SETTINGS.items():
+        os.environ.setdefault(key, value)
 
 
 async def _build_live_classifier(dataset: Dict[str, Any]):
@@ -102,13 +124,20 @@ def _threshold_failures(report: EvalReport, thresholds: Dict[str, float]) -> Lis
 
 
 async def _run(args: argparse.Namespace) -> int:
+    # Import after parsing so an offline run never needs developer secrets.
+    from evals.harness import evaluate, load_golden_set, make_fixture_result_executor
+
     dataset = load_golden_set(args.dataset)
 
     classifier = None
     if args.live:
         classifier = await _build_live_classifier(dataset)
 
-    report = await evaluate(dataset, route_classifier=classifier)
+    report = await evaluate(
+        dataset,
+        route_classifier=classifier,
+        result_executor=make_fixture_result_executor(dataset.get("catalogs", {})),
+    )
 
     if args.json:
         payload = {
@@ -158,6 +187,9 @@ def main() -> None:
         level=logging.INFO if args.verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
     )
+
+    if not args.live:
+        _prepare_offline_environment()
 
     raise SystemExit(asyncio.run(_run(args)))
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -9,9 +10,11 @@ import pytest
 from evals.harness import (
     evaluate,
     load_golden_set,
+    make_fixture_result_executor,
     score_groundedness,
     score_safety,
 )
+from evals.run_eval import _OFFLINE_SETTINGS, _prepare_offline_environment
 
 _DATASET = Path(__file__).resolve().parents[2] / "evals" / "datasets" / "golden_set.yaml"
 
@@ -121,3 +124,121 @@ class TestReport:
         report = await evaluate(dataset)
         assert len(report.failures()) == 1
         assert "1 failing" in report.summary()
+
+
+class TestContinuityAndEquivalenceFixtures:
+    @pytest.mark.asyncio
+    async def test_continuity_case_matches_expected_context(self):
+        dataset = {
+            "cases": [{
+                "id": "follow-up",
+                "type": "continuity",
+                "question": "sort those descending",
+                "history": [{"q": "revenue by region", "sql": "SELECT ..."}],
+                "expect_context": {
+                    "referenced_result": True,
+                    "metric": "total_revenue",
+                },
+            }],
+        }
+
+        async def resolver(question, *, history=None):
+            assert question == "sort those descending"
+            assert history == dataset["cases"][0]["history"]
+            return {
+                "referenced_result": True,
+                "metric": "total_revenue",
+                "comparison": "descending",
+            }
+
+        report = await evaluate(dataset, continuity_resolver=resolver)
+        score = report.dimension_score("continuity")
+        assert score.scored == 1 and score.accuracy == 1.0
+
+    @pytest.mark.asyncio
+    async def test_equivalence_ignores_row_order_within_tolerance(self):
+        dataset = {
+            "cases": [{
+                "id": "equivalent",
+                "type": "equivalence",
+                "catalog": "sales",
+                "sql": "SELECT region, total_revenue FROM report",
+                "expect_rows": [
+                    {"region": "North", "total_revenue": 120.0},
+                    {"region": "South", "total_revenue": 80.0},
+                ],
+                "numeric_tolerance": 0.01,
+            }],
+        }
+
+        async def executor(sql, *, catalog_name=None):
+            assert sql == dataset["cases"][0]["sql"]
+            assert catalog_name == "sales"
+            return [
+                {"region": "South", "total_revenue": 80.0},
+                {"region": "North", "total_revenue": 120.005},
+            ]
+
+        report = await evaluate(dataset, result_executor=executor)
+        score = report.dimension_score("equivalence")
+        assert score.scored == 1 and score.accuracy == 1.0
+
+    @pytest.mark.asyncio
+    async def test_bundled_equivalence_fixture_is_executed(self):
+        dataset = load_golden_set(_DATASET)
+        report = await evaluate(
+            dataset,
+            result_executor=make_fixture_result_executor(dataset["catalogs"]),
+        )
+        score = report.dimension_score("equivalence")
+        assert score.scored == 1 and score.accuracy == 1.0
+
+    @pytest.mark.asyncio
+    async def test_unwired_future_dimensions_are_skipped(self):
+        dataset = {
+            "cases": [
+                {
+                    "id": "continuity",
+                    "type": "continuity",
+                    "question": "show those again",
+                    "expect_context": {"referenced_result": True},
+                },
+                {
+                    "id": "equivalence",
+                    "type": "equivalence",
+                    "sql": "SELECT 1",
+                    "expect_rows": [{"value": 1}],
+                },
+            ],
+        }
+        report = await evaluate(dataset)
+        assert report.dimension_score("continuity").skipped == 1
+        assert report.dimension_score("equivalence").skipped == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_future_expectations_fail_configuration(self):
+        dataset = {
+            "cases": [
+                {"id": "empty-context", "type": "continuity", "expect_context": {}},
+                {"id": "empty-rows", "type": "equivalence", "expect_rows": []},
+            ],
+        }
+        report = await evaluate(dataset)
+        assert {result.case_id for result in report.failures()} == {
+            "empty-context",
+            "empty-rows",
+        }
+
+
+class TestOfflineEvalCommand:
+    def test_offline_command_seeds_only_missing_settings(self, monkeypatch):
+        for key in _OFFLINE_SETTINGS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("METADATA_DB_HOST", "provided-host")
+
+        _prepare_offline_environment()
+
+        assert os.environ["METADATA_DB_HOST"] == "provided-host"
+        for key, value in _OFFLINE_SETTINGS.items():
+            if key != "METADATA_DB_HOST":
+                assert os.environ[key] == value
