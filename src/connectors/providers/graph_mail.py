@@ -18,20 +18,21 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-import httpx
-
-from src.connectors import oauth
+from src.connectors import egress, oauth
 from src.connectors.providers.base import ProviderAdapter, TokenResult
 
 logger = logging.getLogger(__name__)
 
-GRAPH_SENDMAIL = "https://graph.microsoft.com/v1.0/me/sendMail"
+GRAPH_ORIGIN = "https://graph.microsoft.com"
+GRAPH_SENDMAIL = f"{GRAPH_ORIGIN}/v1.0/me/sendMail"
 _MAX_ROWS = 50
 _MAX_COLS = 20
 
 
 class GraphMailAdapter(ProviderAdapter):
     provider_id = "microsoft_graph"
+    auth_kind = "oauth"
+    allowed_origins = (GRAPH_ORIGIN,)
 
     # ── config helpers ──────────────────────────────────────────────────────
     def _tenant(self, config: Dict[str, Any]) -> str:
@@ -169,10 +170,13 @@ class GraphMailAdapter(ProviderAdapter):
 
     # ── Action execution ─────────────────────────────────────────────────────
     async def execute(
-        self, *, action, params, snapshot_payload, access_token, config
+        self, *, action, params, snapshot_payload, config, access_token=None, api_key=None
     ) -> Dict[str, Any]:
         if action != "send_email":
             raise ValueError(f"Unsupported action for microsoft_graph: {action}")
+        if not access_token:
+            raise ValueError("Microsoft Graph requires a delegated access token")
+        snapshot_payload = snapshot_payload or {}
         recipients: List[str] = params.get("recipients") or []
         subject: str = params.get("subject") or "(no subject)"
         note: str = params.get("note") or ""
@@ -194,12 +198,14 @@ class GraphMailAdapter(ProviderAdapter):
             },
             "saveToSentItems": True,
         }
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                GRAPH_SENDMAIL,
-                json=message,
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
+        resp = await egress.request(
+            "POST",
+            GRAPH_SENDMAIL,
+            allowed_origins=self.allowed_origins,
+            json=message,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=30,
+        )
         accepted = resp.status_code == 202
         return {
             "status_code": resp.status_code,

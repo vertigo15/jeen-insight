@@ -68,6 +68,7 @@ from .mcp_cache_service import (
     KEY_COLUMNS_STRUCT,
     SOURCE_GLOBAL,
 )
+from .catalog_filter import filter_tables_rich, filter_columns
 
 logger = logging.getLogger(__name__)
 
@@ -193,11 +194,15 @@ class McpCatalogClient:
     async def load_tables_rich(self, source_key: str) -> List[Dict[str, Any]]:
         """Mirror of MetadataLoader.load_tables_rich for the `@` table picker.
 
-        Shape: ``[{name, description, col_count}]``.
+        Shape: ``[{name, description, col_count}]``. System-schema objects
+        (information_schema / pg_catalog) and duplicate names are stripped so the
+        picker shows only real user tables even when the MCP server harvested the
+        whole database.
         """
-        return await self._load_list_dataset(
+        items = await self._load_list_dataset(
             source_key, NEED_TABLES_RICH, KEY_TABLES_RICH, {}
         )
+        return filter_tables_rich(items)
 
     async def load_knowledge_questions(self, source_key: str) -> List[Dict[str, Any]]:
         """Mirror of MetadataLoader.load_knowledge_questions for `/` templates.
@@ -219,9 +224,10 @@ class McpCatalogClient:
         scope = (table_name or "").strip() or "ALL"
         cache_key = f"{KEY_COLUMNS_STRUCT}:{scope.lower()}"
         arguments = {"table": table_name} if table_name else {}
-        return await self._load_list_dataset(
+        items = await self._load_list_dataset(
             source_key, NEED_LIST_COLUMNS, cache_key, arguments
         )
+        return filter_columns(items)
 
     async def get_cache_status(
         self, mcp_server_id: int, source_key: str

@@ -23,7 +23,12 @@ from src.api.dependencies import (
 )
 from src.connectors.catalog import list_catalog
 from src.connectors.registry_service import RegistryError
-from src.security.app_flags import get_connectors_enabled, set_connectors_enabled
+from src.security.app_flags import (
+    get_agent_tools_enabled,
+    get_connectors_enabled,
+    set_agent_tools_enabled,
+    set_connectors_enabled,
+)
 from src.security.internal_auth import Principal
 
 logger = logging.getLogger(__name__)
@@ -50,6 +55,34 @@ async def set_feature(
     value = await set_connectors_enabled(body.enabled)
     await audit.log(
         event_type="feature.toggled",
+        actor_user_id=principal.user_id,
+        actor_email=principal.email,
+        outcome="enabled" if value else "disabled",
+    )
+    return {"enabled": value}
+
+
+# ── Agent-tools switch (independent; also not gated by the switch itself) ────
+# Whether the AGENT may autonomously propose/execute connector tools. Requires the
+# master connector switch to be on as well; turning this off is an immediate
+# kill switch for agent tool-calling while leaving manual actions intact.
+
+@router.get("/agent-tools-feature")
+async def get_agent_tools_feature(
+    principal: Principal = Depends(require_admin),
+) -> Dict[str, Any]:
+    return {"enabled": await get_agent_tools_enabled(use_cache=False)}
+
+
+@router.put("/agent-tools-feature")
+async def set_agent_tools_feature(
+    body: FeatureToggle,
+    principal: Principal = Depends(require_admin),
+    audit=Depends(get_audit_service),
+) -> Dict[str, Any]:
+    value = await set_agent_tools_enabled(body.enabled)
+    await audit.log(
+        event_type="agent_tools.toggled",
         actor_user_id=principal.user_id,
         actor_email=principal.email,
         outcome="enabled" if value else "disabled",
@@ -177,6 +210,48 @@ async def set_client_secret(
         connector_id=connector_id, outcome="ok",
     )
     return {"ok": True}
+
+
+class ApiKeyBody(BaseModel):
+    api_key: str
+
+
+@router.put("/{connector_id}/api-key", dependencies=[Depends(require_connectors_enabled)])
+async def set_api_key(
+    connector_id: str,
+    body: ApiKeyBody,
+    principal: Principal = Depends(require_admin),
+    registry=Depends(get_registry_service),
+    audit=Depends(get_audit_service),
+) -> Dict[str, Any]:
+    connector = await registry.get_connector(connector_id)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    if connector.get("auth_kind") != "api_key":
+        raise HTTPException(status_code=400, detail="This connector does not use an API key")
+    if not (body.api_key or "").strip():
+        raise HTTPException(status_code=400, detail="API key is required")
+    try:
+        await registry.set_api_key(
+            connector_id, body.api_key.strip(), created_by=principal.email or principal.user_id
+        )
+    except RegistryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await audit.log(
+        event_type="connector.api_key_set",
+        actor_user_id=principal.user_id, actor_email=principal.email,
+        connector_id=connector_id, outcome="ok",
+    )
+    return {"ok": True}
+
+
+@router.get("/{connector_id}/health", dependencies=[Depends(require_connectors_enabled)])
+async def get_connector_health(
+    connector_id: str,
+    principal: Principal = Depends(require_admin),
+    registry=Depends(get_registry_service),
+) -> Dict[str, Any]:
+    return await registry.get_health(connector_id)
 
 
 @router.delete("/{connector_id}", dependencies=[Depends(require_connectors_enabled)])

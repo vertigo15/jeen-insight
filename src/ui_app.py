@@ -49,10 +49,10 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on", "t")
 
 
-# Explicit development mode. Production is the DEFAULT (fail-closed): a fresh
-# install with no config refuses to start with weak/known secrets. Operators
-# running local HTTP dev opt in with JEEN_DEV_MODE=true.
-DEV_MODE = _env_bool("JEEN_DEV_MODE", default=False)
+# Development / POC mode is the DEFAULT so a fresh copy of the app + shared DB
+# "just works" anywhere with zero secret provisioning. Harden a real deployment
+# with JEEN_DEV_MODE=false, which then requires strong, non-default secrets.
+DEV_MODE = _env_bool("JEEN_DEV_MODE", default=True)
 
 # Send cookies over HTTPS only. Defaults to ON in production, OFF in dev so local
 # http://localhost:8501 still logs in.
@@ -613,7 +613,10 @@ def auth_me():
     """Return the current session user (200) or 401 if not logged in."""
     if "user_id" not in session:
         return jsonify({"error": "Not authenticated"}), 401
-    from src.security.app_flags import get_connectors_enabled_sync
+    from src.security.app_flags import (
+        get_agent_tools_enabled_sync,
+        get_connectors_enabled_sync,
+    )
 
     return jsonify({
         "id":         session["user_id"],
@@ -624,6 +627,9 @@ def auth_me():
         # Surface flags the UI uses to gate connector surfaces.
         "is_entra":   bool(session.get("object_id")),
         "connectors_enabled": get_connectors_enabled_sync(),
+        # Independent switch for agent-initiated tool calls (requires connectors
+        # to also be enabled). Surfaced so the UI can reflect/gate the feature.
+        "agent_tools_enabled": get_agent_tools_enabled_sync(),
     })
 
 

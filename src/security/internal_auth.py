@@ -37,8 +37,12 @@ class InternalAuthConfigError(RuntimeError):
 
 
 def _dev_mode() -> bool:
-    raw = (os.getenv("JEEN_DEV_MODE") or "").strip().lower()
-    return raw in ("1", "true", "yes", "on", "t")
+    # Default TRUE (POC/portable): a fresh copy boots with the shared dev secret
+    # so UI and API agree with zero config. Set JEEN_DEV_MODE=false to harden.
+    raw = os.getenv("JEEN_DEV_MODE")
+    if raw is None or not raw.strip():
+        return True
+    return raw.strip().lower() in ("1", "true", "yes", "on", "t")
 
 
 class PrincipalError(Exception):

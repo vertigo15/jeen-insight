@@ -88,6 +88,38 @@ _SEND_EMAIL = ActionSpec(
     },
 )
 
+_SLACK_POST = ActionSpec(
+    name="post_message",
+    label="Post to Slack",
+    description="Post the current result to a Slack channel as yourself.",
+    params={
+        "channel": {"type": "string", "required": True, "max": 200},
+        "note": {"type": "string", "required": False, "max": 3000},
+    },
+)
+
+_JIRA_CREATE = ActionSpec(
+    name="create_issue",
+    label="Create Jira issue",
+    description="Create a Jira issue from the current result.",
+    params={
+        "project_key": {"type": "string", "required": True, "max": 64},
+        "issue_type": {"type": "string", "required": True, "max": 64},
+        "summary": {"type": "string", "required": True, "max": 255},
+        "note": {"type": "string", "required": False, "max": 3000},
+    },
+)
+
+_TAVILY_SEARCH = ActionSpec(
+    name="web_search",
+    label="Web search",
+    description="Search the web (read-only) to enrich an answer.",
+    params={
+        "query": {"type": "string", "required": True, "max": 400},
+        "max_results": {"type": "integer", "required": False, "max": 10},
+    },
+)
+
 CATALOG: Dict[str, CatalogEntry] = {
     "microsoft-graph-mail": CatalogEntry(
         key="microsoft-graph-mail",
@@ -107,18 +139,50 @@ CATALOG: Dict[str, CatalogEntry] = {
         },
         docs_url="https://learn.microsoft.com/graph/api/user-sendmail",
     ),
-    # ── Roadmap (surfaced as "coming soon"; not connectable in v1) ──────────
     "slack-message": CatalogEntry(
         key="slack-message",
         provider="slack",
         display_name="Slack",
-        description="Post results to a Slack channel or DM as yourself.",
+        description="Post the current result to a Slack channel as yourself.",
         category="chat",
         auth_type="oauth2_pkce",
         scopes=["chat:write"],
-        actions=[],
-        coming_soon=True,
+        actions=[_SLACK_POST],
+        config_defaults={
+            "allowed_team_id": "",       # empty => any workspace the user consents to
+            "allowed_channels": [],      # empty => any channel the user can post to
+        },
+        docs_url="https://api.slack.com/methods/chat.postMessage",
     ),
+    "jira-issue": CatalogEntry(
+        key="jira-issue",
+        provider="jira",
+        display_name="Jira",
+        description="Create a Jira issue from the current result.",
+        category="issues",
+        auth_type="oauth2_pkce",
+        scopes=["read:jira-work", "write:jira-work", "offline_access"],
+        actions=[_JIRA_CREATE],
+        config_defaults={
+            "allowed_cloud_id": "",      # REQUIRED at execute (fixed Atlassian site)
+            "allowed_projects": [],      # empty => any project the user can access
+            "allowed_issue_types": [],   # empty => any issue type
+        },
+        docs_url="https://developer.atlassian.com/cloud/jira/platform/rest/v3/",
+    ),
+    "tavily-web-search": CatalogEntry(
+        key="tavily-web-search",
+        provider="tavily",
+        display_name="Tavily Web Search",
+        description="Let the assistant search the web (read-only) to enrich answers.",
+        category="search",
+        auth_type="api_key",
+        scopes=[],
+        actions=[_TAVILY_SEARCH],
+        config_defaults={},
+        docs_url="https://docs.tavily.com/",
+    ),
+    # ── Roadmap (surfaced as "coming soon"; not connectable) ────────────────
     "google-sheets": CatalogEntry(
         key="google-sheets",
         provider="google",
@@ -127,17 +191,6 @@ CATALOG: Dict[str, CatalogEntry] = {
         category="docs",
         auth_type="oauth2_pkce",
         scopes=["https://www.googleapis.com/auth/spreadsheets"],
-        actions=[],
-        coming_soon=True,
-    ),
-    "jira-issue": CatalogEntry(
-        key="jira-issue",
-        provider="jira",
-        display_name="Jira",
-        description="Create a Jira issue from an insight.",
-        category="issues",
-        auth_type="oauth2_pkce",
-        scopes=["write:jira-work"],
         actions=[],
         coming_soon=True,
     ),

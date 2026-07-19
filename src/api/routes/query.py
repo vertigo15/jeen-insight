@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -48,11 +49,16 @@ async def query_database(
             status_code=429,
             detail="Too many concurrent queries. Please wait for the current one to finish.",
         )
+    # Trusted identity propagation: the agent's user context is derived from the
+    # verified Principal, never from the request body. A client cannot spoof a
+    # user_id to read another user's history/cache or own a result snapshot.
+    user_context = dict(request.user_context or {})
+    user_context["user_id"] = user_id
     try:
         result = await agent.process_question(
             question=request.question,
             session_id=request.session_id,
-            user_context=request.user_context or {},
+            user_context=user_context,
             limit=request.limit,
             temperature=request.temperature,
             eval_analytics=request.eval_analytics,
@@ -76,6 +82,15 @@ async def query_database(
         await _maybe_snapshot(
             result, principal=principal, connection=request.connection
         )
+        # Post-result agent tool planner (Phase 3): may propose exactly ONE
+        # email-this-result action when agent tools are enabled and the user's
+        # question expressed explicit intent. Best-effort — never fails the query.
+        try:
+            proposal = await _maybe_propose_tool(result, principal=principal)
+            if proposal:
+                result["tool_proposal"] = proposal
+        except Exception:  # noqa: BLE001
+            logger.debug("tool planner failed", exc_info=True)
         return QueryResponse(**result)
     except HTTPException:
         raise
@@ -133,6 +148,57 @@ async def _maybe_snapshot(result: dict, *, principal: Principal, connection: str
             result["result_handle"] = snap["id"]
     except Exception:  # noqa: BLE001 - snapshots are best-effort
         logger.debug("snapshot create failed", exc_info=True)
+
+
+async def _maybe_propose_tool(result: dict, *, principal: Principal) -> Optional[dict]:
+    """Best-effort post-result tool proposal (see src.agent.tool_planner).
+
+    Returns a proposal dict for the UI confirm card, or None. At most ONE proposal
+    per turn, tried in order: email → Slack → Jira (snapshot-bound writes), then a
+    read (web_search) when the user explicitly asked to search the web. Each path
+    independently requires the connector platform + agent tools enabled, an Entra
+    principal, explicit intent, entitlement, and (for writes) a connected grant —
+    otherwise silently None.
+    """
+    from src.api import state as api_state
+
+    gate = api_state.action_gate
+    registry = api_state.registry_service
+    grants = api_state.grant_service
+    identities = api_state.identity_service
+    if not (gate and registry and grants and identities):
+        return None
+    from src.agent.tool_planner import (
+        plan_jira_action,
+        plan_post_result_action,
+        plan_read_action,
+        plan_slack_action,
+    )
+    from src.api.dependencies import ensure_identity
+
+    # Snapshot-bound OAuth writes (each fires only on its own explicit intent).
+    for planner in (plan_post_result_action, plan_slack_action, plan_jira_action):
+        proposal = await planner(
+            result=result,
+            principal=principal,
+            registry=registry,
+            grants=grants,
+            identities=identities,
+            gate=gate,
+            ensure_identity=ensure_identity,
+        )
+        if proposal is not None:
+            return proposal
+
+    # Read tool (api_key, no snapshot / no grant).
+    return await plan_read_action(
+        result=result,
+        principal=principal,
+        registry=registry,
+        identities=identities,
+        gate=gate,
+        ensure_identity=ensure_identity,
+    )
 
 
 @router.get("/tables")

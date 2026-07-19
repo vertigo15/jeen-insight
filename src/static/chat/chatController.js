@@ -26,16 +26,28 @@
 (function () {
     'use strict';
 
-    // Pipeline labels for the "thinking" indicator. The real /api/query call is
-    // a single blocking request, so these are approximated from the milestones
-    // we do have (send -> query returns -> insights stream inside the card).
-    const PIPELINE = [
+    // "Thinking" indicator phases. /api/ask is a single blocking request that
+    // returns only when the whole graph finishes, so the client cannot know the
+    // real route mid-flight. We therefore show ONLY honest, always-true phases
+    // while waiting (never a fake "Generating SQL" / "Running query"), and then
+    // reconcile to the ACTUAL steps that ran from the response trace once it
+    // arrives (see _buildStepsHtml). This keeps the UI truthful: a from_memory
+    // answer no longer claims it wrote and executed SQL.
+    const WAIT_PHASES = [
         'Understanding your question',
-        'Loading schema & metadata',
-        'Generating SQL',
-        'Running query',
-        'Generating insights',
+        'Working on it\u2026',
     ];
+
+    // Map the real executed graph nodes (data.trace) to short, user-facing labels
+    // for the per-answer "what actually happened" trail. Only the meaningful,
+    // user-visible steps are surfaced; internal bookkeeping nodes are omitted.
+    const STEP_LABELS = {
+        memory_answer_generator: 'Answered from memory',
+        catalog_lookup: 'Loaded schema',
+        sql_generator: 'Generated SQL',
+        execute_query: 'Ran query',
+        fused_eval_analytics: 'Analyzed',
+    };
 
     const CHART_MANAGER_URL = '../chart-feature/chartManager.js?v=87';
     const MAX_TABLE_ROWS = 50;
@@ -309,6 +321,7 @@
 
                 wrap.innerHTML = this._wrapAssistant(`
                     <div class="chat-card">
+                        ${this._buildStepsHtml(data)}
                         <div class="chat-card-summary" data-role="summary" hidden></div>
                         <div class="chat-card-viz">
                             <div class="chat-viz-head">
@@ -367,15 +380,280 @@
                     setTimeout(() => mgr.generateInsights(turn.results, turn.question, turn.queryId, turn.sql), 0);
                 }
             } else if (turn.answer) {
-                // Conversational text answer (no SQL executed).
-                wrap.innerHTML = this._wrapAssistant(`<div class="chat-card"><div class="chat-answer-text">${esc(turn.answer).replace(/\n/g, '<br>')}</div></div>`);
+                // Conversational text answer (no SQL executed) — e.g. a derived
+                // follow-up computed from memory. Show the real steps trail so it
+                // is clear no query ran.
+                wrap.innerHTML = this._wrapAssistant(`<div class="chat-card">${this._buildStepsHtml(data)}<div class="chat-answer-text">${esc(turn.answer).replace(/\n/g, '<br>')}</div></div>`);
                 this.threadEl.appendChild(wrap);
             } else {
                 wrap.innerHTML = this._wrapAssistant(`<div class="chat-card"><div class="chat-answer-text chat-muted">${esc(data.error || 'No results to display.')}</div></div>`);
                 this.threadEl.appendChild(wrap);
             }
 
+            // Agent-proposed tool action: render a generic confirm card (write) or
+            // a search-then-answer card (read).
+            if (data.tool_proposal) {
+                try { this._renderToolProposal(data.tool_proposal, wrap, data); }
+                catch (e) { console.warn('[ChatController] tool proposal render failed:', e); }
+            }
+
             this._scrollToBottom();
+        },
+
+        // ── Agent tool proposal (generic confirm card) ─────────────────────────
+        _renderToolProposal(proposal, wrap, data) {
+            if (!proposal || !proposal.proposal_id || !proposal.nonce) return;
+            const card = wrap.querySelector('.chat-card');
+            if (!card) return;
+            if (proposal.kind === 'read') {
+                this._renderReadProposal(proposal, card, data || {});
+                return;
+            }
+            this._renderWriteProposal(proposal, card);
+        },
+
+        // Field/label spec + a preview-summary renderer per write action. Adding a
+        // new write connector is a data change here (the flow is identical).
+        _writeActionSpec(action) {
+            const specs = {
+                send_email: {
+                    icon: '✉️', verb: 'Send',
+                    fields: [
+                        { role: 'recipients', label: 'Recipients', type: 'text', ph: 'name@example.com, …', list: true },
+                        { role: 'subject', label: 'Subject', type: 'text' },
+                    ],
+                    summary: (d) => {
+                        const p = d.params || {};
+                        const to = (d.recipients || p.recipients || []).map(esc).join(', ');
+                        let h = `<div><strong>From:</strong> ${esc(d.sender || 'your mailbox')}</div>`
+                            + `<div><strong>To:</strong> ${to || '<span class="chat-tool-warn">(none)</span>'}</div>`
+                            + `<div><strong>Subject:</strong> ${esc(d.subject || p.subject || '')}</div>`;
+                        if (d.has_external) {
+                            h += `<div class="chat-tool-warn">⚠ External recipients: ${(d.external_recipients || []).map(esc).join(', ')}</div>`;
+                        }
+                        return h;
+                    },
+                },
+                post_message: {
+                    icon: '💬', verb: 'Post',
+                    fields: [
+                        { role: 'channel', label: 'Channel', type: 'text', ph: '#general or channel ID' },
+                        { role: 'note', label: 'Note (optional)', type: 'textarea', ph: 'Added above the result…' },
+                    ],
+                    summary: (d) => {
+                        const p = d.params || {};
+                        let h = `<div><strong>Channel:</strong> ${esc(p.channel || '') || '<span class="chat-tool-warn">(none)</span>'}</div>`;
+                        if (p.note) h += `<div><strong>Note:</strong> ${esc(p.note)}</div>`;
+                        return h;
+                    },
+                },
+                create_issue: {
+                    icon: '🗂️', verb: 'Create',
+                    fields: [
+                        { role: 'project_key', label: 'Project key', type: 'text', ph: 'ABC' },
+                        { role: 'issue_type', label: 'Issue type', type: 'text', ph: 'Task' },
+                        { role: 'summary', label: 'Summary', type: 'text' },
+                        { role: 'note', label: 'Note (optional)', type: 'textarea' },
+                    ],
+                    summary: (d) => {
+                        const p = d.params || {};
+                        let h = `<div><strong>Project:</strong> ${esc(p.project_key || '') || '<span class="chat-tool-warn">(none)</span>'}</div>`
+                            + `<div><strong>Type:</strong> ${esc(p.issue_type || '')}</div>`
+                            + `<div><strong>Summary:</strong> ${esc(p.summary || '')}</div>`;
+                        if (p.note) h += `<div><strong>Note:</strong> ${esc(p.note)}</div>`;
+                        return h;
+                    },
+                },
+            };
+            return specs[action] || specs.send_email;
+        },
+
+        // ── Agent write action (generic confirm card: preview -> execute) ───────
+        _renderWriteProposal(proposal, card) {
+            const spec = this._writeActionSpec(proposal.action);
+            const params = proposal.params || {};
+            const fieldVal = (f) => {
+                const v = params[f.role];
+                if (f.list) return Array.isArray(v) ? v.join(', ') : (v || '');
+                return v == null ? '' : String(v);
+            };
+            const fieldHtml = spec.fields.map((f) => {
+                const val = fieldVal(f);
+                const input = f.type === 'textarea'
+                    ? `<textarea class="chat-tool-input" rows="2" data-role="${f.role}" placeholder="${esc(f.ph || '')}">${esc(val)}</textarea>`
+                    : `<input type="text" class="chat-tool-input" data-role="${f.role}" placeholder="${esc(f.ph || '')}" value="${esc(val)}">`;
+                return `<label class="chat-tool-label">${esc(f.label)}${input}</label>`;
+            }).join('');
+
+            const el = document.createElement('div');
+            el.className = 'chat-tool-card';
+            el.innerHTML = `
+                <div class="chat-tool-head">
+                    <span class="chat-tool-icon">${spec.icon}</span>
+                    <span class="chat-tool-title">${esc(proposal.prompt || 'Confirm action')}</span>
+                    <span class="chat-tool-sub">${esc((proposal.connector && proposal.connector.display_name) || '')}</span>
+                </div>
+                ${fieldHtml}
+                <div class="chat-tool-summary" data-role="summary" hidden></div>
+                <div class="chat-tool-msg" data-role="msg" hidden></div>
+                <div class="chat-tool-actions">
+                    <button class="chat-tool-btn ghost" type="button" data-act="dismiss">Dismiss</button>
+                    <button class="chat-tool-btn" type="button" data-act="preview">Preview</button>
+                    <button class="chat-tool-btn primary" type="button" data-act="send" hidden>${esc(spec.verb)}</button>
+                </div>`;
+            card.appendChild(el);
+
+            const $ = (sel) => el.querySelector(sel);
+            const msg = $('[data-role="msg"]');
+            const summary = $('[data-role="summary"]');
+            const sendBtn = $('[data-act="send"]');
+            const previewBtn = $('[data-act="preview"]');
+            const showMsg = (text, kind) => {
+                msg.textContent = text;
+                msg.hidden = !text;
+                msg.className = 'chat-tool-msg' + (kind ? ' ' + kind : '');
+            };
+            const collect = () => {
+                const out = {};
+                spec.fields.forEach((f) => {
+                    const node = el.querySelector(`[data-role="${f.role}"]`);
+                    const raw = (node && node.value) || '';
+                    if (f.list) {
+                        out[f.role] = raw.split(',').map((s) => s.trim()).filter(Boolean);
+                    } else {
+                        const v = raw.trim();
+                        if (v) out[f.role] = v;
+                    }
+                });
+                return out;
+            };
+
+            $('[data-act="dismiss"]').addEventListener('click', () => el.remove());
+
+            previewBtn.addEventListener('click', async () => {
+                showMsg('', '');
+                previewBtn.disabled = true;
+                try {
+                    const r = await fetch(`/api/actions/${encodeURIComponent(proposal.proposal_id)}/preview`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ nonce: proposal.nonce, params: collect() }),
+                    });
+                    const d = await r.json();
+                    if (!r.ok) throw new Error(d.detail || 'Preview failed');
+                    const rc = d.snapshot ? `${d.snapshot.row_count} row(s)` : '';
+                    summary.innerHTML = spec.summary(d) + (rc ? `<div><strong>Includes:</strong> ${esc(rc)}</div>` : '');
+                    summary.hidden = false;
+                    sendBtn.hidden = false;
+                } catch (e) {
+                    showMsg(e && e.message ? e.message : String(e), 'error');
+                } finally {
+                    previewBtn.disabled = false;
+                }
+            });
+
+            sendBtn.addEventListener('click', async () => {
+                sendBtn.disabled = true;
+                showMsg('', '');
+                try {
+                    const r = await fetch(`/api/actions/${encodeURIComponent(proposal.proposal_id)}/execute`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ nonce: proposal.nonce, confirmed: true }),
+                    });
+                    const d = await r.json();
+                    if (!r.ok) throw new Error(d.detail || 'Action failed');
+                    el.querySelectorAll('input,textarea,button').forEach((n) => { n.disabled = true; });
+                    showMsg(d.message || (d.accepted ? 'Done.' : 'Not completed.'), d.accepted ? 'ok' : 'error');
+                } catch (e) {
+                    sendBtn.disabled = false;
+                    showMsg(e && e.message ? e.message : String(e), 'error');
+                }
+            });
+        },
+
+        // ── Agent read tool (web search -> tools-disabled answer) ───────────────
+        _renderReadProposal(proposal, card, data) {
+            const params = proposal.params || {};
+            const query = params.query || (data && data.question) || '';
+            const question = (data && data.question) || query;
+            const sessionId = (typeof window._jeenGetSessionId === 'function')
+                ? window._jeenGetSessionId() : null;
+
+            const el = document.createElement('div');
+            el.className = 'chat-tool-card';
+            el.innerHTML = `
+                <div class="chat-tool-head">
+                    <span class="chat-tool-icon">🔎</span>
+                    <span class="chat-tool-title">${esc(proposal.prompt || 'Search the web?')}</span>
+                    <span class="chat-tool-sub">${esc((proposal.connector && proposal.connector.display_name) || '')}</span>
+                </div>
+                <label class="chat-tool-label">Search query
+                    <input type="text" class="chat-tool-input" data-role="query" value="${esc(query)}">
+                </label>
+                <div class="chat-tool-msg" data-role="msg" hidden></div>
+                <div class="chat-tool-answer" data-role="answer" hidden></div>
+                <div class="chat-tool-actions">
+                    <button class="chat-tool-btn ghost" type="button" data-act="dismiss">Dismiss</button>
+                    <button class="chat-tool-btn primary" type="button" data-act="search">Search the web</button>
+                </div>`;
+            card.appendChild(el);
+
+            const $ = (sel) => el.querySelector(sel);
+            const msg = $('[data-role="msg"]');
+            const answerEl = $('[data-role="answer"]');
+            const searchBtn = $('[data-act="search"]');
+            const showMsg = (text, kind) => {
+                msg.textContent = text;
+                msg.hidden = !text;
+                msg.className = 'chat-tool-msg' + (kind ? ' ' + kind : '');
+            };
+
+            $('[data-act="dismiss"]').addEventListener('click', () => el.remove());
+
+            searchBtn.addEventListener('click', async () => {
+                const q = $('[data-role="query"]').value.trim();
+                if (!q) { showMsg('Enter a search query.', 'error'); return; }
+                searchBtn.disabled = true;
+                showMsg('Searching…', '');
+                const pid = encodeURIComponent(proposal.proposal_id);
+                try {
+                    // 1) preview: persist + hash-bind the server-approved params.
+                    let r = await fetch(`/api/actions/${pid}/preview`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ nonce: proposal.nonce, params: { query: q } }),
+                    });
+                    let d = await r.json();
+                    if (!r.ok) throw new Error(d.detail || 'Preview failed');
+                    // 2) execute: runs ONLY the approved params; returns an artifact ref.
+                    r = await fetch(`/api/actions/${pid}/execute`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ nonce: proposal.nonce, confirmed: true }),
+                    });
+                    d = await r.json();
+                    if (!r.ok) throw new Error(d.detail || 'Search failed');
+                    const artifactId = d.continuation && d.continuation.artifact_id;
+                    if (!artifactId) throw new Error('No search result was captured.');
+                    // 3) continue: compose the final answer with TOOLS DISABLED.
+                    showMsg('Composing answer…', '');
+                    r = await fetch(`/api/actions/${pid}/continue`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ artifact_id: artifactId, question, session_id: sessionId }),
+                    });
+                    d = await r.json();
+                    if (!r.ok) throw new Error(d.detail || 'Could not compose an answer.');
+                    el.querySelectorAll('input,button').forEach((n) => { n.disabled = true; });
+                    showMsg('', '');
+                    answerEl.innerHTML = esc(d.answer || '').replace(/\n/g, '<br>');
+                    answerEl.hidden = false;
+                } catch (e) {
+                    searchBtn.disabled = false;
+                    showMsg(e && e.message ? e.message : String(e), 'error');
+                }
+            });
         },
 
         _buildTableHtml(results) {
@@ -658,7 +936,7 @@
             const el = document.createElement('div');
             el.className = 'chat-turn chat-assistant';
             el.innerHTML = this._wrapAssistant(`<div class="chat-thinking" role="status" aria-label="Working on your question">` +
-                PIPELINE.map((label, i) =>
+                WAIT_PHASES.map((label, i) =>
                     `<div class="chat-think-step" data-step="${i}"><span class="chat-think-dot"></span><span class="chat-think-label">${esc(label)}</span></div>`
                 ).join('') + `</div>`);
             this.threadEl.appendChild(el);
@@ -673,11 +951,10 @@
                 });
             };
             apply();
-            // Advance through the early phases on a light timer, then hold at
-            // "Generating SQL" until the real response arrives.
+            // Advance to the honest "Working on it…" phase; hold there until the
+            // real response arrives (no fake per-step claims mid-flight).
             const timers = [];
             timers.push(setTimeout(() => { step = 1; apply(); }, 500));
-            timers.push(setTimeout(() => { step = 2; apply(); }, 1100));
 
             return {
                 el,
@@ -686,6 +963,30 @@
                     if (el.parentNode) el.parentNode.removeChild(el);
                 },
             };
+        },
+
+        // Build the "what actually happened" trail from the real execution trace
+        // returned by the server. Route-aware and truthful: a from_memory answer
+        // shows "Answered from memory", a live query shows "Loaded schema ›
+        // Generated SQL › Ran query › Analyzed". Returns '' when no trace.
+        _buildStepsHtml(data) {
+            const trace = (data && data.trace) || [];
+            if (!trace.length) return '';
+            const seen = new Set();
+            const steps = [];
+            trace.forEach((ev) => {
+                const label = STEP_LABELS[ev && ev.node];
+                if (label && !seen.has(ev.node)) { seen.add(ev.node); steps.push(label); }
+            });
+            if (!steps.length) return '';
+            const route = (data.metrics && data.metrics.route) || '';
+            const title = route
+                ? `Actual pipeline steps for this answer (route: ${route})`
+                : 'Actual pipeline steps for this answer';
+            return `<div class="chat-steps" title="${esc(title)}">`
+                + steps.map((s) => `<span class="chat-step">${esc(s)}</span>`)
+                    .join('<span class="chat-step-sep">\u203a</span>')
+                + `</div>`;
         },
 
         _appendError(message) {

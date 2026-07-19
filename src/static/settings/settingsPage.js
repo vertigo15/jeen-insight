@@ -2023,16 +2023,21 @@ export class SettingsPage {
         this._content.innerHTML = `
             <div class="sp-section-header">
                 <h2 class="sp-section-title">Integrations</h2>
-                <p class="sp-section-desc">Connect Jeen Insights to external services so members can act on their results — e.g. email a summary — using their own credentials. Every action requires the member's own OAuth consent and admin group approval.</p>
+                <p class="sp-section-desc">Connect Jeen Insights to external services so members — and the assistant, on their behalf — can act on their results, e.g. email a summary, using their own credentials. Every action requires the member's own OAuth consent, admin group approval, and an explicit preview → confirm step.</p>
             </div>
             <div class="sp-card">
                 ${this._row('Enable connectors', 'Master switch for the entire per-user connector platform. While off, no connectors, sign-in flows, or actions are available to anyone.', `
                     <label class="sp-switch"><input type="checkbox" id="sp-conn-feature"><span class="sp-switch-slider"></span></label>`)}
             </div>
+            <div class="sp-card">
+                ${this._row('Allow agent tool-calling', 'Let the assistant propose connector actions (e.g. email a result) for a member. Every call still routes through the same preview → confirm gate and requires the member\'s OAuth consent + group approval. Requires the master switch above.', `
+                    <label class="sp-switch"><input type="checkbox" id="sp-agent-tools-feature"><span class="sp-switch-slider"></span></label>`)}
+            </div>
             <div id="sp-conn-body"><div class="sp-conn-empty">Loading…</div></div>
         `;
 
         const chk = this._content.querySelector('#sp-conn-feature');
+        const agentChk = this._content.querySelector('#sp-agent-tools-feature');
         const body = this._content.querySelector('#sp-conn-body');
 
         let enabled = false;
@@ -2045,6 +2050,31 @@ export class SettingsPage {
             return;
         }
         chk.checked = enabled;
+
+        // Independent agent-tools switch (only meaningful while the master switch
+        // is on). Read its state and wire the toggle; disable it when connectors
+        // are off so it cannot be turned on in isolation.
+        let agentEnabled = false;
+        try {
+            const ar = await fetch('/api/connectors/agent-tools-feature');
+            if (ar.ok) agentEnabled = !!(await ar.json()).enabled;
+        } catch (e) { /* leave off; fail closed */ }
+        agentChk.checked = agentEnabled;
+        agentChk.disabled = !enabled;
+        agentChk.addEventListener('change', async () => {
+            const want = agentChk.checked;
+            try {
+                const r = await fetch('/api/connectors/agent-tools-feature', {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: want }),
+                });
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                _showToast(want ? 'Agent tool-calling enabled' : 'Agent tool-calling disabled', want ? 'success' : 'info');
+            } catch (e) {
+                agentChk.checked = !want;
+                _showToast('Could not update — ' + e.message, 'error');
+            }
+        });
 
         chk.addEventListener('change', async () => {
             const want = chk.checked;
@@ -2182,26 +2212,30 @@ export class SettingsPage {
         const allowExternal = !!cfg.allow_external_recipients;
         const clientId = cfg.client_id || '';
         const tenantId = cfg.tenant_id || '';
-        const secretPill = c.has_client_secret
-            ? '<span class="sp-conn-pill on">secret set</span>'
-            : '<span class="sp-conn-pill warn">no secret</span>';
+        const isApiKey = c.auth_kind === 'api_key';
+        const isGraphMail = c.key === 'microsoft-graph-mail';
+        const pill = isApiKey
+            ? (c.has_api_key
+                ? '<span class="sp-conn-pill on">key set</span>'
+                : '<span class="sp-conn-pill warn">no key</span>')
+            : (c.has_client_secret
+                ? '<span class="sp-conn-pill on">secret set</span>'
+                : '<span class="sp-conn-pill warn">no secret</span>');
         const grants = c.group_grants || [];
-        return `
-            <div class="sp-conn-item" data-cid="${_esc(c.id)}">
-                <div class="sp-conn-head">
-                    <div>
-                        <div class="sp-conn-title">${_esc(c.display_name)}</div>
-                        <div class="sp-conn-sub">${_esc(c.provider)} · ${_esc(c.category || '')}</div>
-                    </div>
-                    <div class="sp-conn-actions">
-                        ${secretPill}
-                        <label class="sp-switch"><input type="checkbox" class="sp-conn-enabled" ${c.is_enabled ? 'checked' : ''}><span class="sp-switch-slider"></span></label>
-                        <button class="sp-btn-ghost-sm sp-conn-del" title="Remove connector">Remove</button>
-                    </div>
-                </div>
-                <div class="sp-conn-body">
+
+        // Credential block adapts to the auth model.
+        const credBlock = isApiKey
+            ? `
                     <div class="sp-conn-field">
-                        <label>OAuth client (Entra app registration)</label>
+                        <label>API key (write-only)</label>
+                        <div class="sp-conn-row">
+                            <input class="sp-conn-input sp-cf-apikey" type="password" placeholder="Provider API key">
+                            <button class="sp-btn-primary-sm sp-cf-apikey-save">Save key</button>
+                        </div>
+                    </div>`
+            : `
+                    <div class="sp-conn-field">
+                        <label>OAuth client (app registration)</label>
                         <div class="sp-conn-row">
                             <input class="sp-conn-input sp-cf-client" placeholder="Client ID" value="${_esc(clientId)}">
                             <input class="sp-conn-input sp-cf-tenant" placeholder="Tenant ID (or 'common')" value="${_esc(tenantId)}">
@@ -2210,7 +2244,14 @@ export class SettingsPage {
                             <input class="sp-conn-input sp-cf-secret" type="password" placeholder="Client secret (write-only)">
                             <button class="sp-btn-primary-sm sp-cf-secret-save">Save secret</button>
                         </div>
-                    </div>
+                    </div>`;
+
+        // Policy/config block: recipient policy for Graph Mail; a generic JSON
+        // config editor for other OAuth connectors (Slack channels / Jira cloud id
+        // + projects); nothing extra for API-key connectors.
+        let policyBlock = '';
+        if (isGraphMail) {
+            policyBlock = `
                     <div class="sp-conn-field">
                         <label>Recipient policy</label>
                         <div class="sp-conn-row">
@@ -2222,7 +2263,38 @@ export class SettingsPage {
                             </label>
                             <button class="sp-btn-ghost-sm sp-cf-policy-save" style="margin-left:auto">Save policy</button>
                         </div>
+                    </div>`;
+        } else if (!isApiKey) {
+            policyBlock = `
+                    <div class="sp-conn-field">
+                        <label>Connector config (JSON)</label>
+                        <div class="sp-conn-row">
+                            <textarea class="sp-conn-input sp-cf-config" rows="5" style="font-family:monospace;font-size:0.8125rem">${_esc(JSON.stringify(cfg, null, 2))}</textarea>
+                        </div>
+                        <div class="sp-conn-row" style="margin-top:6px">
+                            <button class="sp-btn-ghost-sm sp-cf-config-save" style="margin-left:auto">Save config</button>
+                        </div>
+                    </div>`;
+        }
+
+        return `
+            <div class="sp-conn-item" data-cid="${_esc(c.id)}">
+                <div class="sp-conn-head">
+                    <div>
+                        <div class="sp-conn-title">${_esc(c.display_name)}</div>
+                        <div class="sp-conn-sub">${_esc(c.provider)} · ${_esc(c.category || '')} · ${_esc(c.auth_kind || 'oauth')}</div>
                     </div>
+                    <div class="sp-conn-actions">
+                        ${pill}
+                        <span class="sp-conn-health-txt" title="Configuration health"></span>
+                        <button class="sp-btn-ghost-sm sp-conn-health" title="Check connector configuration">Check</button>
+                        <label class="sp-switch"><input type="checkbox" class="sp-conn-enabled" ${c.is_enabled ? 'checked' : ''}><span class="sp-switch-slider"></span></label>
+                        <button class="sp-btn-ghost-sm sp-conn-del" title="Remove connector">Remove</button>
+                    </div>
+                </div>
+                <div class="sp-conn-body">
+                    ${credBlock}
+                    ${policyBlock}
                     <div class="sp-conn-field">
                         <label>Allowed Entra groups</label>
                         <div class="sp-conn-row sp-cf-grants">
@@ -2269,6 +2341,35 @@ export class SettingsPage {
             }
         });
 
+        item.querySelector('.sp-conn-health')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            const txt = item.querySelector('.sp-conn-health-txt');
+            btn.disabled = true;
+            if (txt) { txt.textContent = '…'; txt.className = 'sp-conn-health-txt'; }
+            try {
+                const r = await fetch(`/api/connectors/${cid}/health`);
+                const d = await r.json();
+                if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+                if (txt) {
+                    if (d.ok) {
+                        txt.textContent = `ready · v${d.version ?? '?'}`;
+                        txt.className = 'sp-conn-health-txt ok';
+                    } else {
+                        const why = !d.enabled ? 'disabled'
+                            : !d.configured ? (d.auth_kind === 'api_key' ? 'no API key' : 'no secret')
+                            : (d.reason || 'not ready');
+                        txt.textContent = why;
+                        txt.className = 'sp-conn-health-txt warn';
+                    }
+                }
+            } catch (err) {
+                if (txt) { txt.textContent = 'check failed'; txt.className = 'sp-conn-health-txt warn'; }
+                _showToast('Health check failed — ' + err.message, 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
         item.querySelector('.sp-cf-secret-save')?.addEventListener('click', async () => {
             const secret = item.querySelector('.sp-cf-secret').value;
             const client_id = item.querySelector('.sp-cf-client').value.trim();
@@ -2284,6 +2385,43 @@ export class SettingsPage {
                 reload();
             } catch (err) {
                 _showToast('Could not save secret — ' + err.message, 'error');
+            }
+        });
+
+        item.querySelector('.sp-cf-apikey-save')?.addEventListener('click', async () => {
+            const api_key = item.querySelector('.sp-cf-apikey').value.trim();
+            if (!api_key) { _showToast('Enter an API key', 'error'); return; }
+            try {
+                const r = await fetch(`/api/connectors/${cid}/api-key`, {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_key }),
+                });
+                if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+                _showToast('API key saved', 'success');
+                reload();
+            } catch (err) {
+                _showToast('Could not save key — ' + err.message, 'error');
+            }
+        });
+
+        item.querySelector('.sp-cf-config-save')?.addEventListener('click', async () => {
+            let config;
+            try {
+                config = JSON.parse(item.querySelector('.sp-cf-config').value || '{}');
+            } catch (e) {
+                _showToast('Config is not valid JSON', 'error');
+                return;
+            }
+            try {
+                const r = await fetch(`/api/connectors/${cid}/config`, {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ config }),
+                });
+                if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+                _showToast('Config saved', 'success');
+                reload();
+            } catch (err) {
+                _showToast('Could not save config — ' + err.message, 'error');
             }
         });
 

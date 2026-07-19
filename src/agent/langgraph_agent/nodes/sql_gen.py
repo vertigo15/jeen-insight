@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -76,6 +77,64 @@ def _recompute_block(state: AgentState) -> str:
     parts.append(f"rows: {rows_json}")
     # Result rows are user data → fence against prompt injection.
     return fence_untrusted("\n".join(parts), label="prior query result")
+
+
+# ── Prior-result replay (identical-repeat questions) ──────────────────────────
+
+
+def _q_tokens(q: Any) -> set:
+    """Word-token set of a question, lowercased (for a cheap similarity signal)."""
+    return set(re.findall(r"[a-z0-9]+", str(q or "").lower()))
+
+
+def _similarity(a: Any, b: Any) -> float:
+    """Jaccard token overlap of two questions in [0, 1]."""
+    ta, tb = _q_tokens(a), _q_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    inter = len(ta & tb)
+    union = len(ta | tb)
+    return inter / union if union else 0.0
+
+
+def _reuse_prior_result(state: AgentState, question: str) -> Optional[Dict[str, Any]]:
+    """Find a prior turn to replay verbatim for a repeat question.
+
+    Returns ``{query_id, sql, result}`` where ``result`` is ``{columns, rows,
+    row_count}`` for the most similar prior turn whose full rows are still in the
+    result cache. Returns ``None`` when nothing matches or the rows have been
+    evicted (caller then falls back to re-running the query so the table is still
+    reproduced instead of silently degrading to prose).
+    """
+    history = state.get("conversation_history") or []
+    if not history:
+        return None
+    # Pick the most similar prior turn that carries SQL + an id. History arrives
+    # oldest-first, so iterating with ``>=`` keeps the most RECENT among ties.
+    best: Optional[Dict[str, Any]] = None
+    best_sim = -1.0
+    for qa in history:
+        if not qa.get("id") or not qa.get("generated_sql"):
+            continue
+        sim = _similarity(question, qa.get("natural_language_query"))
+        if sim >= best_sim:
+            best_sim = sim
+            best = qa
+    if not best:
+        return None
+    cached = _cached_rows_for(state.get("user_id"), state.get("source_key"), best.get("id"))
+    if not cached or not cached.get("rows"):
+        return None
+    rows = cached.get("rows")
+    return {
+        "query_id": best.get("id"),
+        "sql": best.get("generated_sql"),
+        "result": {
+            "columns": cached.get("columns"),
+            "rows": rows,
+            "row_count": len(rows),
+        },
+    }
 
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
@@ -351,8 +410,9 @@ def make_memory_answer_generator(llm: LangChainLlmService, prompt_loader: Prompt
         usage = response.get("usage") or {}
         route = state.get("route", "from_memory")
         answer: Optional[str] = None
+        reuse_prior = False
 
-        # Try to detect the "needs_query" escape hatch
+        # Try to detect the JSON control object (needs_query / reuse_prior)
         json_str = content
         if "```" in content:
             start = content.find("```") + 3
@@ -366,10 +426,40 @@ def make_memory_answer_generator(llm: LangChainLlmService, prompt_loader: Prompt
             if parsed.get("needs_query"):
                 route = "needs_query"
                 logger.info("memory_answer_generator: escape hatch → needs_query")
+            elif parsed.get("reuse_prior"):
+                reuse_prior = True
+                logger.info("memory_answer_generator: reuse_prior → replay result")
             else:
                 answer = content
         except (json.JSONDecodeError, AttributeError):
             answer = content
+
+        # Replay a prior result verbatim so an identical/rephrased repeat renders
+        # the SAME table + insights instead of a degraded prose blurb. If the
+        # cached rows are gone, fall through to a live re-run (route=needs_query)
+        # so the table is still reproduced rather than silently lost.
+        base_usage = {
+            "llm_call_count": (state.get("llm_call_count") or 0) + 1,
+            "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
+            "token_usage": _merge_usage(state.get("token_usage") or {}, usage),
+            "node_prompts": {**(state.get("node_prompts") or {}), "memory_answer_generator": prompt},
+        }
+        if reuse_prior:
+            replay = _reuse_prior_result(state, question)
+            if replay:
+                logger.info(
+                    "memory_answer_generator: replaying query_id=%s (%d rows)",
+                    replay["query_id"], replay["result"]["row_count"],
+                )
+                return {
+                    "query_result": replay["result"],
+                    "generated_sql": replay["sql"],
+                    "answer": None,
+                    "route": "from_memory",
+                    **base_usage,
+                }
+            logger.info("memory_answer_generator: reuse_prior but rows evicted → needs_query")
+            route = "needs_query"
 
         logger.info(
             "memory_answer_generator: answer=%s, route=%s",
@@ -385,10 +475,7 @@ def make_memory_answer_generator(llm: LangChainLlmService, prompt_loader: Prompt
         return {
             "answer": answer,
             "route": route,
-            "llm_call_count": (state.get("llm_call_count") or 0) + 1,
-            "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
-            "token_usage": _merge_usage(state.get("token_usage") or {}, usage),
-            "node_prompts": {**(state.get("node_prompts") or {}), "memory_answer_generator": prompt},
+            **base_usage,
         }
 
     return memory_answer_generator

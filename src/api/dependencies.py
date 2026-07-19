@@ -139,6 +139,10 @@ def get_audit_service():
     return _require(state.audit_service, "AuditService")
 
 
+def get_tool_result_service():
+    return _require(state.tool_result_service, "ToolResultService")
+
+
 def get_action_gate():
     return _require(state.action_gate, "ActionGate")
 

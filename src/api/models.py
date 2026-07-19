@@ -58,6 +58,11 @@ class QueryResponse(BaseModel):
     # Present only when the connector platform is enabled; used as the sole
     # authorization source for outbound actions (send/share).
     result_handle: Optional[str] = None
+    # At most ONE agent-proposed tool action for this turn (Phase 3). Present only
+    # when agent tool-calling is enabled AND the user's question expressed explicit
+    # intent. The UI renders a confirm card and drives preview -> execute; the
+    # proposal is already recorded server-side (origin=agent) and hash-bound.
+    tool_proposal: Optional[Dict[str, Any]] = None
 
 
 class ColumnInfo(BaseModel):

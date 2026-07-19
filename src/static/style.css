@@ -137,7 +137,9 @@ code, pre, .mono { font-family: var(--font-mono); font-size: var(--text-sm); }
    APP LAYOUT
    ============================================================= */
 
-.app-layout { display: flex; flex-direction: column; min-height: 100vh; }
+/* Lock the shell to exactly one viewport tall so the sidebar + main area each
+   scroll internally instead of growing the whole page past one screen. */
+.app-layout { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 
 .topbar {
   position: sticky; top: 0; z-index: 100;
@@ -904,6 +906,15 @@ td.cell-id {
   border: 2px solid transparent;
 }
 
+/* Long table / question names stay fully readable: each list scrolls
+   horizontally instead of truncating, and vertically so it fits one screen. */
+.tables-list,
+.question-history { overflow-x: auto; }
+.tables-list .table-item { width: max-content; min-width: 100%; }
+.tables-list .table-name { overflow: visible; text-overflow: clip; }
+.question-history .history-item { width: max-content; min-width: 100%; }
+.question-history .question-text { overflow: visible; text-overflow: clip; }
+
 /* =============================================================
    CONNECTION PILL (sidebar header)
    ============================================================= */
@@ -1608,7 +1619,8 @@ td.cell-id {
 /* Individual follow-up chip */
 .ins-followup {
   display: flex;
-  align-items: center;
+  align-items: flex-start;   /* top-align so the arrow sits with the first line
+                                when a long question wraps to multiple lines */
   gap: 10px;
   width: 100%;
   text-align: left;
@@ -1631,9 +1643,15 @@ td.cell-id {
   font-size: 0.8125rem;
   font-weight: 500;
   line-height: 1.4;
+  /* Always wrap long questions instead of truncating; break over-long tokens
+     (URLs, IDs) so nothing spills out of the chip. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .ins-followup svg {
   flex-shrink: 0;
+  margin-top: 2px;           /* align the arrow with the first line of text */
   color: var(--color-faint);
   transition: color 120ms ease;
 }
@@ -5399,6 +5417,28 @@ a.sp-nav-item {
 }
 .chat-card-summary[hidden] { display: none; }
 
+/* Real per-answer step trail (derived from the execution trace) */
+.chat-steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: -4px 0 -2px;
+  font-size: 0.6875rem;
+  color: var(--color-faint);
+}
+.chat-step {
+  padding: 1px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg, transparent);
+  white-space: nowrap;
+}
+.chat-step-sep {
+  color: var(--color-faint);
+  opacity: 0.6;
+}
+
 /* Table/chart viz block */
 .chat-card-viz { display: flex; flex-direction: column; gap: 12px; }
 .chat-viz-head {
@@ -5559,9 +5599,13 @@ a.sp-nav-item {
   gap: 16px;
 }
 /* The chat card is wider than the Ask insights panel — let the follow-up chips
-   reflow to fill the available width (2–3 per row) instead of a fixed 2-up. */
+   reflow to fill the available width. Wider min track (2 roomy columns on a wide
+   card, 1 full-width column when narrow) gives each question space to wrap on one
+   or two lines instead of being cramped/truncated. `min(100%, …)` prevents the
+   track from ever overflowing the card on small screens. */
 .chat-insights-slot .ins-followups {
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: 10px;
 }
 
 /* Conversational (no-SQL) answer + error card */
@@ -5571,6 +5615,55 @@ a.sp-nav-item {
   color: var(--color-text);
 }
 .chat-answer-text.chat-muted { color: var(--color-faint); }
+
+/* Agent tool proposal — generic confirm card (Phase 3) */
+.chat-tool-card {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface-2, var(--color-surface));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.chat-tool-head { display: flex; align-items: baseline; gap: 8px; }
+.chat-tool-icon { font-size: 1.05rem; }
+.chat-tool-title { font-weight: 600; font-size: 0.9375rem; color: var(--color-text); }
+.chat-tool-sub { margin-left: auto; font-size: 0.75rem; color: var(--color-faint); }
+.chat-tool-label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 0.75rem; color: var(--color-faint);
+}
+.chat-tool-input {
+  padding: 7px 10px; border: 1px solid var(--color-border); border-radius: 7px;
+  background: var(--color-bg, #fff); color: var(--color-text); font-size: 0.875rem;
+}
+.chat-tool-input:focus { outline: none; border-color: var(--color-primary, #4f46e5); }
+textarea.chat-tool-input { resize: vertical; min-height: 2.2rem; font-family: inherit; }
+.chat-tool-summary {
+  font-size: 0.8125rem; line-height: 1.55; color: var(--color-text);
+  background: var(--color-bg, rgba(0,0,0,0.02)); border-radius: 7px; padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.chat-tool-warn { color: var(--color-error, #b91c1c); font-weight: 500; }
+.chat-tool-msg { font-size: 0.8125rem; }
+.chat-tool-msg.error { color: var(--color-error, #b91c1c); }
+.chat-tool-msg.ok { color: var(--color-success, #15803d); }
+.chat-tool-answer {
+  font-size: 0.875rem; line-height: 1.6; color: var(--color-text);
+  background: var(--color-bg, rgba(0,0,0,0.02));
+  border: 1px solid var(--color-border); border-radius: 7px; padding: 10px 12px;
+}
+.chat-tool-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.chat-tool-btn {
+  padding: 6px 14px; border-radius: 7px; border: 1px solid var(--color-border);
+  background: var(--color-surface); color: var(--color-text);
+  font-size: 0.8125rem; cursor: pointer;
+}
+.chat-tool-btn:disabled { opacity: 0.5; cursor: default; }
+.chat-tool-btn.ghost { background: transparent; color: var(--color-faint); }
+.chat-tool-btn.primary { background: var(--color-primary, #4f46e5); border-color: var(--color-primary, #4f46e5); color: #fff; }
 .chat-card.chat-error {
   flex-direction: row;
   align-items: center;
@@ -5795,6 +5888,9 @@ a.sp-nav-item {
 .sp-conn-pill.on { background: var(--color-success-bg, #e6f6ec); color: var(--color-success, #1a7f37); }
 .sp-conn-pill.off { background: var(--color-surface-2); color: var(--color-muted); }
 .sp-conn-pill.warn { background: var(--color-warning-bg, #fff4e5); color: var(--color-warning, #b45309); }
+.sp-conn-health-txt { font-size: 0.72rem; font-weight: 600; color: var(--color-faint); }
+.sp-conn-health-txt.ok { color: var(--color-success, #1a7f37); }
+.sp-conn-health-txt.warn { color: var(--color-warning, #b45309); }
 .sp-conn-empty { font-size: 0.85rem; color: var(--color-faint); padding: var(--space-3) 0; }
 .sp-audit-row {
   display: grid; grid-template-columns: 150px 1fr auto; gap: var(--space-3);

@@ -23,6 +23,13 @@ class TokenResult:
 
 class ProviderAdapter:
     provider_id: str = "base"
+    # 'oauth' providers use the delegated OAuth flow below; 'api_key' providers
+    # skip OAuth entirely (no per-user Connect) and execute with an admin-stored,
+    # envelope-encrypted API key passed to ``execute``.
+    auth_kind: str = "oauth"
+    # Fixed HTTPS origins this adapter is permitted to call (SSRF allowlist,
+    # enforced by src/connectors/egress.py). Server-owned; never user-supplied.
+    allowed_origins: tuple = ()
 
     # ── OAuth ──────────────────────────────────────────────────────────────
     def authorize_url(
@@ -87,8 +94,16 @@ class ProviderAdapter:
         *,
         action: str,
         params: Dict[str, Any],
-        snapshot_payload: Dict[str, Any],
-        access_token: str,
+        snapshot_payload: Optional[Dict[str, Any]],
         config: Dict[str, Any],
+        access_token: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """Run a validated action.
+
+        Exactly one credential is provided per the connector's ``auth_kind``:
+        ``access_token`` for OAuth providers, ``api_key`` for API-key providers.
+        ``snapshot_payload`` is present only for actions whose policy requires a
+        result snapshot (write/export actions); read tools receive ``None``.
+        """
         raise NotImplementedError

@@ -102,6 +102,40 @@ class AuditService:
         except Exception:  # noqa: BLE001
             logger.exception("audit: failed to write event %s", event_type)
 
+    @staticmethod
+    async def log_in_tx(
+        conn: asyncpg.Connection,
+        *,
+        event_type: str,
+        actor_user_id: Optional[str] = None,
+        actor_email: Optional[str] = None,
+        identity_id: Optional[str] = None,
+        connector_id: Optional[str] = None,
+        grant_id: Optional[str] = None,
+        proposal_id: Optional[str] = None,
+        snapshot_id: Optional[str] = None,
+        outcome: Optional[str] = None,
+        detail: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Append an audit event on an EXISTING connection/transaction.
+
+        Unlike :meth:`log`, this DOES propagate errors so a security-relevant
+        transition (e.g. the single-execution claim) can be made atomic with its
+        audit record — if the audit insert fails, the whole transition rolls back.
+        """
+        await conn.execute(
+            """
+            INSERT INTO connector_audit
+                (event_type, actor_user_id, actor_email, identity_id,
+                 connector_id, grant_id, proposal_id, snapshot_id,
+                 outcome, detail)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+            """,
+            event_type, actor_user_id, actor_email, identity_id,
+            connector_id, grant_id, proposal_id, snapshot_id,
+            outcome, json.dumps(detail or {}),
+        )
+
     async def list_recent(
         self, *, limit: int = 200, actor_user_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:

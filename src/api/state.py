@@ -45,4 +45,6 @@ registry_service: Optional[object] = None
 grant_service: Optional[object] = None
 snapshot_service: Optional[object] = None
 audit_service: Optional[object] = None
+tool_result_service: Optional[object] = None
+rate_limiter: Optional[object] = None
 action_gate: Optional[object] = None
