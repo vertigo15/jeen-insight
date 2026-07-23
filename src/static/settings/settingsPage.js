@@ -98,6 +98,7 @@ export class SettingsPage {
         this._mcpSelectedTool = null;
         this._mcpToolArgs = null;   // editable JSON string
         this._mcpToolResult = null; // last test-call response/error
+        this._mcpToolResultView = 'tree';
         this._mcpToolCalling = false;
     }
 
@@ -901,10 +902,7 @@ export class SettingsPage {
         const outputSchema = tool?.output_schema || tool?.outputSchema || {};
         const argsText = this._mcpToolArgs ?? _prettyJson(_sampleArgsFromSchema(inputSchema));
         const resultHtml = this._mcpToolResult
-            ? `<div class="mc-tool-result">
-                <div class="mc-tool-result-head">${this._mcpToolResult.ok === false ? 'Error' : 'Result'}</div>
-                <pre>${_esc(_prettyJson(this._mcpToolResult))}</pre>
-               </div>`
+            ? _mcpToolResultViewer(this._mcpToolResult, this._mcpToolResultView)
             : '';
         const schemaSource = liveTools ? 'live tools/list' : 'health snapshot';
         const loadLabel = this._mcpToolsLoading
@@ -1323,6 +1321,7 @@ export class SettingsPage {
                 this._mcpToolCalling = true;
                 this._mcpToolArgs = _prettyJson(args);
                 this._mcpToolResult = null;
+                this._mcpToolResultView = 'tree';
                 this._mcpRender();
                 try {
                     const r = await fetch(`/api/mcp/servers/${activeServ.id}/tools/call`, {
@@ -1340,6 +1339,26 @@ export class SettingsPage {
                 } finally {
                     this._mcpToolCalling = false;
                     this._mcpRender();
+                }
+            });
+        }
+
+        this._content.querySelectorAll('[data-mc-tool-result-view]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this._mcpToolResultView = btn.dataset.mcToolResultView;
+                this._mcpRender();
+            });
+        });
+
+        const resultCopyBtn = $('#mc-tool-result-copy-btn');
+        if (resultCopyBtn && this._mcpToolResult) {
+            resultCopyBtn.addEventListener('click', async () => {
+                const text = _mcpToolResultCopyText(this._mcpToolResult, this._mcpToolResultView);
+                try {
+                    await navigator.clipboard.writeText(text);
+                    _showToast('Result copied to clipboard', 'success');
+                } catch {
+                    _showToast('Could not copy the result', 'error');
                 }
             });
         }
@@ -2839,6 +2858,108 @@ function _prettyJson(value) {
     } catch {
         return String(value ?? '');
     }
+}
+
+function _mcpToolResultViewer(toolResult, selectedView = 'tree') {
+    const isError = toolResult?.ok === false;
+    const hasResult = Object.prototype.hasOwnProperty.call(toolResult || {}, 'result');
+    const result = isError ? (toolResult.error ?? toolResult) : (hasResult ? toolResult.result : toolResult);
+    const view = ['tree', 'formatted', 'raw'].includes(selectedView) ? selectedView : 'tree';
+    const heading = isError ? 'Error' : 'Result';
+    const content = view === 'tree'
+        ? `<div class="mc-json-tree">${_mcpJsonTreeNode(_parseJsonResult(result), heading, 0)}</div>`
+        : `<pre class="mc-result-code">${_esc(
+            view === 'raw' ? _rawJson(toolResult) : _prettyJson(result)
+        )}</pre>`;
+    const runDetails = !isError && _mcpToolRunDetails(toolResult);
+    const diagnosticDetails = isError
+        ? `<details class="mc-result-details">
+                <summary>Error details</summary>
+                <pre class="mc-result-code">${_esc(_prettyJson(toolResult))}</pre>
+           </details>`
+        : '';
+
+    return `<div class="mc-tool-result ${isError ? 'mc-tool-result-error' : ''}">
+        <div class="mc-tool-result-head">
+            <span>${heading}</span>
+            <div class="mc-result-actions">
+                <div class="mc-result-tabs" role="tablist" aria-label="${heading} view">
+                    ${_mcpResultViewButton('tree', 'Tree', view)}
+                    ${_mcpResultViewButton('formatted', 'Formatted', view)}
+                    ${_mcpResultViewButton('raw', 'Raw', view)}
+                </div>
+                <button class="sp-btn-ghost sp-btn-ghost-sm" id="mc-tool-result-copy-btn">Copy JSON</button>
+            </div>
+        </div>
+        ${content}
+        ${runDetails ? `<details class="mc-result-details">
+            <summary>Run details</summary>
+            <pre class="mc-result-code">${_esc(_prettyJson(runDetails))}</pre>
+        </details>` : ''}
+        ${diagnosticDetails}
+    </div>`;
+}
+
+function _mcpResultViewButton(view, label, selectedView) {
+    return `<button type="button" class="mc-result-tab${view === selectedView ? ' is-active' : ''}"
+        data-mc-tool-result-view="${view}" role="tab" aria-selected="${view === selectedView}">${label}</button>`;
+}
+
+function _mcpToolRunDetails(toolResult) {
+    const details = {};
+    ['server_id', 'tool_name', 'arguments'].forEach(key => {
+        if (Object.prototype.hasOwnProperty.call(toolResult || {}, key)) details[key] = toolResult[key];
+    });
+    return Object.keys(details).length ? details : null;
+}
+
+function _mcpToolResultCopyText(toolResult, selectedView) {
+    const isError = toolResult?.ok === false;
+    const hasResult = Object.prototype.hasOwnProperty.call(toolResult || {}, 'result');
+    const result = isError ? (toolResult.error ?? toolResult) : (hasResult ? toolResult.result : toolResult);
+    return selectedView === 'raw' ? _rawJson(toolResult) : _prettyJson(result);
+}
+
+function _parseJsonResult(value) {
+    if (typeof value !== 'string') return value;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return value;
+    }
+}
+
+function _rawJson(value) {
+    if (typeof value === 'string') return value;
+    try {
+        return JSON.stringify(value ?? {});
+    } catch {
+        return String(value ?? '');
+    }
+}
+
+function _mcpJsonTreeNode(value, key, depth) {
+    const keyHtml = `<span class="mc-json-key">${_esc(key)}</span>`;
+    if (value !== null && typeof value === 'object') {
+        const entries = Array.isArray(value)
+            ? value.map((item, index) => [String(index), item])
+            : Object.entries(value);
+        const kind = Array.isArray(value) ? 'Array' : 'Object';
+        const children = entries.length
+            ? entries.map(([childKey, childValue]) => _mcpJsonTreeNode(childValue, childKey, depth + 1)).join('')
+            : `<div class="mc-json-tree-empty">Empty ${kind.toLowerCase()}</div>`;
+        return `<details class="mc-json-tree-node" ${depth === 0 ? 'open' : ''}>
+            <summary>${keyHtml}<span class="mc-json-tree-type">${kind} · ${entries.length}</span></summary>
+            <div class="mc-json-tree-children">${children}</div>
+        </details>`;
+    }
+    return `<div class="mc-json-tree-value">
+        ${keyHtml}<span class="mc-json-value mc-json-${value === null ? 'null' : typeof value}">${_esc(_jsonPrimitive(value))}</span>
+    </div>`;
+}
+
+function _jsonPrimitive(value) {
+    return typeof value === 'string' ? JSON.stringify(value) : String(value);
 }
 
 function _sampleArgsFromSchema(schema) {
