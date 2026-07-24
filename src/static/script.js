@@ -1290,7 +1290,8 @@ function _highlightTableSearch(text, term) {
         + escapeHtml(text.slice(idx + term.length));
 }
 
-// Display filtered tables — accordion layout with description, col count, hover actions.
+// Display filtered tables — accordion layout with description revealed on expansion,
+// col count, and hover actions.
 // `tables` is [{name, description, col_count}] from the metadata catalog.
 function displayFilteredTables(tables) {
     const tablesList = document.getElementById('tables-list');
@@ -1327,7 +1328,7 @@ function displayFilteredTables(tables) {
 
         // Description subtitle with search-term highlighting
         const descHtml = description
-            ? `<div class="table-description" title="${escapeHtml(description)}">${_highlightTableSearch(description, term)}</div>`
+            ? `<div class="table-description${isExpanded ? ' open' : ''}" title="${escapeHtml(description)}">${_highlightTableSearch(description, term)}</div>`
             : '';
 
         // Highlighted table name
@@ -1392,6 +1393,8 @@ function toggleTableExpand(table) {
         _tableExpandedSet.delete(table);
         if (el) {
             el.querySelector('.table-columns-list').classList.remove('open');
+            const description = el.querySelector('.table-description');
+            if (description) description.classList.remove('open');
             const arrow = el.querySelector('.table-expand-arrow');
             if (arrow) arrow.classList.remove('open');
         }
@@ -1402,7 +1405,9 @@ function toggleTableExpand(table) {
     if (!el) return;
 
     const colList = el.querySelector('.table-columns-list');
+    const description = el.querySelector('.table-description');
     const arrow = el.querySelector('.table-expand-arrow');
+    if (description) description.classList.add('open');
     if (arrow) arrow.classList.add('open');
 
     const cacheKey = conn + '|' + table;

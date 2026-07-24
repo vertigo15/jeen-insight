@@ -1,0 +1,9 @@
+dependencies:
+- name: jeen-insights-api
+  repository: file://charts/jeen-insights-api
+  version: 0.1.0
+- name: jeen-insights-ui
+  repository: file://charts/jeen-insights-ui
+  version: 0.1.0
+digest: sha256:c258540e33b18bf16062eec1a85a7bf3c4d0e73b318f36bf0be0cb15463b10e6
+generated: "2026-07-23T18:23:16.306028+03:00"

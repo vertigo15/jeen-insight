@@ -1,0 +1,16 @@
+apiVersion: v2
+name: jeen-insights
+description: Helm umbrella chart for the Jeen Insights API and UI.
+type: application
+version: 0.1.0
+appVersion: "2.0.0"
+kubeVersion: ">=1.29.0-0"
+dependencies:
+  - name: jeen-insights-api
+    version: 0.1.0
+    repository: "file://charts/jeen-insights-api"
+    condition: jeen-insights-api.enabled
+  - name: jeen-insights-ui
+    version: 0.1.0
+    repository: "file://charts/jeen-insights-ui"
+    condition: jeen-insights-ui.enabled

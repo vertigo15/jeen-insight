@@ -1,0 +1,59 @@
+enabled: true
+
+global:
+  commonLabels: {}
+  imagePullSecrets: []
+  env: {}
+  nodeSelector: {}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  existingSecret:
+    name: jeen-insights-secrets
+    optional: false
+
+image:
+  # Valid lint-only defaults. The umbrella's environment overlay supplies
+  # the deployable image reference.
+  repository: registry.invalid/jeen-insights-api
+  tag: "0.0.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+podAnnotations: {}
+
+serviceAccount:
+  create: true
+  annotations: {}
+
+service:
+  port: 8000
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+networkPolicy:
+  enabled: false
+  dnsNamespaces:
+    - kube-system
+  externalEgressCIDRs: []
+  externalEgressPorts:
+    - 443
+    - 5432
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+
+env: {}

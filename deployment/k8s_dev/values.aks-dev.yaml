@@ -1,0 +1,60 @@
+# AKS development overlay. Keep credentials in Azure Key Vault or in the
+# pre-created Kubernetes Secret referenced by global.existingSecret.
+global:
+  environment: dev
+  cloudProvider: azure
+  commonLabels:
+    app.kubernetes.io/component: analytics
+  nodeSelector:
+    workload: backend
+  strategy:
+    type: Recreate
+
+jeen-insights-api:
+  image:
+    repository: jeendevregistry.azurecr.io/jeen-insights-api
+    tag: ad494944
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  nodeSelector:
+    workload: backend
+
+jeen-insights-ui:
+  image:
+    repository: jeendevregistry.azurecr.io/jeen-insights-ui
+    tag: ad494944
+  env:
+    SESSION_COOKIE_SECURE: "true"
+    PUBLIC_APP_URL: https://jeen-insights.dev.jeenai.app
+    AZURE_AD_REDIRECT_URI: https://jeen-insights.dev.jeenai.app/auth/microsoft/callback
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-buffering: "off"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "360"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "360"
+    hosts:
+      - host: jeen-insights.dev.jeenai.app
+        paths:
+          - path: /
+            pathType: Prefix
+    # Existing wildcard Cloudflare Origin CA Secret in the jeen-data namespace.
+    tls:
+      - secretName: cloudflare-tls
+        hosts:
+          - jeen-insights.dev.jeenai.app
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  nodeSelector:
+    workload: backend

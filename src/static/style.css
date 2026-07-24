@@ -1216,6 +1216,7 @@ td.cell-id {
 
 /* Description subtitle under table name */
 .table-description {
+  display: none;
   font-size: var(--text-xs);
   color: var(--color-faint);
   font-style: italic;
@@ -1226,6 +1227,7 @@ td.cell-id {
   line-height: 1.4;
   transition: color 100ms ease;
 }
+.table-description.open { display: block; }
 .table-item.is-active .table-description { color: var(--color-muted); }
 /* Search highlight inside name or description */
 .table-item-header mark,
