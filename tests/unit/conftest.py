@@ -17,7 +17,8 @@ exercise real handler logic; use ``anon_client`` to assert the 401 path.
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -93,6 +94,12 @@ def fake_state(monkeypatch):
         agent_registry = MagicMock(name="AgentRegistry")
 
     fakes = _FakeState()
+    # ``resolve_agent`` first awaits ``get_connection`` to decide SQL vs. Power BI
+    # dispatch. Default the double to a non-Power BI connection so the SQL path
+    # (the untouched default) works; PBI-specific tests override this explicitly.
+    fakes.connection_service.get_connection = AsyncMock(
+        return_value=SimpleNamespace(is_power_bi=False, source_key="sales_db")
+    )
     monkeypatch.setattr(api_state, "connection_service", fakes.connection_service)
     monkeypatch.setattr(api_state, "metadata_loader", fakes.metadata_loader)
     monkeypatch.setattr(api_state, "history_service", fakes.history_service)

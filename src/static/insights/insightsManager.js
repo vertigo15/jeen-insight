@@ -54,6 +54,15 @@ class InsightsManager {
             return;
         }
 
+        // Insights require at least one row. The result cache intentionally
+        // rejects empty datasets with 409, so avoid making a guaranteed-failing
+        // follow-up request for valid empty queries or failed executions that
+        // carry an empty result envelope.
+        const rows = results && (results.rows || results.data);
+        if (!Array.isArray(rows) || rows.length === 0) {
+            return;
+        }
+
         const connection = (typeof getActiveConnection === 'function') ? getActiveConnection() : '';
 
         // The server analyses the FULL result set from its result cache (keyed by

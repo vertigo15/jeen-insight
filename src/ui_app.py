@@ -1265,13 +1265,15 @@ def mcp_proxy(subpath: str):
 # Connector / integration platform proxies
 # ----------------------------------------------------------------------
 
+@app.route("/api/connectors", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 @app.route("/api/connectors/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
-def connectors_admin_proxy(subpath: str):
+def connectors_admin_proxy(subpath: str = ""):
     """Admin connector registry (gated in Flask AND enforced by the API)."""
     guard = _admin_required()
     if guard:
         return guard
-    return _forward(f"/api/connectors/{subpath}")
+    tail = f"/{subpath}" if subpath else ""
+    return _forward(f"/api/connectors{tail}")
 
 
 @app.route("/api/me/connections", methods=["GET"])

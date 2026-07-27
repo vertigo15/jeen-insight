@@ -663,7 +663,12 @@ class ActionGate:
         expires_at = None
         if token.expires_in:
             expires_at = now + timedelta(seconds=int(token.expires_in))
-        await self.grants.store_access_token(grant_id, token.access_token, expires_at)
+        await self.grants.store_refreshed_tokens(
+            grant_id,
+            access_token=token.access_token,
+            access_expires_at=expires_at,
+            refresh_token=token.refresh_token,
+        )
         return token.access_token
 
     @staticmethod

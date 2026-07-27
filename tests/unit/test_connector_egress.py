@@ -6,6 +6,10 @@ opening real sockets by stubbing DNS resolution.
 
 from __future__ import annotations
 
+import gzip
+import json
+
+import httpx
 import pytest
 
 
@@ -16,6 +20,53 @@ def _stub_dns(monkeypatch, ip: str):
         return [(2, 1, 6, "", (ip, port))]
 
     monkeypatch.setattr(egress.socket, "getaddrinfo", _getaddrinfo)
+
+
+class TestEgressBuffering:
+    """Regression: a gzip/deflate-encoded response must round-trip through the
+    stream-buffer-and-rebuild path. ``aiter_bytes()`` already decodes the body,
+    so the rebuilt ``httpx.Response`` must NOT keep the ``Content-Encoding``
+    header — otherwise the constructor's eager ``read()`` re-runs the gzip
+    decoder over already-decompressed bytes and raises ``DecodingError``
+    ("incorrect header check"). This is exactly what Power BI's executeQueries
+    (which always gzips) hit."""
+
+    @pytest.mark.asyncio
+    async def test_gzip_response_roundtrips(self, monkeypatch):
+        from src.connectors import egress
+
+        _stub_dns(monkeypatch, "93.184.216.34")
+        payload = {"results": [{"tables": [{"rows": [{"[probe]": 1}]}]}]}
+        gz = gzip.compress(json.dumps(payload).encode())
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            # Simulate a real wire response: raw gzip body + Content-Encoding.
+            return httpx.Response(
+                200,
+                headers={"Content-Encoding": "gzip", "Content-Type": "application/json"},
+                content=gz,
+                request=request,
+            )
+
+        real_client = httpx.AsyncClient
+
+        def _client_with_mock(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(_handler)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(egress.httpx, "AsyncClient", _client_with_mock)
+
+        resp = await egress.request(
+            "POST",
+            "https://api.powerbi.com/x/executeQueries",
+            allowed_origins=("https://api.powerbi.com",),
+            json={"queries": []},
+        )
+        # The bug raised DecodingError before we reached here; assert the body is
+        # readable and the stale content-coding header was stripped.
+        assert resp.status_code == 200
+        assert resp.json() == payload
+        assert "content-encoding" not in {k.lower() for k in resp.headers}
 
 
 class TestEgressAllowlist:

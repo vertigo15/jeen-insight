@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
-from src.agent import AgentRegistry
+from src.agent import AgentRegistry, DaxAgentRegistry
 from src.agent.conversation_history import ConversationHistoryService
 from src.agent.llm_service import LangChainLlmService
 from src.agent.prompt_cache import PromptCache
@@ -23,6 +23,8 @@ from src.metadata import MetadataLoader, McpServerService, McpCacheService, McpC
 
 # Populated on startup by `src.api.lifespan.lifespan`.
 agent_registry: Optional[AgentRegistry] = None
+# Separate registry for Power BI (text-to-DAX) connections.
+dax_agent_registry: Optional[DaxAgentRegistry] = None
 metadata_loader: Optional[MetadataLoader] = None
 connection_service: Optional[ConnectionService] = None
 history_service: Optional[ConversationHistoryService] = None

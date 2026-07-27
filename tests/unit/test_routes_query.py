@@ -87,6 +87,42 @@ def test_query_cache_uses_verified_user_id(client, fake_state, monkeypatch):
     assert cache_put.call_args.kwargs["user_id"] == "user-a"
 
 
+def test_connect_signal_survives_the_response_model(client, fake_state):
+    """The DAX agent's connect prompt must reach the UI.
+
+    `QueryResponse(**result)` silently drops fields the model doesn't declare,
+    which previously made the "Connect Power BI" prompt unreachable.
+    """
+    fake_state.agent_registry.get_agent = AsyncMock()
+    fake_agent = MagicMock()
+    fake_agent.process_question = AsyncMock(
+        return_value={
+            "question": "total sales by region",
+            "sql": "",
+            "results": None,
+            "answer": None,
+            "error": "Connect your Power BI account to run this query.",
+            "needs_connect": True,
+            "connect_provider": "power-bi",
+        }
+    )
+    fake_state.agent_registry.get_agent.return_value = fake_agent
+
+    resp = client.post(
+        "/api/query",
+        json={
+            "question": "total sales by region",
+            "connection": "pbi_sales",
+            "user_context": {"user_id": "user-a"},
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["needs_connect"] is True
+    assert body["connect_provider"] == "power-bi"
+
+
 def test_tables_requires_connection(client, fake_state):
     # FastAPI returns 422 on a missing required query param.
     resp = client.get("/api/tables")

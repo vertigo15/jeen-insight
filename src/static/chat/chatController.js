@@ -289,7 +289,12 @@
         // ── Rendering ─────────────────────────────────────────────────────────
         _renderAssistant(data, durMs) {
             const id = 'a' + (++this._seq) + '-' + Date.now();
-            const results = (data.results && data.results.columns
+            // A failed execution can still include an empty result envelope
+            // ({columns: [], rows: []}). Treat it as an error, not as an empty
+            // successful table: otherwise the UI hides the actionable Power BI
+            // error and incorrectly starts the insights follow-up request.
+            const executionError = data.error || null;
+            const results = (!executionError && data.results && data.results.columns
                 && (data.results.data || data.results.rows)) ? data.results : null;
 
             const turn = {
@@ -300,6 +305,7 @@
                 sql: data.sql || '',
                 results,
                 answer: data.answer || null,
+                error: executionError,
             };
             this.messages.push(turn);
 

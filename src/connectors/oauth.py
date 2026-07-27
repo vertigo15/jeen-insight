@@ -109,12 +109,23 @@ async def _post_token(token_endpoint: str, data: Dict[str, str]) -> Dict[str, An
             err = body.get("error"), body.get("error_description")
         except Exception:  # noqa: BLE001
             err = (str(resp.status_code), resp.text[:200])
-        raise OAuthError(f"Token endpoint error: {err[0]} — {err[1]}")
+        raise OAuthError(
+            f"Token endpoint error: {err[0]} — {err[1]}", error_code=str(err[0] or "")
+        )
     return resp.json()
 
 
 class OAuthError(RuntimeError):
-    pass
+    """Token-endpoint failure.
+
+    ``error_code`` carries the provider's machine-readable OAuth error (e.g.
+    ``invalid_grant``) so callers can tell "the user must re-consent" apart from
+    "the deployment is misconfigured" without parsing the message.
+    """
+
+    def __init__(self, message: str, *, error_code: str = "") -> None:
+        super().__init__(message)
+        self.error_code = error_code
 
 
 def decode_id_token_claims(id_token: str) -> Dict[str, Any]:

@@ -10,7 +10,12 @@ from typing import Any, Mapping, Optional
 
 from fastapi import Depends, HTTPException, Request
 
-from src.agent import AgentRegistry, JeenInsightsAgent
+from src.agent import (
+    AgentRegistry,
+    DaxAgentRegistry,
+    DaxInsightsAgent,
+    JeenInsightsAgent,
+)
 from src.security.internal_auth import Principal
 from src.agent.conversation_history import ConversationHistoryService
 from src.api import state
@@ -34,6 +39,10 @@ def _require(service: object, name: str) -> object:
 
 def get_agent_registry() -> AgentRegistry:
     return _require(state.agent_registry, "AgentRegistry")  # type: ignore[return-value]
+
+
+def get_dax_agent_registry() -> DaxAgentRegistry:
+    return _require(state.dax_agent_registry, "DaxAgentRegistry")  # type: ignore[return-value]
 
 
 def get_metadata_loader() -> MetadataLoader:
@@ -238,22 +247,40 @@ async def ensure_identity(principal: Principal):
     return identity
 
 
-async def resolve_agent(source_key: Optional[str]) -> JeenInsightsAgent:
+async def resolve_agent(
+    source_key: Optional[str],
+) -> "JeenInsightsAgent | DaxInsightsAgent":
     """Resolve the per-connection agent or raise the appropriate HTTPException.
+
+    Power BI (``service_type='powerbi'``) connections are dispatched to the
+    text-to-DAX ``DaxAgentRegistry`` **before** the SQL ``AgentRegistry`` (whose
+    ``get_runner`` would otherwise 501). The returned ``DaxInsightsAgent``
+    duck-types ``.sql_runner`` and ``.llm`` so every shared route works
+    unchanged. Everything else follows the untouched SQL path.
 
     - 400 if `source_key` is empty / missing.
     - 404 if the connection isn't registered in `settings_services`.
     - 501 if the connection's `service_type` isn't supported yet.
     - 503 if the registry isn't ready.
     """
-    registry = get_agent_registry()
     if not source_key:
         raise HTTPException(
             status_code=400,
             detail="Missing 'connection' (source_key). Pick one from /api/connections.",
         )
+
+    # Look up the connection once to decide which engine serves it. This is a
+    # cheap indexed lookup; both registries cache their agents afterwards.
+    connection_service = get_connection_service()
     try:
-        return await registry.get_agent(source_key)
+        connection = await connection_service.get_connection(source_key)
+    except ConnectionNotFound as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+    try:
+        if getattr(connection, "is_power_bi", False):
+            return await get_dax_agent_registry().get_agent(source_key)
+        return await get_agent_registry().get_agent(source_key)
     except ConnectionNotFound as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except UnsupportedConnectionType as e:
