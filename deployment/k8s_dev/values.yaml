@@ -1,0 +1,115 @@
+global:
+  # Environment-specific values belong in values.aks-dev.yaml or a GitOps
+  # overlay. This base file intentionally contains no environment identifiers.
+  environment: ""
+  cloudProvider: ""
+  commonLabels:
+    app.kubernetes.io/part-of: jeen-insights
+  imagePullSecrets: []
+  env:
+    LOG_LEVEL: INFO
+    METADATA_DB_SSL: "true"
+    JEEN_DEV_MODE: "false"
+    INTERNAL_AUTH_ENABLED: "true"
+    HOME: /tmp
+    MPLCONFIGDIR: /tmp/mpl
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  existingSecret:
+    # This Secret is created outside Helm or by the optional ExternalSecret.
+    name: jeen-insights-secrets
+    optional: false
+  externalSecrets:
+    enabled: false
+    refreshInterval: 1h
+    # Owner: External Secrets authors the whole Secret. Merge: it patches only the
+    # mapped keys and leaves the rest of an externally managed Secret alone.
+    creationPolicy: Owner
+    secretStoreRef:
+      name: ""
+      kind: ClusterSecretStore
+    # Kubernetes Secret key -> remote provider key.
+    secretMappings: {}
+
+jeen-insights-api:
+  enabled: true
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  podAnnotations: {}
+  serviceAccount:
+    create: true
+    annotations: {}
+  service:
+    port: 8000
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  networkPolicy:
+    enabled: false
+    dnsNamespaces:
+      - kube-system
+    externalEgressCIDRs: []
+    externalEgressPorts:
+      - 443
+      - 5432
+  env: {}
+
+jeen-insights-ui:
+  enabled: true
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  podAnnotations: {}
+  serviceAccount:
+    create: true
+    annotations: {}
+  service:
+    port: 8501
+  apiBaseUrl: ""
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts: []
+    tls: []
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  networkPolicy:
+    enabled: false
+    ingressNamespaces: []
+    dnsNamespaces:
+      - kube-system
+    externalEgressCIDRs: []
+    externalEgressPorts:
+      - 443
+      - 5432
+  env: {}

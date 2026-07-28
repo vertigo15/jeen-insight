@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Jeen Insights Helm deployment values",
+  "type": "object",
+  "required": ["global", "jeen-insights-api", "jeen-insights-ui"],
+  "properties": {
+    "global": {
+      "type": "object",
+      "required": ["existingSecret"],
+      "properties": {
+        "existingSecret": {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "optional": {
+              "type": "boolean"
+            }
+          }
+        },
+        "imagePullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "env": {
+          "$ref": "#/definitions/environment"
+        },
+        "externalSecrets": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "refreshInterval": {
+              "type": "string",
+              "minLength": 1
+            },
+            "creationPolicy": {
+              "enum": ["Owner", "Merge", "Orphan", "None"]
+            },
+            "secretStoreRef": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": ["SecretStore", "ClusterSecretStore"]
+                }
+              }
+            },
+            "secretMappings": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "jeen-insights-api": {
+      "$ref": "#/definitions/component"
+    },
+    "jeen-insights-ui": {
+      "$ref": "#/definitions/component"
+    }
+  },
+  "definitions": {
+    "component": {
+      "type": "object",
+      "required": ["image"],
+      "properties": {
+        "image": {
+          "type": "object",
+          "required": ["repository", "tag"],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": ["Always", "IfNotPresent", "Never"]
+            }
+          }
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "env": {
+          "$ref": "#/definitions/environment"
+        },
+        "autoscaling": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "minReplicas": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxReplicas": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "targetCPUUtilizationPercentage": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "autoscaling": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": ["enabled"]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "autoscaling": {
+                "required": [
+                  "minReplicas",
+                  "maxReplicas",
+                  "targetCPUUtilizationPercentage"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": {
+        "type": ["string", "number", "boolean"]
+      }
+    }
+  }
+}

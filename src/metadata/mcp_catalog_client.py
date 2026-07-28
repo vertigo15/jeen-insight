@@ -258,9 +258,20 @@ class McpCatalogClient:
         server: McpServer,
         tool_name: str,
         arguments: Optional[Dict[str, Any]] = None,
-    ) -> Any:
-        """Call a selected MCP tool with user-supplied JSON arguments."""
-        return await self._call_tool(server, tool_name, arguments or {})
+    ) -> Dict[str, Any]:
+        """Call a tool for the admin inspector and preserve its MCP envelope.
+
+        Runtime catalog methods use :meth:`_call_tool`, which deliberately
+        normalises the first content block into the compact values expected by
+        the catalog pipeline. The test inspector instead needs every content
+        block, structured content, metadata, and ``isError`` for diagnosis.
+        """
+        result = await self._jsonrpc(
+            server, "tools/call", {"name": tool_name, "arguments": arguments or {}}
+        )
+        if not isinstance(result, dict):
+            raise McpError(f"Invalid tools/call result from '{tool_name}'")
+        return result
 
     # ── Health check ──────────────────────────────────────────────────────────
 

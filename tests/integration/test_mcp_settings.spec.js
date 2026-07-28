@@ -249,16 +249,16 @@ test.describe('MCP Metadata & Catalog settings panel', () => {
     await expect(page.locator('.mc-field-label').filter({ hasText: 'Catalog tool mapping' })).toBeVisible();
     console.log('   ✓ Catalog tool mapping section visible');
 
-    // Map rows present (4 needs)
+    // Map rows use the backend's canonical catalog-need list.
     const mapRows = page.locator('.mc-map-row');
     const mapCount = await mapRows.count();
-    expect(mapCount).toBe(4);
+    expect(mapCount).toBe(7);
     console.log(`   ✓ ${mapCount} catalog needs shown`);
 
     // Required needs are marked
     const reqMark = page.locator('.mc-map-need .mc-req');
     const reqCount = await reqMark.count();
-    expect(reqCount).toBe(2); // list_tables + describe_table
+    expect(reqCount).toBe(2); // list_sources + list_tables
     console.log(`   ✓ ${reqCount} required needs marked`);
 
     await screenshot(page, '05_tool_mapping');
@@ -328,6 +328,14 @@ test.describe('MCP Metadata & Catalog settings panel', () => {
     const toolCount = await toolRows.count();
     expect(toolCount).toBeGreaterThan(0);
     console.log(`   ✓ ${toolCount} tool(s) listed`);
+
+    // The function tester should expose safe inspection controls after tools
+    // are discovered; it does not run a tool as part of this assertion.
+    await expect(page.locator('.mc-tool-inspector')).toBeVisible();
+    await expect(page.locator('#mc-tool-select')).toBeVisible();
+    await expect(page.locator('#mc-tool-copy-input-btn')).toBeVisible();
+    await expect(page.locator('#mc-tool-call-btn')).toBeVisible();
+    console.log('   ✓ MCP function tester controls visible');
 
     // Tool mapping should now be populated (not "awaiting health check")
     const mappedTools = page.locator('.mc-map-tool:not(.mc-map-muted)');

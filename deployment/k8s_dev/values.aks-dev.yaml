@@ -1,0 +1,73 @@
+# AKS development overlay. Keep credentials in Azure Key Vault or in the
+# pre-created Kubernetes Secret referenced by global.existingSecret.
+global:
+  environment: dev
+  cloudProvider: azure
+  # Key Vault is the single source of truth for the envelope-encryption key.
+  # Local development reads the same vault secret, so the two environments cannot
+  # drift onto different keys and leave stored connector grants unreadable.
+  # Merge keeps the remaining keys of the hand-managed Secret intact.
+  externalSecrets:
+    enabled: true
+    creationPolicy: Merge
+    refreshInterval: 1h
+    secretStoreRef:
+      name: azure-kv-store
+      kind: ClusterSecretStore
+    secretMappings:
+      APP_ENCRYPTION_KEY: JEEN-INSIGHTS-APP-ENCRYPTION-KEY
+  commonLabels:
+    app.kubernetes.io/component: analytics
+  nodeSelector:
+    workload: backend
+  strategy:
+    type: Recreate
+
+jeen-insights-api:
+  image:
+    repository: jeendevregistry.azurecr.io/jeen-insights-api
+    tag: insight-persist-20260727204949
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  nodeSelector:
+    workload: backend
+
+jeen-insights-ui:
+  image:
+    repository: jeendevregistry.azurecr.io/jeen-insights-ui
+    tag: powerbi-empty-results-20260727080713
+  env:
+    SESSION_COOKIE_SECURE: "true"
+    PUBLIC_APP_URL: https://jeen-insights.dev.jeenai.app
+    AZURE_AD_REDIRECT_URI: https://jeen-insights.dev.jeenai.app/auth/microsoft/callback
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-buffering: "off"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "360"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "360"
+    hosts:
+      - host: jeen-insights.dev.jeenai.app
+        paths:
+          - path: /
+            pathType: Prefix
+    # Existing wildcard Cloudflare Origin CA Secret in the jeen-data namespace.
+    tls:
+      - secretName: cloudflare-tls
+        hosts:
+          - jeen-insights.dev.jeenai.app
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  nodeSelector:
+    workload: backend

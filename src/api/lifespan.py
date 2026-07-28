@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 from fastapi import FastAPI
 
-from src.agent import AgentRegistry
+from src.agent import AgentRegistry, DaxAgentRegistry
 from src.agent.conversation_history import ConversationHistoryService
 from src.agent.llm_service import LangChainLlmService
 from src.agent.prompt_cache import PromptCache
@@ -355,6 +355,7 @@ async def lifespan(_app: FastAPI):
     # ── Prompt cache (starts empty; fills lazily on first use) ───────────────
     state.prompt_cache = PromptCache(pool, llm_service)
 
+    _user_resolver = SimpleUserResolver()
     state.agent_registry = AgentRegistry(
         llm_service=llm_service,
         router_llm_service=router_llm_service,
@@ -362,7 +363,19 @@ async def lifespan(_app: FastAPI):
         metadata_loader=state.metadata_loader,
         connection_service=state.connection_service,
         history_service=state.history_service,
-        user_resolver=SimpleUserResolver(),
+        user_resolver=_user_resolver,
+    )
+
+    # Separate registry for Power BI (text-to-DAX) connections. Shares the same
+    # collaborators but is a distinct object so the SQL path is never touched.
+    state.dax_agent_registry = DaxAgentRegistry(
+        llm_service=llm_service,
+        router_llm_service=router_llm_service,
+        prompt_cache=state.prompt_cache,
+        metadata_loader=state.metadata_loader,
+        connection_service=state.connection_service,
+        history_service=state.history_service,
+        user_resolver=_user_resolver,
     )
 
     # ── Build LangGraph insights eval subgraph ────────────────────────────
@@ -407,9 +420,12 @@ async def lifespan(_app: FastAPI):
         logger.info("👋 Shutting down Jeen Insights")
         if state.agent_registry:
             await state.agent_registry.close()
+        if state.dax_agent_registry:
+            await state.dax_agent_registry.close()
         await close_metadata_pool()
         # Reset handles so a hot-reload cycle doesn't leave stale references.
         state.agent_registry       = None
+        state.dax_agent_registry   = None
         state.metadata_loader       = None
         state.connection_service    = None
         state.history_service       = None

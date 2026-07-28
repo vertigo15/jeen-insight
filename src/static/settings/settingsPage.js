@@ -97,8 +97,10 @@ export class SettingsPage {
         this._mcpToolsLoading = false;
         this._mcpSelectedTool = null;
         this._mcpToolArgs = null;   // editable JSON string
+        this._mcpToolArgsByTool = {};
+        this._mcpToolInputMode = 'guided';
         this._mcpToolResult = null; // last test-call response/error
-        this._mcpToolResultView = 'tree';
+        this._mcpToolResultView = 'content';
         this._mcpToolCalling = false;
     }
 
@@ -543,7 +545,10 @@ export class SettingsPage {
         this._mcpTools = null;
         this._mcpSelectedTool = null;
         this._mcpToolArgs = null;
+        this._mcpToolArgsByTool = {};
+        this._mcpToolInputMode = 'guided';
         this._mcpToolResult = null;
+        this._mcpToolResultView = 'content';
     }
 
     _mcpRender() {
@@ -702,15 +707,9 @@ export class SettingsPage {
                 </div>
             </div>
             ${bearer ? `<div class="mc-field">
-                <label class="mc-field-label">Bearer token</label>
-                <div class="mc-input-wrap">
-                    <input id="mc-f-token" class="mc-input" type="password" value="" placeholder="${d.has_token ? '•••••••• (saved — leave blank to keep)' : '••••••••••••••••'}" data-has-token="${d.has_token ? '1' : '0'}" data-srv-id="${d.id || ''}" autocomplete="off" />
-                    <button type="button" class="mc-pw-toggle" id="mc-f-token-eye" aria-label="Show or hide token" title="Show / hide token" tabindex="-1">
-                        <svg id="mc-eye-show" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-                        <svg id="mc-eye-hide" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-                    </button>
-                </div>
-                <div class="mc-field-help">${d.has_token ? 'A token is saved. Type to replace it, or click the eye to reveal the saved value.' : 'Stored server-side; never sent to the LLM.'}</div>
+                <label class="mc-field-label">Bearer token${d.has_token ? ' <span class="sp-conn-pill on">saved</span>' : ''}</label>
+                <input id="mc-f-token" class="mc-input" type="password" value="" placeholder="${d.has_token ? 'Enter a new token to replace the saved one' : 'Paste a bearer token'}" autocomplete="new-password" />
+                <div class="mc-field-help">${d.has_token ? 'The saved token cannot be retrieved. Enter a new value to replace it, or leave this blank to keep it.' : 'Stored server-side and never sent to the LLM.'}</div>
             </div>` : ''}
             <div class="mc-form-foot">
                 <button class="sp-btn-ghost" id="mc-f-cancel">Cancel</button>
@@ -900,7 +899,12 @@ export class SettingsPage {
         const tool = tools.find(t => t.name === selectedName) || null;
         const inputSchema = tool?.input_schema || tool?.inputSchema || {};
         const outputSchema = tool?.output_schema || tool?.outputSchema || {};
-        const argsText = this._mcpToolArgs ?? _prettyJson(_sampleArgsFromSchema(inputSchema));
+        const defaultArgs = _prettyJson(_sampleArgsFromSchema(inputSchema));
+        const argsText = this._mcpToolArgsByTool[selectedName] ?? this._mcpToolArgs ?? defaultArgs;
+        const hasGuidedFields = _mcpHasGuidedFields(inputSchema);
+        const inputMode = hasGuidedFields ? this._mcpToolInputMode : 'json';
+        const args = _mcpParseArguments(argsText) ?? _sampleArgsFromSchema(inputSchema);
+        const inputErrors = _mcpInputValidationErrors(inputSchema, args);
         const resultHtml = this._mcpToolResult
             ? _mcpToolResultViewer(this._mcpToolResult, this._mcpToolResultView)
             : '';
@@ -926,6 +930,7 @@ export class SettingsPage {
                             ${tools.map(t => `<option value="${_esc(t.name)}"${t.name === selectedName ? ' selected' : ''}>${_esc(t.name)}</option>`).join('')}
                         </select>
                         <div class="mc-field-help">${_esc(tool?.description || 'No description provided.')}</div>
+                        ${_mcpToolAnnotationBadges(tool)}
                     </div>
                     <div class="mc-tool-schema-pair">
                         <div>
@@ -938,11 +943,21 @@ export class SettingsPage {
                         </div>
                     </div>
                     <div class="mc-field">
-                        <label class="mc-field-label">Test arguments JSON</label>
-                        <textarea id="mc-tool-args" class="mc-json-area" spellcheck="false">${_esc(argsText)}</textarea>
+                        <label class="mc-field-label">Test arguments</label>
+                        <div class="mc-input-mode-tabs" role="tablist" aria-label="Argument editor mode">
+                            ${hasGuidedFields ? _mcpInputModeButton('guided', 'Guided fields', inputMode) : ''}
+                            ${_mcpInputModeButton('json', 'Advanced JSON', inputMode)}
+                        </div>
+                        ${inputMode === 'guided'
+                            ? _mcpGuidedArgumentsForm(inputSchema, args)
+                            : `<textarea id="mc-tool-args" class="mc-json-area" spellcheck="false">${_esc(argsText)}</textarea>`}
+                        ${inputErrors.length
+                            ? `<div class="mc-input-errors">${inputErrors.map(error => `<div>${_esc(error)}</div>`).join('')}</div>`
+                            : '<div class="mc-field-help">Optional blank fields are omitted. The MCP server performs final validation.</div>'}
                         <div class="mc-tool-actions">
                             <button class="sp-btn-ghost sp-btn-ghost-sm" id="mc-tool-sample-btn">Use schema sample</button>
-                            <button class="sp-btn-primary-sm" id="mc-tool-call-btn" ${this._mcpToolCalling ? 'disabled' : ''}>${this._mcpToolCalling ? 'Running…' : 'Run function'}</button>
+                            <button class="sp-btn-ghost sp-btn-ghost-sm" id="mc-tool-copy-input-btn">Copy input</button>
+                            <button class="sp-btn-primary-sm" id="mc-tool-call-btn" ${this._mcpToolCalling || this._mcpTesting ? 'disabled' : ''}>${this._mcpToolCalling ? 'Running…' : 'Run function'}</button>
                         </div>
                     </div>
                     ${resultHtml}
@@ -1119,34 +1134,6 @@ export class SettingsPage {
         const authSel = $('#mc-f-auth');
         if (authSel) authSel.addEventListener('change', () => { this._mcpDraft.auth_type = authSel.value; this._mcpRender(); });
 
-        // Form: bearer-token reveal (eye). Reveals what's typed, and for an
-        // existing server with a saved token, fetches the stored value on demand.
-        const tokenEye = $('#mc-f-token-eye');
-        if (tokenEye) {
-            tokenEye.addEventListener('click', async () => {
-                const input   = $('#mc-f-token');
-                const showIco = $('#mc-eye-show');
-                const hideIco = $('#mc-eye-hide');
-                if (!input) return;
-                if (input.type === 'password') {
-                    if (!input.value && input.dataset.hasToken === '1' && input.dataset.srvId) {
-                        try {
-                            const r = await fetch(`/api/mcp/servers/${input.dataset.srvId}/token`);
-                            if (r.ok) { const j = await r.json(); input.value = j.bearer_token || ''; }
-                            else throw new Error(`HTTP ${r.status}`);
-                        } catch (e2) { _showToast('Could not load saved token — ' + e2.message, 'error'); return; }
-                    }
-                    input.type = 'text';
-                    if (showIco) showIco.style.display = 'none';
-                    if (hideIco) hideIco.style.display = '';
-                } else {
-                    input.type = 'password';
-                    if (showIco) showIco.style.display = '';
-                    if (hideIco) hideIco.style.display = 'none';
-                }
-            });
-        }
-
         // Form: save
         const saveBtn = $('#mc-f-save');
         if (saveBtn) {
@@ -1207,11 +1194,18 @@ export class SettingsPage {
                             this._mcpToolsServerId = activeServ.id;
                             this._mcpTools = freshTools;
                             this._mcpSelectedTool = freshTools[0].name || null;
+                            this._mcpToolArgsByTool = {};
                             this._mcpToolArgs = _prettyJson(
                                 _sampleArgsFromSchema(
                                     freshTools[0].input_schema || freshTools[0].inputSchema || {}
                                 )
                             );
+                            if (this._mcpSelectedTool) {
+                                this._mcpToolArgsByTool[this._mcpSelectedTool] = this._mcpToolArgs;
+                            }
+                            this._mcpToolInputMode = _mcpHasGuidedFields(
+                                freshTools[0].input_schema || freshTools[0].inputSchema || {}
+                            ) ? 'guided' : 'json';
                             this._mcpToolResult = null;
                         }
                         toastType = 'success';
@@ -1248,11 +1242,16 @@ export class SettingsPage {
                     this._mcpToolsServerId = activeServ.id;
                     this._mcpTools = tools;
                     this._mcpSelectedTool = tools[0]?.name || null;
-                    this._mcpToolArgs = _prettyJson(
-                        _sampleArgsFromSchema(
-                            tools[0]?.input_schema || tools[0]?.inputSchema || {}
-                        )
-                    );
+                    this._mcpToolArgsByTool = {};
+                    this._mcpToolInputMode = 'guided';
+                    if (tools[0]?.name) {
+                        this._mcpToolArgs = _prettyJson(
+                            _sampleArgsFromSchema(
+                                tools[0]?.input_schema || tools[0]?.inputSchema || {}
+                            )
+                        );
+                        this._mcpToolArgsByTool[tools[0].name] = this._mcpToolArgs;
+                    }
                     _showToast(`Loaded ${tools.length} MCP function${tools.length === 1 ? '' : 's'}`, 'success');
                 } catch (e2) {
                     _showToast('Could not load MCP functions — ' + e2.message, 'error');
@@ -1270,10 +1269,16 @@ export class SettingsPage {
                     ? this._mcpTools
                     : ((S.servers||[]).find(s => s.is_active)?.health?.tools || []);
                 const tool = tools.find(t => t.name === toolSelect.value);
+                if (this._mcpSelectedTool) {
+                    this._mcpToolArgsByTool[this._mcpSelectedTool] = this._mcpToolArgs || '{}';
+                }
                 this._mcpSelectedTool = toolSelect.value;
-                this._mcpToolArgs = _prettyJson(
-                    _sampleArgsFromSchema(tool?.input_schema || tool?.inputSchema || {})
-                );
+                this._mcpToolArgs = this._mcpToolArgsByTool[toolSelect.value]
+                    ?? _prettyJson(_sampleArgsFromSchema(tool?.input_schema || tool?.inputSchema || {}));
+                this._mcpToolArgsByTool[toolSelect.value] = this._mcpToolArgs;
+                this._mcpToolInputMode = _mcpHasGuidedFields(tool?.input_schema || tool?.inputSchema || {})
+                    ? 'guided'
+                    : 'json';
                 this._mcpToolResult = null;
                 this._mcpRender();
             });
@@ -1283,8 +1288,34 @@ export class SettingsPage {
         if (toolArgs) {
             toolArgs.addEventListener('input', () => {
                 this._mcpToolArgs = toolArgs.value;
+                if (this._mcpSelectedTool) this._mcpToolArgsByTool[this._mcpSelectedTool] = toolArgs.value;
             });
         }
+
+        this._content.querySelectorAll('[data-mc-tool-input-mode]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this._mcpToolInputMode = btn.dataset.mcToolInputMode;
+                this._mcpRender();
+            });
+        });
+
+        this._content.querySelectorAll('[data-mc-tool-arg]').forEach(input => {
+            input.addEventListener('change', () => {
+                const tools = (this._mcpToolsServerId === S.active_server_id && this._mcpTools)
+                    ? this._mcpTools
+                    : ((S.servers||[]).find(s => s.is_active)?.health?.tools || []);
+                const tool = tools.find(t => t.name === this._mcpSelectedTool) || tools[0];
+                const schema = tool?.input_schema || tool?.inputSchema || {};
+                const args = _mcpParseArguments(this._mcpToolArgs) ?? _sampleArgsFromSchema(schema);
+                const key = input.dataset.mcToolArg;
+                const fieldSchema = (schema.properties || {})[key] || {};
+                _mcpApplyGuidedArgument(args, key, fieldSchema, input);
+                this._mcpToolArgs = _prettyJson(args);
+                if (this._mcpSelectedTool) this._mcpToolArgsByTool[this._mcpSelectedTool] = this._mcpToolArgs;
+                this._mcpToolResult = null;
+                this._mcpRender();
+            });
+        });
 
         const sampleBtn = $('#mc-tool-sample-btn');
         if (sampleBtn) {
@@ -1296,8 +1327,23 @@ export class SettingsPage {
                 this._mcpToolArgs = _prettyJson(
                     _sampleArgsFromSchema(tool?.input_schema || tool?.inputSchema || {})
                 );
+                if (this._mcpSelectedTool) this._mcpToolArgsByTool[this._mcpSelectedTool] = this._mcpToolArgs;
                 this._mcpToolResult = null;
                 this._mcpRender();
+            });
+        }
+
+        const copyInputBtn = $('#mc-tool-copy-input-btn');
+        if (copyInputBtn) {
+            copyInputBtn.addEventListener('click', async () => {
+                try {
+                    const toolName = this._mcpSelectedTool || $('#mc-tool-select')?.value;
+                    const toolArgs = this._mcpToolArgsByTool[toolName] ?? this._mcpToolArgs ?? '{}';
+                    await navigator.clipboard.writeText(toolArgs);
+                    _showToast('Test input copied to clipboard', 'success');
+                } catch {
+                    _showToast('Could not copy test input', 'error');
+                }
             });
         }
 
@@ -1306,7 +1352,10 @@ export class SettingsPage {
             callBtn.addEventListener('click', async () => {
                 const activeServ = (S.servers||[]).find(s => s.is_active);
                 const toolName = this._mcpSelectedTool || $('#mc-tool-select')?.value;
-                const rawArgs = $('#mc-tool-args')?.value || '{}';
+                const rawArgs = $('#mc-tool-args')?.value
+                    ?? this._mcpToolArgsByTool[toolName]
+                    ?? this._mcpToolArgs
+                    ?? '{}';
                 if (!activeServ || !toolName) return;
                 let args;
                 try {
@@ -1318,23 +1367,55 @@ export class SettingsPage {
                     _showToast('Invalid JSON arguments — ' + e2.message, 'error');
                     return;
                 }
+                const tools = (this._mcpToolsServerId === S.active_server_id && this._mcpTools)
+                    ? this._mcpTools
+                    : ((S.servers||[]).find(s => s.is_active)?.health?.tools || []);
+                const tool = tools.find(t => t.name === toolName) || null;
+                const inputErrors = _mcpInputValidationErrors(
+                    tool?.input_schema || tool?.inputSchema || {}, args
+                );
+                if (inputErrors.length) {
+                    _showToast(inputErrors[0], 'error');
+                    return;
+                }
+                const risk = _mcpToolRisk(tool);
+                const confirmed = risk.level === 'confirmation_required'
+                    ? confirm(`${risk.reason}\n\nRun "${toolName}" with these arguments?`)
+                    : false;
+                if (risk.level === 'confirmation_required' && !confirmed) return;
                 this._mcpToolCalling = true;
                 this._mcpToolArgs = _prettyJson(args);
+                this._mcpToolArgsByTool[toolName] = this._mcpToolArgs;
                 this._mcpToolResult = null;
-                this._mcpToolResultView = 'tree';
+                this._mcpToolResultView = 'content';
                 this._mcpRender();
                 try {
                     const r = await fetch(`/api/mcp/servers/${activeServ.id}/tools/call`, {
                         method: 'POST',
                         credentials: 'same-origin',
                         headers: {'Content-Type':'application/json'},
-                        body: JSON.stringify({tool_name: toolName, arguments: args}),
+                        body: JSON.stringify({tool_name: toolName, arguments: args, confirmed}),
                     });
                     const data = await r.json().catch(() => ({}));
-                    this._mcpToolResult = r.ok ? data : {ok: false, error: data.detail || data.error || `HTTP ${r.status}`};
+                    this._mcpToolResult = r.ok
+                        ? {...data, completed_at: new Date().toISOString()}
+                        : {
+                            ok: false,
+                            tool_name: toolName,
+                            arguments: args,
+                            error: _mcpErrorMessage(data.detail || data.error || `HTTP ${r.status}`),
+                            diagnostic: data,
+                            completed_at: new Date().toISOString(),
+                        };
                     _showToast(r.ok ? 'MCP function call complete' : 'MCP function call failed', r.ok ? 'success' : 'error');
                 } catch (e2) {
-                    this._mcpToolResult = {ok: false, error: e2.message || String(e2)};
+                    this._mcpToolResult = {
+                        ok: false,
+                        tool_name: toolName,
+                        arguments: args,
+                        error: e2.message || String(e2),
+                        completed_at: new Date().toISOString(),
+                    };
                     _showToast('MCP function call failed — ' + e2.message, 'error');
                 } finally {
                     this._mcpToolCalling = false;
@@ -1360,6 +1441,52 @@ export class SettingsPage {
                 } catch {
                     _showToast('Could not copy the result', 'error');
                 }
+            });
+        }
+
+        const aiAssistBtn = $('#mc-tool-ai-assist-btn');
+        if (aiAssistBtn && this._mcpToolResult) {
+            aiAssistBtn.addEventListener('click', async () => {
+                const activeServ = (S.servers || []).find(s => s.is_active);
+                const toolName = this._mcpToolResult.tool_name || this._mcpSelectedTool;
+                if (!activeServ || !toolName) return;
+                this._mcpToolResult = {...this._mcpToolResult, ai_assist_loading: true, ai_assist_error: null};
+                this._mcpRender();
+                try {
+                    const r = await fetch(`/api/mcp/servers/${activeServ.id}/tools/assist-error`, {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            tool_name: toolName,
+                            arguments: this._mcpToolResult.arguments || {},
+                            error: _mcpToolErrorForAssist(this._mcpToolResult),
+                        }),
+                    });
+                    const data = await r.json().catch(() => ({}));
+                    if (!r.ok) throw new Error(_mcpErrorMessage(data.detail || data.error || `HTTP ${r.status}`));
+                    this._mcpToolResult = {...this._mcpToolResult, ai_assist: data, ai_assist_loading: false};
+                } catch (e2) {
+                    this._mcpToolResult = {
+                        ...this._mcpToolResult,
+                        ai_assist_loading: false,
+                        ai_assist_error: e2.message || 'AI assistance could not analyze this error.',
+                    };
+                } finally {
+                    this._mcpRender();
+                }
+            });
+        }
+
+        const applyAiArgsBtn = $('#mc-tool-ai-apply-args-btn');
+        if (applyAiArgsBtn && this._mcpToolResult?.ai_assist?.suggested_arguments) {
+            applyAiArgsBtn.addEventListener('click', () => {
+                const toolName = this._mcpToolResult.tool_name || this._mcpSelectedTool;
+                this._mcpToolArgs = _prettyJson(this._mcpToolResult.ai_assist.suggested_arguments);
+                if (toolName) this._mcpToolArgsByTool[toolName] = this._mcpToolArgs;
+                this._mcpToolInputMode = 'json';
+                _showToast('AI suggestion loaded. Review it, then run the tool manually.', 'info');
+                this._mcpRender();
             });
         }
 
@@ -2860,44 +2987,286 @@ function _prettyJson(value) {
     }
 }
 
-function _mcpToolResultViewer(toolResult, selectedView = 'tree') {
-    const isError = toolResult?.ok === false;
-    const hasResult = Object.prototype.hasOwnProperty.call(toolResult || {}, 'result');
-    const result = isError ? (toolResult.error ?? toolResult) : (hasResult ? toolResult.result : toolResult);
-    const view = ['tree', 'formatted', 'raw'].includes(selectedView) ? selectedView : 'tree';
-    const heading = isError ? 'Error' : 'Result';
-    const content = view === 'tree'
-        ? `<div class="mc-json-tree">${_mcpJsonTreeNode(_parseJsonResult(result), heading, 0)}</div>`
-        : `<pre class="mc-result-code">${_esc(
-            view === 'raw' ? _rawJson(toolResult) : _prettyJson(result)
-        )}</pre>`;
-    const runDetails = !isError && _mcpToolRunDetails(toolResult);
-    const diagnosticDetails = isError
-        ? `<details class="mc-result-details">
-                <summary>Error details</summary>
-                <pre class="mc-result-code">${_esc(_prettyJson(toolResult))}</pre>
-           </details>`
-        : '';
+function _mcpHasGuidedFields(schema) {
+    return !!(schema?.properties && Object.keys(schema.properties).length);
+}
+
+function _mcpInputModeButton(mode, label, selectedMode) {
+    return `<button type="button" class="mc-input-mode-tab${mode === selectedMode ? ' is-active' : ''}"
+        data-mc-tool-input-mode="${mode}" role="tab" aria-selected="${mode === selectedMode}">${label}</button>`;
+}
+
+function _mcpGuidedArgumentsForm(schema, args) {
+    const properties = schema?.properties || {};
+    const required = Array.isArray(schema?.required) ? schema.required : [];
+    return `<div class="mc-guided-args">
+        ${Object.entries(properties).map(([key, fieldSchema]) =>
+            _mcpGuidedArgumentField(key, fieldSchema || {}, args?.[key], required.includes(key))
+        ).join('')}
+    </div>`;
+}
+
+function _mcpGuidedArgumentField(key, schema, value, required) {
+    const type = _mcpSchemaType(schema);
+    const label = `${_esc(schema.title || key)}${required ? ' <span class="mc-req">*</span>' : ''}`;
+    const description = schema.description ? `<div class="mc-field-help">${_esc(schema.description)}</div>` : '';
+    const attributes = `data-mc-tool-arg="${_esc(key)}" data-mc-tool-required="${required ? '1' : '0'}"`;
+    let control;
+
+    if (Array.isArray(schema.enum)) {
+        control = `<select class="settings-select" ${attributes}>
+            ${!required ? '<option value="">Not set</option>' : ''}
+            ${schema.enum.map(option => `<option value="${_esc(String(option))}"${String(option) === String(value) ? ' selected' : ''}>${_esc(String(option))}</option>`).join('')}
+        </select>`;
+    } else if (type === 'boolean') {
+        control = `<label class="mc-guided-checkbox">
+            <input type="checkbox" ${attributes} ${value ? 'checked' : ''} />
+            <span>${value ? 'Enabled' : 'Disabled'}</span>
+        </label>`;
+    } else if (type === 'string' || type === 'number' || type === 'integer') {
+        const inputType = type === 'string' ? 'text' : 'number';
+        const numericStep = type === 'integer' ? ' step="1"' : type === 'number' ? ' step="any"' : '';
+        control = `<input class="mc-input" type="${inputType}" ${attributes}${numericStep}
+            value="${_esc(value ?? '')}" placeholder="${_esc(schema.examples?.[0] ?? schema.default ?? '')}" />`;
+    } else {
+        control = `<div class="mc-guided-unsupported">Edit this ${_esc(type || 'complex')} value in Advanced JSON.</div>`;
+    }
+
+    return `<div class="mc-guided-field">
+        <label class="mc-field-label">${label}</label>
+        ${control}
+        ${description}
+    </div>`;
+}
+
+function _mcpSchemaType(schema) {
+    const type = schema?.type;
+    return Array.isArray(type) ? type.find(item => item !== 'null') || type[0] : type;
+}
+
+function _mcpParseArguments(text) {
+    try {
+        const parsed = typeof text === 'string' ? JSON.parse(text || '{}') : text;
+        return parsed && !Array.isArray(parsed) && typeof parsed === 'object' ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+function _mcpApplyGuidedArgument(args, key, schema, input) {
+    const type = _mcpSchemaType(schema);
+    const required = input.dataset.mcToolRequired === '1';
+    if (type === 'boolean') {
+        args[key] = input.checked;
+        return;
+    }
+
+    const raw = input.value;
+    if (!raw && !required) {
+        delete args[key];
+        return;
+    }
+    if (Array.isArray(schema.enum)) {
+        args[key] = schema.enum.find(option => String(option) === raw) ?? raw;
+    } else if (type === 'number' || type === 'integer') {
+        const numeric = Number(raw);
+        args[key] = Number.isFinite(numeric) ? numeric : raw;
+    } else {
+        args[key] = raw;
+    }
+}
+
+function _mcpInputValidationErrors(schema, args) {
+    if (!schema || !args) return ['Arguments must be a JSON object.'];
+    const properties = schema.properties || {};
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    const errors = required
+        .filter(key => !Object.prototype.hasOwnProperty.call(args, key))
+        .map(key => `${key} is required.`);
+
+    Object.entries(args).forEach(([key, value]) => {
+        const field = properties[key];
+        if (!field) return;
+        const type = _mcpSchemaType(field);
+        if (type === 'string' && typeof value !== 'string') errors.push(`${key} must be a string.`);
+        if ((type === 'number' || type === 'integer') && (typeof value !== 'number' || !Number.isFinite(value))) {
+            errors.push(`${key} must be a number.`);
+        }
+        if (type === 'integer' && Number.isFinite(value) && !Number.isInteger(value)) {
+            errors.push(`${key} must be an integer.`);
+        }
+        if (type === 'boolean' && typeof value !== 'boolean') errors.push(`${key} must be true or false.`);
+        if (Array.isArray(field.enum) && !field.enum.some(option => Object.is(option, value))) {
+            errors.push(`${key} must be one of the allowed values.`);
+        }
+        if (typeof value === 'string' && field.minLength && value.length < field.minLength) {
+            errors.push(`${key} must contain at least ${field.minLength} characters.`);
+        }
+    });
+    return errors;
+}
+
+function _mcpToolRisk(tool) {
+    const annotations = tool?.annotations || {};
+    if (annotations.destructiveHint === true) {
+        return {level: 'confirmation_required', reason: 'This tool may permanently modify or delete data.'};
+    }
+    if (annotations.openWorldHint === true) {
+        return {level: 'confirmation_required', reason: 'This tool may contact external systems.'};
+    }
+    if (annotations.readOnlyHint === true) {
+        return {level: 'read_only', reason: 'The server marks this tool as read-only.'};
+    }
+    return {level: 'confirmation_required', reason: 'This tool is not explicitly marked as read-only.'};
+}
+
+function _mcpToolAnnotationBadges(tool) {
+    const annotations = tool?.annotations || {};
+    const badges = [
+        annotations.readOnlyHint === true ? ['read-only', 'mc-tool-safety-ok'] : null,
+        annotations.destructiveHint === true ? ['destructive', 'mc-tool-safety-warn'] : null,
+        annotations.openWorldHint === true ? ['external access', 'mc-tool-safety-warn'] : null,
+        annotations.idempotentHint === true ? ['idempotent', ''] : null,
+    ].filter(Boolean);
+    if (!badges.length) badges.push(['confirmation required', 'mc-tool-safety-warn']);
+    return `<div class="mc-tool-badges">${badges.map(([label, cls]) =>
+        `<span class="mc-tool-safety ${cls}">${_esc(label)}</span>`
+    ).join('')}</div>`;
+}
+
+function _mcpErrorMessage(error) {
+    if (typeof error === 'string') return error;
+    if (error?.message) return error.message;
+    return _prettyJson(error);
+}
+
+function _mcpToolErrorForAssist(toolResult) {
+    if (toolResult?.result) return toolResult.result;
+    return toolResult?.diagnostic || toolResult?.error || toolResult;
+}
+
+function _mcpToolResultViewer(toolResult, selectedView = 'content') {
+    const envelope = _mcpToolResultEnvelope(toolResult);
+    const contentBlocks = Array.isArray(envelope?.content) ? envelope.content : [];
+    const hasStructured = Object.prototype.hasOwnProperty.call(envelope || {}, 'structuredContent');
+    const primary = _mcpPrimaryResult(envelope, toolResult);
+    const views = ['content', ...(hasStructured ? ['structured'] : []), 'tree', 'formatted', 'raw'];
+    const view = views.includes(selectedView) ? selectedView : 'content';
+    const isError = toolResult?.ok === false || envelope?.isError === true;
+    const heading = isError ? 'Tool error' : 'Result';
+    const content = view === 'content'
+        ? _mcpContentBlocksHtml(contentBlocks, toolResult.error)
+        : view === 'structured'
+            ? `<div class="mc-json-tree">${_mcpJsonTreeNode(envelope.structuredContent, 'Structured content', 0)}</div>`
+            : view === 'tree'
+                ? `<div class="mc-json-tree">${_mcpJsonTreeNode(primary, 'Result', 0)}</div>`
+                : `<pre class="mc-result-code">${_esc(
+                    view === 'raw'
+                        ? _prettyJson(_mcpRedactedToolResult(toolResult))
+                        : _prettyJson(primary)
+                )}</pre>`;
+    const runDetails = _mcpToolRunDetails(toolResult);
+    const validation = _mcpOutputValidationHtml(toolResult.output_validation);
+        const aiAssist = _mcpAiAssistHtml(toolResult);
 
     return `<div class="mc-tool-result ${isError ? 'mc-tool-result-error' : ''}">
         <div class="mc-tool-result-head">
             <span>${heading}</span>
             <div class="mc-result-actions">
                 <div class="mc-result-tabs" role="tablist" aria-label="${heading} view">
+                    ${_mcpResultViewButton('content', 'Content', view)}
+                    ${hasStructured ? _mcpResultViewButton('structured', 'Structured', view) : ''}
                     ${_mcpResultViewButton('tree', 'Tree', view)}
                     ${_mcpResultViewButton('formatted', 'Formatted', view)}
-                    ${_mcpResultViewButton('raw', 'Raw', view)}
+                    ${_mcpResultViewButton('raw', 'Raw MCP', view)}
                 </div>
-                <button class="sp-btn-ghost sp-btn-ghost-sm" id="mc-tool-result-copy-btn">Copy JSON</button>
+                <button class="sp-btn-ghost sp-btn-ghost-sm" id="mc-tool-result-copy-btn">Copy view</button>
+                ${isError ? `<button class="sp-btn-ghost sp-btn-ghost-sm" id="mc-tool-ai-assist-btn" ${toolResult.ai_assist_loading ? 'disabled' : ''}>${toolResult.ai_assist_loading ? 'AI analyzing…' : 'AI help with error'}</button>` : ''}
             </div>
         </div>
+        ${validation}
         ${content}
+        ${aiAssist}
         ${runDetails ? `<details class="mc-result-details">
             <summary>Run details</summary>
             <pre class="mc-result-code">${_esc(_prettyJson(runDetails))}</pre>
         </details>` : ''}
-        ${diagnosticDetails}
+        ${toolResult.diagnostic ? `<details class="mc-result-details">
+            <summary>Request error details</summary>
+            <pre class="mc-result-code">${_esc(_prettyJson(toolResult.diagnostic))}</pre>
+        </details>` : ''}
     </div>`;
+}
+
+function _mcpAiAssistHtml(toolResult) {
+    if (toolResult.ai_assist_loading) {
+        return '<div class="mc-ai-assist mc-ai-assist-loading">AI is analyzing the test failure. It will only suggest changes; it will not rerun the tool.</div>';
+    }
+    if (toolResult.ai_assist_error) {
+        return `<div class="mc-ai-assist mc-ai-assist-error">${_esc(toolResult.ai_assist_error)}</div>`;
+    }
+    const assist = toolResult.ai_assist;
+    if (!assist) return '';
+    const suggestedArguments = assist.suggested_arguments;
+    const validationErrors = assist.suggestion_validation?.errors || [];
+    return `<details class="mc-ai-assist" open>
+        <summary>AI error assistance</summary>
+        <div class="mc-ai-assist-body">
+            <div><b>Summary:</b> ${_esc(assist.summary || 'No summary provided.')}</div>
+            ${assist.likely_cause ? `<div><b>Likely cause:</b> ${_esc(assist.likely_cause)}</div>` : ''}
+            ${assist.next_steps?.length ? `<div><b>Safe next steps:</b><ul>${assist.next_steps.map(step => `<li>${_esc(step)}</li>`).join('')}</ul></div>` : ''}
+            ${suggestedArguments ? `<div>
+                <b>Suggested arguments</b>
+                <pre class="mc-result-code">${_esc(_prettyJson(suggestedArguments))}</pre>
+                <button class="sp-btn-ghost sp-btn-ghost-sm" id="mc-tool-ai-apply-args-btn">Use suggestion</button>
+            </div>` : ''}
+            ${validationErrors.length ? `<div class="mc-input-errors">${validationErrors.map(error => `<div>${_esc(error)}</div>`).join('')}</div>` : ''}
+        </div>
+    </details>`;
+}
+
+function _mcpToolResultEnvelope(toolResult) {
+    return toolResult?.result && typeof toolResult.result === 'object'
+        ? toolResult.result
+        : null;
+}
+
+function _mcpPrimaryResult(envelope, toolResult) {
+    if (Object.prototype.hasOwnProperty.call(envelope || {}, 'structuredContent')) return envelope.structuredContent;
+    const firstText = (envelope?.content || []).find(block => block?.type === 'text');
+    if (firstText) return _parseJsonResult(firstText.text || '');
+    return envelope || toolResult.error || toolResult;
+}
+
+function _mcpContentBlocksHtml(blocks, error) {
+    if (!blocks.length) {
+        return `<div class="mc-result-empty">${_esc(error || 'The MCP server returned no content blocks.')}</div>`;
+    }
+    return `<div class="mc-content-blocks">${blocks.map((block, index) =>
+        _mcpContentBlockHtml(block, index)
+    ).join('')}</div>`;
+}
+
+function _mcpContentBlockHtml(block, index) {
+    const type = block?.type || 'unknown';
+    let body;
+    if (type === 'text') {
+        body = `<pre class="mc-result-code">${_esc(_prettyJson(block.text || ''))}</pre>`;
+    } else if (type === 'resource_link' || type === 'resourceLink') {
+        body = `<pre class="mc-result-code">${_esc(_prettyJson({
+            uri: block.uri, name: block.name, description: block.description, mimeType: block.mimeType,
+        }))}</pre>`;
+    } else if (type === 'image' || type === 'audio') {
+        body = `<pre class="mc-result-code">${_esc(_prettyJson({
+            type, mimeType: block.mimeType, size: typeof block.data === 'string' ? `${block.data.length} encoded characters` : undefined,
+        }))}</pre>`;
+    } else {
+        body = `<pre class="mc-result-code">${_esc(_prettyJson(block))}</pre>`;
+    }
+    return `<details class="mc-content-block" ${index === 0 ? 'open' : ''}>
+        <summary>${_esc(type)} block <span>${index + 1}</span></summary>
+        ${body}
+    </details>`;
 }
 
 function _mcpResultViewButton(view, label, selectedView) {
@@ -2907,17 +3276,53 @@ function _mcpResultViewButton(view, label, selectedView) {
 
 function _mcpToolRunDetails(toolResult) {
     const details = {};
-    ['server_id', 'tool_name', 'arguments'].forEach(key => {
+    ['server_id', 'tool_name', 'risk', 'duration_ms', 'completed_at'].forEach(key => {
         if (Object.prototype.hasOwnProperty.call(toolResult || {}, key)) details[key] = toolResult[key];
     });
+    if (Object.prototype.hasOwnProperty.call(toolResult || {}, 'arguments')) {
+        details.arguments = _mcpRedactSecrets(toolResult.arguments);
+    }
     return Object.keys(details).length ? details : null;
 }
 
+function _mcpOutputValidationHtml(diagnostic) {
+    if (!diagnostic?.available) return '';
+    if (diagnostic.valid) {
+        return '<div class="mc-output-validation mc-output-valid">Structured content matches the advertised output schema.</div>';
+    }
+    return `<details class="mc-output-validation mc-output-invalid">
+        <summary>Structured content does not match the advertised output schema.</summary>
+        <pre class="mc-result-code">${_esc(_prettyJson(diagnostic.errors || []))}</pre>
+    </details>`;
+}
+
 function _mcpToolResultCopyText(toolResult, selectedView) {
-    const isError = toolResult?.ok === false;
-    const hasResult = Object.prototype.hasOwnProperty.call(toolResult || {}, 'result');
-    const result = isError ? (toolResult.error ?? toolResult) : (hasResult ? toolResult.result : toolResult);
-    return selectedView === 'raw' ? _rawJson(toolResult) : _prettyJson(result);
+    const envelope = _mcpToolResultEnvelope(toolResult);
+    if (selectedView === 'raw') return _prettyJson(_mcpRedactedToolResult(toolResult));
+    if (selectedView === 'structured') return _prettyJson(envelope?.structuredContent);
+    if (selectedView === 'content') return _prettyJson(envelope?.content || toolResult.error || []);
+    return _prettyJson(_mcpPrimaryResult(envelope, toolResult));
+}
+
+function _mcpRedactedToolResult(toolResult) {
+    return {
+        ...toolResult,
+        ...(Object.prototype.hasOwnProperty.call(toolResult || {}, 'arguments')
+            ? {arguments: _mcpRedactSecrets(toolResult.arguments)}
+            : {}),
+    };
+}
+
+function _mcpRedactSecrets(value, key = '') {
+    const secretKey = /token|secret|password|authorization|api[_-]?key|credential/i.test(key);
+    if (secretKey && value !== undefined) return '[redacted]';
+    if (Array.isArray(value)) return value.map(item => _mcpRedactSecrets(item));
+    if (value && typeof value === 'object') {
+        return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [
+            childKey, _mcpRedactSecrets(childValue, childKey),
+        ]));
+    }
+    return value;
 }
 
 function _parseJsonResult(value) {
@@ -2974,7 +3379,14 @@ function _sampleArgsFromSchema(schema) {
     ];
     const sample = {};
     ordered.forEach(key => {
-        sample[key] = _sampleValueFromSchema(props[key]);
+        const field = props[key] || {};
+        const hasSuggestedValue = Object.prototype.hasOwnProperty.call(field, 'default')
+            || Object.prototype.hasOwnProperty.call(field, 'const')
+            || (Array.isArray(field.enum) && field.enum.length)
+            || (Array.isArray(field.examples) && field.examples.length);
+        if (required.includes(key) || hasSuggestedValue) {
+            sample[key] = _sampleValueFromSchema(field);
+        }
     });
     return sample;
 }

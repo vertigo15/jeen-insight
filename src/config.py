@@ -106,6 +106,62 @@ class Settings(BaseSettings):
     # and fail closed so removing a user from a group revokes access promptly.
     CONNECTOR_GROUP_MEMBERSHIP_TTL_SECONDS: int = 900
 
+    # ── Power BI (text-to-DAX) ──────────────────────────────────────────────
+    # Base URL for the Power BI REST API. Override only for sovereign clouds
+    # (e.g. https://api.powerbigov.us). The delegated OAuth resource stays
+    # https://analysis.windows.net/powerbi/api regardless.
+    POWERBI_API_BASE: str = "https://api.powerbi.com"
+    # Delegated scope requested for read-only dataset queries. The reserved AAD
+    # scopes (openid/profile/email/offline_access) are added by the catalog entry;
+    # this is just the Power BI resource scope used for token refresh fallbacks.
+    POWERBI_DEFAULT_SCOPE: str = (
+        "https://analysis.windows.net/powerbi/api/Dataset.Read.All"
+    )
+    # Per-call timeout (seconds) for the executeQueries endpoint. Legacy JSON
+    # executeQueries has no server-side queryTimeout, so this is the client cap.
+    POWERBI_EXECUTE_TIMEOUT_SECONDS: float = 60.0
+    # Max DAX repair/regeneration attempts before giving up (separate from the
+    # transport retry budget, which is fixed in the feedback router).
+    DAX_MAX_RETRIES: int = 4
+    # When True, run the DAX static validator (lexer/linter + symbol resolution +
+    # DLP) before executing against Power BI. Mirrors SQLGLOT_VALIDATION_ENABLED.
+    DAX_VALIDATION_ENABLED: bool = True
+    # Value (entity) linking: before generating DAX, verify that the literals in
+    # the plan's filters exist as real column values, correcting typos and asking
+    # the user when a value is ambiguous or absent. Costs one bounded, read-only
+    # probe per filtered text column (cached per user), and fails open.
+    DAX_ENTITY_RESOLUTION_ENABLED: bool = True
+    # Distinct values pulled per column before the column is treated as too large
+    # to match locally (the probe then falls back to a server-side search).
+    DAX_ENTITY_MAX_DOMAIN_VALUES: int = 1000
+    # Similarity (0-100) a column value needs to be considered a candidate.
+    # Lower = more typo tolerance and more clarification questions.
+    DAX_ENTITY_MATCH_THRESHOLD: float = 78.0
+    # When a literal matches nothing in its target column, search sibling text
+    # columns of the same table ("Mountain 300" is a model, not a product name).
+    DAX_ENTITY_CROSS_COLUMN_ENABLED: bool = True
+    # TEMPORARY (local testing only): a pre-minted delegated Power BI access
+    # token. When set, ``pbi_execute_query`` uses it directly and BYPASSES the
+    # connector-grant subsystem (which isn't provisioned locally). Mint one with:
+    #   az account get-access-token --resource https://analysis.windows.net/powerbi/api --query accessToken -o tsv
+    # The token is user-scoped and expires (~1h), so refresh it as needed. Leave
+    # empty in any real deployment — delegated OAuth via connectors is the
+    # supported path. REMOVE once the Power BI connector is provisioned.
+    POWERBI_TEST_ACCESS_TOKEN: str = ""
+    # TEMPORARY: app-only (service-principal) credentials for a dedicated Azure
+    # App Registration that has been granted Power BI access (added to the
+    # workspace + tenant "service principals can use Power BI APIs" enabled).
+    # When client id + secret are set, ``pbi_execute_query`` mints an app-only
+    # token via the client-credentials flow (self-refreshing, no user
+    # interaction) and uses it INSTEAD of the delegated grant subsystem — the
+    # preferred temporary path until the Power BI connector is provisioned.
+    # Keep the SECRET only in .env (gitignored), never in code. Tenant falls back
+    # to AZURE_AD_TENANT_ID when unset. REMOVE with the rest of the temporary
+    # Power BI bridge once delegated OAuth via connectors is live.
+    POWERBI_APP_TENANT_ID: str = ""
+    POWERBI_APP_CLIENT_ID: str = ""
+    POWERBI_APP_CLIENT_SECRET: str = ""
+
     # ── Deployment safety ───────────────────────────────────────────────────
     # Development / POC mode. Defaults to TRUE so a fresh copy of the app + shared
     # DB "just works" anywhere with zero secret provisioning (boots without strong

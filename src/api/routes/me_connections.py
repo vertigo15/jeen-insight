@@ -27,6 +27,7 @@ from src.api.dependencies import (
 from src.connectors import oauth
 from src.connectors.grant_service import GrantError
 from src.connectors.providers import get_provider
+from src.security.crypto import CryptoError
 from src.security.internal_auth import Principal
 
 logger = logging.getLogger(__name__)
@@ -184,7 +185,24 @@ async def oauth_callback(
     if provider is None:
         raise HTTPException(status_code=500, detail="Provider adapter unavailable")
 
-    client_secret = await registry.get_client_secret(session["connector_id"])
+    try:
+        client_secret = await registry.get_client_secret(session["connector_id"])
+    except CryptoError as exc:
+        # The stored secret exists but this deployment's APP_ENCRYPTION_KEY cannot
+        # unwrap it (commonly two environments sharing one database). Retrying the
+        # consent flow cannot fix it, so say so instead of returning a 500.
+        logger.error("oauth callback: client secret is undecryptable: %s", exc)
+        await audit.log(
+            event_type="grant.failed", actor_user_id=principal.user_id,
+            connector_id=session["connector_id"], outcome="client_secret_undecryptable",
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "This deployment cannot read its stored connector credentials. "
+                "Ask an admin to check APP_ENCRYPTION_KEY."
+            ),
+        ) from exc
     try:
         token = await provider.exchange_code(
             config=config, manifest=manifest, client_secret=client_secret,

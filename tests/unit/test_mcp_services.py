@@ -694,6 +694,51 @@ class TestMcpCatalogClientLoadAll:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# McpCatalogClient — inspector test calls
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestMcpCatalogClientInspectorCalls:
+
+    def _make_client(self):
+        return McpCatalogClient(AsyncMock(), McpCacheService(_mock_pool()))
+
+    @pytest.mark.asyncio
+    async def test_test_call_preserves_complete_mcp_result_envelope(self):
+        client = self._make_client()
+        server = _make_server()
+        response = {
+            "content": [
+                {"type": "text", "text": '{"tables": 42}'},
+                {"type": "resource_link", "uri": "mcp://catalog/tables"},
+            ],
+            "structuredContent": {"tables": 42},
+            "_meta": {"requestId": "test-1"},
+            "isError": False,
+        }
+
+        with patch.object(client, "_jsonrpc", new_callable=AsyncMock, return_value=response) as rpc:
+            result = await client.call_tool_for_test(server, "list_tables", {"connection_id": 1})
+
+        assert result == response
+        rpc.assert_awaited_once_with(
+            server,
+            "tools/call",
+            {"name": "list_tables", "arguments": {"connection_id": 1}},
+        )
+
+    @pytest.mark.asyncio
+    async def test_test_call_keeps_tool_level_error_as_structured_result(self):
+        client = self._make_client()
+        response = {"content": [{"type": "text", "text": "Access denied"}], "isError": True}
+
+        with patch.object(client, "_jsonrpc", new_callable=AsyncMock, return_value=response):
+            result = await client.call_tool_for_test(_make_server(), "restricted_tool")
+
+        assert result["isError"] is True
+        assert result["content"][0]["text"] == "Access denied"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # McpCatalogClient — run_health_check
 # ═══════════════════════════════════════════════════════════════════════════════
 

@@ -63,6 +63,12 @@ class QueryResponse(BaseModel):
     # intent. The UI renders a confirm card and drives preview -> execute; the
     # proposal is already recorded server-side (origin=agent) and hash-bound.
     tool_proposal: Optional[Dict[str, Any]] = None
+    # Delegated-OAuth data sources (Power BI text-to-DAX) set these when the
+    # signed-in user must connect or reconnect the provider before the query can
+    # run. Undeclared fields are dropped by Pydantic, so the UI connect prompt
+    # only works while these stay part of the response contract.
+    needs_connect: Optional[bool] = None
+    connect_provider: Optional[str] = None
 
 
 class ColumnInfo(BaseModel):

@@ -42,6 +42,11 @@ Thumbs.db
 .dockerignore
 docker-compose.override.yml
 
+# Runtime secrets
+.env
+.env.*
+!.env.example
+
 # Documentation
 README.md
 docs/

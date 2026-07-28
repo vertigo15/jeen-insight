@@ -39,11 +39,66 @@ CONNECTOR_REGISTRY: dict[str, ConnectorDefinition] = {
 }
 
 
+# Power BI is deliberately NOT in CONNECTOR_REGISTRY: it is not a SqlRunner (no
+# JDBC-style pool, no SQL dialect). It is a delegated-OAuth REST data source
+# handled by the separate text-to-DAX agent. These helpers let the connection
+# layer recognise it (surface the dataset identifiers) without ever trying to
+# build a SqlRunner for it.
+_POWER_BI_SERVICE_TYPES = frozenset(
+    {
+        "powerbi",
+        "power-bi",
+        "power_bi",
+        "power bi",
+        # TEMPORARY: schema-modeler currently registers Power BI datasets as
+        # offline ``.pbit`` uploads (category='dashboard',
+        # service_type='PowerBISemanticFile') that carry only model metadata —
+        # no live workspace/dataset id. Until those live coordinates are stored
+        # in ``connection_config``, treat this type as Power BI so the
+        # text-to-DAX agent can serve it; the workspace/dataset ids are injected
+        # from a hardcoded map in ``connection_service`` (see _TEMP_PBI_*).
+        "powerbisemanticfile",
+    }
+)
+
+
+def is_power_bi_service_type(service_type: str | None) -> bool:
+    """True when a ``settings_services.service_type`` names a Power BI dataset."""
+    return (service_type or "").strip().lower() in _POWER_BI_SERVICE_TYPES
+
+
+def power_bi_connection_fields(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Surface the non-secret Power BI dataset identifiers from a config blob.
+
+    Accepts both camelCase (schema-modeler UI) and snake_case spellings. No
+    secret (client secret / refresh token) ever lives in ``connection_config`` —
+    the delegated OAuth grant is stored encrypted in the connector subsystem.
+    """
+    return {
+        "workspace_id": coerce_str(
+            cfg.get("workspaceId")
+            or cfg.get("workspace_id")
+            or cfg.get("groupId")
+            or cfg.get("group_id")
+        ),
+        "dataset_id": coerce_str(cfg.get("datasetId") or cfg.get("dataset_id")),
+        "model_version": coerce_str(cfg.get("modelVersion") or cfg.get("model_version")),
+        "tenant_id": coerce_str(cfg.get("tenantId") or cfg.get("tenant_id")),
+        "client_id": coerce_str(cfg.get("clientId") or cfg.get("client_id")),
+    }
+
+
 def get_connector_definition(service_type: str | None) -> ConnectorDefinition:
     key = (service_type or "").strip().lower()
     definition = CONNECTOR_REGISTRY.get(key)
     if not definition:
         supported = ", ".join(sorted(CONNECTOR_REGISTRY))
+        if is_power_bi_service_type(service_type):
+            raise UnsupportedConnectionType(
+                f"service_type={service_type!r} is a Power BI dataset, which is served "
+                "by the text-to-DAX agent, not a SqlRunner. This should have been "
+                "dispatched before build_sql_runner()."
+            )
         raise UnsupportedConnectionType(
             f"service_type={service_type!r} is not supported. Supported types: {supported}."
         )

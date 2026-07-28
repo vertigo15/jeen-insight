@@ -1,0 +1,7 @@
+Jeen Insights has been rendered for namespace {{ .Release.Namespace }}.
+
+The UI service is {{ .Release.Name }}-jeen-insights-ui on port 8501.
+The API service is {{ .Release.Name }}-jeen-insights-api on port 8000.
+
+Confirm that the external Secret {{ include "jeen-insights.existingSecretName" . }}
+contains the required runtime credentials before installing this release.

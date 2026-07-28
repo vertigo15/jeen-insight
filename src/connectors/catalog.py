@@ -182,6 +182,33 @@ CATALOG: Dict[str, CatalogEntry] = {
         config_defaults={},
         docs_url="https://docs.tavily.com/",
     ),
+    "power-bi": CatalogEntry(
+        key="power-bi",
+        provider="power_bi",
+        display_name="Power BI (DAX)",
+        description=(
+            "Query your Power BI datasets in natural language. Runs read-only DAX "
+            "against the dataset as yourself (delegated Dataset.Read.All). Requires "
+            "workspace access, dataset Read + Build, and the tenant 'Dataset Execute "
+            "Queries REST API' setting enabled."
+        ),
+        category="analytics",
+        auth_type="oauth2_pkce",
+        # openid/profile/email/offline_access are reserved AAD scopes and may be
+        # combined with the single Power BI resource scope in one token request.
+        scopes=[
+            "openid",
+            "profile",
+            "email",
+            "offline_access",
+            "https://analysis.windows.net/powerbi/api/Dataset.Read.All",
+        ],
+        # No outbound actions — Power BI is a read-only data source. Queries are
+        # executed via PowerBiDaxClient, not the connector action gate.
+        actions=[],
+        config_defaults={},
+        docs_url="https://learn.microsoft.com/rest/api/power-bi/datasets/execute-queries",
+    ),
     # ── Roadmap (surfaced as "coming soon"; not connectable) ────────────────
     "google-sheets": CatalogEntry(
         key="google-sheets",

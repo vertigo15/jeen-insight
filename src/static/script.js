@@ -574,6 +574,11 @@ function displayResults(data) {
 
     if (data.error) {
         resultsDisplay.innerHTML = `<div class="error-message">${data.error}</div>`;
+        // Power BI (text-to-DAX) surfaces a delegated-OAuth connect prompt when
+        // the signed-in user hasn't linked (or must re-link) their account.
+        if (data.needs_connect) {
+            _appendConnectPrompt(resultsDisplay, data.connect_provider || 'power-bi');
+        }
         exportBtn.style.display = 'none';
         copyResultsBtn.style.display = 'none';
         if (saveAnalysisBtn) saveAnalysisBtn.style.display = 'none';
@@ -1290,7 +1295,8 @@ function _highlightTableSearch(text, term) {
         + escapeHtml(text.slice(idx + term.length));
 }
 
-// Display filtered tables — accordion layout with description, col count, hover actions.
+// Display filtered tables — accordion layout with description revealed on expansion,
+// col count, and hover actions.
 // `tables` is [{name, description, col_count}] from the metadata catalog.
 function displayFilteredTables(tables) {
     const tablesList = document.getElementById('tables-list');
@@ -1327,7 +1333,7 @@ function displayFilteredTables(tables) {
 
         // Description subtitle with search-term highlighting
         const descHtml = description
-            ? `<div class="table-description" title="${escapeHtml(description)}">${_highlightTableSearch(description, term)}</div>`
+            ? `<div class="table-description${isExpanded ? ' open' : ''}" title="${escapeHtml(description)}">${_highlightTableSearch(description, term)}</div>`
             : '';
 
         // Highlighted table name
@@ -1392,6 +1398,8 @@ function toggleTableExpand(table) {
         _tableExpandedSet.delete(table);
         if (el) {
             el.querySelector('.table-columns-list').classList.remove('open');
+            const description = el.querySelector('.table-description');
+            if (description) description.classList.remove('open');
             const arrow = el.querySelector('.table-expand-arrow');
             if (arrow) arrow.classList.remove('open');
         }
@@ -1402,7 +1410,9 @@ function toggleTableExpand(table) {
     if (!el) return;
 
     const colList = el.querySelector('.table-columns-list');
+    const description = el.querySelector('.table-description');
     const arrow = el.querySelector('.table-expand-arrow');
+    if (description) description.classList.add('open');
     if (arrow) arrow.classList.add('open');
 
     const cacheKey = conn + '|' + table;
@@ -1921,6 +1931,38 @@ window.saveCurrentAnalysis = saveCurrentAnalysis;
 // Recipients + subject are validated server-side against the connector's policy,
 // and the payload is rendered from the server-held snapshot — never from these
 // browser rows.
+
+// Power BI (text-to-DAX) needs-connect prompt. Resolves the Power BI connector's
+// id from the caller's available connectors (matched by catalog key) and renders
+// a "Connect" button that kicks off the delegated-OAuth round-trip. Additive:
+// only invoked when a DAX query returns `needs_connect`.
+async function _appendConnectPrompt(container, providerKey) {
+    const wrap = document.createElement('div');
+    wrap.className = 'connect-prompt';
+    wrap.style.marginTop = '12px';
+    container.appendChild(wrap);
+    try {
+        const r = await fetch('/api/me/connections');
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const connections = (await r.json()).connections || [];
+        const conn = connections.find(c => c.key === providerKey)
+            || connections.find(c => c.category === 'analytics');
+        if (!conn) {
+            wrap.innerHTML = `<p class="sr-note">Power BI isn't available to your account yet. Ask an admin to enable the Power BI connector and grant you access.</p>`;
+            return;
+        }
+        const label = escapeHtml(conn.display_name || 'Power BI');
+        wrap.innerHTML = `
+            <p class="sr-note">Connect your ${label} account to run this query. You'll be redirected to sign in and grant read-only access to the dataset.</p>
+            <button class="sp-btn-primary-sm" id="dax-connect-btn">Connect ${label}</button>`;
+        wrap.querySelector('#dax-connect-btn').addEventListener('click', () => {
+            window.location.href = `/integrations/${encodeURIComponent(conn.connector_id)}/connect`;
+        });
+    } catch (e) {
+        wrap.innerHTML = `<p class="sr-note">Couldn't load your Power BI connection status — ${escapeHtml(e.message)}.</p>`;
+    }
+}
+window._appendConnectPrompt = _appendConnectPrompt;
 
 async function openSendResult() {
     if (!window._resultHandle) {
@@ -2645,7 +2687,8 @@ function _traceSearchInput(val) {
 }
 window._traceSearchInput = _traceSearchInput;
 
-const _TRACE_FLOW_COLUMNS = [
+// ── Text-to-SQL LangGraph layout ────────────────────────────────────────────
+const _TRACE_FLOW_COLUMNS_SQL = [
     {
         title: 'Memory',
         hint: 'Conversation context and optional summarisation.',
@@ -2678,7 +2721,7 @@ const _TRACE_FLOW_COLUMNS = [
     },
 ];
 
-const _TRACE_FLOW_EDGES = [
+const _TRACE_FLOW_EDGES_SQL = [
     ['memory_shrink_check', 'memory_summarizer', 'over budget'],
     ['memory_shrink_check', 'fused_router', 'within budget'],
     ['memory_summarizer', 'fused_router', 'then route'],
@@ -2707,6 +2750,105 @@ const _TRACE_FLOW_EDGES = [
     ['response_formatter', 'save_to_memory', 'final payload'],
     ['save_to_memory', 'observability_log', 'persisted'],
 ];
+
+// ── Text-to-DAX (Power BI) LangGraph layout ─────────────────────────────────
+// Mirrors src/agent/langgraph_agent_dax/graph.py so a Power BI run shows the
+// nodes that actually ran (typed planner, DAX generate/validate/repair, the
+// executeQueries call + result-integrity check, and the DAX feedback router)
+// instead of the SQL topology.
+const _TRACE_FLOW_COLUMNS_DAX = [
+    {
+        title: 'Memory',
+        hint: 'Conversation context and optional summarisation.',
+        nodes: ['memory_shrink_check', 'memory_summarizer', 'memory_answer_generator'],
+    },
+    {
+        title: 'Routing',
+        hint: 'Classifies the request and chooses the logical branch.',
+        nodes: ['fused_router'],
+    },
+    {
+        title: 'Catalog + Plan',
+        hint: 'Loads the Power BI model catalog, builds a typed query plan, and assembles the DAX prompt.',
+        nodes: ['dax_catalog_lookup', 'dax_query_planner', 'dax_prompt_builder'],
+    },
+    {
+        title: 'DAX + Safety',
+        hint: 'Generates DAX, statically validates it (read-only gate, symbols, DLP, TOPN), and repairs on failure.',
+        nodes: ['dax_generator', 'dax_static_validate', 'dax_repair'],
+    },
+    {
+        title: 'Execution + Eval',
+        hint: 'Runs executeQueries against the dataset, checks result integrity, then evaluates intent.',
+        nodes: ['pbi_execute_query', 'result_integrity_check', 'trivial_result_check', 'fused_eval_analytics', 'dax_feedback_router'],
+    },
+    {
+        title: 'Output',
+        hint: 'Formats the answer, saves memory, and writes observability logs.',
+        nodes: ['response_formatter', 'save_to_memory', 'observability_log'],
+    },
+];
+
+const _TRACE_FLOW_EDGES_DAX = [
+    ['memory_shrink_check', 'memory_summarizer', 'over budget'],
+    ['memory_shrink_check', 'fused_router', 'within budget'],
+    ['memory_summarizer', 'fused_router', 'then route'],
+    ['fused_router', 'memory_answer_generator', 'from memory'],
+    ['fused_router', 'dax_catalog_lookup', 'needs query'],
+    ['fused_router', 'response_formatter', 'blocked / greeting'],
+    ['memory_answer_generator', 'dax_catalog_lookup', 'needs fresh data'],
+    ['memory_answer_generator', 'response_formatter', 'answer ready'],
+    ['dax_catalog_lookup', 'dax_query_planner', 'catalog ready'],
+    ['dax_catalog_lookup', 'response_formatter', 'blocked'],
+    ['dax_query_planner', 'dax_prompt_builder', 'plan ready'],
+    ['dax_query_planner', 'response_formatter', 'clarification'],
+    ['dax_prompt_builder', 'dax_generator', 'system prompt'],
+    ['dax_generator', 'dax_static_validate', 'DAX'],
+    ['dax_generator', 'response_formatter', 'clarification'],
+    ['dax_static_validate', 'pbi_execute_query', 'valid'],
+    ['dax_static_validate', 'dax_repair', 'repairable'],
+    ['dax_static_validate', 'response_formatter', 'invalid / blocked'],
+    ['dax_repair', 'dax_static_validate', 're-validate'],
+    ['pbi_execute_query', 'result_integrity_check', 'rows'],
+    ['pbi_execute_query', 'dax_feedback_router', 'exec error'],
+    ['pbi_execute_query', 'response_formatter', 'needs connect'],
+    ['result_integrity_check', 'trivial_result_check', 'ok'],
+    ['result_integrity_check', 'dax_feedback_router', 'empty diagnostic'],
+    ['trivial_result_check', 'fused_eval_analytics', 'needs eval'],
+    ['trivial_result_check', 'response_formatter', 'trivial / eval off'],
+    ['fused_eval_analytics', 'response_formatter', 'answers intent'],
+    ['fused_eval_analytics', 'dax_feedback_router', 'wrong result'],
+    ['dax_feedback_router', 'dax_repair', 'local repair'],
+    ['dax_feedback_router', 'dax_generator', 'regenerate'],
+    ['dax_feedback_router', 'dax_query_planner', 'replan'],
+    ['dax_feedback_router', 'dax_catalog_lookup', 'refresh catalog'],
+    ['dax_feedback_router', 'response_formatter', 'exhausted'],
+    ['response_formatter', 'save_to_memory', 'final payload'],
+    ['save_to_memory', 'observability_log', 'persisted'],
+];
+
+// Active layout — reassigned per render by ``_selectTraceFlowLayout`` based on
+// whether the run was text-to-SQL or text-to-DAX. The trace-flow builders read
+// these two names, so switching layouts is a single reassignment.
+let _TRACE_FLOW_COLUMNS = _TRACE_FLOW_COLUMNS_SQL;
+let _TRACE_FLOW_EDGES = _TRACE_FLOW_EDGES_SQL;
+
+/** True when this run went through the text-to-DAX (Power BI) LangGraph. */
+function _isDaxRun(events, metrics) {
+    const dbType = String((metrics && metrics.database_type) || '').toLowerCase();
+    if (dbType === 'powerbi' || dbType === 'power-bi' || dbType === 'dax') return true;
+    return (events || []).some(ev => {
+        const n = ev && ev.node ? String(ev.node) : '';
+        return n.startsWith('dax_') || n === 'pbi_execute_query' || n === 'result_integrity_check';
+    });
+}
+
+/** Point the active trace-flow layout at the SQL or DAX topology for this run. */
+function _selectTraceFlowLayout(events, metrics) {
+    const dax = _isDaxRun(events, metrics);
+    _TRACE_FLOW_COLUMNS = dax ? _TRACE_FLOW_COLUMNS_DAX : _TRACE_FLOW_COLUMNS_SQL;
+    _TRACE_FLOW_EDGES = dax ? _TRACE_FLOW_EDGES_DAX : _TRACE_FLOW_EDGES_SQL;
+}
 
 function _traceStatsByNode(events) {
     const stats = {};
@@ -2842,6 +2984,9 @@ function _buildTraceTransitionsHtml(ranEdges, ranNodes) {
 }
 
 function _buildTraceFlowHtml(events, metrics) {
+    // Pick the SQL vs DAX topology for this run before laying anything out, so
+    // the columns/edges/transition map all describe the graph that actually ran.
+    _selectTraceFlowLayout(events, metrics);
     const stats = _traceStatsByNode(events);
     const ranEdges = _traceRanEdges(events);
     const ranNodes = new Set(Object.keys(stats));
@@ -2924,8 +3069,10 @@ function _buildTraceFlowHtml(events, metrics) {
 }
 
 function _traceNodeType(node) {
-    if (['memory_summarizer', 'fused_router', 'memory_answer_generator', 'sql_generator', 'fused_eval_analytics'].includes(node)) return 'llm';
-    if (['catalog_lookup', 'execute_query', 'save_to_memory'].includes(node)) return 'db';
+    if (['memory_summarizer', 'fused_router', 'memory_answer_generator', 'sql_generator', 'fused_eval_analytics',
+         'dax_query_planner', 'dax_generator', 'dax_repair'].includes(node)) return 'llm';
+    if (['catalog_lookup', 'execute_query', 'save_to_memory',
+         'dax_catalog_lookup', 'pbi_execute_query'].includes(node)) return 'db';
     return 'logic';
 }
 
@@ -3496,6 +3643,17 @@ const _NODE_INFO = {
     response_formatter:      'Pure-Python step that assembles the final API response object.',
     save_to_memory:          'Persists the SQL, token usage and execution result to the conversation history.',
     observability_log:       'Emits the structured QUERY_EVENT log line at the end of every run.',
+
+    // ── Text-to-DAX (Power BI) nodes ──────────────────────────────────────
+    dax_catalog_lookup:      'Loads the Power BI model catalog (tables, columns, measures, relationships, date table) from the metadata DB. Detail shows the source, cache HIT/MISS and load time.',
+    dax_query_planner:       'LLM call that produces a typed semantic plan (grain, measures, filters, time intelligence) before any DAX is written.',
+    dax_prompt_builder:      'Assembles the DAX system prompt (catalog + DAX authoring rules) shown in the Prompt tab.',
+    dax_generator:           'LLM call that writes the DAX query for the question (and repairs it on retries).',
+    dax_static_validate:     'DAX lexer/linter: read-only safety gate, symbol resolution, DLP over columns/measures, and TOPN row-cap — no engine round-trip.',
+    dax_repair:              'LLM call that repairs the DAX using the static-validator feedback, then re-validates.',
+    pbi_execute_query:       'Runs the read-only DAX against the Power BI dataset via the executeQueries REST API. Detail shows rows × columns; ms is the Power BI execution time.',
+    result_integrity_check:  'Annotates empty/partial results and decides whether a one-shot empty-result diagnostic is warranted.',
+    dax_feedback_router:     'Classifies DAX failures (transport / local repair / regenerate / replan / refresh-catalog) and picks the next retry step within budget.',
 };
 
 // Friendly, human-readable label for each pipeline node. The raw node name is
@@ -3518,6 +3676,17 @@ const _NODE_LABELS = {
     response_formatter:      'Format response',
     save_to_memory:          'Save to memory',
     observability_log:       'Log event',
+
+    // ── Text-to-DAX (Power BI) nodes ──────────────────────────────────────
+    dax_catalog_lookup:      'Catalog lookup',
+    dax_query_planner:       'Query plan',
+    dax_prompt_builder:      'Prompt build',
+    dax_generator:           'DAX generation',
+    dax_static_validate:     'DAX validate',
+    dax_repair:              'DAX repair',
+    pbi_execute_query:       'Run DAX',
+    result_integrity_check:  'Integrity check',
+    dax_feedback_router:     'Retry classify',
 };
 function _nodeLabel(node) {
     if (_NODE_LABELS[node]) return _NODE_LABELS[node];

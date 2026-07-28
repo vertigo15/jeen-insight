@@ -5,6 +5,7 @@ from typing import Dict, Optional
 from .base import ProviderAdapter, TokenResult
 from .graph_mail import GraphMailAdapter
 from .jira import JiraAdapter
+from .power_bi import PowerBiAdapter
 from .slack import SlackAdapter
 from .tavily import TavilyAdapter
 
@@ -13,6 +14,7 @@ _ADAPTERS: Dict[str, ProviderAdapter] = {
     SlackAdapter.provider_id: SlackAdapter(),
     JiraAdapter.provider_id: JiraAdapter(),
     TavilyAdapter.provider_id: TavilyAdapter(),
+    PowerBiAdapter.provider_id: PowerBiAdapter(),
 }
 
 
@@ -26,6 +28,7 @@ __all__ = [
     "GraphMailAdapter",
     "SlackAdapter",
     "JiraAdapter",
+    "PowerBiAdapter",
     "TavilyAdapter",
     "get_provider",
 ]

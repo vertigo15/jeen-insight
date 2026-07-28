@@ -116,9 +116,22 @@ async def request(
                     )
             # Rebuild a Response with the buffered content so callers can read
             # .json()/.text/.status_code after the stream context closes.
+            #
+            # ``aiter_bytes()`` already DECODED the body per Content-Encoding, so
+            # the buffered bytes are identity. We must drop the content-coding
+            # headers before handing them to the constructor: httpx.Response(content=)
+            # eagerly calls .read(), which would otherwise re-apply the gzip/deflate
+            # decoder to already-decompressed bytes and raise DecodingError
+            # ("incorrect header check"). Content-Length is likewise stale.
+            _stale = {"content-encoding", "content-length"}
+            buffered_headers = [
+                (name, value)
+                for name, value in resp.headers.multi_items()
+                if name.lower() not in _stale
+            ]
             return httpx.Response(
                 status_code=resp.status_code,
-                headers=resp.headers,
+                headers=buffered_headers,
                 content=bytes(chunks),
                 request=resp.request,
             )

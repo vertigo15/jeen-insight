@@ -39,6 +39,7 @@ from src.connectors.registry_service import ConnectorRegistryService
 from src.connectors.snapshot_service import SnapshotService
 from src.connectors.tool_result_service import ToolResultService
 from src.security.app_flags import get_agent_tools_enabled, get_connectors_enabled
+from src.security.crypto import CryptoError
 
 # Distributed caps (per fixed window). Coarse but cross-replica.
 _PROPOSE_PER_USER_PER_MIN = 20
@@ -643,27 +644,43 @@ class ActionGate:
     async def _ensure_access_token(
         self, *, connector_id: str, grant_id: str, manifest: Dict[str, Any], config: Dict[str, Any]
     ) -> str:
-        current = await self.grants.get_access_token(grant_id)
-        now = datetime.now(timezone.utc)
-        if current and current.get("value"):
-            exp = current.get("expires_at")
-            if exp is None or exp > now + timedelta(seconds=60):
-                return current["value"]
+        # A KEK mismatch (two deployments sharing one database with different
+        # APP_ENCRYPTION_KEY values) makes stored credentials unreadable. Report it
+        # as the deployment fault it is rather than as an expired connection, which
+        # would send the user through a reconnect that cannot help.
+        try:
+            current = await self.grants.get_access_token(grant_id)
+            now = datetime.now(timezone.utc)
+            if current and current.get("value"):
+                exp = current.get("expires_at")
+                if exp is None or exp > now + timedelta(seconds=60):
+                    return current["value"]
 
-        refresh = await self.grants.get_refresh_token(grant_id)
-        if not refresh:
-            raise RuntimeError("no refresh token; reconnect required")
-        provider = get_provider(manifest.get("provider"))
-        if provider is None:
-            raise RuntimeError("provider adapter missing")
-        client_secret = await self.registry.get_client_secret(connector_id)
+            refresh = await self.grants.get_refresh_token(grant_id)
+            if not refresh:
+                raise RuntimeError("no refresh token; reconnect required")
+            provider = get_provider(manifest.get("provider"))
+            if provider is None:
+                raise RuntimeError("provider adapter missing")
+            client_secret = await self.registry.get_client_secret(connector_id)
+        except CryptoError as exc:
+            logger.error("ActionGate: stored credentials are undecryptable: %s", exc)
+            raise RuntimeError(
+                "stored credentials cannot be read on this deployment; "
+                "check APP_ENCRYPTION_KEY"
+            ) from exc
         token = await provider.refresh(
             config=config, manifest=manifest, client_secret=client_secret, refresh_token=refresh
         )
         expires_at = None
         if token.expires_in:
             expires_at = now + timedelta(seconds=int(token.expires_in))
-        await self.grants.store_access_token(grant_id, token.access_token, expires_at)
+        await self.grants.store_refreshed_tokens(
+            grant_id,
+            access_token=token.access_token,
+            access_expires_at=expires_at,
+            refresh_token=token.refresh_token,
+        )
         return token.access_token
 
     @staticmethod

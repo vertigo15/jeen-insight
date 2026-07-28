@@ -1,0 +1,2 @@
+# Rebuilt from the local chart source by `helm dependency build`.
+charts/*.tgz

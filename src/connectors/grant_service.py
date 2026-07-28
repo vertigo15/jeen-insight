@@ -167,6 +167,31 @@ class GrantService:
         async with self.pool.acquire() as conn:
             await self._store_secret(conn, uuid.UUID(grant_id), "access_token", token, expires_at)
 
+    async def store_refreshed_tokens(
+        self,
+        grant_id: str,
+        *,
+        access_token: str,
+        access_expires_at: Optional[datetime],
+        refresh_token: Optional[str] = None,
+    ) -> None:
+        """Persist a refresh result, replacing the rotated refresh token.
+
+        Entra returns a replacement refresh token on most refreshes and retires
+        the previous one, so both secrets are written in a single transaction:
+        keeping the old refresh token after storing the new access token would
+        eventually strand the grant.
+        """
+        _require_crypto()
+        gid = uuid.UUID(grant_id)
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await self._store_secret(
+                    conn, gid, "access_token", access_token, access_expires_at
+                )
+                if refresh_token:
+                    await self._store_secret(conn, gid, "refresh_token", refresh_token, None)
+
     async def _read_secret(self, grant_id: str, kind: str) -> Optional[Dict[str, Any]]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(

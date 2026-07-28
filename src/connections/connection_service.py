@@ -27,10 +27,41 @@ from src.connectors.factory import (
     coerce_int,
     coerce_str,
     decode_config,
+    is_power_bi_service_type,
+    power_bi_connection_fields,
     public_connection_fields,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEMPORARY: hardcoded Power BI workspace + dataset coordinates
+# ─────────────────────────────────────────────────────────────────────────────
+# The Power BI sources in ``settings_services`` are registered as offline
+# ``.pbit`` uploads (category='dashboard', service_type='PowerBISemanticFile').
+# Their ``connection_config`` carries only model metadata (fileName / modelName)
+# — NOT the live workspace + dataset id needed to call the executeQueries REST
+# API. Until schema-modeler captures those live coordinates (the user will set
+# them in Jeen schema later), map each ``source_key`` (= settings_services.name)
+# to its published dataset here so the text-to-DAX agent can run live queries.
+#
+# Workspace: https://app.powerbi.com/groups/79fe9a53-6ef1-4dae-b477-39429f19009d
+# Dataset ids were resolved from GET /v1.0/myorg/groups/{ws}/datasets.
+# REMOVE this block once connection_config carries workspaceId + datasetId.
+_TEMP_PBI_WORKSPACE_ID = "79fe9a53-6ef1-4dae-b477-39429f19009d"
+_TEMP_PBI_DATASETS: Dict[str, str] = {
+    "test3": "adb541a7-8133-4f01-8fb5-3b92e4c10e60",  # Sales & Returns Sample v201912
+    "Awesome_Chocolates": "2fb1253a-c352-403c-88d4-4fe6981bc3f8",
+    "sakila powerbi final": "c99b06cd-6c8d-4e24-8be9-982ea9f30a86",
+}
+
+# Rows selectable as data sources: real SQL databases plus the Power BI ``.pbit``
+# datasets we bridge above. Kept as a single predicate so list/get stay in sync.
+_SELECTABLE_ROWS_WHERE = (
+    "(category = 'database' "
+    "OR (category = 'dashboard' AND lower(service_type) = 'powerbisemanticfile'))"
+)
 
 
 class ConnectionNotFound(Exception):
@@ -55,6 +86,12 @@ class Connection:
     db_schema: Optional[str]
     enable_ssl: bool
     is_active: bool
+    # ── Power BI (text-to-DAX) — non-secret dataset identifiers ─────────────
+    # Populated only for `service_type='powerbi'` connections; None otherwise.
+    is_power_bi: bool = False
+    workspace_id: Optional[str] = None
+    dataset_id: Optional[str] = None
+    model_version: Optional[str] = None
 
     def to_public_dict(self) -> dict:
         """Return a dict safe to send to the UI (no secrets)."""
@@ -73,6 +110,10 @@ class Connection:
             "db_schema": self.db_schema,
             "enable_ssl": self.enable_ssl,
             "is_active": self.is_active,
+            "is_power_bi": self.is_power_bi,
+            "workspace_id": self.workspace_id,
+            "dataset_id": self.dataset_id,
+            "model_version": self.model_version,
         }
 
 
@@ -94,10 +135,10 @@ class ConnectionService:
         """List active database connections from `settings_services`."""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT id, name, description, service_type, connection_config, is_active
                 FROM public.settings_services
-                WHERE category = 'database' AND is_active = TRUE
+                WHERE {_SELECTABLE_ROWS_WHERE} AND is_active = TRUE
                 ORDER BY name
                 """
             )
@@ -107,10 +148,10 @@ class ConnectionService:
         """Fetch one active connection by `name`. Raises `ConnectionNotFound`."""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                """
+                f"""
                 SELECT id, name, description, service_type, connection_config, is_active
                 FROM public.settings_services
-                WHERE category = 'database' AND name = $1
+                WHERE {_SELECTABLE_ROWS_WHERE} AND name = $1
                 """,
                 source_key,
             )
@@ -121,7 +162,12 @@ class ConnectionService:
         return self._row_to_connection(row)
 
     async def get_runner(self, source_key: str) -> SqlRunner:
-        """Return a lazily-initialized `SqlRunner` for `source_key`."""
+        """Return a lazily-initialized `SqlRunner` for `source_key`.
+
+        Power BI connections have no ``SqlRunner`` (they are served by the
+        text-to-DAX agent), so this raises ``UnsupportedConnectionType``. In
+        practice ``resolve_agent`` dispatches Power BI before ever calling here.
+        """
         if source_key in self._runners:
             return self._runners[source_key]
 
@@ -131,6 +177,11 @@ class ConnectionService:
             if source_key in self._runners:
                 return self._runners[source_key]
             row = await self._fetch_full_row(source_key)
+            if is_power_bi_service_type(row.get("service_type")):
+                raise UnsupportedConnectionType(
+                    f"Connection {source_key!r} is a Power BI dataset (text-to-DAX); "
+                    "it has no SqlRunner."
+                )
             runner = await self._build_runner(row)
             self._runners[source_key] = runner
             return runner
@@ -150,10 +201,10 @@ class ConnectionService:
     async def _fetch_full_row(self, source_key: str) -> dict:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                """
+                f"""
                 SELECT id, name, description, service_type, connection_config, is_active
                 FROM public.settings_services
-                WHERE category = 'database' AND name = $1
+                WHERE {_SELECTABLE_ROWS_WHERE} AND name = $1
                 """,
                 source_key,
             )
@@ -166,6 +217,43 @@ class ConnectionService:
     def _row_to_connection(self, row) -> Connection:
         cfg = decode_config(row["connection_config"])
         service_type = row["service_type"] or ""
+
+        # Power BI datasets are not SqlRunners — surface their delegated-OAuth
+        # dataset identifiers and skip the SQL connection-field parsing entirely.
+        if is_power_bi_service_type(service_type):
+            pbi = power_bi_connection_fields(cfg)
+            # TEMPORARY: offline .pbit sources have no live workspace/dataset id
+            # in connection_config, so fall back to the hardcoded map keyed by
+            # source_key (settings_services.name). Real 'powerbi' connections
+            # that already carry the ids keep using them. Remove with _TEMP_PBI_*.
+            workspace_id = pbi["workspace_id"] or _TEMP_PBI_WORKSPACE_ID
+            dataset_id = pbi["dataset_id"] or _TEMP_PBI_DATASETS.get(row["name"])
+            if not pbi["dataset_id"] and dataset_id:
+                logger.info(
+                    "Power BI source_key=%s using hardcoded workspace/dataset "
+                    "(workspace=%s dataset=%s) — TEMPORARY until stored in schema",
+                    row["name"], workspace_id, dataset_id,
+                )
+            return Connection(
+                id=row["id"],
+                source_key=row["name"],
+                display_name=row["name"],
+                description=row["description"],
+                service_type=service_type,
+                database_type="powerbi",
+                connection_host=None,
+                connection_port=None,
+                connection_database=None,
+                connection_catalog=None,
+                connection_http_path=None,
+                db_schema=None,
+                enable_ssl=True,
+                is_active=row["is_active"],
+                is_power_bi=True,
+                workspace_id=workspace_id,
+                dataset_id=dataset_id,
+                model_version=pbi["model_version"],
+            )
         try:
             fields = public_connection_fields(cfg, service_type)
             database_type = fields["database_type"]

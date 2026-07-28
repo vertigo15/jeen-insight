@@ -36,7 +36,12 @@ httpx>=0.27.0
 python-dotenv>=1.0.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
+jsonschema>=4.25.1
 sqlglot>=25.0.0
+# Token-aware fuzzy matching for value (entity) linking — matches a typed
+# literal like "Mountaiin 300" to the real column value "Mountain-300 Black, 38".
+# src/metadata/value_index.py degrades to difflib if this is missing.
+rapidfuzz>=3.9.0
 
 # Data profiling
 ydata-profiling>=4.0.0
