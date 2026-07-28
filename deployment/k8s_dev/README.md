@@ -61,8 +61,35 @@ global:
       AZURE_OPENAI_API_KEY: AZURE-OPENAI-API-KEY
 ```
 
+`creationPolicy` defaults to `Owner`, which makes External Secrets the sole
+author of the target Secret and prunes any key not listed in `secretMappings`.
+Use `Merge` to have Key Vault own only the mapped keys while the rest of a
+hand-managed Secret is left intact.
+
 Wait for the generated Secret to be present and the `ExternalSecret` to report
 `SecretSynced` before starting the Helm release.
+
+### APP_ENCRYPTION_KEY must be identical everywhere sharing a metadata DB
+
+`APP_ENCRYPTION_KEY` is the key-encryption key for connector secrets: per-user
+OAuth grants, refresh tokens, and connector client secrets. It is one key per
+deployment, not per user, and it never expires.
+
+Every environment pointed at the same metadata database **must** use the same
+value. Two deployments sharing one database with different keys cannot read each
+other's stored grants, and the failure is silent in a way that looks like expired
+consent: the user is asked to reconnect, reconnecting rewrites the grant under
+one key, and the other environment breaks in turn. In the dev environment the
+canonical value therefore lives in Key Vault as
+`JEEN-INSIGHTS-APP-ENCRYPTION-KEY` (`jeen-kv-aks-dev`), synced by the
+`Merge`-policy `ExternalSecret` in `values.aks-dev.yaml`.
+
+Local development must hold that same value in `.env`. Note that the vault's data
+plane resolves to a private endpoint, so `az keyvault secret show` does not work
+from a workstation outside the cluster network; retrieve the value from a host
+inside the VNet, or ask an operator for it. Rotating the key requires
+re-encrypting stored connector secrets, which in practice means re-creating the
+connector client secrets and having every user reconnect.
 
 ## Ingress and runtime requirements
 

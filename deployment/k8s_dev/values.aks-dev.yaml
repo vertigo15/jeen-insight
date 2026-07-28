@@ -3,6 +3,19 @@
 global:
   environment: dev
   cloudProvider: azure
+  # Key Vault is the single source of truth for the envelope-encryption key.
+  # Local development reads the same vault secret, so the two environments cannot
+  # drift onto different keys and leave stored connector grants unreadable.
+  # Merge keeps the remaining keys of the hand-managed Secret intact.
+  externalSecrets:
+    enabled: true
+    creationPolicy: Merge
+    refreshInterval: 1h
+    secretStoreRef:
+      name: azure-kv-store
+      kind: ClusterSecretStore
+    secretMappings:
+      APP_ENCRYPTION_KEY: JEEN-INSIGHTS-APP-ENCRYPTION-KEY
   commonLabels:
     app.kubernetes.io/component: analytics
   nodeSelector:
@@ -13,7 +26,7 @@ global:
 jeen-insights-api:
   image:
     repository: jeendevregistry.azurecr.io/jeen-insights-api
-    tag: connect-auth-20260727113602
+    tag: insight-persist-20260727204949
   resources:
     requests:
       cpu: 250m

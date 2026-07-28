@@ -25,6 +25,9 @@ global:
   externalSecrets:
     enabled: false
     refreshInterval: 1h
+    # Owner: External Secrets authors the whole Secret. Merge: it patches only the
+    # mapped keys and leaves the rest of an externally managed Secret alone.
+    creationPolicy: Owner
     secretStoreRef:
       name: ""
       kind: ClusterSecretStore
