@@ -396,6 +396,16 @@
                 this.threadEl.appendChild(wrap);
             }
 
+            // Delegated-OAuth data sources (Power BI text-to-DAX) ask the user to
+            // link their account. Reuses the Ask-mode card so both surfaces offer
+            // the same action instead of a dead-end error message.
+            if (data.needs_connect && typeof window._appendConnectPrompt === 'function') {
+                const card = wrap.querySelector('.chat-card');
+                if (card) {
+                    window._appendConnectPrompt(card, data.connect_provider || 'power-bi');
+                }
+            }
+
             // Agent-proposed tool action: render a generic confirm card (write) or
             // a search-then-answer card (read).
             if (data.tool_proposal) {

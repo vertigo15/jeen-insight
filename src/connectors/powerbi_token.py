@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
+from src.security.crypto import CryptoError
+
 logger = logging.getLogger(__name__)
 
 # Catalog key of the Power BI connector (see src/connectors/catalog.py).
@@ -29,12 +31,20 @@ _EXPIRY_SKEW_SECONDS = 60
 # else (invalid_client, server_error, transport failures) is a deployment or
 # transient problem, and telling the user to reconnect would send them through a
 # consent flow that cannot fix it.
+# Shared Graph client for membership refresh (constructed on first use).
+_graph_directory = None
+
 _RECONNECT_ERROR_CODES = frozenset({
     "invalid_grant",
     "interaction_required",
     "login_required",
     "consent_required",
 })
+
+_UNREADABLE_SECRET_MESSAGE = (
+    "Power BI sign-in is unavailable because this deployment cannot read its "
+    "stored credentials. Ask an admin to check APP_ENCRYPTION_KEY."
+)
 
 
 class PowerBiTokenError(RuntimeError):
@@ -125,19 +135,27 @@ class PowerBiTokenProvider:
         # grant issued earlier must stop working the moment the user loses group
         # access. Not entitled is never `needs_connect` — reconnecting cannot
         # grant entitlement back.
+        group_grant_ids = connector.get("group_grants") or []
         allowed, reason = await self.identities.can_use_connector(
-            identity["id"],
-            connector_id,
-            group_grant_ids=connector.get("group_grants") or [],
+            identity["id"], connector_id, group_grant_ids=group_grant_ids
         )
+        if not allowed and reason == "membership_stale":
+            # The query path has no `ensure_identity` dependency, so nothing else
+            # refreshes the membership cache here. Without this, an entitled user
+            # is locked out for every query made more than one TTL after they last
+            # touched a connector route.
+            await self._refresh_membership(identity)
+            allowed, reason = await self.identities.can_use_connector(
+                identity["id"], connector_id, group_grant_ids=group_grant_ids
+            )
         if not allowed:
             logger.warning(
                 "PowerBiTokenProvider: identity %s not entitled to connector %s (%s)",
                 identity["id"], connector_id, reason,
             )
             if reason == "membership_stale":
-                # Group membership is refreshed out of band and fails closed while
-                # stale; that is transient, so don't send the user to an admin.
+                # Refresh didn't help (no Graph credentials, or Graph is down), so
+                # this is transient infrastructure rather than a policy decision.
                 raise PowerBiTokenError(
                     "Your Power BI access could not be verified right now. Please try again."
                 )
@@ -166,7 +184,9 @@ class PowerBiTokenProvider:
         except Exception:  # noqa: BLE001
             pass
 
-        current = await self.grants.get_access_token(grant_id)
+        current = await self._read_secret(
+            self.grants.get_access_token(grant_id), "access token"
+        )
         expires_at = current.get("expires_at") if current else None
         return PowerBiToken(
             access_token=access_token,
@@ -175,6 +195,22 @@ class PowerBiTokenProvider:
             grant_id=grant_id,
             connector_id=connector_id,
         )
+
+    @staticmethod
+    async def _read_secret(coro: Any, what: str) -> Any:
+        """Await a stored-secret read, mapping an undecryptable value to a clear error.
+
+        A KEK mismatch — two deployments sharing one database with different
+        ``APP_ENCRYPTION_KEY`` values — makes stored tokens unreadable. That is a
+        deployment fault, not expired consent, so it must never surface as a
+        connect prompt: reconnecting rewrites the grant under one key and breaks
+        the other environment, looping the user forever.
+        """
+        try:
+            return await coro
+        except CryptoError as exc:
+            logger.error("PowerBiTokenProvider: cannot decrypt stored %s: %s", what, exc)
+            raise PowerBiTokenError(_UNREADABLE_SECRET_MESSAGE) from exc
 
     async def _ensure_access_token(
         self,
@@ -187,13 +223,17 @@ class PowerBiTokenProvider:
     ) -> str:
         now = datetime.now(timezone.utc)
         if not force_refresh:
-            current = await self.grants.get_access_token(grant_id)
+            current = await self._read_secret(
+                self.grants.get_access_token(grant_id), "access token"
+            )
             if current and current.get("value"):
                 exp = current.get("expires_at")
                 if exp is None or exp > now + timedelta(seconds=_EXPIRY_SKEW_SECONDS):
                     return current["value"]
 
-        refresh = await self.grants.get_refresh_token(grant_id)
+        refresh = await self._read_secret(
+            self.grants.get_refresh_token(grant_id), "refresh token"
+        )
         if not refresh:
             raise PowerBiTokenError(
                 "Your Power BI connection expired. Please reconnect.",
@@ -206,7 +246,9 @@ class PowerBiTokenProvider:
         if provider is None:
             raise PowerBiTokenError("Power BI provider adapter is missing.")
 
-        client_secret = await self.registry.get_client_secret(connector_id)
+        client_secret = await self._read_secret(
+            self.registry.get_client_secret(connector_id), "client secret"
+        )
         try:
             token = await provider.refresh(
                 config=config,
@@ -227,6 +269,21 @@ class PowerBiTokenProvider:
             refresh_token=getattr(token, "refresh_token", None),
         )
         return token.access_token
+
+    async def _refresh_membership(self, identity: Dict[str, Any]) -> None:
+        """Best-effort authoritative membership refresh from Graph."""
+        try:
+            from src.connectors.graph_directory import GraphDirectoryClient
+
+            global _graph_directory
+            if _graph_directory is None:
+                _graph_directory = GraphDirectoryClient()
+            await self.identities.maybe_refresh_from_graph(identity, _graph_directory)
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "PowerBiTokenProvider: membership refresh unavailable for %s: %s",
+                identity.get("id"), exc,
+            )
 
     @staticmethod
     def _refresh_error(exc: Exception) -> PowerBiTokenError:

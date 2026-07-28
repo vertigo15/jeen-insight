@@ -13,20 +13,29 @@ import pytest
 
 from src.connectors.oauth import OAuthError
 from src.connectors.powerbi_token import PowerBiTokenError, PowerBiTokenProvider
+from src.security.crypto import CryptoError
 
 
 class _Identities:
-    def __init__(self, identity, *, entitled=True):
+    def __init__(self, identity, *, entitled=True, stale_until_refresh=False):
         self._identity = identity
         self._entitled = entitled
+        self._stale = stale_until_refresh
         self.entitlement_checks = []
+        self.refreshes = 0
 
     async def get_by_auth_user(self, auth_user_id):
         return self._identity
 
     async def can_use_connector(self, identity_id, connector_id, *, group_grant_ids):
         self.entitlement_checks.append((identity_id, connector_id, group_grant_ids))
+        if self._stale:
+            return False, "membership_stale"
         return (True, "ok") if self._entitled else (False, "not_in_group")
+
+    async def maybe_refresh_from_graph(self, identity, graph):
+        self.refreshes += 1
+        self._stale = False
 
 
 class _Registry:
@@ -72,6 +81,13 @@ class _Grants:
 
     async def touch_used(self, grant_id):
         self.touched.append(grant_id)
+
+
+def _noop_refresh(identities):
+    """Graph refresh that runs but can't clear staleness (no creds / Graph down)."""
+    async def _refresh(identity, graph):
+        identities.refreshes += 1
+    return _refresh
 
 
 def _provider(identities, registry, grants):
@@ -140,6 +156,34 @@ class TestEntitlement:
         with pytest.raises(PowerBiTokenError) as ei:
             await p.get_token_for_auth_user(42)
         # Reconnecting cannot restore entitlement, so never prompt to connect.
+        assert ei.value.needs_connect is False
+
+    async def test_stale_membership_is_refreshed_then_allowed(self):
+        """The query path has no `ensure_identity`, so it must refresh the cache
+        itself rather than locking out an entitled user once the TTL lapses."""
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        grants = _Grants(
+            {"id": "g", "status": "active"}, access={"value": "at", "expires_at": future}
+        )
+        identities = _Identities({"id": "i"}, stale_until_refresh=True)
+        p = _provider(identities, _Registry(_CONNECTOR), grants)
+
+        tok = await p.get_token_for_auth_user(42)
+        assert tok.access_token == "at"
+        assert identities.refreshes == 1
+        assert len(identities.entitlement_checks) == 2  # stale, then re-checked
+
+    async def test_membership_stale_after_refresh_is_transient_not_reconnect(self):
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        grants = _Grants(
+            {"id": "g", "status": "active"}, access={"value": "at", "expires_at": future}
+        )
+        identities = _Identities({"id": "i"}, stale_until_refresh=True)
+        identities.maybe_refresh_from_graph = _noop_refresh(identities)
+        p = _provider(identities, _Registry(_CONNECTOR), grants)
+
+        with pytest.raises(PowerBiTokenError) as ei:
+            await p.get_token_for_auth_user(42)
         assert ei.value.needs_connect is False
 
     async def test_entitlement_checked_with_connector_group_grants(self):
@@ -258,3 +302,53 @@ class TestTokenResolution:
         with pytest.raises(PowerBiTokenError) as ei:
             await p.get_token_for_auth_user(42)
         assert ei.value.needs_connect is True
+
+
+class TestUndecryptableSecrets:
+    """A wrong APP_ENCRYPTION_KEY must never look like expired consent.
+
+    Two deployments sharing one metadata database with different keys cannot read
+    each other's stored tokens. Prompting reconnect there rewrites the grant under
+    one key and breaks the other environment, so the user loops forever.
+    """
+
+    async def test_undecryptable_access_token_is_not_needs_connect(self):
+        grants = _Grants({"id": "g", "status": "active"})
+
+        async def _boom(grant_id):
+            raise CryptoError("Decryption failed (wrong key, tampered data, or AAD mismatch).")
+
+        grants.get_access_token = _boom
+        p = _provider(_Identities({"id": "i"}), _Registry(_CONNECTOR), grants)
+
+        with pytest.raises(PowerBiTokenError) as ei:
+            await p.get_token_for_auth_user(42)
+        assert ei.value.needs_connect is False
+        assert "APP_ENCRYPTION_KEY" in str(ei.value)
+
+    async def test_undecryptable_refresh_token_is_not_needs_connect(self):
+        grants = _Grants({"id": "g", "status": "active"}, access=None)
+
+        async def _boom(grant_id):
+            raise CryptoError("Decryption failed (wrong key, tampered data, or AAD mismatch).")
+
+        grants.get_refresh_token = _boom
+        p = _provider(_Identities({"id": "i"}), _Registry(_CONNECTOR), grants)
+
+        with pytest.raises(PowerBiTokenError) as ei:
+            await p.get_token_for_auth_user(42)
+        assert ei.value.needs_connect is False
+
+    async def test_undecryptable_client_secret_is_not_needs_connect(self):
+        grants = _Grants({"id": "g", "status": "active"}, access=None, refresh="rt")
+        registry = _Registry(_CONNECTOR)
+
+        async def _boom(connector_id):
+            raise CryptoError("Decryption failed (wrong key, tampered data, or AAD mismatch).")
+
+        registry.get_client_secret = _boom
+        p = _provider(_Identities({"id": "i"}), registry, grants)
+
+        with pytest.raises(PowerBiTokenError) as ei:
+            await p.get_token_for_auth_user(42)
+        assert ei.value.needs_connect is False
