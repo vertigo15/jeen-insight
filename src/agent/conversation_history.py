@@ -23,6 +23,28 @@ import asyncpg
 logger = logging.getLogger(__name__)
 
 
+def insight_text(content: Any) -> str:
+    """Flatten a rich insight value into plain text for storage.
+
+    Summaries (and occasionally findings) arrive as a highlight-fragment array —
+    ``[{"t": "Revenue rose", "hl": "pos"}, …]`` — which the UI renders itself.
+    ``insights_query_insights.content`` is text, so keep the words and drop the
+    styling rather than failing the whole write.
+    """
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    if isinstance(content, list):
+        return "".join(
+            str(seg.get("t") or "") if isinstance(seg, dict) else str(seg)
+            for seg in content
+        )
+    if isinstance(content, dict):
+        return str(content.get("t") or "")
+    return str(content)
+
+
 class ConversationHistoryService:
     """Reads/writes Jeen Insights operational tables.
 
@@ -192,7 +214,7 @@ class ConversationHistoryService:
         *,
         query_id: UUID,
         insight_type: str,
-        content: str,
+        content: Any,
         metadata: Optional[Dict[str, Any]] = None,
         llm_model: Optional[str] = None,
         llm_execution_time_ms: Optional[int] = None,
@@ -211,7 +233,7 @@ class ConversationHistoryService:
                     """,
                     query_id,
                     insight_type,
-                    content,
+                    insight_text(content),
                     json.dumps(metadata) if metadata else None,
                     llm_model,
                     llm_execution_time_ms,
