@@ -58,6 +58,19 @@ class DaxAgentState(AgentState, total=False):
     plan_assumptions: List[str]
     clarification_required: bool
 
+    # ── Value (entity) linking, produced by dax_entity_resolver ─────────────
+    # Filter literals confirmed against real column values:
+    #   [{target, raw_value, value, status}]
+    resolved_entities: List[Dict[str, Any]]
+    # Literals that need the user to choose or that exist nowhere in the model:
+    #   [{target, column, value, candidates, columns?}]
+    entity_ambiguities: List[Dict[str, Any]]
+    # Literals resolution could not verify either way (governed / non-text /
+    # domain too large / probe failed). A non-empty list is what allows the
+    # feedback router to retry resolution on an empty result.
+    unresolved_entities: List[Dict[str, Any]]
+    entity_resolution_attempts: int
+
     # ── DAX generation / validation ─────────────────────────────────────────
     generated_dax: Optional[str]
     identifiers_used: List[Dict[str, Any]]     # resolved DaxIdentifier dicts

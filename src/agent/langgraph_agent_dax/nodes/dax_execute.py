@@ -23,7 +23,11 @@ from typing import Any, Dict, Optional
 from src.agent.langgraph_agent_dax.state import DaxAgentState
 from src.config import settings
 from src.connectors.powerbi import PowerBiDaxClient
-from src.connectors.powerbi_token import PowerBiTokenError, PowerBiTokenProvider
+from src.connectors.powerbi_token import (
+    PowerBiTokenError,
+    PowerBiTokenProvider,
+    provider_from_app_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,15 +41,7 @@ _MAX_EMPTY_DIAGNOSTICS = 1
 
 def _token_provider() -> Optional[PowerBiTokenProvider]:
     """Build a token provider from the live connector services (or None)."""
-    from src.api import state as _state
-
-    if not (_state.identity_service and _state.registry_service and _state.grant_service):
-        return None
-    return PowerBiTokenProvider(
-        identity_service=_state.identity_service,
-        registry_service=_state.registry_service,
-        grant_service=_state.grant_service,
-    )
+    return provider_from_app_state()
 
 
 def make_pbi_execute_query():

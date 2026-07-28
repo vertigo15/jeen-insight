@@ -8,6 +8,8 @@ The validator classifies failures into a BLOCKING channel (``dax_validation_erro
 
 from __future__ import annotations
 
+import pytest
+
 from src.agent.langgraph_agent_dax.nodes.dax_validate import make_dax_static_validate
 
 
@@ -89,6 +91,46 @@ class TestBlocking:
         assert out["dlp_blocked"] is True
         assert out["governance_error"]
         assert out["governed_lineage"]
+
+    @pytest.mark.parametrize(
+        "column",
+        [
+            "Social Security Number",
+            "social_security_number",
+            "SocialSecurityNumber",
+            "Credit Card Number",
+            "API Key",
+            "Access Token",
+        ],
+    )
+    def test_dlp_blocks_governed_columns_however_they_are_spelled(self, column):
+        """The built-in patterns are underscore-style because they were written
+        for SQL identifiers, but a tabular model names columns for humans. Every
+        spelling below is one column to a reader and must be one to the policy."""
+        out = _validate(
+            f"EVALUATE 'Customer'[{column}]",
+            table_columns={"customer": [column.lower()]},
+        )
+        assert out["dlp_blocked"] is True
+
+    @pytest.mark.parametrize("column", ["Home Address", "home_address", "HomeAddress"])
+    def test_a_configured_name_is_matched_however_the_model_spells_it(self, column):
+        """An operator writing `home_address` in the settings means the column,
+        not that exact punctuation."""
+        out = _validate(
+            f"EVALUATE 'Customer'[{column}]",
+            governed=["home_address"],
+            table_columns={"customer": [column.lower()]},
+        )
+        assert out["dlp_blocked"] is True
+
+    @pytest.mark.parametrize("column", ["Region", "Card Type", "Pinot Variety", "Spin Rate"])
+    def test_dlp_leaves_ordinary_columns_alone(self, column):
+        out = _validate(
+            f"EVALUATE 'Sales'[{column}]",
+            table_columns={"sales": [column.lower()]},
+        )
+        assert out["dlp_blocked"] is False
 
     def test_missing_catalog_blocks(self):
         node = make_dax_static_validate(enabled=True, require_catalog=True)

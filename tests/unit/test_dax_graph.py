@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 from src.agent.langgraph_agent_dax.graph import (
     _make_route_from_trivial,
     _route_from_catalog,
+    _route_from_entity_resolver,
     _route_from_eval,
     _route_from_execute,
     _route_from_feedback,
@@ -60,7 +61,14 @@ class TestQueryCoreRouting:
 
     def test_planner_clarification(self):
         assert _route_from_planner({"clarification_required": True}) == "response_formatter"
-        assert _route_from_planner({}) == "dax_prompt_builder"
+        assert _route_from_planner({}) == "dax_entity_resolver"
+
+    def test_entity_resolver_clarification(self):
+        assert (
+            _route_from_entity_resolver({"clarification_required": True})
+            == "response_formatter"
+        )
+        assert _route_from_entity_resolver({}) == "dax_prompt_builder"
 
     def test_generator(self):
         assert _route_from_generator({"generated_dax": "EVALUATE X"}) == "dax_static_validate"
@@ -111,5 +119,9 @@ class TestTerminalRouting:
         assert _route_from_feedback({"dax_feedback_action": "local_repair"}) == "dax_repair"
         assert _route_from_feedback({"dax_feedback_action": "regenerate"}) == "dax_generator"
         assert _route_from_feedback({"dax_feedback_action": "replan"}) == "dax_query_planner"
+        assert (
+            _route_from_feedback({"dax_feedback_action": "resolve_entities"})
+            == "dax_entity_resolver"
+        )
         assert _route_from_feedback({"dax_feedback_action": "refresh_catalog"}) == "dax_catalog_lookup"
         assert _route_from_feedback({"dax_feedback_action": "exhausted"}) == "response_formatter"

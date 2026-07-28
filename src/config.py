@@ -126,6 +126,20 @@ class Settings(BaseSettings):
     # When True, run the DAX static validator (lexer/linter + symbol resolution +
     # DLP) before executing against Power BI. Mirrors SQLGLOT_VALIDATION_ENABLED.
     DAX_VALIDATION_ENABLED: bool = True
+    # Value (entity) linking: before generating DAX, verify that the literals in
+    # the plan's filters exist as real column values, correcting typos and asking
+    # the user when a value is ambiguous or absent. Costs one bounded, read-only
+    # probe per filtered text column (cached per user), and fails open.
+    DAX_ENTITY_RESOLUTION_ENABLED: bool = True
+    # Distinct values pulled per column before the column is treated as too large
+    # to match locally (the probe then falls back to a server-side search).
+    DAX_ENTITY_MAX_DOMAIN_VALUES: int = 1000
+    # Similarity (0-100) a column value needs to be considered a candidate.
+    # Lower = more typo tolerance and more clarification questions.
+    DAX_ENTITY_MATCH_THRESHOLD: float = 78.0
+    # When a literal matches nothing in its target column, search sibling text
+    # columns of the same table ("Mountain 300" is a model, not a product name).
+    DAX_ENTITY_CROSS_COLUMN_ENABLED: bool = True
     # TEMPORARY (local testing only): a pre-minted delegated Power BI access
     # token. When set, ``pbi_execute_query`` uses it directly and BYPASSES the
     # connector-grant subsystem (which isn't provisioned locally). Mint one with:

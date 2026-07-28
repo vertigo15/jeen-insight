@@ -65,6 +65,8 @@ Filter dates on the Date table (not on fact tables) and use time-intelligence fu
 
 A typed plan for the current question has already been produced. Follow it: use its measures, grain, filters, sort, and date role. Do not silently deviate.
 
+A filter marked `"resolved": true` has already been checked against the model's actual column values. Use its `target` and `value` verbatim — never re-spell, trim, or "tidy" them, and never substitute a value you consider more likely. When such a filter uses `"op": "in"` with a list, filter on the whole list (e.g. `'Table'[Column] IN {{"A", "B"}}`), not just the first entry.
+
 {plan}
 
 # Knowledge Pairs

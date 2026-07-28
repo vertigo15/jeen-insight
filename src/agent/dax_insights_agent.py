@@ -130,6 +130,10 @@ class DaxInsightsAgent:
             eval_analytics_enabled=settings.EVAL_ANALYTICS_ENABLED,
             require_catalog_for_query=settings.REQUIRE_CATALOG_FOR_QUERY,
             dlp_governed_columns=_parse_governed_columns(settings.DLP_GOVERNED_COLUMNS),
+            entity_resolution_enabled=settings.DAX_ENTITY_RESOLUTION_ENABLED,
+            entity_max_domain_values=settings.DAX_ENTITY_MAX_DOMAIN_VALUES,
+            entity_match_threshold=settings.DAX_ENTITY_MATCH_THRESHOLD,
+            entity_cross_column_enabled=settings.DAX_ENTITY_CROSS_COLUMN_ENABLED,
         )
         logger.info(
             "✅ DAX agent ready for source_key=%s (workspace=%s dataset=%s)",
@@ -241,6 +245,11 @@ class DaxInsightsAgent:
                 "plan_grain": None,
                 "plan_assumptions": [],
                 "clarification_required": False,
+                # ── Value (entity) linking ──────────────────────────────
+                "resolved_entities": [],
+                "entity_ambiguities": [],
+                "unresolved_entities": [],
+                "entity_resolution_attempts": 0,
                 # ── DAX generation / validation ─────────────────────────
                 "retry_count": 0,
                 "generated_sql": None,       # kept for shared nodes; == generated_dax

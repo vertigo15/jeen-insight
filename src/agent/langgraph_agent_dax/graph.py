@@ -8,30 +8,34 @@ observability) reuses the shared, engine-agnostic nodes **imported read-only**
 from ``src.agent.langgraph_agent`` — those files are never edited, so the SQL
 flow cannot regress.
 
-Graph topology:
-    START → memory_shrink_check ─(over)→ memory_summarizer ─┐
-                                └─(within)──────────────────┘
-                                                             fused_router
-      ┌─(greeting/out_of_scope/unsafe)──────────────────────► response_formatter
-      ├─(from_memory)→ memory_answer_generator ─(answered)──► response_formatter
-      │                                         └─(needs_query)┐
-      └─(needs_query)──────────────────────────► dax_catalog_lookup ◄──┐
-                                                     │ (blocked→fmt)     │
-                                                dax_query_planner        │
-                                              ┌─(clarify→fmt)            │
-                                         dax_prompt_builder              │
-                                              dax_generator ◄──────────┐ │
-                                          ┌──(clarify/empty→fmt)       │ │
-                                    dax_static_validate ◄─ dax_repair  │ │
-                                   ┌─(block→fmt)  (repairable)↑        │ │
-                              pbi_execute_query                        │ │
-                          ┌─(terminal→fmt) (error)→ dax_feedback_router┘─┘
-                     result_integrity_check ─(empty diag)→ dax_feedback_router
-                          │ (valid)
-                    trivial_result_check ─→ fused_eval_analytics ─(semantic)→ feedback
-                          └──────────────────────┬─────────────────────────┘
-                                          response_formatter → save_to_memory
-                                          → observability_log → END
+Graph topology (``fmt`` = response_formatter, ``feedback`` = dax_feedback_router):
+
+    START → memory_shrink_check ─(over budget)→ memory_summarizer ─┐
+                                └─(within budget)──────────────────┴→ fused_router
+
+    fused_router ─(greeting | out_of_scope | unsafe)────────────────→ fmt
+                 ├(from_memory)→ memory_answer_generator ─(answered)→ fmt
+                 │                                       └(needs_query)┐
+                 └(needs_query)───────────────────────────────────────┴→ dax_catalog_lookup
+
+    dax_catalog_lookup    ─(blocked)→ fmt          └→ dax_query_planner
+    dax_query_planner     ─(clarify)→ fmt          └→ dax_entity_resolver
+    dax_entity_resolver   ─(clarify)→ fmt          └→ dax_prompt_builder
+    dax_prompt_builder                             └→ dax_generator
+    dax_generator         ─(clarify | empty)→ fmt  └→ dax_static_validate
+    dax_static_validate   ─(blocked)→ fmt
+                          ├(repairable)→ dax_repair → dax_static_validate
+                          └→ pbi_execute_query
+    pbi_execute_query     ─(terminal)→ fmt  ├(error)→ feedback
+                                            └→ result_integrity_check
+    result_integrity_check ─(empty diag)→ feedback └→ trivial_result_check
+    trivial_result_check  ─(trivial | eval off)→ fmt └→ fused_eval_analytics
+    fused_eval_analytics  ─(semantic mismatch)→ feedback └→ fmt
+
+    feedback → dax_repair | dax_generator | dax_query_planner |
+               dax_entity_resolver | dax_catalog_lookup | fmt
+
+    fmt → save_to_memory → observability_log → END
 """
 
 from __future__ import annotations
@@ -70,6 +74,7 @@ from src.agent.langgraph_agent_dax.nodes.dax_validate import (
     make_dax_repair,
     make_dax_static_validate,
 )
+from src.agent.langgraph_agent_dax.nodes.entity_resolver import make_dax_entity_resolver
 from src.agent.langgraph_agent_dax.nodes.feedback import make_dax_feedback_router
 from src.agent.langgraph_agent_dax.nodes.planner import make_dax_query_planner
 from src.agent.langgraph_agent_dax.prompt_loader import DaxPromptLoader
@@ -93,6 +98,7 @@ _NODE_META: dict[str, tuple[str, str]] = {
     "memory_answer_generator": ("💬", "llm"),
     "dax_catalog_lookup":      ("📦", "db"),
     "dax_query_planner":       ("🗺", "llm"),
+    "dax_entity_resolver":     ("🔍", "db"),
     "dax_prompt_builder":      ("🔧", "logic"),
     "dax_generator":           ("🧠", "llm"),
     "dax_static_validate":     ("✅", "logic"),
@@ -146,6 +152,10 @@ def build_dax_graph(
     eval_analytics_enabled: bool = True,
     require_catalog_for_query: bool = True,
     dlp_governed_columns=None,
+    entity_resolution_enabled: bool = True,
+    entity_max_domain_values: int = 1000,
+    entity_match_threshold: float = 78.0,
+    entity_cross_column_enabled: bool = True,
 ) -> Any:
     """Build and compile the text-to-DAX LangGraph."""
     builder: StateGraph = StateGraph(DaxAgentState)
@@ -167,6 +177,14 @@ def build_dax_graph(
     # DAX-specific query core.
     n("dax_catalog_lookup",      make_dax_catalog_lookup(metadata_loader, require_catalog_for_query))
     n("dax_query_planner",       make_dax_query_planner(llm, prompt_loader))
+    n("dax_entity_resolver",     make_dax_entity_resolver(
+        entity_resolution_enabled,
+        dlp_enabled=dlp_enabled,
+        dlp_governed_columns=dlp_governed_columns,
+        max_domain_values=entity_max_domain_values,
+        match_threshold=entity_match_threshold,
+        cross_column_enabled=entity_cross_column_enabled,
+    ))
     n("dax_prompt_builder",      make_dax_prompt_builder(prompt_loader))
     n("dax_generator",           make_dax_generator(llm, prompt_loader))
     n("dax_static_validate",     make_dax_static_validate(
@@ -188,6 +206,7 @@ def build_dax_graph(
 
     builder.add_conditional_edges("dax_catalog_lookup", _route_from_catalog)
     builder.add_conditional_edges("dax_query_planner", _route_from_planner)
+    builder.add_conditional_edges("dax_entity_resolver", _route_from_entity_resolver)
     builder.add_edge("dax_prompt_builder", "dax_generator")
     builder.add_conditional_edges("dax_generator", _route_from_generator)
     builder.add_conditional_edges("dax_static_validate", _route_from_validate)
@@ -236,6 +255,15 @@ def _route_from_catalog(state: DaxAgentState) -> str:
 
 
 def _route_from_planner(state: DaxAgentState) -> str:
+    if state.get("clarification_required"):
+        return "response_formatter"
+    return "dax_entity_resolver"
+
+
+def _route_from_entity_resolver(state: DaxAgentState) -> str:
+    # A filter literal that matches nothing (or several things) is a question for
+    # the user, not a query to run: executing it would return an empty table and
+    # hide the real problem.
     if state.get("clarification_required"):
         return "response_formatter"
     return "dax_prompt_builder"
@@ -296,6 +324,8 @@ def _route_from_feedback(state: DaxAgentState) -> str:
         return "dax_generator"
     if action == "replan":
         return "dax_query_planner"
+    if action == "resolve_entities":
+        return "dax_entity_resolver"
     if action == "refresh_catalog":
         return "dax_catalog_lookup"
     return "response_formatter"  # clarify | exhausted

@@ -46,7 +46,7 @@ Analyze this question and emit ONLY a JSON object (no prose, no fences) with thi
     {{"kind": "column_aggregation", "ref": "'Table'[Column]", "agg": "SUM|AVERAGE|COUNT|COUNTROWS|MIN|MAX|DISTINCTCOUNT"}}
   ],
   "filters": [
-    {{"target": "'Table'[Column]", "op": "equals|in|between|greater|less|contains", "value": "..."}}
+    {{"target": "'Table'[Column]", "op": "equals|in|between|greater|less|contains", "value": "...", "value_kind": "literal|expression"}}
   ],
   "sort": [{{"by": "[Measure Name] | 'Table'[Column]", "dir": "DESC|ASC"}}],
   "date_role": {{"table": "'Date'", "column": "'Date'[Date]", "grain": "day|month|quarter|year|none", "intelligence": "none|YTD|MTD|QTD|same_period_last_year|year_over_year"}},
@@ -64,6 +64,7 @@ Analyze this question and emit ONLY a JSON object (no prose, no fences) with thi
 - Reference measures as [Name] and columns as 'Table'[Column].
 - Only reference measures/columns/tables that appear above. If the question needs something not in the model, set "clarification_required": true and put a single, specific question in "clarification".
 - Set "clarification_required": true ONLY for genuine business ambiguity that would change the answer (e.g. "sales" could be Internet vs Reseller vs Total, or an undefined time range). Otherwise make a reasonable assumption, record it, and proceed.
+- Set each filter's "value_kind" to "literal" when the value is a name the user typed (a product, customer, country, category) and to "expression" when it is a computed bound, a date range, or a number. Copy a literal EXACTLY as the user wrote it, including any misspelling, and put it on the column you believe holds it — a later step verifies it against the model's real values, corrects it, and asks the user if it is ambiguous. Do NOT guess a "corrected" spelling yourself and do NOT set "clarification_required" merely because you are unsure a value exists.
 - For time-based questions, fill "date_role" using the marked Date table; if none exists, set date_role.table to the best date column's table and add an assumption.
 
 **Question:** {question}

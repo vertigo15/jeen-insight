@@ -23,7 +23,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Set
 
-from src.agent.langgraph_agent.nodes.validation import _build_dlp_regex
+from src.agent.langgraph_agent.nodes.validation import _DLP_PATTERNS
 from src.agent.langgraph_agent_dax.nodes.dax_gen import _extract_dax
 from src.agent.langgraph_agent_dax.prompt_loader import DaxPromptLoader
 from src.agent.langgraph_agent_dax.state import DaxAgentState
@@ -43,6 +43,42 @@ _DEFINE_MEASURE_RE = re.compile(
 )
 
 
+# Governed-column matching, DAX flavour. The shared patterns were written for
+# SQL identifiers and are underscore-style ("social_security"), but a tabular
+# model names its columns for humans — "Social Security Number" — so applying
+# them unchanged would wave through exactly the columns they exist to protect.
+_DLP_SEPARATOR_RE = re.compile(r"[_\-]+")
+_DLP_CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def build_dax_dlp_regex(extra_columns: Optional[List[str]]) -> "re.Pattern[str]":
+    """Compile the governed-column policy with separators made flexible.
+
+    Operator-configured names get the same treatment as the built-ins: someone
+    who writes ``home_address`` in the settings means the column, not that exact
+    punctuation, and the model very likely spells it "Home Address".
+    """
+    patterns = [p.replace("_", r"[\s_-]*") for p in _DLP_PATTERNS]
+    for col in extra_columns or []:
+        words = [w for w in re.split(r"[^0-9A-Za-z]+", _DLP_CAMEL_RE.sub(" ", str(col or ""))) if w]
+        if words:
+            patterns.append(r"\b" + r"[\s_-]*".join(re.escape(w) for w in words) + r"\b")
+    return re.compile("|".join(patterns), re.IGNORECASE)
+
+
+def is_governed_name(dlp_re: "re.Pattern[str]", name: object) -> bool:
+    """True when a column name is governed, however it is punctuated.
+
+    ``SocialSecurityNumber``, ``social_security_number`` and "Social Security
+    Number" are one column to a reader and must be one column to the policy, so
+    the name is reduced to spaced words before matching rather than requiring
+    the patterns to anticipate every casing convention.
+    """
+    raw = str(name or "")
+    spaced = _DLP_SEPARATOR_RE.sub(" ", raw)
+    return bool(dlp_re.search(raw) or dlp_re.search(_DLP_CAMEL_RE.sub(" ", spaced)))
+
+
 def _static_repairs(state: DaxAgentState) -> int:
     return int((state.get("repair_attempts_by_category") or {}).get("static", 0))
 
@@ -54,7 +90,7 @@ def make_dax_static_validate(
     dlp_governed_columns: Optional[List[str]] = None,
 ):
     """Return a sync ``dax_static_validate`` node."""
-    dlp_re = _build_dlp_regex(dlp_governed_columns)
+    dlp_re = build_dax_dlp_regex(dlp_governed_columns)
 
     def dax_static_validate(state: DaxAgentState) -> Dict[str, Any]:
         dax = state.get("generated_dax") or ""
@@ -131,7 +167,7 @@ def make_dax_static_validate(
                     lint.append(
                         f"Unknown column '{ident.name}' on table '{ident.table}'."
                     )
-                if dlp_re.search(ident.name):
+                if is_governed_name(dlp_re, ident.name):
                     governed.append(f"{ident.table}[{ident.name}]")
             else:
                 # Unqualified [Name]: a measure, a defined measure, or a
@@ -147,7 +183,7 @@ def make_dax_static_validate(
                         f"Unknown measure or column '[{ident.name}]'. Measures are "
                         f"'[Name]'; columns are ''Table''[Column]."
                     )
-                if dlp_re.search(ident.name):
+                if is_governed_name(dlp_re, ident.name):
                     governed.append(f"[{ident.name}]")
 
         base["identifiers_used"] = identifiers_used

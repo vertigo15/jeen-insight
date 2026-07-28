@@ -96,6 +96,31 @@ class TestSemanticAndEmpty:
         assert out["dax_error_category"] == "EMPTY_OR_BLANK"
         assert out["dax_feedback_action"] == "regenerate"
 
+    def test_empty_with_unverified_literal_resolves_entities(self):
+        """Zero rows plus a filter value never checked against the model is far
+        more often a bad literal than bad DAX."""
+        st = {
+            "retry_count": 0,
+            "query_result": {"columns": [], "rows": [], "row_count": 0},
+            "integrity_action": "empty_diagnostic",
+            "error_context": "zero rows",
+            "unresolved_entities": [{"target": "'Product'[Name]", "value": "Mountaiin 300"}],
+            "entity_resolution_attempts": 1,
+        }
+        out = _ROUTER(st)
+        assert out["dax_feedback_action"] == "resolve_entities"
+        assert "never verified" in out["error_context"]
+
+    def test_empty_stops_re_resolving_once_the_budget_is_spent(self):
+        st = {
+            "retry_count": 0,
+            "query_result": {"columns": [], "rows": [], "row_count": 0},
+            "integrity_action": "empty_diagnostic",
+            "unresolved_entities": [{"target": "'Product'[Name]", "value": "Mountaiin 300"}],
+            "entity_resolution_attempts": 2,
+        }
+        assert _ROUTER(st)["dax_feedback_action"] == "regenerate"
+
     def test_semantic_mismatch_regenerates(self):
         st = {
             "retry_count": 0,

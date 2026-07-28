@@ -13,14 +13,16 @@ Categories → action:
   CONTEXT_SEMANTICS / SEMANTIC_MISMATCH → regenerate from plan.
   RELATIONSHIP_PATH / TIME_SEMANTICS → replan (or clarify for business meaning).
   RESOURCE_LIMIT / PARTIAL_RESULT → regenerate with a "tighten grain/TOPN" note.
-  EMPTY_OR_BLANK → one diagnostic regeneration, then accept the empty result.
+  EMPTY_OR_BLANK → resolve entities when a filter literal was never verified,
+    else one diagnostic regeneration, then accept the empty result.
   AUTHN → transport (handled inline); AUTHZ_OR_TENANT → stop with config error.
   THROTTLED / TRANSIENT_SERVICE → stop once inline retries are spent.
   UNSAFE_OR_GOVERNED → block. EXHAUSTED → best safe explanation + clarification.
 
 Actions map to next nodes in ``graph.py``:
   local_repair→dax_repair, regenerate→dax_generator, replan→dax_query_planner,
-  refresh_catalog→dax_catalog_lookup, clarify/exhausted→response_formatter.
+  resolve_entities→dax_entity_resolver, refresh_catalog→dax_catalog_lookup,
+  clarify/exhausted→response_formatter.
 """
 
 from __future__ import annotations
@@ -35,6 +37,9 @@ logger = logging.getLogger(__name__)
 _MAX_PLAN_REGENERATIONS = 2
 _MAX_CATALOG_REFRESH = 1
 _MAX_LOCAL_REPAIRS = 1
+# Entity resolution runs once in the normal path; this allows one broader retry
+# triggered by an empty result.
+_MAX_ENTITY_RESOLUTIONS = 2
 
 # Keyword heuristics over the Power BI error message to sub-classify a 400.
 _UNKNOWN_OBJECT_HINTS = (
@@ -172,7 +177,21 @@ def make_dax_feedback_router(max_retries: int):
                 "TOPN, add filters, and narrow the date range."
             )
         elif category == "EMPTY_OR_BLANK":
-            action = "regenerate"
+            # A zero-row result whose filters were never checked against real
+            # column values is far more often a bad literal than bad DAX, and
+            # regenerating the same literal cannot fix that.
+            if (
+                state.get("unresolved_entities")
+                and int(state.get("entity_resolution_attempts") or 0) < _MAX_ENTITY_RESOLUTIONS
+            ):
+                action = "resolve_entities"
+                error_context = (
+                    (error_context or "")
+                    + " One or more filter values were never verified against the "
+                    "model; check them before regenerating."
+                )
+            else:
+                action = "regenerate"
 
         logger.info(
             "dax_feedback_router: category=%s action=%s (retry %d/%d)",

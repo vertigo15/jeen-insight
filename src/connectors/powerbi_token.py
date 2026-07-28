@@ -310,9 +310,27 @@ class PowerBiTokenProvider:
         )
 
 
+def provider_from_app_state() -> Optional[PowerBiTokenProvider]:
+    """Build a provider from the live connector services, or None if unavailable.
+
+    Shared by every graph node that needs a delegated Power BI token so there is
+    one place that knows which services must be present.
+    """
+    from src.api import state as _state
+
+    if not (_state.identity_service and _state.registry_service and _state.grant_service):
+        return None
+    return PowerBiTokenProvider(
+        identity_service=_state.identity_service,
+        registry_service=_state.registry_service,
+        grant_service=_state.grant_service,
+    )
+
+
 __all__ = [
     "PowerBiToken",
     "PowerBiTokenError",
     "PowerBiTokenProvider",
     "POWERBI_CONNECTOR_KEY",
+    "provider_from_app_state",
 ]

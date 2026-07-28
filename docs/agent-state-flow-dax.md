@@ -31,7 +31,9 @@ flowchart TD
     cat -->|blocked| fmt
     cat --> planner["dax_query_planner (required)"]
     planner -->|clarification_required| fmt
-    planner -->|plan_ready| pb["dax_prompt_builder"]
+    planner -->|plan_ready| entity["dax_entity_resolver"]
+    entity -->|ambiguous / unknown value| fmt
+    entity -->|values grounded| pb["dax_prompt_builder"]
     pb --> gen["dax_generator (run_dax tool)"]
     gen -->|clarification / empty| fmt
     gen --> val["dax_static_validate (lexer + symbols + DLP + TOPN)"]
@@ -52,6 +54,7 @@ flowchart TD
     fbr -->|local_repair| repair
     fbr -->|regenerate| gen
     fbr -->|replan| planner
+    fbr -->|resolve_entities| entity
     fbr -->|refresh_catalog| cat
     fbr -->|clarify / exhausted| fmt
     fmt --> save["save_to_memory (shared)"]
@@ -72,9 +75,10 @@ flowchart TD
 |------|------|----------------|
 | `dax_catalog_lookup` | DB | Load curated metadata; split **MEASURES** from columns; detect a Date/Calendar table; fail closed (`catalog_blocked`) when no catalog is registered. |
 | `dax_query_planner` | LLM | **Mandatory** typed plan (grain, dimensions, metrics, filters, sort, date role, relationship paths, row budget, assumptions, `clarification_required`). Fails *open* to a minimal aggregate plan on parse error. |
+| `dax_entity_resolver` | DB | **Value linking**, no LLM. Verifies each plan filter's literal against the column's real values with a bounded, cached, read-only probe: corrects typos ("Mountaiin 300"), widens to `IN` when one phrase names several SKUs, searches sibling text columns when the value lives elsewhere, and asks the user when it is ambiguous or absent. Widening is the one change that can be wrong without looking wrong (the query still returns a plausible number), so it requires a multi-token phrase, a *complete* read of the column, and exact agreement on any digits — "Mountain 300" must never absorb "Mountain-3000". Fails *open* — an unverifiable literal is recorded in `unresolved_entities`, never blocked. Governed columns are never probed, and a cached domain is only served after the reader's entitlement is re-confirmed. |
 | `dax_prompt_builder` | logic | Assemble the DAX system prompt (MEASURES vs COLUMNS, RELATIONSHIPS, DATE, plan) + the `structured_prompt` for the UI. |
 | `dax_generator` | LLM | Emit a single DAX query via the `run_dax` tool, following the plan. Stores it in both `generated_dax` and `generated_sql` (so shared nodes read it unchanged). |
-| `dax_static_validate` | logic | Read-only/shape gate, balanced delimiters, single top-level `EVALUATE`, `DEFINE MEASURE/VAR`-only, banned MDX/DMV/DDL, symbol resolution (`'Table'[Column]` vs `[Measure]`), DLP over columns + measure lineage, TOPN-present for detail grain. **No sqlglot.** |
+| `dax_static_validate` | logic | Read-only/shape gate, balanced delimiters, single top-level `EVALUATE`, `DEFINE MEASURE/VAR`-only, banned MDX/DMV/DDL, symbol resolution (`'Table'[Column]` vs `[Measure]`), DLP over columns + measure lineage, TOPN-present for detail grain. **No sqlglot.** DLP matching is separator-insensitive here: the shared patterns are underscore-style because they were written for SQL identifiers, but a tabular model names columns for humans, so `Social Security Number`, `social_security_number` and `SocialSecurityNumber` are all one governed column. Text-to-SQL matching is unchanged. |
 | `dax_repair` | LLM | Focused pre-execution repair of a query that failed static validation (bounded budget). |
 | `pbi_execute_query` | REST | Resolve the request-scoped delegated token, POST `executeQueries`, handle transport retries inline (401 refresh once; 429 `Retry-After`; 5xx backoff). Token never enters graph state. |
 | `result_integrity_check` | logic | Annotate empty/partial results; a valid empty result is a **success**. At most one empty-result diagnostic regeneration. |
@@ -89,13 +93,13 @@ Categories → action:
 - `CONTEXT_SEMANTICS` / `SEMANTIC_MISMATCH` → regenerate from plan.
 - `RELATIONSHIP_PATH` / `TIME_SEMANTICS` → replan (or clarify for business meaning).
 - `RESOURCE_LIMIT` / `PARTIAL_RESULT` → regenerate with a "tighten grain/TOPN" note.
-- `EMPTY_OR_BLANK` → one diagnostic regeneration, then accept.
+- `EMPTY_OR_BLANK` → re-resolve entities when a filter literal was never verified (a zero-row result is far more often a bad literal than bad DAX), else one diagnostic regeneration, then accept.
 - `AUTHN` (401) → refresh + replay inline. `AUTHZ_OR_TENANT` (403/tenant) → stop with a config error. `THROTTLED` (429) / `TRANSIENT_SERVICE` (5xx) → bounded inline retries.
 - `UNSAFE_OR_GOVERNED` → block. `EXHAUSTED` → best safe explanation.
 
 Budgets: **1** local repair/query, **2** plan regenerations, **1** catalog
-refresh, **1** empty-result diagnostic, **3** inline transport retries — tracked
-per category so the graph never loops blindly.
+refresh, **2** entity resolutions, **1** empty-result diagnostic, **3** inline
+transport retries — tracked per category so the graph never loops blindly.
 
 ## `executeQueries` constraints (drive the client + validator)
 
