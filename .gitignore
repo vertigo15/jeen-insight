@@ -37,3 +37,6 @@ htmlcov/
 node_modules/
 test-results/
 playwright-report/
+
+# uv lockfile (project pins live in requirements.txt / pyproject.toml)
+uv.lock

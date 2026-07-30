@@ -26,7 +26,7 @@ global:
 jeen-insights-api:
   image:
     repository: jeendevregistry.azurecr.io/jeen-insights-api
-    tag: insight-persist-20260727204949
+    tag: 83c797be
   resources:
     requests:
       cpu: 250m
@@ -40,7 +40,7 @@ jeen-insights-api:
 jeen-insights-ui:
   image:
     repository: jeendevregistry.azurecr.io/jeen-insights-ui
-    tag: powerbi-empty-results-20260727080713
+    tag: 83c797be
   env:
     SESSION_COOKIE_SECURE: "true"
     PUBLIC_APP_URL: https://jeen-insights.dev.jeenai.app
