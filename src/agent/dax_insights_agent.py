@@ -28,7 +28,8 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
 from src.agent.conversation_history import ConversationHistoryService
-from src.agent.langgraph_agent.nodes.output import _enrich_trace
+from src.agent.langgraph_agent.nodes.catalog import _load_catalog_bundle
+from src.agent.langgraph_agent.nodes.output import _enrich_trace, slim_trace
 from src.agent.langgraph_agent_dax import DaxPromptLoader, build_dax_graph
 from src.agent.langgraph_agent_dax.state import DaxAgentState
 from src.agent.llm_service import LangChainLlmService
@@ -165,7 +166,7 @@ class DaxInsightsAgent:
             runtime = await get_runtime_settings()
 
             results = await asyncio.gather(
-                self.metadata_loader.load_all(self.source_key),
+                _load_catalog_bundle(self.source_key, self.metadata_loader),
                 self._fetch_conversation_context(
                     session_id, user_id=str(user.id), limit=runtime.conversation_context_turns
                 ),
@@ -175,22 +176,26 @@ class DaxInsightsAgent:
                 return_exceptions=True,
             )
 
-            metadata_bundle: Dict[str, str] = (
-                results[0] if not isinstance(results[0], Exception) else {}
-            )
+            metadata_bundle: Dict[str, str] = {}
+            catalog_meta: Dict[str, Any] = {}
+            if not isinstance(results[0], Exception):
+                metadata_bundle, catalog_meta = results[0]
             conversation_context: List[Dict[str, Any]] = (
                 results[1] if not isinstance(results[1], Exception) else []
             )
             query_id = results[2] if not isinstance(results[2], Exception) else None
 
+            # A failed catalog pre-load is recoverable — dax_catalog_lookup
+            # retries and fails closed with a user-facing message if it also
+            # fails — so it must not be seeded into state["error"], which
+            # response_formatter would then prefer over a successful answer.
             pre_graph_error: Optional[str] = None
             if isinstance(results[0], Exception):
-                pre_graph_error = f"Metadata load failed: {results[0]}"
-                logger.error("dax: metadata_loader.load_all failed: %s", results[0])
+                logger.error("dax: catalog pre-load failed (recoverable): %s", results[0])
             if isinstance(results[1], Exception):
                 logger.warning("dax: _fetch_conversation_context failed: %s", results[1])
             if isinstance(results[2], Exception):
-                pre_graph_error = pre_graph_error or f"Audit log failed: {results[2]}"
+                pre_graph_error = f"Audit log failed: {results[2]}"
                 logger.warning("dax: log_query failed (non-fatal): %s", results[2])
 
             initial_state: DaxAgentState = {
@@ -226,7 +231,13 @@ class DaxInsightsAgent:
                 "route": "needs_query",
                 "route_reason": "",
                 # ── Catalog (SQL-shared) ────────────────────────────────
+                # Pre-loaded above; dax_catalog_lookup consumes it instead of
+                # loading a second time. catalog_seeded is the one-shot ticket.
                 "metadata_bundle": metadata_bundle,
+                "catalog_seeded": bool(metadata_bundle),
+                "catalog_source_used": catalog_meta.get("source", "db"),
+                "catalog_cache": catalog_meta.get("cache"),
+                "catalog_load_ms": int(catalog_meta.get("load_ms") or 0),
                 "dialect_rules": "",
                 "known_tables": [],
                 "known_columns": [],
@@ -324,6 +335,9 @@ class DaxInsightsAgent:
 
             raw_trace = list(final_state.get("trace") or [])
             if raw_trace:
+                # Slim before enriching: enrichment attaches rendered prompts,
+                # so taking the projection first makes leaking one impossible.
+                await self._safe_persist_trace(query_id, slim_trace(raw_trace))
                 _enrich_trace(raw_trace, final_state)
                 formatted["trace"] = raw_trace
 
@@ -362,6 +376,17 @@ class DaxInsightsAgent:
             dataset_id=self.source_key,
             rag_context={},
         )
+
+    async def _safe_persist_trace(
+        self, query_id: Optional[UUID], node_trace: List[Dict[str, Any]]
+    ) -> None:
+        """Record per-node timings. Telemetry: never fail the answer over it."""
+        if not query_id or not node_trace:
+            return
+        try:
+            await self.history.update_node_trace(query_id=query_id, node_trace=node_trace)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to persist node trace")
 
     async def _fetch_conversation_context(
         self, session_id: UUID, *, user_id: str, limit: int = 5
