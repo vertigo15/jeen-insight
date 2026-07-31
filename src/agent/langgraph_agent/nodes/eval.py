@@ -105,6 +105,10 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
         )
         model_override = await prompt_loader.model_override_for("fused_eval_analytics")
 
+        # Lazy: importing src.api at module scope would close an import cycle
+        # (src.api → lifespan → src.agent → this module).
+        from src.api.llm_params import QUERY_PARAMS  # noqa: PLC0415
+
         t0 = time.monotonic()
         response = await llm.generate(
             messages=[
@@ -112,7 +116,11 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
                 {"role": "user", "content": "Evaluate the results and respond with JSON."},
             ],
             temperature=0.2,
-            max_tokens=600,
+            # Same ceiling as the standalone eval subgraph below. These two run
+            # the same analysis; at 600 the inline one truncated rich
+            # fragment-array summaries mid-JSON and the parse fell back to a
+            # bare text summary, silently losing the findings.
+            max_tokens=QUERY_PARAMS.max_tokens,
             model_override=model_override,
             timeout=state.get("llm_timeout_seconds"),
         )
@@ -223,7 +231,8 @@ def make_fused_eval_analytics_subgraph(
         except KeyError:
             prompt_text = template
 
-        from src.api.llm_params import QUERY_PARAMS
+        from src.api.llm_params import QUERY_PARAMS  # noqa: PLC0415
+
         try:
             response = await llm_service.generate(
                 messages=[

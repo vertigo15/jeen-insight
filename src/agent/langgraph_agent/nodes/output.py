@@ -19,7 +19,7 @@ from datetime import date, datetime, time as dt_time
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from src.agent.conversation_history import ConversationHistoryService
+from src.agent.conversation_history import ConversationHistoryService, insight_text
 from src.agent.langgraph_agent.state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -225,10 +225,27 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
         },
     }
 
+    # Eval output, named to match GenerateInsightsResponse so the two endpoints
+    # that expose this analysis return one shape. These must also be declared on
+    # QueryResponse — Pydantic drops any key the model doesn't know about, which
+    # is how this whole block used to be thrown away.
+    #
+    # `insights` is the eval node's name for what the API calls `findings`, and
+    # the node emits `follow_up_questions`, not `follow_up`. Findings are meant
+    # to be plain strings but occasionally come back as highlight-fragment
+    # arrays, so flatten rather than let one stray shape fail the response.
     if eval_result.get("insights"):
-        formatted["insights"] = eval_result["insights"]
-    if eval_result.get("follow_up"):
-        formatted["follow_up"] = eval_result["follow_up"]
+        formatted["findings"] = [
+            insight_text(f) for f in eval_result["insights"] if f
+        ]
+    if eval_result.get("suggestions"):
+        formatted["suggestions"] = [
+            insight_text(s) for s in eval_result["suggestions"] if s
+        ]
+    if eval_result.get("follow_up_questions"):
+        formatted["followups"] = [
+            insight_text(q) for q in eval_result["follow_up_questions"] if q
+        ]
 
     # ── Execution trace ───────────────────────────────────────────────────────────────────
     # NOTE: the trace is intentionally NOT attached here. response_formatter
