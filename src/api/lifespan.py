@@ -77,6 +77,11 @@ async def _ensure_schema(conn) -> None:
         ALTER TABLE insights_conversation_sessions
             ADD COLUMN IF NOT EXISTS result_artifact JSONB
     """)
+    # Slim per-node graph timings (see migration 020).
+    await conn.execute("""
+        ALTER TABLE insights_conversation_sessions
+            ADD COLUMN IF NOT EXISTS node_trace JSONB
+    """)
 
     # ── MCP tables ────────────────────────────────────────────────────────────
     await conn.execute("""

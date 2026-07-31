@@ -246,6 +246,36 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
     return {"formatted_response": formatted}
 
 
+def slim_trace(events: list) -> List[Dict[str, Any]]:
+    """Reduce an execution trace to the fields that are safe to store.
+
+    The in-memory trace is built for the developer panel: ``_enrich_trace``
+    hangs the fully rendered LLM prompt off every node that called a model,
+    plus prose ``detail`` lines that can quote the generated SQL. None of that
+    belongs in a telemetry column — it carries catalog schema and user data,
+    and dwarfs the timings we actually want to aggregate.
+
+    Order is preserved and repeated node names are kept: a second
+    ``sql_generator`` event is a repair retry, and collapsing the two would
+    hide exactly the pathology this data exists to find.
+    """
+    slim: List[Dict[str, Any]] = []
+    for event in events or []:
+        node = event.get("node")
+        if not node:
+            continue
+        try:
+            elapsed = int(event.get("elapsed_ms") or 0)
+        except (TypeError, ValueError):
+            elapsed = 0
+        slim.append({
+            "node": str(node),
+            "elapsed_ms": elapsed,
+            "type": str(event.get("type") or "logic"),
+        })
+    return slim
+
+
 def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[name-defined]
     """Mutate each event in-place with human-readable detail from state."""
     result = state.get("query_result") or {}
@@ -481,6 +511,11 @@ def observability_log(state: AgentState) -> Dict[str, Any]:
         "has_error": has_error,
         "connector_error_type": result.get("error_type"),
         "query_id": str(state.get("query_id") or ""),
+        # Same shape as the persisted node_trace column, so per-node latency is
+        # still recoverable from logs alone if a pipeline is added later. This
+        # node runs inside the graph, so the three tail nodes are necessarily
+        # absent here; the stored column is the complete record.
+        "nodes": slim_trace(state.get("trace") or []),
     }
 
     # Human-readable summary + machine-parseable JSON in one line.
