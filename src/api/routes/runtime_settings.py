@@ -1,7 +1,8 @@
 """Runtime guardrail settings API.
 
-Exposes the live-editable global knobs stored in ``app_settings``:
-DB statement timeout, max result rows, and the conversation-context window.
+Exposes the live-editable global knobs stored in ``app_settings``: DB statement
+timeout, max result rows, the conversation-context window, and the text-to-DAX
+entity-resolution controls (including the switch that turns it off).
 Backed by ``src/metadata/runtime_settings.py``.
 """
 
@@ -25,25 +26,41 @@ class RuntimeSettingsResponse(BaseModel):
     db_statement_timeout_ms: int
     max_result_rows: int
     conversation_context_turns: int
-    bounds: Dict[str, Dict[str, int]]
+    dax_entity_resolution_enabled: bool
+    dax_entity_max_domain_values: int
+    dax_entity_match_threshold: float
+    dax_entity_cross_column_enabled: bool
+    bounds: Dict[str, Dict[str, float]]
 
 
 class RuntimeSettingsUpdate(BaseModel):
     db_statement_timeout_ms: int | None = None
     max_result_rows: int | None = None
     conversation_context_turns: int | None = None
+    dax_entity_resolution_enabled: bool | None = None
+    dax_entity_max_domain_values: int | None = None
+    dax_entity_match_threshold: float | None = None
+    dax_entity_cross_column_enabled: bool | None = None
+
+
+def _response(current: rs.RuntimeSettings) -> RuntimeSettingsResponse:
+    return RuntimeSettingsResponse(
+        db_statement_timeout_ms=current.db_statement_timeout_ms,
+        max_result_rows=current.max_result_rows,
+        conversation_context_turns=current.conversation_context_turns,
+        dax_entity_resolution_enabled=current.dax_entity_resolution_enabled,
+        dax_entity_max_domain_values=current.dax_entity_max_domain_values,
+        dax_entity_match_threshold=current.dax_entity_match_threshold,
+        dax_entity_cross_column_enabled=current.dax_entity_cross_column_enabled,
+        bounds=rs.bounds(),
+    )
 
 
 @router.get("/runtime", response_model=RuntimeSettingsResponse)
 async def get_runtime():
     """Return the effective runtime guardrails plus their clamp bounds."""
     current = await rs.get_runtime_settings(use_cache=False)
-    return RuntimeSettingsResponse(
-        db_statement_timeout_ms=current.db_statement_timeout_ms,
-        max_result_rows=current.max_result_rows,
-        conversation_context_turns=current.conversation_context_turns,
-        bounds=rs.bounds(),
-    )
+    return _response(current)
 
 
 @router.put("/runtime", response_model=RuntimeSettingsResponse, dependencies=[Depends(require_admin)])
@@ -59,8 +76,8 @@ async def update_runtime(body: RuntimeSettingsUpdate):
 
     try:
         for key, value in updates.items():
-            await rs.set_runtime_setting(key, int(value))
-    except KeyError as exc:
+            await rs.set_runtime_setting(key, value)
+    except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
@@ -68,9 +85,4 @@ async def update_runtime(body: RuntimeSettingsUpdate):
         ) from exc
 
     current = await rs.get_runtime_settings(use_cache=False)
-    return RuntimeSettingsResponse(
-        db_statement_timeout_ms=current.db_statement_timeout_ms,
-        max_result_rows=current.max_result_rows,
-        conversation_context_turns=current.conversation_context_turns,
-        bounds=rs.bounds(),
-    )
+    return _response(current)

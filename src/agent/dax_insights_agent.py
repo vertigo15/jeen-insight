@@ -35,6 +35,7 @@ from src.agent.llm_service import LangChainLlmService
 from src.agent.user_resolver import SimpleUserResolver
 from src.config import settings
 from src.connections import Connection, ConnectionService
+from src.connectors.powerbi_token import TokenProviderFactory
 from src.metadata import MetadataLoader
 
 logger = logging.getLogger(__name__)
@@ -101,6 +102,7 @@ class DaxInsightsAgent:
         history_service: ConversationHistoryService,
         user_resolver: SimpleUserResolver,
         prompt_loader: DaxPromptLoader,
+        token_provider_factory: Optional[TokenProviderFactory] = None,
     ) -> None:
         self.connection = connection
         self.source_key = connection.source_key
@@ -134,6 +136,7 @@ class DaxInsightsAgent:
             entity_max_domain_values=settings.DAX_ENTITY_MAX_DOMAIN_VALUES,
             entity_match_threshold=settings.DAX_ENTITY_MATCH_THRESHOLD,
             entity_cross_column_enabled=settings.DAX_ENTITY_CROSS_COLUMN_ENABLED,
+            token_provider_factory=token_provider_factory,
         )
         logger.info(
             "✅ DAX agent ready for source_key=%s (workspace=%s dataset=%s)",
@@ -250,6 +253,12 @@ class DaxInsightsAgent:
                 "entity_ambiguities": [],
                 "unresolved_entities": [],
                 "entity_resolution_attempts": 0,
+                # Snapshot the admin-tunable knobs once per question so a mid-
+                # flight change cannot alter behaviour between repair retries.
+                "entity_resolution_enabled": runtime.dax_entity_resolution_enabled,
+                "entity_max_domain_values": runtime.dax_entity_max_domain_values,
+                "entity_match_threshold": runtime.dax_entity_match_threshold,
+                "entity_cross_column_enabled": runtime.dax_entity_cross_column_enabled,
                 # ── DAX generation / validation ─────────────────────────
                 "retry_count": 0,
                 "generated_sql": None,       # kept for shared nodes; == generated_dax
@@ -390,7 +399,9 @@ class DaxAgentRegistry:
         user_resolver: SimpleUserResolver,
         prompt_loader: Optional[DaxPromptLoader] = None,
         prompt_cache: Optional[Any] = None,
+        token_provider_factory: Optional[TokenProviderFactory] = None,
     ) -> None:
+        self.token_provider_factory = token_provider_factory
         self.llm = llm_service
         self.router_llm = router_llm_service or llm_service
         self.metadata_loader = metadata_loader
@@ -419,6 +430,7 @@ class DaxAgentRegistry:
                 history_service=self.history,
                 user_resolver=self.user_resolver,
                 prompt_loader=self.prompt_loader,
+                token_provider_factory=self.token_provider_factory,
             )
             self._agents[source_key] = agent
             logger.info("✅ Built DaxInsightsAgent for source_key=%s", source_key)

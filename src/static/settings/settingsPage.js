@@ -1620,11 +1620,13 @@ export class SettingsPage {
         const tb = b.db_statement_timeout_ms || { min: 0, max: 600000 };
         const rb = b.max_result_rows || { min: 1, max: 1000000 };
         const cb = b.conversation_context_turns || { min: 0, max: 50 };
+        const eb = b.dax_entity_max_domain_values || { min: 1, max: 100000 };
+        const mb = b.dax_entity_match_threshold || { min: 0, max: 100 };
 
         this._content.innerHTML = `
             <div class="sp-section-header">
                 <h2 class="sp-section-title">Query &amp; Safety</h2>
-                <p class="sp-section-desc">Global guardrails for SQL execution and conversation memory. Applied live across the whole application and persisted across restarts.</p>
+                <p class="sp-section-desc">Global guardrails for SQL execution, conversation memory, and Power BI value matching. Applied live across the whole application and persisted across restarts.</p>
             </div>
             <div class="sp-card">
                 <div class="sp-card-title">SQL Execution</div>
@@ -1644,6 +1646,21 @@ export class SettingsPage {
                            min="${cb.min}" max="${cb.max}" step="1"
                            value="${data.conversation_context_turns}">`)}
             </div>
+            <div class="sp-card">
+                <div class="sp-card-title">Power BI Entity Resolution</div>
+                ${this._row('Resolve filter values', 'Check the values the assistant filters on against the real values in the model, correcting typos and asking when a name is ambiguous. Turning this off sends filter values through to DAX exactly as written.', `
+                    <label class="sp-switch"><input type="checkbox" id="sp-rt-entity-on" ${data.dax_entity_resolution_enabled ? 'checked' : ''}><span class="sp-switch-slider"></span></label>`)}
+                ${this._row('Match threshold', `How close a value must be to count as the same value, 0–100. Lower accepts more typos but asks for confirmation less often. Range ${mb.min}–${mb.max}.`, `
+                    <input class="settings-select" type="number" id="sp-rt-entity-threshold"
+                           min="${mb.min}" max="${mb.max}" step="1"
+                           value="${data.dax_entity_match_threshold}">`)}
+                ${this._row('Values read per column', `Ceiling on how many distinct values are read from a column when checking one. Higher is more accurate on large dimensions but slower. Range ${eb.min}–${eb.max}.`, `
+                    <input class="settings-select" type="number" id="sp-rt-entity-domain"
+                           min="${eb.min}" max="${eb.max}" step="100"
+                           value="${data.dax_entity_max_domain_values}">`)}
+                ${this._row('Search related columns', 'When a value is not in the column the assistant picked, look for it in sibling columns of the same table (e.g. a model name given as a product name).', `
+                    <label class="sp-switch"><input type="checkbox" id="sp-rt-entity-cross" ${data.dax_entity_cross_column_enabled ? 'checked' : ''}><span class="sp-switch-slider"></span></label>`)}
+            </div>
             <div class="sp-card-footer">
                 <button class="sp-btn-primary" id="sp-rt-save">Save</button>
             </div>
@@ -1654,6 +1671,10 @@ export class SettingsPage {
                 db_statement_timeout_ms: parseInt(this._content.querySelector('#sp-rt-timeout').value, 10),
                 max_result_rows: parseInt(this._content.querySelector('#sp-rt-maxrows').value, 10),
                 conversation_context_turns: parseInt(this._content.querySelector('#sp-rt-turns').value, 10),
+                dax_entity_resolution_enabled: this._content.querySelector('#sp-rt-entity-on').checked,
+                dax_entity_match_threshold: parseFloat(this._content.querySelector('#sp-rt-entity-threshold').value),
+                dax_entity_max_domain_values: parseInt(this._content.querySelector('#sp-rt-entity-domain').value, 10),
+                dax_entity_cross_column_enabled: this._content.querySelector('#sp-rt-entity-cross').checked,
             };
             try {
                 const res = await fetch('/api/settings/runtime', {

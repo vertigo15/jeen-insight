@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from src.agent.langgraph_agent_dax.nodes import entity_resolver as er
 from src.agent.langgraph_agent_dax.nodes.entity_resolver import (
     build_clarification,
     column_display_names,
@@ -87,7 +86,7 @@ def _state(filters, **overrides):
 
 
 def _node(probe, **kwargs):
-    return make_dax_entity_resolver(True, **kwargs)
+    return make_dax_entity_resolver(True, probe_factory=lambda state: probe, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -98,16 +97,13 @@ def _clear_cache():
 
 
 @pytest.fixture
-def probe(monkeypatch):
-    """Install a fake probe so no Power BI call is ever attempted."""
-    holder = {}
+def probe():
+    """Hand back the fake probe the node should use.
 
-    def install(p):
-        holder["probe"] = p
-        monkeypatch.setattr(er, "_build_probe", lambda state: p)
-        return p
-
-    return install
+    The node takes its probe factory by injection (see ``_node``), so no Power
+    BI call is ever attempted and nothing has to be patched into the module.
+    """
+    return lambda p: p
 
 
 # ── Catalog parsing helpers ───────────────────────────────────────────────────
@@ -583,22 +579,89 @@ class TestSkipRules:
 # ── Failing open ──────────────────────────────────────────────────────────────
 
 
+def _never_probe(state):
+    pytest.fail("must not probe")
+
+
 class TestFailOpen:
-    async def test_disabled_node_does_nothing(self, monkeypatch):
-        monkeypatch.setattr(er, "_build_probe", lambda state: pytest.fail("must not probe"))
-        node = make_dax_entity_resolver(False)
+    async def test_disabled_node_does_nothing(self):
+        node = make_dax_entity_resolver(False, probe_factory=_never_probe)
         out = await node(
             _state([{"target": "'Product'[Product Name]", "op": "equals", "value": "x y"}])
         )
         assert out == {"entity_resolution_attempts": 1}
         assert "query_plan" not in out
 
-    async def test_unavailable_probe_leaves_the_plan_intact(self, monkeypatch):
-        monkeypatch.setattr(er, "_build_probe", lambda state: None)
+    async def test_state_switch_disables_a_node_built_enabled(self):
+        """The admin kill switch must stop a resolver that was deployed on."""
+        node = make_dax_entity_resolver(True, probe_factory=_never_probe)
+        out = await node(
+            _state(
+                [{"target": "'Product'[Product Name]", "op": "equals", "value": "x y"}],
+                entity_resolution_enabled=False,
+            )
+        )
+        assert out == {"entity_resolution_attempts": 1}
+
+    async def test_state_switch_enables_a_node_built_disabled(self, probe):
+        p = probe(_Probe({("Product", "Product Name"): PRODUCTS}))
+        node = make_dax_entity_resolver(False, probe_factory=lambda state: p)
+        out = await node(
+            _state(
+                [
+                    {
+                        "target": "'Product'[Product Name]",
+                        "op": "equals",
+                        "value": "Mountain-300 Black, 38",
+                    }
+                ],
+                entity_resolution_enabled=True,
+            )
+        )
+        assert p.distinct_calls, "state override should re-enable probing"
+        assert out["resolved_entities"]
+
+    async def test_absent_snapshot_falls_back_to_build_time_settings(self, probe):
+        """Graphs driven directly (tests, evals) seed no snapshot."""
+        p = probe(_Probe({("Product", "Product Name"): PRODUCTS}))
+        node = _node(p, max_domain_values=77)
+        await node(
+            _state(
+                [
+                    {
+                        "target": "'Product'[Product Name]",
+                        "op": "equals",
+                        "value": "Mountaiin 300 Black, 38",
+                    }
+                ]
+            )
+        )
+        assert p.distinct_calls[0][2] == 77
+
+    async def test_state_snapshot_overrides_the_domain_ceiling(self, probe):
+        p = probe(_Probe({("Product", "Product Name"): PRODUCTS}))
+        node = _node(p, max_domain_values=77)
+        await node(
+            _state(
+                [
+                    {
+                        "target": "'Product'[Product Name]",
+                        "op": "equals",
+                        "value": "Mountaiin 300 Black, 38",
+                    }
+                ],
+                entity_max_domain_values=5,
+            )
+        )
+        assert p.distinct_calls[0][2] == 5
+
+    async def test_unavailable_probe_leaves_the_plan_intact(self):
+        """A deployment with no connector platform gets no probe at all."""
         state = _state(
             [{"target": "'Product'[Product Name]", "op": "equals", "value": "Mountaiin 300"}]
         )
-        out = await make_dax_entity_resolver(True)(state)
+        node = make_dax_entity_resolver(True, probe_factory=lambda state: None)
+        out = await node(state)
         assert "query_plan" not in out
         assert "clarification" not in out
         assert out["unresolved_entities"][0]["reason"] == "no probe"

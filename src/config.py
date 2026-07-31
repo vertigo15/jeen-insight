@@ -140,27 +140,12 @@ class Settings(BaseSettings):
     # When a literal matches nothing in its target column, search sibling text
     # columns of the same table ("Mountain 300" is a model, not a product name).
     DAX_ENTITY_CROSS_COLUMN_ENABLED: bool = True
-    # TEMPORARY (local testing only): a pre-minted delegated Power BI access
-    # token. When set, ``pbi_execute_query`` uses it directly and BYPASSES the
-    # connector-grant subsystem (which isn't provisioned locally). Mint one with:
-    #   az account get-access-token --resource https://analysis.windows.net/powerbi/api --query accessToken -o tsv
-    # The token is user-scoped and expires (~1h), so refresh it as needed. Leave
-    # empty in any real deployment — delegated OAuth via connectors is the
-    # supported path. REMOVE once the Power BI connector is provisioned.
-    POWERBI_TEST_ACCESS_TOKEN: str = ""
-    # TEMPORARY: app-only (service-principal) credentials for a dedicated Azure
-    # App Registration that has been granted Power BI access (added to the
-    # workspace + tenant "service principals can use Power BI APIs" enabled).
-    # When client id + secret are set, ``pbi_execute_query`` mints an app-only
-    # token via the client-credentials flow (self-refreshing, no user
-    # interaction) and uses it INSTEAD of the delegated grant subsystem — the
-    # preferred temporary path until the Power BI connector is provisioned.
-    # Keep the SECRET only in .env (gitignored), never in code. Tenant falls back
-    # to AZURE_AD_TENANT_ID when unset. REMOVE with the rest of the temporary
-    # Power BI bridge once delegated OAuth via connectors is live.
-    POWERBI_APP_TENANT_ID: str = ""
-    POWERBI_APP_CLIENT_ID: str = ""
-    POWERBI_APP_CLIENT_SECRET: str = ""
+    # NOTE: there is deliberately no app-only (service-principal) or pre-minted
+    # test-token escape hatch here. Power BI is read strictly through the
+    # signed-in user's delegated grant so that the model's row-level security
+    # applies to them; a shared app identity would return rows the asker is not
+    # allowed to see. Any environment still setting POWERBI_APP_* or
+    # POWERBI_TEST_ACCESS_TOKEN is ignored (``extra = "ignore"`` below).
 
     # ── Deployment safety ───────────────────────────────────────────────────
     # Development / POC mode. Defaults to TRUE so a fresh copy of the app + shared

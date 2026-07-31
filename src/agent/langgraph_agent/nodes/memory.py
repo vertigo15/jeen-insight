@@ -16,6 +16,7 @@ from typing import Any, Dict
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
+from src.agent.token_usage import merge_usage
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +26,6 @@ logger = logging.getLogger(__name__)
 def _estimate_tokens(text: str) -> int:
     """Rough token estimate: ~4 chars per token (no tokenizer needed)."""
     return max(1, len(text) // 4)
-
-
-def _merge_usage(current: Dict[str, int], new: Dict[str, Any]) -> Dict[str, int]:
-    return {
-        "input_tokens": current.get("input_tokens", 0) + (new.get("prompt_tokens") or 0),
-        "output_tokens": current.get("output_tokens", 0) + (new.get("completion_tokens") or 0),
-        "total_tokens": current.get("total_tokens", 0) + (new.get("total_tokens") or 0),
-    }
 
 
 # ── Node factories ────────────────────────────────────────────────────────────
@@ -95,7 +88,7 @@ def make_memory_summarizer(llm: LangChainLlmService, prompt_loader: PromptLoader
             "memory_summary": summary,
             "llm_call_count": (state.get("llm_call_count") or 0) + 1,
             "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
-            "token_usage": _merge_usage(state.get("token_usage") or {}, usage),
+            "token_usage": merge_usage(state.get("token_usage") or {}, usage),
             "node_prompts": {**(state.get("node_prompts") or {}), "memory_summarizer": system_msg},
         }
 
