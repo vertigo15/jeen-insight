@@ -66,7 +66,7 @@ def _eval_resp(summary: str = "Data retrieved successfully.") -> Dict[str, Any]:
             "answers_intent": True,
             "summary": summary,
             "insights": ["Revenue grew year-over-year", "Q4 was the strongest quarter"],
-            "follow_up": "Would you like a breakdown by product?",
+            "follow_up_questions": ["Would you like a breakdown by product?"],
         }),
         "finish_reason": "stop",
         "usage": {"prompt_tokens": 400, "completion_tokens": 80, "total_tokens": 480},
@@ -188,7 +188,8 @@ class TestHappyPath:
         assert resp["sql"] == sql
         assert resp["results"]["row_count"] == 2
         assert "Sales peaked" in resp["answer"]
-        assert "Revenue grew" in resp.get("insights", [""])[0]
+        assert "Revenue grew" in resp.get("findings", [""])[0]
+        assert resp.get("followups") == ["Would you like a breakdown by product?"]
         assert resp["error"] is None
         assert resp["metrics"]["route"] == "needs_query"
         assert resp["metrics"]["retry_count"] == 0

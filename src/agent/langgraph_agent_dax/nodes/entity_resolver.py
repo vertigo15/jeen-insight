@@ -44,7 +44,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from src.agent.langgraph_agent_dax.nodes.catalog import _extract_type
 from src.agent.langgraph_agent_dax.nodes.dax_validate import (
@@ -57,8 +57,8 @@ from src.connectors.powerbi import PowerBiDaxClient
 from src.connectors.powerbi_probe import PowerBiValueProbe, ProbeResult
 from src.connectors.powerbi_token import (
     PowerBiTokenError,
-    PowerBiTokenProvider,
-    provider_from_app_state,
+    TokenProviderFactory,
+    no_token_provider,
 )
 from src.metadata.value_index import (
     ValueDomain,
@@ -105,9 +105,9 @@ _TARGET_RE = re.compile(r"^\s*'?([^'\[\]]+?)'?\s*\[\s*([^\]]+?)\s*\]\s*$")
 _NAMEY_HINTS = ("name", "model", "product", "category", "title", "label", "description", "code")
 
 
-def _token_provider() -> Optional[PowerBiTokenProvider]:
-    """Build a token provider from the live connector services (or None)."""
-    return provider_from_app_state()
+# A probe is per-request: it is bound to the dataset and the delegated token of
+# whoever asked the question, so it cannot be built until the state is in hand.
+ProbeFactory = Callable[[DaxAgentState], Optional["PowerBiValueProbe"]]
 
 
 # ── Catalog helpers ───────────────────────────────────────────────────────────
@@ -571,14 +571,31 @@ def make_dax_entity_resolver(
     max_domain_values: int = 1000,
     match_threshold: float = 78.0,
     cross_column_enabled: bool = True,
+    probe_factory: Optional[ProbeFactory] = None,
 ):
-    """Return an async ``dax_entity_resolver`` node."""
+    """Return an async ``dax_entity_resolver`` node.
+
+    The keyword arguments are construction-time defaults. When the agent seeds
+    an admin-tunable snapshot into state (see ``DaxInsightsAgent``), that wins,
+    so resolution can be retuned or switched off without a redeploy. A graph
+    driven directly — tests, evals — supplies no snapshot and gets these.
+
+    ``probe_factory`` is how the node reads values out of the model. It is
+    injected so this node does not have to know where delegated tokens come
+    from; omitting it yields a node that can never probe, which is the correct
+    behaviour on a deployment with no connector platform.
+    """
     dlp_re = build_dax_dlp_regex(dlp_governed_columns)
+    build_probe = probe_factory or make_probe_factory()
+
+    def _setting(state: DaxAgentState, key: str, fallback: Any) -> Any:
+        value = state.get(key)
+        return fallback if value is None else value
 
     async def dax_entity_resolver(state: DaxAgentState) -> Dict[str, Any]:
         attempts = int(state.get("entity_resolution_attempts") or 0)
         base: Dict[str, Any] = {"entity_resolution_attempts": attempts + 1}
-        if not enabled:
+        if not _setting(state, "entity_resolution_enabled", enabled):
             return base
 
         plan = state.get("query_plan") or {}
@@ -590,7 +607,7 @@ def make_dax_entity_resolver(
             logger.info("dax_entity_resolver: no literal filters to resolve")
             return {**base, "unresolved_entities": [], "entity_ambiguities": []}
 
-        probe = _build_probe(state)
+        probe = build_probe(state)
         identity = await _authorize(probe)
         if identity is None:
             # No usable probe, or the reader is no longer entitled to this
@@ -616,9 +633,15 @@ def make_dax_entity_resolver(
             table_columns=state.get("table_columns") or {},
             dlp_re=dlp_re,
             dlp_enabled=dlp_enabled,
-            max_domain_values=max_domain_values,
-            threshold=match_threshold,
-            cross_column=cross_column_enabled,
+            max_domain_values=int(
+                _setting(state, "entity_max_domain_values", max_domain_values)
+            ),
+            threshold=float(
+                _setting(state, "entity_match_threshold", match_threshold)
+            ),
+            cross_column=bool(
+                _setting(state, "entity_cross_column_enabled", cross_column_enabled)
+            ),
         )
 
         # Only text columns are worth probing; skip the rest before spending a
@@ -694,9 +717,22 @@ async def _authorize(probe: Optional[PowerBiValueProbe]) -> Optional[str]:
         return None
 
 
-def _build_probe(state: DaxAgentState) -> Optional[PowerBiValueProbe]:
+def make_probe_factory(
+    token_provider_factory: Optional[TokenProviderFactory] = None,
+) -> ProbeFactory:
+    """Return the production probe factory for a given source of tokens."""
+    provider_for = token_provider_factory or no_token_provider
+
+    def build(state: DaxAgentState) -> Optional[PowerBiValueProbe]:
+        return _build_probe(state, provider_for())
+
+    return build
+
+
+def _build_probe(
+    state: DaxAgentState, provider: Optional[Any]
+) -> Optional[PowerBiValueProbe]:
     """Wire a probe to this request's dataset and delegated token."""
-    provider = _token_provider()
     if provider is None:
         return None
     try:

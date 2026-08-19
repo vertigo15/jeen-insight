@@ -206,6 +206,35 @@ class ConversationHistoryService:
         except Exception:
             logger.exception("Failed to update execution")
 
+    async def update_node_trace(
+        self,
+        *,
+        query_id: UUID,
+        node_trace: List[Dict[str, Any]],
+    ) -> None:
+        """Store the slim per-node timings for this run.
+
+        Written after the graph finishes rather than from ``save_to_memory``,
+        because the trace is not complete until the tail nodes have run. This
+        is telemetry: a failure here must never affect the answer, so it is
+        swallowed like the other updates on this service.
+        """
+        if not node_trace:
+            return
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE insights_conversation_sessions
+                    SET node_trace = $1
+                    WHERE id = $2
+                    """,
+                    json.dumps(node_trace),
+                    query_id,
+                )
+        except Exception:
+            logger.exception("Failed to persist node trace")
+
     # ------------------------------------------------------------------
     # Insights
     # ------------------------------------------------------------------

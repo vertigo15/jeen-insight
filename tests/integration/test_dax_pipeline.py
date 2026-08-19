@@ -128,7 +128,6 @@ def _initial_state():
 
 
 async def test_dax_pipeline_happy_path(monkeypatch):
-    monkeypatch.setattr(ex, "_token_provider", lambda: _TokenProvider())
     monkeypatch.setattr(ex, "PowerBiDaxClient", _PbiClient)
 
     main_llm = _MainLLM()
@@ -143,6 +142,8 @@ async def test_dax_pipeline_happy_path(monkeypatch):
         dlp_enabled=False,           # keep the happy path free of governance blocks
         dax_validation_enabled=True,
         eval_analytics_enabled=False,  # skip the eval LLM leg
+        entity_resolution_enabled=False,  # covered by its own unit tests
+        token_provider_factory=lambda: _TokenProvider(),
     )
 
     final = await graph.ainvoke(_initial_state())
@@ -162,11 +163,9 @@ async def test_dax_pipeline_happy_path(monkeypatch):
     assert main_llm.calls == 2
 
 
-async def test_dax_pipeline_needs_connect(monkeypatch):
+async def test_dax_pipeline_needs_connect():
     # No connector services configured → the executor short-circuits to a hard,
     # terminal connect/config message rather than looping the repair budget.
-    monkeypatch.setattr(ex, "_token_provider", lambda: None)
-
     graph = build_dax_graph(
         llm=_MainLLM(),
         router_llm=_RouterLLM(),
@@ -176,6 +175,8 @@ async def test_dax_pipeline_needs_connect(monkeypatch):
         deployment_name="gpt-x",
         dlp_enabled=False,
         eval_analytics_enabled=False,
+        entity_resolution_enabled=False,
+        token_provider_factory=lambda: None,
     )
 
     final = await graph.ainvoke(_initial_state())

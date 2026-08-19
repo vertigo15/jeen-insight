@@ -27,16 +27,9 @@ from typing import Any, Callable, Dict, List
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
+from src.agent.token_usage import merge_usage
 
 logger = logging.getLogger(__name__)
-
-
-def _merge_usage(current: Dict[str, int], new: Dict[str, Any]) -> Dict[str, int]:
-    return {
-        "input_tokens": current.get("input_tokens", 0) + (new.get("prompt_tokens") or 0),
-        "output_tokens": current.get("output_tokens", 0) + (new.get("completion_tokens") or 0),
-        "total_tokens": current.get("total_tokens", 0) + (new.get("total_tokens") or 0),
-    }
 
 
 _SAMPLE_ROWS = 12
@@ -112,6 +105,10 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
         )
         model_override = await prompt_loader.model_override_for("fused_eval_analytics")
 
+        # Lazy: importing src.api at module scope would close an import cycle
+        # (src.api → lifespan → src.agent → this module).
+        from src.api.llm_params import QUERY_PARAMS  # noqa: PLC0415
+
         t0 = time.monotonic()
         response = await llm.generate(
             messages=[
@@ -119,7 +116,11 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
                 {"role": "user", "content": "Evaluate the results and respond with JSON."},
             ],
             temperature=0.2,
-            max_tokens=600,
+            # Same ceiling as the standalone eval subgraph below. These two run
+            # the same analysis; at 600 the inline one truncated rich
+            # fragment-array summaries mid-JSON and the parse fell back to a
+            # bare text summary, silently losing the findings.
+            max_tokens=QUERY_PARAMS.max_tokens,
             model_override=model_override,
             timeout=state.get("llm_timeout_seconds"),
         )
@@ -176,7 +177,7 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
             "eval_result": eval_result,
             "llm_call_count": (state.get("llm_call_count") or 0) + 1,
             "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
-            "token_usage": _merge_usage(state.get("token_usage") or {}, usage),
+            "token_usage": merge_usage(state.get("token_usage") or {}, usage),
             "node_prompts": {**(state.get("node_prompts") or {}), "fused_eval_analytics": prompt},
         }
 
@@ -230,7 +231,8 @@ def make_fused_eval_analytics_subgraph(
         except KeyError:
             prompt_text = template
 
-        from src.api.llm_params import QUERY_PARAMS
+        from src.api.llm_params import QUERY_PARAMS  # noqa: PLC0415
+
         try:
             response = await llm_service.generate(
                 messages=[

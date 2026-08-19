@@ -70,6 +70,14 @@ class DaxAgentState(AgentState, total=False):
     # feedback router to retry resolution on an empty result.
     unresolved_entities: List[Dict[str, Any]]
     entity_resolution_attempts: int
+    # Admin-tunable resolution controls, snapshotted once per question by the
+    # agent so a mid-flight settings change cannot alter behaviour between
+    # repair retries. Absent when a graph is driven directly (tests, evals), in
+    # which case the node falls back to its construction-time defaults.
+    entity_resolution_enabled: bool
+    entity_max_domain_values: int
+    entity_match_threshold: float
+    entity_cross_column_enabled: bool
 
     # ── DAX generation / validation ─────────────────────────────────────────
     generated_dax: Optional[str]

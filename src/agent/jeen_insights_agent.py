@@ -20,7 +20,8 @@ from uuid import UUID, uuid4
 
 from src.agent.conversation_history import ConversationHistoryService
 from src.agent.langgraph_agent import PromptLoader, build_graph
-from src.agent.langgraph_agent.nodes.output import _enrich_trace
+from src.agent.langgraph_agent.nodes.catalog import _load_catalog_bundle
+from src.agent.langgraph_agent.nodes.output import _enrich_trace, slim_trace
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
 from src.agent.user_resolver import SimpleUserResolver
@@ -129,7 +130,7 @@ class JeenInsightsAgent:
             # hiccup) the flow continues with query_id=None and the error is
             # surfaced in the UI via formatted_response["error"].
             results = await asyncio.gather(
-                self._load_catalog(self.source_key),
+                _load_catalog_bundle(self.source_key, self.metadata_loader),
                 self._fetch_conversation_context(
                     session_id, user_id=str(user.id), limit=runtime.conversation_context_turns
                 ),
@@ -142,9 +143,10 @@ class JeenInsightsAgent:
             )
 
             # Unpack — keep going even if individual calls errored
-            metadata_bundle: Dict[str, str] = (
-                results[0] if not isinstance(results[0], Exception) else {}
-            )
+            metadata_bundle: Dict[str, str] = {}
+            catalog_meta: Dict[str, Any] = {}
+            if not isinstance(results[0], Exception):
+                metadata_bundle, catalog_meta = results[0]
             conversation_context: List[Dict[str, Any]] = (
                 results[1] if not isinstance(results[1], Exception) else []
             )
@@ -152,15 +154,21 @@ class JeenInsightsAgent:
                 results[2] if not isinstance(results[2], Exception) else None
             )
 
-            # Surface non-fatal pre-graph errors for observability
+            # Surface non-fatal pre-graph errors for observability.
+            #
+            # A failed catalog load is deliberately NOT one of them: this load is
+            # only a head start for catalog_lookup, which will retry and, if it
+            # also fails, fail closed with a message written for the user. Seeding
+            # state["error"] here would outlive that recovery — response_formatter
+            # prefers state["error"] over everything else, so a transient blip
+            # would surface as an error on an otherwise successful answer.
             pre_graph_error: Optional[str] = None
             if isinstance(results[0], Exception):
-                pre_graph_error = f"Metadata load failed: {results[0]}"
-                logger.error("metadata_loader.load_all failed: %s", results[0])
+                logger.error("catalog pre-load failed (recoverable): %s", results[0])
             if isinstance(results[1], Exception):
                 logger.warning("_fetch_conversation_context failed: %s", results[1])
             if isinstance(results[2], Exception):
-                pre_graph_error = pre_graph_error or f"Audit log failed: {results[2]}"
+                pre_graph_error = f"Audit log failed: {results[2]}"
                 logger.warning("log_query failed (non-fatal): %s", results[2])
 
             initial_state: AgentState = {
@@ -192,7 +200,13 @@ class JeenInsightsAgent:
                 "route": "needs_query",
                 "route_reason": "",
                 # ── Catalog ─────────────────────────────────────────────
+                # Pre-loaded above; catalog_lookup consumes it instead of
+                # loading a second time. catalog_seeded is the one-shot ticket.
                 "metadata_bundle": metadata_bundle,
+                "catalog_seeded": bool(metadata_bundle),
+                "catalog_source_used": catalog_meta.get("source", "db"),
+                "catalog_cache": catalog_meta.get("cache"),
+                "catalog_load_ms": int(catalog_meta.get("load_ms") or 0),
                 "dialect_rules": "",
                 "known_tables": [],
                 "known_columns": [],
@@ -245,6 +259,9 @@ class JeenInsightsAgent:
             # observability_log — are included in the developer log.
             raw_trace = list(final_state.get("trace") or [])
             if raw_trace:
+                # Slim before enriching: enrichment attaches rendered prompts,
+                # so taking the projection first makes leaking one impossible.
+                await self._safe_persist_trace(query_id, slim_trace(raw_trace))
                 _enrich_trace(raw_trace, final_state)
                 formatted["trace"] = raw_trace
 
@@ -267,25 +284,6 @@ class JeenInsightsAgent:
     # Internals
     # ------------------------------------------------------------------
 
-    async def _load_catalog(self, source_key: str) -> Dict[str, str]:
-        """
-        Load the catalog bundle, routing to MCP or the metadata DB depending
-        on the global ``app_settings.catalog_source`` setting.
-        Falls back silently to the metadata DB on any error.
-        """
-        try:
-            from src.api import state as _state  # noqa: PLC0415 (lazy import avoids circular)
-            if _state.mcp_server_service and _state.mcp_catalog_client:
-                catalog_source = await _state.mcp_server_service.get_catalog_source(source_key)
-                if catalog_source == "mcp":
-                    logger.info("agent: catalog pre-fetch via MCP for source_key=%s", source_key)
-                    return await _state.mcp_catalog_client.load_all(source_key)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "agent: MCP catalog pre-fetch failed (%s) — falling back to metadata DB", exc
-            )
-        return await self.metadata_loader.load_all(source_key)
-
     async def _safe_log_query(
         self,
         *,
@@ -303,6 +301,17 @@ class JeenInsightsAgent:
             dataset_id=self.source_key,
             rag_context={},  # metadata not yet available; parallel fetch
         )
+
+    async def _safe_persist_trace(
+        self, query_id: Optional[UUID], node_trace: List[Dict[str, Any]]
+    ) -> None:
+        """Record per-node timings. Telemetry: never fail the answer over it."""
+        if not query_id or not node_trace:
+            return
+        try:
+            await self.history.update_node_trace(query_id=query_id, node_trace=node_trace)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to persist node trace")
 
     async def _fetch_conversation_context(
         self, session_id: UUID, *, user_id: str, limit: int = 5

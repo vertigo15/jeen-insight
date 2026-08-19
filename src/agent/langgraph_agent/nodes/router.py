@@ -25,6 +25,7 @@ from src.agent.langgraph_agent.nodes.safety_text import fence_untrusted
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
+from src.agent.token_usage import merge_usage
 
 logger = logging.getLogger(__name__)
 
@@ -75,14 +76,6 @@ def _format_recent_history(history: Any) -> str:
             line += f"\nSQL: {sql}"
         lines.append(line)
     return "\n".join(lines)
-
-
-def _merge_usage(current: Dict[str, int], new: Dict[str, Any]) -> Dict[str, int]:
-    return {
-        "input_tokens": current.get("input_tokens", 0) + (new.get("prompt_tokens") or 0),
-        "output_tokens": current.get("output_tokens", 0) + (new.get("completion_tokens") or 0),
-        "total_tokens": current.get("total_tokens", 0) + (new.get("total_tokens") or 0),
-    }
 
 
 def make_fused_router(router_llm: LangChainLlmService, prompt_loader: PromptLoader):
@@ -175,7 +168,7 @@ def make_fused_router(router_llm: LangChainLlmService, prompt_loader: PromptLoad
             "route_reason": reason,
             "llm_call_count": (state.get("llm_call_count") or 0) + 1,
             "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
-            "token_usage": _merge_usage(state.get("token_usage") or {}, usage),
+            "token_usage": merge_usage(state.get("token_usage") or {}, usage),
             "node_prompts": {**(state.get("node_prompts") or {}), "fused_router": system_msg},
         }
 

@@ -19,7 +19,7 @@ from datetime import date, datetime, time as dt_time
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from src.agent.conversation_history import ConversationHistoryService
+from src.agent.conversation_history import ConversationHistoryService, insight_text
 from src.agent.langgraph_agent.state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -225,10 +225,27 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
         },
     }
 
+    # Eval output, named to match GenerateInsightsResponse so the two endpoints
+    # that expose this analysis return one shape. These must also be declared on
+    # QueryResponse — Pydantic drops any key the model doesn't know about, which
+    # is how this whole block used to be thrown away.
+    #
+    # `insights` is the eval node's name for what the API calls `findings`, and
+    # the node emits `follow_up_questions`, not `follow_up`. Findings are meant
+    # to be plain strings but occasionally come back as highlight-fragment
+    # arrays, so flatten rather than let one stray shape fail the response.
     if eval_result.get("insights"):
-        formatted["insights"] = eval_result["insights"]
-    if eval_result.get("follow_up"):
-        formatted["follow_up"] = eval_result["follow_up"]
+        formatted["findings"] = [
+            insight_text(f) for f in eval_result["insights"] if f
+        ]
+    if eval_result.get("suggestions"):
+        formatted["suggestions"] = [
+            insight_text(s) for s in eval_result["suggestions"] if s
+        ]
+    if eval_result.get("follow_up_questions"):
+        formatted["followups"] = [
+            insight_text(q) for q in eval_result["follow_up_questions"] if q
+        ]
 
     # ── Execution trace ───────────────────────────────────────────────────────────────────
     # NOTE: the trace is intentionally NOT attached here. response_formatter
@@ -244,6 +261,36 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
         formatted["node_prompts"] = node_prompts
 
     return {"formatted_response": formatted}
+
+
+def slim_trace(events: list) -> List[Dict[str, Any]]:
+    """Reduce an execution trace to the fields that are safe to store.
+
+    The in-memory trace is built for the developer panel: ``_enrich_trace``
+    hangs the fully rendered LLM prompt off every node that called a model,
+    plus prose ``detail`` lines that can quote the generated SQL. None of that
+    belongs in a telemetry column — it carries catalog schema and user data,
+    and dwarfs the timings we actually want to aggregate.
+
+    Order is preserved and repeated node names are kept: a second
+    ``sql_generator`` event is a repair retry, and collapsing the two would
+    hide exactly the pathology this data exists to find.
+    """
+    slim: List[Dict[str, Any]] = []
+    for event in events or []:
+        node = event.get("node")
+        if not node:
+            continue
+        try:
+            elapsed = int(event.get("elapsed_ms") or 0)
+        except (TypeError, ValueError):
+            elapsed = 0
+        slim.append({
+            "node": str(node),
+            "elapsed_ms": elapsed,
+            "type": str(event.get("type") or "logic"),
+        })
+    return slim
 
 
 def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[name-defined]
@@ -481,6 +528,11 @@ def observability_log(state: AgentState) -> Dict[str, Any]:
         "has_error": has_error,
         "connector_error_type": result.get("error_type"),
         "query_id": str(state.get("query_id") or ""),
+        # Same shape as the persisted node_trace column, so per-node latency is
+        # still recoverable from logs alone if a pipeline is added later. This
+        # node runs inside the graph, so the three tail nodes are necessarily
+        # absent here; the stored column is the complete record.
+        "nodes": slim_trace(state.get("trace") or []),
     }
 
     # Human-readable summary + machine-parseable JSON in one line.

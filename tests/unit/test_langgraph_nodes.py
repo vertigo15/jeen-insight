@@ -529,7 +529,12 @@ class TestResponseFormatter:
             "governance_error": None,
             "route": "needs_query",
             "connection_display_name": "Test DB",
-            "eval_result": {"summary": "Sales total is $1,000.", "insights": ["Revenue is stable"], "follow_up": "", "answers_intent": True},
+            "eval_result": {
+                "summary": "Sales total is $1,000.",
+                "insights": ["Revenue is stable"],
+                "follow_up_questions": ["How did Q4 compare?"],
+                "answers_intent": True,
+            },
             "structured_prompt": {},
             "error": None,
             "exec_error": None,
@@ -585,13 +590,41 @@ class TestResponseFormatter:
         assert result["metrics"]["llm_call_count"] == 3
 
     def test_insights_attached_when_present(self):
+        """Eval output is exposed under the names QueryResponse declares.
+
+        The keys must match GenerateInsightsResponse (findings / suggestions /
+        followups) — anything else is silently dropped by Pydantic.
+        """
         result = response_formatter(self._state())["formatted_response"]
-        assert result.get("insights") == ["Revenue is stable"]
+        assert result.get("findings") == ["Revenue is stable"]
+
+    def test_follow_ups_read_from_the_key_eval_actually_writes(self):
+        """Regression: eval emits follow_up_questions, not follow_up."""
+        result = response_formatter(self._state())["formatted_response"]
+        assert result.get("followups") == ["How did Q4 compare?"]
+
+    def test_fragment_array_findings_are_flattened_to_text(self):
+        """Findings are meant to be strings but sometimes arrive as fragments.
+
+        QueryResponse types them as List[str], so a stray fragment array must be
+        flattened here rather than failing validation for the whole response.
+        """
+        state = self._state(eval_result={
+            "summary": "ok",
+            "insights": [[{"t": "Revenue rose ", "hl": "pos"}, {"t": "12%"}]],
+            "answers_intent": True,
+        })
+        result = response_formatter(state)["formatted_response"]
+        assert result.get("findings") == ["Revenue rose 12%"]
 
     def test_no_insights_key_when_absent(self):
-        state = self._state(eval_result={"summary": "ok", "insights": [], "answers_intent": True, "follow_up": ""})
+        state = self._state(eval_result={
+            "summary": "ok", "insights": [], "answers_intent": True,
+            "follow_up_questions": [],
+        })
         result = response_formatter(state)["formatted_response"]
-        assert "insights" not in result
+        assert "findings" not in result
+        assert "followups" not in result
 
 
 # ── _extract_table_names ──────────────────────────────────────────────────────

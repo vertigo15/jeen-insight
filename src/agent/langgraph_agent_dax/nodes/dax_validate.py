@@ -29,6 +29,7 @@ from src.agent.langgraph_agent_dax.prompt_loader import DaxPromptLoader
 from src.agent.langgraph_agent_dax.state import DaxAgentState
 from src.agent.llm_service import LangChainLlmService
 from src.connectors.dax_safety import banned_token, is_read_only_dax, lex_dax
+from src.agent.token_usage import merge_usage
 from src.tools.dax_tool import RunDaxTool
 
 logger = logging.getLogger(__name__)
@@ -236,14 +237,6 @@ def _repairable_or_exhausted(
 # ── dax_repair ─────────────────────────────────────────────────────────────────
 
 
-def _merge_usage(current: Dict[str, int], new: Dict[str, Any]) -> Dict[str, int]:
-    return {
-        "input_tokens": current.get("input_tokens", 0) + (new.get("prompt_tokens") or 0),
-        "output_tokens": current.get("output_tokens", 0) + (new.get("completion_tokens") or 0),
-        "total_tokens": current.get("total_tokens", 0) + (new.get("total_tokens") or 0),
-    }
-
-
 def make_dax_repair(llm: LangChainLlmService, prompt_loader: DaxPromptLoader):
     """Return an async ``dax_repair`` node (focused pre-execution repair)."""
 
@@ -296,7 +289,7 @@ def make_dax_repair(llm: LangChainLlmService, prompt_loader: DaxPromptLoader):
         updates: Dict[str, Any] = {
             "llm_call_count": (state.get("llm_call_count") or 0) + 1,
             "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
-            "token_usage": _merge_usage(state.get("token_usage") or {}, usage),
+            "token_usage": merge_usage(state.get("token_usage") or {}, usage),
             "repair_attempts_by_category": counts,
             "dax_repairable_error": None,
             "dax_lint_errors": [],

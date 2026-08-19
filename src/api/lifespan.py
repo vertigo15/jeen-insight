@@ -77,6 +77,11 @@ async def _ensure_schema(conn) -> None:
         ALTER TABLE insights_conversation_sessions
             ADD COLUMN IF NOT EXISTS result_artifact JSONB
     """)
+    # Slim per-node graph timings (see migration 020).
+    await conn.execute("""
+        ALTER TABLE insights_conversation_sessions
+            ADD COLUMN IF NOT EXISTS node_trace JSONB
+    """)
 
     # ── MCP tables ────────────────────────────────────────────────────────────
     await conn.execute("""
@@ -368,6 +373,11 @@ async def lifespan(_app: FastAPI):
 
     # Separate registry for Power BI (text-to-DAX) connections. Shares the same
     # collaborators but is a distinct object so the SQL path is never touched.
+    # The token factory is built here, where the connector services already
+    # exist, so the DAX nodes receive their Power BI credentials instead of
+    # reaching back into this module for them.
+    from src.connectors.powerbi_token import make_provider_factory
+
     state.dax_agent_registry = DaxAgentRegistry(
         llm_service=llm_service,
         router_llm_service=router_llm_service,
@@ -376,6 +386,11 @@ async def lifespan(_app: FastAPI):
         connection_service=state.connection_service,
         history_service=state.history_service,
         user_resolver=_user_resolver,
+        token_provider_factory=make_provider_factory(
+            identity_service=state.identity_service,
+            registry_service=state.registry_service,
+            grant_service=state.grant_service,
+        ),
     )
 
     # ── Build LangGraph insights eval subgraph ────────────────────────────

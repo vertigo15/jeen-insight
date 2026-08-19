@@ -24,6 +24,7 @@ from src.agent.langgraph_agent.nodes.safety_text import fence_untrusted
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
+from src.agent.token_usage import merge_usage
 from src.tools.sql_tool import RunSqlTool
 
 logger = logging.getLogger(__name__)
@@ -134,17 +135,6 @@ def _reuse_prior_result(state: AgentState, question: str) -> Optional[Dict[str, 
             "rows": rows,
             "row_count": len(rows),
         },
-    }
-
-
-# ── Shared helpers ────────────────────────────────────────────────────────────
-
-
-def _merge_usage(current: Dict[str, int], new: Dict[str, Any]) -> Dict[str, int]:
-    return {
-        "input_tokens": current.get("input_tokens", 0) + (new.get("prompt_tokens") or 0),
-        "output_tokens": current.get("output_tokens", 0) + (new.get("completion_tokens") or 0),
-        "total_tokens": current.get("total_tokens", 0) + (new.get("total_tokens") or 0),
     }
 
 
@@ -310,7 +300,7 @@ def make_sql_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
         updates: Dict[str, Any] = {
             "llm_call_count": (state.get("llm_call_count") or 0) + 1,
             "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
-            "token_usage": _merge_usage(state.get("token_usage") or {}, usage),
+            "token_usage": merge_usage(state.get("token_usage") or {}, usage),
             "sqlglot_error": None,
             "exec_error": None,
             "dlp_blocked": False,
@@ -441,7 +431,7 @@ def make_memory_answer_generator(llm: LangChainLlmService, prompt_loader: Prompt
         base_usage = {
             "llm_call_count": (state.get("llm_call_count") or 0) + 1,
             "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
-            "token_usage": _merge_usage(state.get("token_usage") or {}, usage),
+            "token_usage": merge_usage(state.get("token_usage") or {}, usage),
             "node_prompts": {**(state.get("node_prompts") or {}), "memory_answer_generator": prompt},
         }
         if reuse_prior:

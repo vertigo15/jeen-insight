@@ -25,8 +25,8 @@ from src.config import settings
 from src.connectors.powerbi import PowerBiDaxClient
 from src.connectors.powerbi_token import (
     PowerBiTokenError,
-    PowerBiTokenProvider,
-    provider_from_app_state,
+    TokenProviderFactory,
+    no_token_provider,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,13 +39,18 @@ _MAX_BACKOFF_SECONDS = 8.0
 _MAX_EMPTY_DIAGNOSTICS = 1
 
 
-def _token_provider() -> Optional[PowerBiTokenProvider]:
-    """Build a token provider from the live connector services (or None)."""
-    return provider_from_app_state()
+def make_pbi_execute_query(
+    token_provider_factory: Optional[TokenProviderFactory] = None,
+):
+    """Return an async ``pbi_execute_query`` node.
 
-
-def make_pbi_execute_query():
-    """Return an async ``pbi_execute_query`` node."""
+    ``token_provider_factory`` supplies the delegated Power BI token. It is
+    injected by whoever composes the graph rather than looked up from global
+    application state, so this node can be exercised with a stub. Omitting it
+    means "this deployment has no connector platform", which the node reports
+    as a configuration problem rather than a failure.
+    """
+    provider_for = token_provider_factory or no_token_provider
 
     async def pbi_execute_query(state: DaxAgentState) -> Dict[str, Any]:
         dax = state.get("generated_dax") or state.get("generated_sql") or ""
@@ -56,7 +61,7 @@ def make_pbi_execute_query():
         if limit and limit > 0:
             max_rows = min(max_rows, limit)
 
-        provider = _token_provider()
+        provider = provider_for()
         if provider is None:
             return _needs_connect(
                 state,

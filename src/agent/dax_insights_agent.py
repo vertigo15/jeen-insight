@@ -28,13 +28,15 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
 from src.agent.conversation_history import ConversationHistoryService
-from src.agent.langgraph_agent.nodes.output import _enrich_trace
+from src.agent.langgraph_agent.nodes.catalog import _load_catalog_bundle
+from src.agent.langgraph_agent.nodes.output import _enrich_trace, slim_trace
 from src.agent.langgraph_agent_dax import DaxPromptLoader, build_dax_graph
 from src.agent.langgraph_agent_dax.state import DaxAgentState
 from src.agent.llm_service import LangChainLlmService
 from src.agent.user_resolver import SimpleUserResolver
 from src.config import settings
 from src.connections import Connection, ConnectionService
+from src.connectors.powerbi_token import TokenProviderFactory
 from src.metadata import MetadataLoader
 
 logger = logging.getLogger(__name__)
@@ -101,6 +103,7 @@ class DaxInsightsAgent:
         history_service: ConversationHistoryService,
         user_resolver: SimpleUserResolver,
         prompt_loader: DaxPromptLoader,
+        token_provider_factory: Optional[TokenProviderFactory] = None,
     ) -> None:
         self.connection = connection
         self.source_key = connection.source_key
@@ -134,6 +137,7 @@ class DaxInsightsAgent:
             entity_max_domain_values=settings.DAX_ENTITY_MAX_DOMAIN_VALUES,
             entity_match_threshold=settings.DAX_ENTITY_MATCH_THRESHOLD,
             entity_cross_column_enabled=settings.DAX_ENTITY_CROSS_COLUMN_ENABLED,
+            token_provider_factory=token_provider_factory,
         )
         logger.info(
             "✅ DAX agent ready for source_key=%s (workspace=%s dataset=%s)",
@@ -162,7 +166,7 @@ class DaxInsightsAgent:
             runtime = await get_runtime_settings()
 
             results = await asyncio.gather(
-                self.metadata_loader.load_all(self.source_key),
+                _load_catalog_bundle(self.source_key, self.metadata_loader),
                 self._fetch_conversation_context(
                     session_id, user_id=str(user.id), limit=runtime.conversation_context_turns
                 ),
@@ -172,22 +176,26 @@ class DaxInsightsAgent:
                 return_exceptions=True,
             )
 
-            metadata_bundle: Dict[str, str] = (
-                results[0] if not isinstance(results[0], Exception) else {}
-            )
+            metadata_bundle: Dict[str, str] = {}
+            catalog_meta: Dict[str, Any] = {}
+            if not isinstance(results[0], Exception):
+                metadata_bundle, catalog_meta = results[0]
             conversation_context: List[Dict[str, Any]] = (
                 results[1] if not isinstance(results[1], Exception) else []
             )
             query_id = results[2] if not isinstance(results[2], Exception) else None
 
+            # A failed catalog pre-load is recoverable — dax_catalog_lookup
+            # retries and fails closed with a user-facing message if it also
+            # fails — so it must not be seeded into state["error"], which
+            # response_formatter would then prefer over a successful answer.
             pre_graph_error: Optional[str] = None
             if isinstance(results[0], Exception):
-                pre_graph_error = f"Metadata load failed: {results[0]}"
-                logger.error("dax: metadata_loader.load_all failed: %s", results[0])
+                logger.error("dax: catalog pre-load failed (recoverable): %s", results[0])
             if isinstance(results[1], Exception):
                 logger.warning("dax: _fetch_conversation_context failed: %s", results[1])
             if isinstance(results[2], Exception):
-                pre_graph_error = pre_graph_error or f"Audit log failed: {results[2]}"
+                pre_graph_error = f"Audit log failed: {results[2]}"
                 logger.warning("dax: log_query failed (non-fatal): %s", results[2])
 
             initial_state: DaxAgentState = {
@@ -223,7 +231,13 @@ class DaxInsightsAgent:
                 "route": "needs_query",
                 "route_reason": "",
                 # ── Catalog (SQL-shared) ────────────────────────────────
+                # Pre-loaded above; dax_catalog_lookup consumes it instead of
+                # loading a second time. catalog_seeded is the one-shot ticket.
                 "metadata_bundle": metadata_bundle,
+                "catalog_seeded": bool(metadata_bundle),
+                "catalog_source_used": catalog_meta.get("source", "db"),
+                "catalog_cache": catalog_meta.get("cache"),
+                "catalog_load_ms": int(catalog_meta.get("load_ms") or 0),
                 "dialect_rules": "",
                 "known_tables": [],
                 "known_columns": [],
@@ -250,6 +264,12 @@ class DaxInsightsAgent:
                 "entity_ambiguities": [],
                 "unresolved_entities": [],
                 "entity_resolution_attempts": 0,
+                # Snapshot the admin-tunable knobs once per question so a mid-
+                # flight change cannot alter behaviour between repair retries.
+                "entity_resolution_enabled": runtime.dax_entity_resolution_enabled,
+                "entity_max_domain_values": runtime.dax_entity_max_domain_values,
+                "entity_match_threshold": runtime.dax_entity_match_threshold,
+                "entity_cross_column_enabled": runtime.dax_entity_cross_column_enabled,
                 # ── DAX generation / validation ─────────────────────────
                 "retry_count": 0,
                 "generated_sql": None,       # kept for shared nodes; == generated_dax
@@ -315,6 +335,9 @@ class DaxInsightsAgent:
 
             raw_trace = list(final_state.get("trace") or [])
             if raw_trace:
+                # Slim before enriching: enrichment attaches rendered prompts,
+                # so taking the projection first makes leaking one impossible.
+                await self._safe_persist_trace(query_id, slim_trace(raw_trace))
                 _enrich_trace(raw_trace, final_state)
                 formatted["trace"] = raw_trace
 
@@ -354,6 +377,17 @@ class DaxInsightsAgent:
             rag_context={},
         )
 
+    async def _safe_persist_trace(
+        self, query_id: Optional[UUID], node_trace: List[Dict[str, Any]]
+    ) -> None:
+        """Record per-node timings. Telemetry: never fail the answer over it."""
+        if not query_id or not node_trace:
+            return
+        try:
+            await self.history.update_node_trace(query_id=query_id, node_trace=node_trace)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to persist node trace")
+
     async def _fetch_conversation_context(
         self, session_id: UUID, *, user_id: str, limit: int = 5
     ) -> List[Dict[str, Any]]:
@@ -390,7 +424,9 @@ class DaxAgentRegistry:
         user_resolver: SimpleUserResolver,
         prompt_loader: Optional[DaxPromptLoader] = None,
         prompt_cache: Optional[Any] = None,
+        token_provider_factory: Optional[TokenProviderFactory] = None,
     ) -> None:
+        self.token_provider_factory = token_provider_factory
         self.llm = llm_service
         self.router_llm = router_llm_service or llm_service
         self.metadata_loader = metadata_loader
@@ -419,6 +455,7 @@ class DaxAgentRegistry:
                 history_service=self.history,
                 user_resolver=self.user_resolver,
                 prompt_loader=self.prompt_loader,
+                token_provider_factory=self.token_provider_factory,
             )
             self._agents[source_key] = agent
             logger.info("✅ Built DaxInsightsAgent for source_key=%s", source_key)

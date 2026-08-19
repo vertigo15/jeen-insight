@@ -54,6 +54,13 @@ class QueryResponse(BaseModel):
     metrics: Optional[Dict[str, Any]] = None
     # Per-node execution trace. Each entry: {node, elapsed_ms, icon, type, detail, ...}
     trace: Optional[List[Dict[str, Any]]] = None
+    # Result analysis from the inline eval node, present only when the caller
+    # asked for it (eval_analytics=true). Named to match
+    # GenerateInsightsResponse so both endpoints expose the same shape; the
+    # browser uses the /generate-insights/stream SSE path instead.
+    findings: Optional[List[str]] = None
+    suggestions: Optional[List[str]] = None
+    followups: Optional[List[str]] = None
     # Opaque handle to a durable, server-held encrypted snapshot of this result.
     # Present only when the connector platform is enabled; used as the sole
     # authorization source for outbound actions (send/share).

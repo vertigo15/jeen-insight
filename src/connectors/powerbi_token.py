@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from src.security.crypto import CryptoError
 
@@ -310,21 +310,40 @@ class PowerBiTokenProvider:
         )
 
 
-def provider_from_app_state() -> Optional[PowerBiTokenProvider]:
-    """Build a provider from the live connector services, or None if unavailable.
+TokenProviderFactory = Callable[[], Optional[PowerBiTokenProvider]]
 
-    Shared by every graph node that needs a delegated Power BI token so there is
-    one place that knows which services must be present.
+
+def make_provider_factory(
+    *,
+    identity_service: Optional[Any],
+    registry_service: Optional[Any],
+    grant_service: Optional[Any],
+) -> TokenProviderFactory:
+    """Return a factory that mints a provider from these connector services.
+
+    Composition (the API lifespan) builds this once the services exist and hands
+    it to whatever needs a delegated token, so the graph nodes never reach back
+    into application state to find their collaborators. The result is a callable
+    rather than a provider because callers expect one construction per use, and
+    because a deployment with connectors switched off must still be able to hand
+    over *something* that simply yields ``None``.
     """
-    from src.api import state as _state
 
-    if not (_state.identity_service and _state.registry_service and _state.grant_service):
-        return None
-    return PowerBiTokenProvider(
-        identity_service=_state.identity_service,
-        registry_service=_state.registry_service,
-        grant_service=_state.grant_service,
-    )
+    def factory() -> Optional[PowerBiTokenProvider]:
+        if not (identity_service and registry_service and grant_service):
+            return None
+        return PowerBiTokenProvider(
+            identity_service=identity_service,
+            registry_service=registry_service,
+            grant_service=grant_service,
+        )
+
+    return factory
+
+
+def no_token_provider() -> None:
+    """A factory for deployments and tests with no connector platform."""
+    return None
 
 
 __all__ = [
@@ -332,5 +351,7 @@ __all__ = [
     "PowerBiTokenError",
     "PowerBiTokenProvider",
     "POWERBI_CONNECTOR_KEY",
-    "provider_from_app_state",
+    "TokenProviderFactory",
+    "make_provider_factory",
+    "no_token_provider",
 ]

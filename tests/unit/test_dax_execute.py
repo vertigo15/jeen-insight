@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 import src.agent.langgraph_agent_dax.nodes.dax_execute as ex
 from src.agent.langgraph_agent_dax.nodes.dax_execute import (
     make_pbi_execute_query,
@@ -39,9 +37,11 @@ class _Client:
     def __init__(self, results, raise_on_init=None):
         self._results = list(results)
         self.exec_calls = 0
+        self.tokens_used = []
 
     async def execute_dax(self, dax, token, *, max_rows=None):
         self.exec_calls += 1
+        self.tokens_used.append(token)
         return self._results.pop(0) if self._results else {"error": "no result", "error_type": "service"}
 
 
@@ -57,22 +57,22 @@ def _state(**overrides):
 
 
 def _wire(monkeypatch, provider, client):
-    monkeypatch.setattr(ex, "_token_provider", lambda: provider)
+    """Stub the HTTP client and return a node wired to ``provider``."""
     monkeypatch.setattr(ex, "PowerBiDaxClient", lambda **kw: client)
+    return make_pbi_execute_query(lambda: provider)
 
 
 class TestExecute:
-    async def test_no_provider_is_hard_terminal(self, monkeypatch):
-        monkeypatch.setattr(ex, "_token_provider", lambda: None)
-        out = await make_pbi_execute_query()(_state())
+    async def test_no_provider_is_hard_terminal(self):
+        out = await make_pbi_execute_query(lambda: None)(_state())
         assert out["dax_terminal"] is True
         assert out["needs_connect"] is False  # hard config error, not a connect prompt
         assert out["answer"]
 
     async def test_token_error_needs_connect(self, monkeypatch):
         provider = _Provider(error=PowerBiTokenError("connect me", needs_connect=True))
-        _wire(monkeypatch, provider, _Client([]))
-        out = await make_pbi_execute_query()(_state())
+        node = _wire(monkeypatch, provider, _Client([]))
+        out = await node(_state())
         assert out["dax_terminal"] is True
         assert out["needs_connect"] is True
 
@@ -81,8 +81,8 @@ class TestExecute:
         client = _Client([
             {"columns": ["Region"], "rows": [{"Region": "EU"}], "row_count": 1, "is_partial": False}
         ])
-        _wire(monkeypatch, provider, client)
-        out = await make_pbi_execute_query()(_state())
+        node = _wire(monkeypatch, provider, client)
+        out = await node(_state())
         assert out["exec_error"] is None
         assert out["query_result"]["row_count"] == 1
         assert out["query_result"]["columns"] == ["Region"]
@@ -95,34 +95,47 @@ class TestExecute:
             {"error": "unauthorized", "error_type": "auth"},
             {"columns": ["X"], "rows": [{"X": 1}], "row_count": 1},
         ])
-        _wire(monkeypatch, provider, client)
-        out = await make_pbi_execute_query()(_state())
+        node = _wire(monkeypatch, provider, client)
+        out = await node(_state())
         assert out["exec_error"] is None
         assert out["query_result"]["row_count"] == 1
         assert client.exec_calls == 2
         assert provider.calls == [False, True]  # second call forced a refresh
 
-    async def test_delegated_provider_is_used_when_legacy_tokens_exist(self, monkeypatch):
-        """DAX execution must never bypass the signed-in user's Power BI grant."""
-        delegated = _Provider()
+    async def test_the_query_runs_on_the_askers_own_token(self, monkeypatch):
+        """DAX execution must never bypass the signed-in user's Power BI grant.
+
+        Power BI applies row-level security to whoever the token belongs to, so
+        an app-only or shared token would hand the asker rows they may not see.
+        """
+        delegated = _Provider(token="the-users-token")
         client = _Client([
             {"columns": ["X"], "rows": [{"X": 1}], "row_count": 1}
         ])
-        monkeypatch.setattr(ex.settings, "POWERBI_TEST_ACCESS_TOKEN", "legacy-token", raising=False)
-        _wire(monkeypatch, delegated, client)
+        node = _wire(monkeypatch, delegated, client)
 
-        out = await make_pbi_execute_query()(_state())
+        out = await node(_state())
         assert out["exec_error"] is None
-        assert out["query_result"]["row_count"] == 1
+        assert client.tokens_used == ["the-users-token"]
         assert delegated.calls == [False]
+
+    def test_config_offers_no_way_to_bypass_the_users_grant(self):
+        """Guards against reintroducing the removed app-only / test-token bridge."""
+        for bypass in (
+            "POWERBI_TEST_ACCESS_TOKEN",
+            "POWERBI_APP_TENANT_ID",
+            "POWERBI_APP_CLIENT_ID",
+            "POWERBI_APP_CLIENT_SECRET",
+        ):
+            assert not hasattr(ex.settings, bypass), f"{bypass} is back"
 
     async def test_execution_error_surfaces_to_feedback(self, monkeypatch):
         provider = _Provider()
         client = _Client([
             {"error": "Cannot find column 'X'", "error_type": "execution_error", "http_status": 400}
         ])
-        _wire(monkeypatch, provider, client)
-        out = await make_pbi_execute_query()(_state())
+        node = _wire(monkeypatch, provider, client)
+        out = await node(_state())
         assert out["exec_error"] == "Cannot find column 'X'"
         assert out["error_context"].startswith("Power BI DAX error")
         assert out.get("dax_terminal") is not True
@@ -130,13 +143,12 @@ class TestExecute:
 
     async def test_misconfigured_client_is_fatal(self, monkeypatch):
         provider = _Provider()
-        monkeypatch.setattr(ex, "_token_provider", lambda: provider)
 
         def _boom(**kw):
             raise ValueError("missing dataset id")
 
         monkeypatch.setattr(ex, "PowerBiDaxClient", _boom)
-        out = await make_pbi_execute_query()(_state())
+        out = await make_pbi_execute_query(lambda: provider)(_state())
         assert out["dax_terminal"] is True
         assert "misconfigured" in out["error"]
 

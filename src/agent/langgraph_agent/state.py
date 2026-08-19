@@ -76,6 +76,10 @@ class AgentState(TypedDict, total=False):
     catalog_available: bool             # True when the catalog loaded with >=1 table
     catalog_error: Optional[str]        # set when the catalog failed to load
     catalog_blocked: bool               # True → deny-by-default (no usable catalog)
+    catalog_seeded: bool                # metadata_bundle came from the agent's pre-graph
+                                        # load and has not been consumed yet. One-shot:
+                                        # catalog_lookup clears it, so the explicit
+                                        # refresh routes still get a real reload.
 
     # ── SQL generation loop ───────────────────────────────────────────────
     retry_count: int

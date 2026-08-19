@@ -20,12 +20,11 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.agent.langgraph_agent.nodes.catalog import (
-    _extract_table_names,
-    _load_catalog_bundle,
+    _acquire_catalog,
+    _derive_catalog_state,
 )
 from src.agent.langgraph_agent_dax.prompt_loader import DaxPromptLoader
 from src.agent.langgraph_agent_dax.state import DaxAgentState
@@ -173,19 +172,28 @@ def make_dax_catalog_lookup(metadata_loader: MetadataLoader, require_catalog: bo
 
     async def dax_catalog_lookup(state: DaxAgentState) -> Dict[str, Any]:
         source_key = state["source_key"]
-        logger.info("dax_catalog_lookup: loading metadata for source_key=%s", source_key)
-        t0 = time.monotonic()
-        catalog_error = ""
-        try:
-            bundle, meta = await _load_catalog_bundle(source_key, metadata_loader)
-        except Exception as exc:  # noqa: BLE001 — fail closed
-            logger.error("dax_catalog_lookup: metadata load failed: %s", exc)
-            bundle, meta = {}, {"source": "db", "cache": None}
-            catalog_error = "Failed to load catalog metadata for this dataset."
-        load_ms = round((time.monotonic() - t0) * 1000)
+        bundle, meta, load_ms, catalog_error = await _acquire_catalog(
+            state,
+            source_key,
+            metadata_loader,
+            log_label="dax_catalog_lookup",
+            failure_message="Failed to load catalog metadata for this dataset.",
+        )
 
+        updates = _derive_catalog_state(
+            bundle,
+            meta,
+            load_ms=load_ms,
+            catalog_error=catalog_error,
+            require_catalog=require_catalog,
+            display=state.get("connection_display_name") or source_key,
+            engine="dax",
+        )
+
+        # DAX-specific derivation: measures live in the same metadata_columns
+        # rows as plain columns and are told apart by data_type, so the split
+        # has to happen here rather than in the shared parser.
         columns_text = bundle.get("columns", "")
-        known_tables = _extract_table_names(bundle.get("tables", ""))
         (
             table_columns,
             known_columns,
@@ -193,18 +201,10 @@ def make_dax_catalog_lookup(metadata_loader: MetadataLoader, require_catalog: bo
             measure_home_tables,
             _column_lines,
         ) = _parse_dax_columns(columns_text)
+        known_tables = updates["known_tables"]
         date_table, date_column = _detect_date_table(known_tables, table_columns, columns_text)
-        catalog_available = bool(known_tables)
 
-        logger.info(
-            "dax_catalog_lookup: %d tables, %d cols, %d measures, date_table=%s via %s (%dms)",
-            len(known_tables), len(known_columns), len(known_measures), date_table,
-            meta["source"], load_ms,
-        )
-
-        updates: Dict[str, Any] = {
-            "metadata_bundle": bundle,
-            "known_tables": known_tables,
+        updates.update({
             "known_columns": known_columns,
             "table_columns": table_columns,
             "known_measures": known_measures,
@@ -214,27 +214,14 @@ def make_dax_catalog_lookup(metadata_loader: MetadataLoader, require_catalog: bo
             "date_table": date_table,
             "date_column": date_column,
             "is_marked_date_table": False,
-            "catalog_source_used": meta["source"],
-            "catalog_cache": meta["cache"],
-            "catalog_load_ms": load_ms,
-            "catalog_available": catalog_available,
-            "catalog_error": catalog_error or None,
-            "catalog_blocked": False,
-        }
+        })
 
-        if require_catalog and not catalog_available:
-            display = state.get("connection_display_name") or source_key
-            reason = catalog_error or f"No catalog metadata is registered for '{display}'."
-            updates["catalog_blocked"] = True
-            updates["error"] = (
-                f"{reason} DAX queries are blocked until the dataset's tables, "
-                "columns and measures are registered in Settings."
-            )
-            updates["answer"] = (
-                f"I don't have any catalog metadata for {display} yet, so I can't "
-                "safely build a DAX query. Please register the tables, columns and "
-                "measures for this dataset (or ask an admin), then try again."
-            )
+        logger.info(
+            "dax_catalog_lookup: %d tables, %d cols, %d measures, date_table=%s via %s (%dms)",
+            len(known_tables), len(known_columns), len(known_measures), date_table,
+            meta.get("source"), load_ms,
+        )
+        if updates["catalog_blocked"]:
             logger.warning("dax_catalog_lookup: blocking — no usable catalog for %s", source_key)
 
         return updates

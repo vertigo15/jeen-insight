@@ -4,9 +4,11 @@ Acts as a thin pass-through to the FastAPI backend. The browser sends a
 `connection` (source_key) along with every data-related request; this UI
 forwards it on without inspecting it.
 
-Authentication is handled here in the Flask layer using a signed session
-cookie.  The FastAPI backend runs internally and is not directly exposed to
-browser users; it has no auth of its own.
+Browser authentication is handled here in the Flask layer using a signed
+session cookie. The FastAPI backend is not exposed to browser users and does
+not authenticate them directly, but it is not unauthenticated: this layer mints
+a short-lived internal token per request, which the backend verifies (see
+``src/security/internal_auth.py``) and refuses to serve without.
 """
 
 from __future__ import annotations

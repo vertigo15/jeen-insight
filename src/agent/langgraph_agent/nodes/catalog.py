@@ -36,11 +36,27 @@ async def _load_catalog_bundle(
     on the global ``app_settings.catalog_source`` setting.
 
     Returns ``(bundle, meta)`` where ``meta`` records which provider served the
-    catalog and, for MCP, whether it was a cache hit or miss — so the developer
-    trace can show where the metadata came from.
+    catalog, for MCP whether it was a cache hit or miss, and how long the load
+    took — so the developer trace can show where the metadata came from.
+
+    This is the single entry point for catalog loading. Both agents pre-load
+    through it before starting the graph and both ``catalog_lookup`` nodes go
+    through it on refresh, so an MCP-backed source can never end up with the
+    pre-graph and in-graph loads reading different catalogs.
 
     Falls back silently to the metadata DB on any MCP error.
     """
+    t0 = time.monotonic()
+    bundle, meta = await _route_catalog_load(source_key, metadata_loader)
+    meta["load_ms"] = round((time.monotonic() - t0) * 1000)
+    return bundle, meta
+
+
+async def _route_catalog_load(
+    source_key: str,
+    metadata_loader: MetadataLoader,
+) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    """Pick the provider and load. See ``_load_catalog_bundle``."""
     meta: Dict[str, Any] = {"source": "db", "cache": None}
     # Lazy import avoids a circular dependency at module load time.
     try:
@@ -77,6 +93,117 @@ async def _load_catalog_bundle(
     return await metadata_loader.load_all(source_key), meta
 
 
+# ── Shared acquire / derive ──────────────────────────────────────────────────
+
+
+async def _acquire_catalog(
+    state: Dict[str, Any],
+    source_key: str,
+    metadata_loader: MetadataLoader,
+    *,
+    log_label: str,
+    failure_message: str,
+) -> Tuple[Dict[str, str], Dict[str, Any], int, str]:
+    """Get the catalog bundle, reusing the agent's pre-graph load when possible.
+
+    Both agents already load the catalog before ``ainvoke`` — concurrently with
+    the history fetch and the audit insert — and seed it into ``metadata_bundle``.
+    No node between START and the lookup reads that key, so consuming it here is
+    always safe and saves a duplicate load on every single query.
+
+    ``catalog_seeded`` is a one-shot ticket: the node clears it after consuming,
+    so the explicit refresh paths (``missing_table`` in SQL, ``refresh_catalog``
+    in DAX) re-enter this node and get a genuine reload. That is the whole point
+    of those paths, and keying off the flag rather than off the feedback type
+    means a new refresh route cannot silently inherit a stale catalog.
+
+    Returns ``(bundle, meta, load_ms, catalog_error)``. Never raises: a failed
+    load yields an empty bundle so the caller can fail closed.
+    """
+    seeded = state.get("metadata_bundle") or {}
+    if state.get("catalog_seeded") and seeded:
+        logger.info("%s: reusing pre-graph catalog for source_key=%s", log_label, source_key)
+        return (
+            seeded,
+            {
+                "source": state.get("catalog_source_used") or "db",
+                "cache": state.get("catalog_cache"),
+            },
+            int(state.get("catalog_load_ms") or 0),
+            "",
+        )
+
+    logger.info("%s: loading metadata for source_key=%s", log_label, source_key)
+    try:
+        bundle, meta = await _load_catalog_bundle(source_key, metadata_loader)
+    except Exception as exc:  # noqa: BLE001 — fail closed rather than query blindly
+        logger.error("%s: metadata load failed for source_key=%s: %s", log_label, source_key, exc)
+        return {}, {"source": "db", "cache": None}, 0, failure_message
+    return bundle, meta, int(meta.get("load_ms") or 0), ""
+
+
+# Fail-closed wording, per engine: (error, user-facing answer).
+_BLOCKED_MESSAGES: Dict[str, Tuple[str, str]] = {
+    "sql": (
+        "{reason} Queries are blocked until the schema (tables and columns) "
+        "is registered in Settings.",
+        "I don't have any catalog metadata for {display} yet, so I can't "
+        "safely build a query. Please register the tables and columns in "
+        "Settings (or ask an admin), then try again.",
+    ),
+    "dax": (
+        "{reason} DAX queries are blocked until the dataset's tables, "
+        "columns and measures are registered in Settings.",
+        "I don't have any catalog metadata for {display} yet, so I can't "
+        "safely build a DAX query. Please register the tables, columns and "
+        "measures for this dataset (or ask an admin), then try again.",
+    ),
+}
+
+
+def _derive_catalog_state(
+    bundle: Dict[str, str],
+    meta: Dict[str, Any],
+    *,
+    load_ms: int,
+    catalog_error: str,
+    require_catalog: bool,
+    display: str,
+    engine: str = "sql",
+) -> Dict[str, Any]:
+    """Build the state updates common to both catalog nodes.
+
+    Covers the table allowlist, the provider/cache trace fields and the
+    fail-closed gate. Callers layer their engine-specific column parsing on top:
+    SQL splits plain columns, DAX additionally separates curated measures and
+    detects a date table.
+    """
+    known_tables = _extract_table_names(bundle.get("tables", ""))
+    catalog_available = bool(known_tables)
+
+    updates: Dict[str, Any] = {
+        "metadata_bundle": bundle,
+        "known_tables": known_tables,
+        "catalog_source_used": meta.get("source", "db"),
+        "catalog_cache": meta.get("cache"),
+        "catalog_load_ms": load_ms,
+        "catalog_available": catalog_available,
+        "catalog_error": catalog_error or None,
+        "catalog_blocked": False,
+        # One-shot ticket spent: a re-entry must reload.
+        "catalog_seeded": False,
+    }
+
+    if require_catalog and not catalog_available:
+        reason = catalog_error or f"No catalog metadata is registered for '{display}'."
+        error_tpl, answer_tpl = _BLOCKED_MESSAGES[engine]
+        updates["catalog_blocked"] = True
+        updates["error"] = error_tpl.format(reason=reason)
+        updates["answer"] = answer_tpl.format(display=display)
+
+    return updates
+
+
 # ── catalog_lookup ───────────────────────────────────────────────────────────────────────
 
 
@@ -91,55 +218,33 @@ def make_catalog_lookup(metadata_loader: MetadataLoader, require_catalog: bool =
 
     async def catalog_lookup(state: AgentState) -> Dict[str, Any]:
         source_key = state["source_key"]
-        logger.info("catalog_lookup: loading metadata for source_key=%s", source_key)
-        t0 = time.monotonic()
-        catalog_error: str = ""
-        try:
-            bundle, meta = await _load_catalog_bundle(source_key, metadata_loader)
-        except Exception as exc:  # noqa: BLE001 — fail closed rather than query blindly
-            logger.error(
-                "catalog_lookup: metadata load failed for source_key=%s: %s",
-                source_key, exc,
-            )
-            bundle, meta = {}, {"source": "db", "cache": None}
-            catalog_error = "Failed to load catalog metadata for this connection."
-        load_ms = round((time.monotonic() - t0) * 1000)
-        known_tables = _extract_table_names(bundle.get("tables", ""))
-        table_columns, known_columns = _extract_columns(bundle.get("columns", ""))
-        catalog_available = bool(known_tables)
-        logger.info(
-            "catalog_lookup: %d known tables, %d known columns via %s (cache=%s, %dms)",
-            len(known_tables), len(known_columns), meta["source"], meta["cache"], load_ms,
+        bundle, meta, load_ms, catalog_error = await _acquire_catalog(
+            state,
+            source_key,
+            metadata_loader,
+            log_label="catalog_lookup",
+            failure_message="Failed to load catalog metadata for this connection.",
         )
 
-        updates: Dict[str, Any] = {
-            "metadata_bundle": bundle,
-            "known_tables": known_tables,
-            "known_columns": known_columns,
-            "table_columns": table_columns,
-            "catalog_source_used": meta["source"],
-            "catalog_cache": meta["cache"],
-            "catalog_load_ms": load_ms,
-            "catalog_available": catalog_available,
-            "catalog_error": catalog_error or None,
-            "catalog_blocked": False,
-        }
+        table_columns, known_columns = _extract_columns(bundle.get("columns", ""))
+        updates = _derive_catalog_state(
+            bundle,
+            meta,
+            load_ms=load_ms,
+            catalog_error=catalog_error,
+            require_catalog=require_catalog,
+            display=state.get("connection_display_name") or source_key,
+            engine="sql",
+        )
+        updates["known_columns"] = known_columns
+        updates["table_columns"] = table_columns
 
-        if require_catalog and not catalog_available:
-            display = state.get("connection_display_name") or source_key
-            reason = catalog_error or (
-                f"No catalog metadata is registered for '{display}'."
-            )
-            updates["catalog_blocked"] = True
-            updates["error"] = (
-                f"{reason} Queries are blocked until the schema (tables and columns) "
-                "is registered in Settings."
-            )
-            updates["answer"] = (
-                f"I don't have any catalog metadata for {display} yet, so I can't "
-                "safely build a query. Please register the tables and columns in "
-                "Settings (or ask an admin), then try again."
-            )
+        logger.info(
+            "catalog_lookup: %d known tables, %d known columns via %s (cache=%s, %dms)",
+            len(updates["known_tables"]), len(known_columns),
+            meta.get("source"), meta.get("cache"), load_ms,
+        )
+        if updates["catalog_blocked"]:
             logger.warning(
                 "catalog_lookup: blocking query for source_key=%s — no usable catalog",
                 source_key,

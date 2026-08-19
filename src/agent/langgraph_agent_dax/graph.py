@@ -5,8 +5,8 @@
 static-validate → execute → repair) is DAX-specific, while everything after rows
 return (memory, router, insights/eval, response formatting, persistence,
 observability) reuses the shared, engine-agnostic nodes **imported read-only**
-from ``src.agent.langgraph_agent`` — those files are never edited, so the SQL
-flow cannot regress.
+from ``src.agent.langgraph_agent`` — no DAX change alters their behaviour, so
+the SQL flow cannot regress.
 
 Graph topology (``fmt`` = response_formatter, ``feedback`` = dax_feedback_router):
 
@@ -43,7 +43,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import Any, Optional
 
 from langgraph.graph import END, START, StateGraph
 
@@ -74,12 +74,16 @@ from src.agent.langgraph_agent_dax.nodes.dax_validate import (
     make_dax_repair,
     make_dax_static_validate,
 )
-from src.agent.langgraph_agent_dax.nodes.entity_resolver import make_dax_entity_resolver
+from src.agent.langgraph_agent_dax.nodes.entity_resolver import (
+    make_dax_entity_resolver,
+    make_probe_factory,
+)
 from src.agent.langgraph_agent_dax.nodes.feedback import make_dax_feedback_router
 from src.agent.langgraph_agent_dax.nodes.planner import make_dax_query_planner
 from src.agent.langgraph_agent_dax.prompt_loader import DaxPromptLoader
 from src.agent.langgraph_agent_dax.state import DaxAgentState
 from src.agent.llm_service import LangChainLlmService
+from src.connectors.powerbi_token import TokenProviderFactory
 from src.metadata import MetadataLoader
 
 logger = logging.getLogger(__name__)
@@ -156,8 +160,15 @@ def build_dax_graph(
     entity_max_domain_values: int = 1000,
     entity_match_threshold: float = 78.0,
     entity_cross_column_enabled: bool = True,
+    token_provider_factory: Optional[TokenProviderFactory] = None,
 ) -> Any:
-    """Build and compile the text-to-DAX LangGraph."""
+    """Build and compile the text-to-DAX LangGraph.
+
+    ``token_provider_factory`` is the single source of delegated Power BI
+    tokens for the two nodes that talk to Power BI. Composition supplies it
+    (see ``src/api/lifespan.py``); a graph built without one cannot reach Power
+    BI at all, which is what tests and connector-less deployments want.
+    """
     builder: StateGraph = StateGraph(DaxAgentState)
 
     def n(name, fn):
@@ -184,13 +195,14 @@ def build_dax_graph(
         max_domain_values=entity_max_domain_values,
         match_threshold=entity_match_threshold,
         cross_column_enabled=entity_cross_column_enabled,
+        probe_factory=make_probe_factory(token_provider_factory),
     ))
     n("dax_prompt_builder",      make_dax_prompt_builder(prompt_loader))
     n("dax_generator",           make_dax_generator(llm, prompt_loader))
     n("dax_static_validate",     make_dax_static_validate(
         dax_validation_enabled, require_catalog_for_query, dlp_enabled, dlp_governed_columns))
     n("dax_repair",              make_dax_repair(llm, prompt_loader))
-    n("pbi_execute_query",       make_pbi_execute_query())
+    n("pbi_execute_query",       make_pbi_execute_query(token_provider_factory))
     n("result_integrity_check",  result_integrity_check)
     n("dax_feedback_router",     make_dax_feedback_router(max_retries))
 
