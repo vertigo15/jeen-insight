@@ -94,7 +94,25 @@ async def test_sql_runner_enforces_read_only_and_row_cap():
 
     result = await runner.run_sql("SELECT x FROM demo", limit=5, max_rows=10)
     assert result["row_count"] == 1
-    assert "LIMIT 5" in runner.executed_sql
+    # One sentinel row beyond the visible cap proves whether truncation occurred.
+    assert "LIMIT 6" in runner.executed_sql
+
+
+@pytest.mark.asyncio
+async def test_sql_runner_uses_sentinel_row_for_truthful_truncation():
+    runner = FakeRunner()
+
+    async def execute(sql: str, statement_timeout_ms: int):
+        runner.executed_sql = sql
+        return ["x"], [{"x": i} for i in range(6)]
+
+    runner._execute = execute
+    result = await runner.run_sql("SELECT x FROM demo", limit=5, max_rows=10)
+
+    assert result["rows"] == [{"x": i} for i in range(5)]
+    assert result["row_count"] == 5
+    assert result["truncated"] is True
+    assert result["cap"] == 5
 
 
 def test_dialect_metadata_for_supported_connectors():

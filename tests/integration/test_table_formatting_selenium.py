@@ -94,7 +94,7 @@ def _submit_query(driver: webdriver.Chrome, long_wait: WebDriverWait, question: 
     )
     time.sleep(0.3)
     driver.execute_script("window.askQuestion()")
-    long_wait.until(EC.visibility_of_element_located((By.ID, "results-section")))
+    long_wait.until(EC.visibility_of_element_located((By.ID, "v3-table-block")))
     print(f"   ✓ Query results visible for: {question!r}")
 
 
@@ -337,23 +337,23 @@ def test_table_formatting():
 
             _screenshot(driver, "08_insights_colors")
 
-        # ── 9. main-inner fills available width ───────────────────────────
-        print("\n── 9. main-inner dynamic width ──")
+        # ── 9. workspace fills available width ────────────────────────────
+        print("\n── 9. workspace dynamic width ──")
         main_inner_width = driver.execute_script(
-            "const el = document.querySelector('.main-inner'); "
+            "const el = document.querySelector('.v3-scroll'); "
             "return el ? el.getBoundingClientRect().width : null;"
         )
         main_content_width = driver.execute_script(
-            "const el = document.querySelector('.main-content'); "
+            "const el = document.querySelector('.v3-workspace'); "
             "return el ? el.getBoundingClientRect().width : null;"
         )
         if main_inner_width and main_content_width:
-            # main-inner should fill most of main-content (minus padding)
+            # The workspace scroll region should fill the result workspace.
             ratio = main_inner_width / main_content_width
-            print(f"   ℹ main-inner: {main_inner_width:.0f}px / main-content: {main_content_width:.0f}px = {ratio:.2f}")
+            print(f"   ℹ scroll: {main_inner_width:.0f}px / workspace: {main_content_width:.0f}px = {ratio:.2f}")
             assert ratio > 0.85, \
-                f"main-inner should fill ≥85% of main-content width, got {ratio:.2f}"
-            print("   ✓ main-inner fills available content width (no 900px cap)")
+                f"workspace scroll region should fill ≥85% of available width, got {ratio:.2f}"
+            print("   ✓ workspace fills available content width")
         _screenshot(driver, "09_layout")
 
         print("\n✅ All table formatting + insights coloring checks passed!\n")

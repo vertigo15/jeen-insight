@@ -24,6 +24,7 @@ from src.agent.langgraph_agent.nodes.catalog import _load_catalog_bundle
 from src.agent.langgraph_agent.nodes.output import _enrich_trace, slim_trace
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
+from src.agent.progress import ProgressCallback
 from src.agent.user_resolver import SimpleUserResolver
 from src.config import settings
 from src.connections import Connection, ConnectionService
@@ -102,6 +103,7 @@ class JeenInsightsAgent:
         temperature: Optional[float] = None,
         eval_analytics: Optional[bool] = None,
         llm_timeout: Optional[int] = None,
+        progress_callback: Optional[ProgressCallback] = None,
     ) -> Dict[str, Any]:
         """Run the LangGraph text-to-SQL pipeline.
 
@@ -179,6 +181,7 @@ class JeenInsightsAgent:
                 "user_context": user_context or {},
                 "limit": limit,
                 "temperature": temperature,
+                "progress_callback": progress_callback,
                 # ── Connection ──────────────────────────────────────────
                 "connection_display_name": self.display_name,
                 "database_type": self.database_type,

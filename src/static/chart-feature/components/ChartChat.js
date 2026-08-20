@@ -82,7 +82,7 @@ export class ChartChat {
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'chart-refine-input';
-        input.placeholder = 'Refine this chart... e.g. "make it a line chart" or "add a 3-month moving average"';
+        input.placeholder = 'Edit this chart in words — “stack by channel, log scale”';
         input.maxLength = MAX_INSTRUCTION_LEN;
         input.disabled = true;
         input.setAttribute('aria-label', 'Refine this chart');
@@ -96,7 +96,7 @@ export class ChartChat {
         const applyBtn = document.createElement('button');
         applyBtn.type = 'button';
         applyBtn.className = 'chart-refine-apply';
-        applyBtn.innerHTML = `<span>Apply</span>${ARROW_SVG}`;
+        applyBtn.innerHTML = `<span>Enhance</span>${ARROW_SVG}`;
         applyBtn.disabled = true;
         applyBtn.addEventListener('click', () => this._handleSend());
 

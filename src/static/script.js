@@ -615,7 +615,7 @@ function displayResults(data) {
         // The table is already visible; InsightsManager streams the analysis
         // and updates the Insights panel when each chunk arrives.
         const _aiAnalytics = (window.JeenPreferences && window.JeenPreferences.getAll().aiAnalytics) || 'on';
-        if (_aiAnalytics === 'on' && !_isRestoringSavedAnalysis) {
+        if (_aiAnalytics === 'on' && !_isRestoringSavedAnalysis && !data._inlineAnalytics) {
             generateInsights(data.results, currentQuestion, currentQueryId, currentSql);
         } else {
             // Hide the insights container when analytics is off.
@@ -1888,6 +1888,7 @@ async function saveCurrentAnalysis() {
         btn.disabled = true;
         btn.textContent = 'Saving…';
     }
+    let succeeded = false;
     try {
         const chartState = (chartManager && typeof chartManager.getSaveState === 'function')
             ? chartManager.getSaveState()
@@ -1911,15 +1912,31 @@ async function saveCurrentAnalysis() {
             }),
         });
         if (!res.ok) throw new Error(await res.text());
+        succeeded = true;
+        if (btn) {
+            btn.dataset.state = 'success';
+            btn.textContent = 'Saved ✓';
+        }
         showToast('Analysis saved', 'success');
         await loadSavedAnalyses();
     } catch (err) {
         console.error('[SavedAnalyses] save failed', err);
+        if (btn) {
+            btn.dataset.state = 'error';
+            btn.textContent = 'Retry save';
+            btn.title = 'Save failed. Click to retry.';
+        }
         showToast('Save failed', 'error');
     } finally {
         if (btn) {
             btn.disabled = false;
-            btn.textContent = oldText || 'Save';
+            if (succeeded) {
+                setTimeout(() => {
+                    btn.dataset.state = 'idle';
+                    btn.textContent = oldText || 'Save';
+                    btn.title = 'Save';
+                }, 3000);
+            }
         }
     }
 }
@@ -2273,9 +2290,10 @@ async function displayHistory() {
         loadSavedAnalyses();
         // Fetch both pinned and recent questions for the active connection
         const qs = `?connection=${encodeURIComponent(connection)}`;
-        const [pinnedResponse, recentResponse] = await Promise.all([
+        const [pinnedResponse, recentResponse, logResponse] = await Promise.all([
             fetch(`/api/user/pinned-questions${qs}`),
-            fetch(`/api/user/recent-questions${qs}&limit=15`)
+            fetch(`/api/user/recent-questions${qs}&limit=15`),
+            fetch(`/api/user/history-log${qs}&limit=100`)
         ]);
 
         if (!pinnedResponse.ok || !recentResponse.ok) {
@@ -2284,9 +2302,24 @@ async function displayHistory() {
 
         const pinnedData = await pinnedResponse.json();
         const recentData = await recentResponse.json();
+        const logData = logResponse.ok ? await logResponse.json() : { entries: [] };
 
         const pinnedQuestions = pinnedData.questions || [];
         const recentQuestions = recentData.questions || [];
+        const timestamps = new Map();
+        (logData.entries || []).forEach(entry => {
+            if (entry.question && entry.asked_at && !timestamps.has(entry.question)) {
+                timestamps.set(entry.question, entry.asked_at);
+            }
+        });
+        const when = (question) => {
+            const raw = timestamps.get(question);
+            if (!raw) return '';
+            const date = new Date(raw);
+            return Number.isNaN(date.getTime())
+                ? ''
+                : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+        };
 
         // Mirror into autocomplete caches so Tier 1 (Recent) is instant.
         recentQuestionsCache = recentQuestions.slice();
@@ -2311,24 +2344,26 @@ async function displayHistory() {
 
         // Show pinned questions first with pin icon
         if (pinnedQuestions.length > 0) {
-            html += pinnedQuestions.map(q =>
-                `<div class="history-item pinned-item">
-                    <span class="pin-icon" onclick="unpinQuestion(event, '${escapeHtml(q).replace(/'/g, "\\'")}')">📌</span>
-                    <span class="question-text" onclick="_jeenQuestionClick('${escapeHtml(q).replace(/'/g, "\\'")}')"
-                          title="${escapeHtml(q)}">${escapeHtml(q)}</span>
-                </div>`
-            ).join('');
+            html += `<div class="v3-history-group-head"><span class="v3-star filled">★</span><span>Pinned questions</span><span>${pinnedQuestions.length} pinned</span></div>`;
+            html += pinnedQuestions.map(q => {
+                const safe = escapeHtml(q).replace(/'/g, "\\'");
+                return `<div class="history-item pinned-item" onclick="_jeenQuestionClick('${safe}')">
+                    <span class="question-text" title="${escapeHtml(q)}">${escapeHtml(q)}<small>${when(q)}</small></span>
+                    <button class="pin-icon" aria-label="Unpin question" onclick="unpinQuestion(event, '${safe}')">★</button>
+                </div>`;
+            }).join('');
         }
 
         // Show recent questions below pinned ones with unpin icon
         if (recentQuestions.length > 0) {
-            html += recentQuestions.map(q =>
-                `<div class="history-item">
-                    <span class="pin-icon" onclick="pinQuestion(event, '${escapeHtml(q).replace(/'/g, "\\'")}')">📍</span>
-                    <span class="question-text" onclick="_jeenQuestionClick('${escapeHtml(q).replace(/'/g, "\\'")}')"
-                          title="${escapeHtml(q)}">${escapeHtml(q)}</span>
-                </div>`
-            ).join('');
+            html += '<div class="v3-history-group-head"><span>Recent questions</span></div>';
+            html += recentQuestions.map(q => {
+                const safe = escapeHtml(q).replace(/'/g, "\\'");
+                return `<div class="history-item" onclick="_jeenQuestionClick('${safe}')">
+                    <span class="question-text" title="${escapeHtml(q)}">${escapeHtml(q)}<small>${when(q)}</small></span>
+                    <button class="pin-icon" aria-label="Pin question" onclick="pinQuestion(event, '${safe}')">☆</button>
+                </div>`;
+            }).join('');
         }
 
         historyDiv.innerHTML = html;
@@ -3777,7 +3812,7 @@ window._toggleTraceEvent = _toggleTraceEvent;
 async function initializeChartFeature(results) {
     // Dynamically import ChartManager if not already loaded
     if (!ChartManager) {
-        const module = await import('./chart-feature/chartManager.js?v=87');
+        const module = await import('./chart-feature/chartManager.js?v=100');
         ChartManager = module.ChartManager;
     }
 
@@ -3787,7 +3822,9 @@ async function initializeChartFeature(results) {
     }
 
     // Create new chart manager
-    chartManager = new ChartManager();
+    chartManager = new ChartManager({
+        workspaceMode: Boolean(document.getElementById('v3-shell')),
+    });
     await chartManager.initialize(results);
 }
 
@@ -4511,6 +4548,9 @@ function reRenderTable() {
     const container = document.getElementById('table-container');
     if (container) container.innerHTML = renderTable(currentResults, rows.slice(0, _displayLimit));
     _updateDisplayLimitBar(totalAfterFilter, _displayLimit);
+    if (window.WorkspaceController && typeof window.WorkspaceController.renderTable === 'function') {
+        window.WorkspaceController.renderTable();
+    }
 }
 
 // ======================================================
@@ -4692,6 +4732,50 @@ window._copyAllPrompt = _copyAllPrompt;
 
 // Make functions globally accessible for onclick handlers
 window.askQuestion = askQuestion;
+window.JeenLegacyBridge = {
+    applyResult(data) {
+        displayResults({ ...(data || {}), _inlineAnalytics: true });
+    },
+    getState() {
+        return {
+            question: currentQuestion,
+            sql: currentSql,
+            results: currentResults,
+            queryId: currentQueryId,
+            sessionId: currentSessionId,
+        };
+    },
+    getChartState() {
+        return chartManager && typeof chartManager.getSaveState === 'function'
+            ? chartManager.getSaveState()
+            : null;
+    },
+    async restoreChartState(state) {
+        if (!state || !state.chart_config || !chartManager
+            || typeof chartManager.restoreSavedChart !== 'function') return;
+        await chartManager.restoreSavedChart(state.chart_config, state.chart_spec || null);
+    },
+    getTablePresentation() {
+        return {
+            formats: { ..._colFormats },
+            derived: _derivedCols.map(item => ({ ...item })),
+            sortColumn,
+            sortDirection,
+        };
+    },
+    formatTableValue(value, columnIndex, numeric) {
+        const format = _colFormats[columnIndex];
+        if (format) {
+            const rendered = applyColFormatValue(value, format.type);
+            if (rendered !== null) return rendered;
+        }
+        if (value === null || value === undefined || value === '') return '—';
+        return numeric ? formatNumeric(value) : String(value);
+    },
+    setVisibleRows(rows) {
+        _currentVisibleRows = Array.isArray(rows) ? rows : [];
+    },
+};
 
 // Fill the question input from a follow-up chip and auto-submit
 window._fillFollowUp = function(question) {
@@ -4711,6 +4795,7 @@ window.loadTables = loadTables;
 window.filterTables = filterTables;
 window.fillQuestion = fillQuestion;
 window.clearHistory = clearHistory;
+window.displayHistory = displayHistory;
 window.toggleDescribe = toggleDescribe;
 window.switchStatsTab = switchStatsTab;
 window.showToast         = showToast;

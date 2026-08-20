@@ -83,6 +83,7 @@ from src.agent.langgraph_agent_dax.nodes.planner import make_dax_query_planner
 from src.agent.langgraph_agent_dax.prompt_loader import DaxPromptLoader
 from src.agent.langgraph_agent_dax.state import DaxAgentState
 from src.agent.llm_service import LangChainLlmService
+from src.agent.progress import emit_progress
 from src.connectors.powerbi_token import TokenProviderFactory
 from src.metadata import MetadataLoader
 
@@ -123,18 +124,66 @@ def _timed(name: str, fn: Any) -> Any:
     icon, ntype = _NODE_META.get(name, ("●", "logic"))
     if asyncio.iscoroutinefunction(fn):
         async def _async_wrapper(state):
+            emit_progress(
+                state, node=name, status="node_started", icon=icon, node_type=ntype
+            )
             t0 = time.monotonic()
-            result = await fn(state)
+            try:
+                result = await fn(state)
+            except Exception as exc:
+                elapsed = round((time.monotonic() - t0) * 1000)
+                emit_progress(
+                    state,
+                    node=name,
+                    status="node_failed",
+                    icon=icon,
+                    node_type=ntype,
+                    elapsed_ms=elapsed,
+                    error=str(exc),
+                )
+                raise
             elapsed = round((time.monotonic() - t0) * 1000)
+            emit_progress(
+                state,
+                node=name,
+                status="node_finished",
+                icon=icon,
+                node_type=ntype,
+                elapsed_ms=elapsed,
+            )
             out = {} if result is None else dict(result)
             out["trace"] = [{"node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype}]
             return out
         return _async_wrapper
 
     def _sync_wrapper(state):
+        emit_progress(
+            state, node=name, status="node_started", icon=icon, node_type=ntype
+        )
         t0 = time.monotonic()
-        result = fn(state)
+        try:
+            result = fn(state)
+        except Exception as exc:
+            elapsed = round((time.monotonic() - t0) * 1000)
+            emit_progress(
+                state,
+                node=name,
+                status="node_failed",
+                icon=icon,
+                node_type=ntype,
+                elapsed_ms=elapsed,
+                error=str(exc),
+            )
+            raise
         elapsed = round((time.monotonic() - t0) * 1000)
+        emit_progress(
+            state,
+            node=name,
+            status="node_finished",
+            icon=icon,
+            node_type=ntype,
+            elapsed_ms=elapsed,
+        )
         out = {} if result is None else dict(result)
         out["trace"] = [{"node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype}]
         return out
