@@ -162,9 +162,13 @@ def make_sqlglot_validate(
 
                 # Table existence check (only when catalog is populated).
                 if known and tname not in known:
+                    available = sorted(known)
+                    preview = available[:20]
+                    remainder = len(available) - len(preview)
+                    suffix = f" (+{remainder} more)" if remainder else ""
                     error_msg = (
                         f"Table '{table.name}' not found in catalog. "
-                        f"Available: {sorted(known)}"
+                        f"Available: {preview}{suffix}"
                     )
                     logger.info("sqlglot_validate: %s", error_msg)
                     return {"sqlglot_error": error_msg}

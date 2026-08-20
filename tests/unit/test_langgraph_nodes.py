@@ -25,7 +25,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.agent.langgraph_agent.nodes.catalog import _extract_table_names, make_prompt_builder
+from src.agent.langgraph_agent.nodes.catalog import (
+    _extract_columns,
+    _extract_table_names,
+    make_prompt_builder,
+)
 from src.agent.langgraph_agent.nodes.execution import trivial_result_check
 from src.agent.langgraph_agent.nodes.feedback import make_feedback_classifier
 from src.agent.langgraph_agent.nodes.memory import make_memory_shrink_check, make_memory_summarizer
@@ -651,6 +655,14 @@ class TestExtractTableNames:
         names = _extract_table_names(tables)
         assert names == ["customers", "exchange_rates", "sales"]
 
+    def test_normalises_schema_qualified_mcp_names(self):
+        tables = """
+        Tables available for querying:
+        - "public"."dimdate": Calendar dimension
+        - public.factinternetsales - Internet sales
+        """
+        assert _extract_table_names(tables) == ["dimdate", "factinternetsales"]
+
     def test_empty_string_returns_empty(self):
         assert _extract_table_names("") == []
 
@@ -658,6 +670,22 @@ class TestExtractTableNames:
         tables = "- FactSales\n\n\n- DimDate"
         names = _extract_table_names(tables)
         assert len(names) == 2
+
+
+class TestExtractColumns:
+    def test_normalises_schema_qualified_mcp_columns(self):
+        columns = """
+        - "public"."dimdate"."datekey" - Type: INTEGER
+        - "public"."dimdate"."calendaryear" - Type: INTEGER
+        - public.factinternetsales.salesamount - Type: NUMERIC
+        """
+        by_table, flat = _extract_columns(columns)
+
+        assert by_table == {
+            "dimdate": ["datekey", "calendaryear"],
+            "factinternetsales": ["salesamount"],
+        }
+        assert flat == ["datekey", "calendaryear", "salesamount"]
 
 
 # ── _extract_sql ──────────────────────────────────────────────────────────────
