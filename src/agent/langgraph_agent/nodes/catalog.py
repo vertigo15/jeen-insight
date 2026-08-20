@@ -385,8 +385,33 @@ def _extract_table_names(tables_text: str) -> List[str]:
                 table_name = table_name.split(separator, 1)[0].strip()
                 break
         if table_name:
-            names.append(table_name.lower())
+            parts = _catalog_identifier_parts(table_name)
+            if parts:
+                # Validation compares sqlglot's bare ``Table.name``. MCP may
+                # return schema-qualified identifiers such as
+                # ``"public"."dimdate"``; retain the table component only.
+                names.append(parts[-1].lower())
     return names
+
+
+def _catalog_identifier_parts(identifier: str) -> List[str]:
+    """Split a catalog identifier and remove common SQL quoting.
+
+    Catalog providers can emit ``table.column``, ``public.table.column`` or
+    quoted equivalents. Metadata identifiers do not contain dots in practice,
+    so taking the final components is both portable and deterministic.
+    """
+    parts: List[str] = []
+    for raw in identifier.split("."):
+        part = raw.strip()
+        if len(part) >= 2 and (
+            (part[0] == part[-1] and part[0] in {'"', "'", "`"})
+            or (part[0] == "[" and part[-1] == "]")
+        ):
+            part = part[1:-1].strip()
+        if part:
+            parts.append(part)
+    return parts
 
 
 def _extract_columns(columns_text: str) -> Tuple[Dict[str, List[str]], List[str]]:
@@ -406,11 +431,11 @@ def _extract_columns(columns_text: str) -> Tuple[Dict[str, List[str]], List[str]
             continue
         # The qualified name is everything before the first " - " separator.
         qualified = stripped.split(" - ")[0].strip()
-        if "." not in qualified:
+        parts = _catalog_identifier_parts(qualified)
+        if len(parts) < 2:
             continue
-        table, _, column = qualified.partition(".")
-        table = table.strip().lower()
-        column = column.strip().lower()
+        table = parts[-2].lower()
+        column = parts[-1].lower()
         if not table or not column:
             continue
         table_columns.setdefault(table, [])
