@@ -168,7 +168,11 @@ class DaxInsightsAgent:
             runtime = await get_runtime_settings()
 
             results = await asyncio.gather(
-                _load_catalog_bundle(self.source_key, self.metadata_loader),
+                _load_catalog_bundle(
+                    self.source_key,
+                    self.metadata_loader,
+                    question=question,
+                ),
                 self._fetch_conversation_context(
                     session_id, user_id=str(user.id), limit=runtime.conversation_context_turns
                 ),

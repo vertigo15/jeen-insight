@@ -93,6 +93,7 @@ class McpCatalogClient:
     Public API (same interface as before — callers are unchanged):
       load_connections()       → replaces ConnectionService.list_connections()
       load_all(source_key)     → replaces MetadataLoader.load_all()
+      load_filtered(source_key, question) → question-focused catalog bundle
       run_health_check(server) → rich health check + persists result
     """
 
@@ -148,6 +149,49 @@ class McpCatalogClient:
         # Second attempt from cache (now populated).
         result = await self._bundle_from_cache(server, source_key)
         return result if result is not None else _empty_bundle()
+
+    async def load_filtered(
+        self, source_key: str, question: str
+    ) -> Dict[str, str]:
+        """Return a question-focused catalog bundle from ``get_filtered_prompt``.
+
+        Filtered prompts are request-specific, so they deliberately bypass the
+        shared full-catalog cache. Callers should fall back to ``load_all`` when
+        this optional MCP capability is unavailable or fails.
+        """
+        server = await self._srv_svc.get_active()
+        if not server:
+            raise McpError("No active MCP server")
+
+        tool = server.get_tool_for_need(NEED_DESCRIBE_TABLE)
+        if not tool:
+            raise McpError("No filtered prompt tool mapped (need: describe_table)")
+
+        conn_id = await self._resolve_connection_id(server, source_key)
+        if conn_id is None:
+            raise McpError(f"No connection found for source_key={source_key!r}")
+
+        raw = await self._call_tool(
+            server,
+            tool,
+            {"connection_id": conn_id, "question": question},
+        )
+        text = _extract_text(raw)
+        if not text:
+            raise McpError(
+                f"Empty response from {tool} for connection_id={conn_id}"
+            )
+
+        bundle = _parse_catalog_markdown(text)
+        if not bundle.get("sources"):
+            bundle["sources"] = await self._build_sources(server, source_key)
+        logger.info(
+            "mcp: filtered catalog loaded source_key=%s connection_id=%d (%d chars)",
+            source_key,
+            conn_id,
+            len(text),
+        )
+        return bundle
 
     # ── Structured autocomplete datasets (`/`, `#`, `@`) ──────────────────────
 
