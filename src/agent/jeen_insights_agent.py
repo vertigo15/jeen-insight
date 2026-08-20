@@ -132,7 +132,11 @@ class JeenInsightsAgent:
             # hiccup) the flow continues with query_id=None and the error is
             # surfaced in the UI via formatted_response["error"].
             results = await asyncio.gather(
-                _load_catalog_bundle(self.source_key, self.metadata_loader),
+                _load_catalog_bundle(
+                    self.source_key,
+                    self.metadata_loader,
+                    question=question,
+                ),
                 self._fetch_conversation_context(
                     session_id, user_id=str(user.id), limit=runtime.conversation_context_turns
                 ),

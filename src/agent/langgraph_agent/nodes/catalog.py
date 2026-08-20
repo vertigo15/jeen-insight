@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 async def _load_catalog_bundle(
     source_key: str,
     metadata_loader: MetadataLoader,
+    question: str = "",
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
     """
     Load the catalog bundle for *source_key*, routing to MCP or DB depending
@@ -47,7 +48,9 @@ async def _load_catalog_bundle(
     Falls back silently to the metadata DB on any MCP error.
     """
     t0 = time.monotonic()
-    bundle, meta = await _route_catalog_load(source_key, metadata_loader)
+    bundle, meta = await _route_catalog_load(
+        source_key, metadata_loader, question=question
+    )
     meta["load_ms"] = round((time.monotonic() - t0) * 1000)
     return bundle, meta
 
@@ -55,6 +58,8 @@ async def _load_catalog_bundle(
 async def _route_catalog_load(
     source_key: str,
     metadata_loader: MetadataLoader,
+    *,
+    question: str = "",
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
     """Pick the provider and load. See ``_load_catalog_bundle``."""
     meta: Dict[str, Any] = {"source": "db", "cache": None}
@@ -65,6 +70,23 @@ async def _route_catalog_load(
             catalog_source = await _state.mcp_server_service.get_catalog_source(source_key)
             if catalog_source == "mcp":
                 meta["source"] = "mcp"
+                if question.strip():
+                    try:
+                        bundle = await _state.mcp_catalog_client.load_filtered(
+                            source_key, question
+                        )
+                        meta["filtered"] = True
+                        logger.info(
+                            "catalog_lookup: using filtered MCP provider for source_key=%s",
+                            source_key,
+                        )
+                        return bundle, meta
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "catalog_lookup: filtered MCP load failed (%s); "
+                            "using full catalog",
+                            exc,
+                        )
                 # Probe cache state before loading so the trace can report HIT/MISS.
                 try:
                     active = await _state.mcp_server_service.get_active()
@@ -135,7 +157,11 @@ async def _acquire_catalog(
 
     logger.info("%s: loading metadata for source_key=%s", log_label, source_key)
     try:
-        bundle, meta = await _load_catalog_bundle(source_key, metadata_loader)
+        bundle, meta = await _load_catalog_bundle(
+            source_key,
+            metadata_loader,
+            question=str(state.get("question") or ""),
+        )
     except Exception as exc:  # noqa: BLE001 — fail closed rather than query blindly
         logger.error("%s: metadata load failed for source_key=%s: %s", log_label, source_key, exc)
         return {}, {"source": "db", "cache": None}, 0, failure_message
