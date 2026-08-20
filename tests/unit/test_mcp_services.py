@@ -702,11 +702,14 @@ class TestMcpCatalogClientLoadAll:
         server = _make_server(health=health)
         client = self._make_client(server)
         client._resolve_connection_id = AsyncMock(return_value=42)
-        client._call_tool = AsyncMock(return_value=(
-            "## Tables\n- DimDate\n"
-            "## Columns\n- DimDate.DateKey - Type: integer\n"
-            "## Source\nAdventureWorks | postgres"
-        ))
+        client._call_tool = AsyncMock(return_value={
+            "prompt": (
+                "## Tables\n- DimDate\n"
+                "## Columns\n- DimDate.DateKey - Type: integer\n"
+                "## Source\nAdventureWorks | postgres"
+            ),
+            "meta": {"filtered": True},
+        })
 
         bundle = await client.load_filtered(
             "AdventureWorks", "sales by month"

@@ -176,13 +176,22 @@ class McpCatalogClient:
             tool,
             {"connection_id": conn_id, "question": question},
         )
-        text = _extract_text(raw)
+        text = (
+            raw.get("prompt", "")
+            if isinstance(raw, dict) and isinstance(raw.get("prompt"), str)
+            else _extract_text(raw)
+        )
         if not text:
             raise McpError(
                 f"Empty response from {tool} for connection_id={conn_id}"
             )
 
         bundle = _parse_catalog_markdown(text)
+        if not bundle.get("tables"):
+            raise McpError(
+                f"No table section in response from {tool} "
+                f"for connection_id={conn_id}"
+            )
         if not bundle.get("sources"):
             bundle["sources"] = await self._build_sources(server, source_key)
         logger.info(
