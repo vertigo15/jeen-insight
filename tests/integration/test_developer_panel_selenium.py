@@ -111,17 +111,18 @@ def _submit_query(driver: webdriver.Chrome, long_wait: WebDriverWait, question: 
     #    so no Escape/click gymnastics are needed.
     driver.execute_script("window.askQuestion()")
 
-    # 4. Wait for results section to appear (indicates query finished).
+    # 4. Wait for the selected-result workspace (indicates query finished).
     long_wait.until(
-        EC.visibility_of_element_located((By.ID, "results-section"))
+        EC.visibility_of_element_located((By.ID, "v3-table-block"))
     )
     print("   ✓ Query results visible")
 
 
 def _open_dev_panel(driver: webdriver.Chrome, short_wait: WebDriverWait) -> None:
-    """Click the </> button and wait for the drawer to slide in."""
-    btn = short_wait.until(EC.element_to_be_clickable((By.ID, "dev-panel-btn")))
-    btn.click()
+    """Open diagnostics from the secondary SQL dock action."""
+    driver.execute_script("WorkspaceController.toggleDock('sql')")
+    btn = short_wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "[data-dev-details]")))
+    driver.execute_script("arguments[0].click()", btn)
     short_wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".dev-drawer.open")))
     print("   ✓ Dev panel is open")
 

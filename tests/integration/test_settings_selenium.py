@@ -121,8 +121,8 @@ def _login(
 
 def _open_settings(driver: webdriver.Chrome, wait: WebDriverWait) -> None:
     """Click the gear icon and wait for the overlay to become visible."""
-    btn = wait.until(EC.element_to_be_clickable((By.ID, "settings-btn")))
-    btn.click()
+    btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "[data-rail='settings']")))
+    driver.execute_script("arguments[0].click()", btn)
     # Overlay must lose the [hidden] attribute and become displayed
     wait.until(
         EC.visibility_of_element_located((By.CSS_SELECTOR, ".sp-overlay"))

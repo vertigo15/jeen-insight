@@ -155,24 +155,20 @@ def test_top_products_chart_enhancement():
         ask_btn.click()
         print("\u2713 Clicked Ask button")
 
-        # ── 3. Wait for results section ────────────────────────────────────
+        # ── 3. Wait for selected-result workspace ──────────────────────────
         # Detect two failure modes:
         #   a) #error-message visible (network/connection error from askQuestion catch)
-        #   b) results-section visible but contains error content from the LLM (e.g. 401)
+        #   b) an error turn appeared from the LLM/backend.
         def _results_or_error(d):
             # a) JS catch-level error in the query card
             err = d.find_element(By.ID, "error-message")
             if err.is_displayed():
                 raise AssertionError(f"Query-card error: {err.text.strip()!r}")
-            # b) Results section appeared — check for LLM-level error text inside it
-            rs = d.find_element(By.ID, "results-section")
-            if rs.is_displayed():
-                rs_html = rs.get_attribute("innerHTML") or ""
-                if "Error code:" in rs_html or "error-result" in rs_html:
-                    # Extract visible text for a clear error message.
-                    raise AssertionError(
-                        f"Results section shows LLM error: {rs.text[:200]!r}"
-                    )
+            error_cards = d.find_elements(By.CSS_SELECTOR, ".v3-error-block")
+            if error_cards and error_cards[-1].is_displayed():
+                raise AssertionError(f"Query error: {error_cards[-1].text[:200]!r}")
+            table = d.find_element(By.ID, "v3-table-block")
+            if table.is_displayed():
                 return True
             return False
 
@@ -180,22 +176,7 @@ def test_top_products_chart_enhancement():
         print("\u2713 Results section visible")
         _screenshot(driver, "01_results_loaded")
 
-        # ── 4. Switch to chart view ────────────────────────────────────────
-        # ChartToggle renders #toggle-chart-btn inside #chart-toggle-container.
-        # Wait for the button to be present; it may be disabled if the query
-        # returned no rows (ChartManager.disableChartButton).
-        chart_tab = short.until(
-            EC.presence_of_element_located((By.ID, "toggle-chart-btn"))
-        )
-        if not chart_tab.is_enabled():
-            pytest.skip(
-                "Chart tab is disabled (query returned no chartable rows) — "
-                "chart rendering cannot be tested with this result set"
-            )
-        chart_tab.click()
-        print("\u2713 Clicked Chart tab")
-
-        # ── 5. Chart view container must become visible ──────────────────────
+        # ── 4. Chart stays visible above the table ─────────────────────────
         short.until(
             EC.visibility_of_element_located((By.ID, "chart-view-container"))
         )

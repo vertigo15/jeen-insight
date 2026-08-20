@@ -36,6 +36,9 @@ class AgentState(TypedDict, total=False):
     user_context: Dict[str, Any]
     limit: Optional[int]
     temperature: Optional[float]
+    # Request-scoped, synchronous telemetry callback used by the SSE query
+    # route. It is never persisted or included in the formatted response.
+    progress_callback: Any
 
     # ── Connection info ───────────────────────────────────────────────────
     connection_display_name: str

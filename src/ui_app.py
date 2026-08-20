@@ -794,39 +794,92 @@ def warm_cache(source_key: str):
 # ----------------------------------------------------------------------
 # Query / data exploration
 # ----------------------------------------------------------------------
+def _query_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a backend query payload with identity sourced from the session."""
+
+    payload: Dict[str, Any] = {
+        "question": (data.get("question") or "").strip(),
+        "connection": data.get("connection"),
+        "user_context": _session_user_context(),
+    }
+    for field in (
+        "session_id",
+        "limit",
+        "temperature",
+        "eval_analytics",
+        "llm_timeout",
+    ):
+        if data.get(field) is not None:
+            payload[field] = data[field]
+    return payload
+
+
 @app.route("/api/ask", methods=["POST"])
 def ask_question():
     data = request.get_json() or {}
     question = (data.get("question") or "").strip()
     connection = data.get("connection")
-    session_id = data.get("session_id")
 
     if not question:
         return jsonify({"error": "Question cannot be empty"}), 400
     if not connection:
         return jsonify({"error": "No connection selected"}), 400
 
-    payload: Dict[str, Any] = {
-        "question": question,
-        "connection": connection,
-        "user_context": _session_user_context(),
-    }
-    if session_id:
-        payload["session_id"] = session_id
-    # Optional user-preferences overrides. The API enforces bounds; we just
-    # forward the values verbatim if the client sent them.
-    if data.get("limit") is not None:
-        payload["limit"] = data["limit"]
-    if data.get("temperature") is not None:
-        payload["temperature"] = data["temperature"]
-    # Forward eval_analytics so the UI can skip the in-graph insights step and
-    # render the data table as soon as SQL returns (insights stream separately).
-    if data.get("eval_analytics") is not None:
-        payload["eval_analytics"] = data["eval_analytics"]
-    # Per-request LLM timeout override from the settings panel.
-    if data.get("llm_timeout") is not None:
-        payload["llm_timeout"] = data["llm_timeout"]
+    payload = _query_payload(data)
     return _proxy_post("/api/query", payload, timeout=120)
+
+
+@app.route("/api/ask/stream", methods=["POST"])
+def ask_question_stream():
+    """Relay authenticated LangGraph progress without buffering."""
+
+    data = request.get_json() or {}
+    question = (data.get("question") or "").strip()
+    connection = data.get("connection")
+    if not question:
+        return jsonify({"error": "Question cannot be empty"}), 400
+    if not connection:
+        return jsonify({"error": "No connection selected"}), 400
+
+    try:
+        upstream = requests.post(
+            f"{API_BASE_URL}/api/query/stream",
+            json=_query_payload(data),
+            stream=True,
+            timeout=(10, 300),
+            headers={
+                **_internal_headers(),
+                "Accept": "text/event-stream",
+                "Cache-Control": "no-cache",
+            },
+        )
+    except requests.exceptions.RequestException as exc:
+        logger.error("Backend query stream failed: %s", exc)
+        return jsonify({"error": f"Backend unavailable: {exc}"}), 503
+
+    if upstream.status_code != 200:
+        body = upstream.text
+        status = upstream.status_code
+        upstream.close()
+        return jsonify({"error": body}), status
+
+    def relay():
+        try:
+            for chunk in upstream.iter_content(chunk_size=64):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    return Response(
+        stream_with_context(relay()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @app.route("/api/tables", methods=["GET"])
