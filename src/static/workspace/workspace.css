@@ -361,9 +361,52 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-trace-note { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .v3-trace-ms { color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
 .v3-answer { margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 11px; }
-.v3-summary { font-size: 14px; font-weight: 300; line-height: 1.6; text-align: left; text-wrap: pretty; }
-.v3-finding { display: flex; align-items: flex-start; gap: 9px; color: var(--muted); font-size: 13px; font-weight: 300; line-height: 1.55; }
-.v3-finding .v3-dot { margin-top: 8px; width: 5px; height: 5px; flex-basis: 5px; background: var(--rose); }
+.v3-summary { font-size: 14.5px; font-weight: 400; line-height: 1.6; text-align: left; text-wrap: pretty; }
+.v3-insights {
+  overflow: hidden;
+  padding: 11px 12px 5px;
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  background: var(--rosesoft);
+  box-shadow: inset 3px 0 0 var(--rose);
+}
+.v3-insights-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: .01em;
+}
+.v3-insights-mark { color: var(--rose); font-size: 14px; line-height: 1; }
+.v3-insights-list { margin-top: 3px; }
+.v3-finding {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 400;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+.v3-finding:first-child { border-top: 0; }
+.v3-insight-index {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--rose);
+  font: 500 10px var(--font-mono);
+  box-shadow: 0 0 0 1px var(--border);
+}
 .v3-followups { display: flex; flex-wrap: wrap; gap: 6px; }
 .v3-followups .v3-chip {
   max-width: 100%;
