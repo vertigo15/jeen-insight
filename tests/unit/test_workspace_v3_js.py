@@ -61,3 +61,18 @@ def test_workspace_bootstrap_hides_legacy_layout():
     assert "body.v3-booting > .app-layout { visibility: hidden; }" in styles
     assert "document.body.classList.remove('v3-booting')" in controller
     assert "WorkspaceController.init();" in controller
+
+
+def test_workspace_renders_findings_as_key_insights():
+    root = Path(__file__).resolve().parents[2]
+    styles = (root / "src/static/workspace/workspace.css").read_text()
+    controller = (
+        root / "src/static/workspace/workspaceController.js"
+    ).read_text()
+
+    assert 'class="v3-insights" aria-label="Key insights"' in controller
+    assert "v3-insights-title" in controller
+    assert "v3-insight-index" in controller
+    assert ".v3-insights {" in styles
+    assert "background: var(--rosesoft);" in styles
+    assert "color: var(--text);" in styles

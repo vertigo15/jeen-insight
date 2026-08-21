@@ -833,7 +833,13 @@
                 <span class="v3-trace-ms">${formatMs(item.elapsed_ms)}</span></div>`).join('')}</div>` : ''}
               <div class="v3-answer">
                 ${summary ? `<div class="v3-summary">${esc(summary)}</div>` : ''}
-                ${findings.map((finding) => `<div class="v3-finding"><span class="v3-dot"></span><span>${esc(textOf(finding))}</span></div>`).join('')}
+                ${findings.length ? `<section class="v3-insights" aria-label="Key insights">
+                  <div class="v3-insights-title"><span class="v3-insights-mark" aria-hidden="true">✦</span>Key insights</div>
+                  <div class="v3-insights-list">${findings.map((finding, index) => `<div class="v3-finding">
+                    <span class="v3-insight-index" aria-hidden="true">${index + 1}</span>
+                    <span>${esc(textOf(finding))}</span>
+                  </div>`).join('')}</div>
+                </section>` : ''}
                 ${followups.length ? `<div class="v3-followups">${followups.map((question) => `<button class="v3-chip" data-followup="${esc(textOf(question))}">${esc(textOf(question))}</button>`).join('')}</div>` : ''}
               </div>
             </article>`;
