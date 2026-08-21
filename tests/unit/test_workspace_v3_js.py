@@ -47,3 +47,17 @@ def test_workspace_v3_pure_utilities():
     """
 
     subprocess.run(["node", "-e", script], cwd=root, check=True)
+
+
+def test_workspace_bootstrap_hides_legacy_layout():
+    root = Path(__file__).resolve().parents[2]
+    template = (root / "src/templates/index.html").read_text()
+    styles = (root / "src/static/workspace/workspace.css").read_text()
+    controller = (
+        root / "src/static/workspace/workspaceController.js"
+    ).read_text()
+
+    assert '<body class="v3-booting">' in template
+    assert "body.v3-booting > .app-layout { visibility: hidden; }" in styles
+    assert "document.body.classList.remove('v3-booting')" in controller
+    assert "WorkspaceController.init();" in controller
