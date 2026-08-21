@@ -191,3 +191,41 @@ def test_result_turn_trace_table_dock_and_error_preservation(driver):
     assert driver.find_element(By.CSS_SELECTOR, ".v3-error-block").is_displayed()
     driver.execute_script("document.getElementById('v3-thread').scrollTop = document.getElementById('v3-thread').scrollHeight")
     _shot(driver, "07_result_error_preserved.png")
+
+
+def test_hebrew_answers_use_rtl_insight_layout(driver):
+    _inject_success(driver)
+    driver.execute_script(
+        """
+        const turn = WorkspaceController.turns[0];
+        turn.question = 'הצג מכירות שנה מול שנה לפי חודש';
+        turn.result.answer = 'המכירות בשנת 2007 היו גבוהות יותר לאורך רוב השנה.';
+        turn.result.findings = [
+          'דצמבר היה החודש החזק ביותר עם צמיחה משמעותית.',
+          'ספטמבר הציג את השינוי החד ביותר לעומת השנה הקודמת.',
+          'מרץ היה החריג היחיד עם ירידה מתונה.'
+        ];
+        turn.result.followups = [
+          'איזה ערוץ תרם יותר לצמיחה?',
+          'איך נראית המגמה לפי אזור?'
+        ];
+        WorkspaceController.render();
+        """
+    )
+
+    summary = driver.find_element(By.CSS_SELECTOR, ".v3-summary")
+    insights = driver.find_element(By.CSS_SELECTOR, ".v3-insights")
+    finding = driver.find_element(By.CSS_SELECTOR, ".v3-finding")
+    badge = finding.find_element(By.CSS_SELECTOR, ".v3-insight-index")
+    finding_text = finding.find_elements(By.CSS_SELECTOR, "span")[1]
+
+    assert summary.get_attribute("dir") == "rtl"
+    assert insights.get_attribute("dir") == "rtl"
+    assert finding_text.get_attribute("dir") == "rtl"
+    assert badge.rect["x"] > finding_text.rect["x"]
+    assert all(
+        chip.get_attribute("dir") == "rtl"
+        for chip in driver.find_elements(By.CSS_SELECTOR, ".v3-followups .v3-chip")
+    )
+    assert "rgba" in insights.value_of_css_property("background-color")
+    _shot(driver, "08_hebrew_rtl.png")

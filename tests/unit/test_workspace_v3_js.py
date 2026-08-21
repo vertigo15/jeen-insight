@@ -40,6 +40,9 @@ def test_workspace_v3_pure_utilities():
       const note = u.safeTraceNote({{node:'sql_generator', type:'llm', detail:'SELECT secret FROM payroll'}});
       if (note.includes('SELECT') || note.includes('payroll')) throw new Error('SQL leaked into inline trace');
       if (u.filterResultRows(results, 'us').length !== 1) throw new Error('row filtering');
+      if (u.directionOf('המכירות עלו ב-37%') !== 'rtl') throw new Error('Hebrew direction');
+      if (u.directionOf('Revenue increased 37%') !== 'ltr') throw new Error('English direction');
+      if (u.directionOf('צמיחה of 36.9% לעומת 2006') !== 'rtl') throw new Error('mixed Hebrew direction');
       const failed = u.selectionForTurn('good', {{id:'bad', status:'error'}});
       if (failed.selectedTurnId !== 'bad' || failed.selectedResultId !== 'good') throw new Error('error replaced good result');
       const success = u.selectionForTurn('good', {{id:'new', status:'success'}});
@@ -73,6 +76,9 @@ def test_workspace_renders_findings_as_key_insights():
     assert 'class="v3-insights" aria-label="Key insights"' in controller
     assert "v3-insights-title" in controller
     assert "v3-insight-index" in controller
+    assert 'dir="${insightsDirection}"' in controller
+    assert 'dir="${directionOf(summary)}"' in controller
+    assert 'dir="${directionOf(question)}"' in controller
     assert ".v3-insights {" in styles
-    assert "background: var(--rosesoft);" in styles
+    assert "background: var(--insight-bg);" in styles
     assert "color: var(--text);" in styles

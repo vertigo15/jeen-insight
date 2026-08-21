@@ -26,6 +26,7 @@
   --faint: #b8b8bf;
   --rose: #8878c4;
   --rosesoft: #f2effb;
+  --insight-bg: rgba(136, 120, 196, .055);
   --link: #2b7fd4;
   --linksoft: #eaf4fd;
   --link2: #1f66ad;
@@ -64,6 +65,7 @@
   --faint: #5d5d67;
   --rose: #b9a8f0;
   --rosesoft: #262238;
+  --insight-bg: rgba(185, 168, 240, .065);
   --link: #6cb6f5;
   --linksoft: #16283a;
   --link2: #93cbff;
@@ -346,7 +348,7 @@ body.v3-ready > .app-layout { display: none !important; }
   width: 22px; height: 22px; flex: 0 0 22px; display: grid; place-items: center;
   border-radius: 50%; background: var(--plum); color: #fff; font-size: 9.5px; font-weight: 500;
 }
-.v3-question { font-size: 15px; line-height: 1.4; letter-spacing: -.005em; text-align: left; text-wrap: pretty; }
+.v3-question { font-size: 15px; line-height: 1.4; letter-spacing: -.005em; text-align: start; text-wrap: pretty; }
 .v3-run-strip { margin-top: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .v3-dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--soft2); }
 .v3-dot.is-done { background: var(--rose); }
@@ -361,13 +363,13 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-trace-note { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .v3-trace-ms { color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
 .v3-answer { margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 11px; }
-.v3-summary { font-size: 14.5px; font-weight: 400; line-height: 1.6; text-align: left; text-wrap: pretty; }
+.v3-summary { font-size: 14.5px; font-weight: 400; line-height: 1.6; text-align: start; text-wrap: pretty; }
 .v3-insights {
   overflow: hidden;
   padding: 11px 12px 5px;
   border: 1px solid var(--border2);
   border-radius: 12px;
-  background: var(--rosesoft);
+  background: var(--insight-bg);
   box-shadow: inset 3px 0 0 var(--rose);
 }
 .v3-insights-title {
@@ -413,6 +415,7 @@ body.v3-ready > .app-layout { display: none !important; }
   padding: 6px 12px;
   border-radius: 14px;
   line-height: 1.45;
+  text-align: start;
   white-space: normal;
 }
 .v3-running-list { margin-top: 13px; display: flex; flex-direction: column; gap: 6px; }
