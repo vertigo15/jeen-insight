@@ -61,6 +61,13 @@
         return '';
     }
 
+    function directionOf(value) {
+        const text = textOf(value);
+        const rtlCount = (text.match(/[\u0590-\u05ff\u0600-\u08ff]/g) || []).length;
+        const ltrCount = (text.match(/[A-Za-z\u00c0-\u02af]/g) || []).length;
+        return rtlCount > ltrCount ? 'rtl' : 'ltr';
+    }
+
     function formatMs(ms) {
         if (ms === null || ms === undefined || ms === '') return '—';
         const n = Number(ms);
@@ -786,7 +793,7 @@
             const initials = this._initials();
             if (turn.status === 'running') {
                 return `<article class="v3-turn is-running${selected ? ' is-selected' : ''}" data-turn="${turn.id}">
-                  <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question">${esc(turn.question)}</div></div>
+                  <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
                   <div class="v3-running-list">${PHASES.map((phase) => {
                     const status = turn.phaseState[phase.id];
                     const label = status === 'done' ? 'ok' : status === 'running' ? 'running…' : status === 'error' ? 'failed' : '';
@@ -797,7 +804,7 @@
             if (turn.status === 'error') {
                 const failed = [...turn.trace].reverse().find((item) => item.status === 'node_failed');
                 return `<article class="v3-turn is-selected" data-turn="${turn.id}">
-                  <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question">${esc(turn.question)}</div></div>
+                  <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
                   <div class="v3-error-block">${esc(turn.error)}
                     <div class="v3-error-meta">query_failed · failed at ${esc(failed?.node || 'query')} · ${formatMs(turn.durationMs)}</div>
                   </div>
@@ -815,6 +822,7 @@
             const summary = textOf(result.answer);
             const findings = result.findings || [];
             const followups = result.followups || [];
+            const insightsDirection = directionOf(findings.map(textOf).join(' '));
             const dots = PHASES.map((phase) => {
                 const events = finished.filter((item) => (NODE_PHASE[item.node] || 'execution') === phase.id);
                 const elapsed = events.reduce((total, item) => total + Number(item.elapsed_ms || 0), 0);
@@ -823,7 +831,7 @@
             }).join('');
             const trace = turn.trace.filter((item) => item.status !== 'node_started');
             return `<article class="v3-turn${selected ? ' is-selected' : ''}" data-turn="${turn.id}">
-              <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question">${esc(turn.question)}</div></div>
+              <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
               <div class="v3-run-strip">${dots}<span class="v3-run-meta">${formatMs(turn.durationMs)} · ${trace.length} nodes</span>
                 <button class="v3-text-btn" data-trace-toggle="${turn.id}">${turn.traceOpen ? 'hide run' : 'run details'}</button>
               </div>
@@ -832,15 +840,15 @@
                 <span>${esc(item.node)}</span><span class="v3-trace-note">${esc(safeTraceNote(item))}</span>
                 <span class="v3-trace-ms">${formatMs(item.elapsed_ms)}</span></div>`).join('')}</div>` : ''}
               <div class="v3-answer">
-                ${summary ? `<div class="v3-summary">${esc(summary)}</div>` : ''}
-                ${findings.length ? `<section class="v3-insights" aria-label="Key insights">
+                ${summary ? `<div class="v3-summary" dir="${directionOf(summary)}">${esc(summary)}</div>` : ''}
+                ${findings.length ? `<section class="v3-insights" aria-label="Key insights" dir="${insightsDirection}">
                   <div class="v3-insights-title"><span class="v3-insights-mark" aria-hidden="true">✦</span>Key insights</div>
                   <div class="v3-insights-list">${findings.map((finding, index) => `<div class="v3-finding">
                     <span class="v3-insight-index" aria-hidden="true">${index + 1}</span>
-                    <span>${esc(textOf(finding))}</span>
+                    <span dir="${directionOf(finding)}">${esc(textOf(finding))}</span>
                   </div>`).join('')}</div>
                 </section>` : ''}
-                ${followups.length ? `<div class="v3-followups">${followups.map((question) => `<button class="v3-chip" data-followup="${esc(textOf(question))}">${esc(textOf(question))}</button>`).join('')}</div>` : ''}
+                ${followups.length ? `<div class="v3-followups">${followups.map((question) => `<button class="v3-chip" dir="${directionOf(question)}" data-followup="${esc(textOf(question))}">${esc(textOf(question))}</button>`).join('')}</div>` : ''}
               </div>
             </article>`;
         },
@@ -1146,6 +1154,7 @@
         compactProfile,
         cappedMeta,
         textOf,
+        directionOf,
         safeTraceNote,
         filterResultRows,
         selectionForTurn,
