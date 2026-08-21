@@ -201,6 +201,7 @@
             this._applyResponsive();
             this.render();
             document.body.classList.add('v3-ready');
+            document.body.classList.remove('v3-booting');
             window.askQuestion = () => this.submitComposer();
             window._jeenQuestionClick = (q) => this.send(q);
             window._fillFollowUp = (q) => this.send(q);
@@ -1144,5 +1145,9 @@
         selectionForTurn,
     };
     window.WorkspaceController = WorkspaceController;
-    window.addEventListener('DOMContentLoaded', () => WorkspaceController.init());
+    if (typeof document !== 'undefined' && document.body) {
+        WorkspaceController.init();
+    } else {
+        window.addEventListener('DOMContentLoaded', () => WorkspaceController.init());
+    }
 })();

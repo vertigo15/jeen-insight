@@ -86,6 +86,7 @@ body {
   overflow: hidden;
 }
 
+body.v3-booting > .app-layout { visibility: hidden; }
 body.v3-ready > .app-layout { display: none !important; }
 
 .v3-shell, .v3-shell * { box-sizing: border-box; }
