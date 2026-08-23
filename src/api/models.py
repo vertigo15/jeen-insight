@@ -105,6 +105,15 @@ class GenerateChartRequest(BaseModel):
     x_column: Optional[str] = None
     y_column: Optional[str] = None
     series_column: Optional[str] = None
+    # Explicit map bindings. These are optional so the LLM can choose from the
+    # geo-role candidates on the first render; user changes always override it.
+    location_column: Optional[str] = None
+    latitude_column: Optional[str] = None
+    longitude_column: Optional[str] = None
+    location_parts: Optional[Dict[str, str]] = None
+    value_column: Optional[str] = None
+    value2_column: Optional[str] = None
+    aggregate: Optional[str] = None
 
 
 class GenerateChartResponse(BaseModel):

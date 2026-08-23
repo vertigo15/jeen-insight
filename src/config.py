@@ -43,7 +43,9 @@ class Settings(BaseSettings):
     OSM_GEOCODER_TIMEOUT_SECONDS: float = 5.0
     OSM_GEOCODER_MIN_INTERVAL_SECONDS: float = 1.0
     OSM_GEOCODER_CACHE_TTL_SECONDS: int = 86400
-    OSM_GEOCODER_MAX_UNIQUE_PLACES: int = 250
+    # Bound a chart request so one result cannot turn into a long-running
+    # third-party geocoding job. The remaining unique places are marked limited.
+    OSM_GEOCODER_MAX_UNIQUE_PLACES: int = 50
 
     # LangGraph agent settings
     LANGGRAPH_MAX_RETRIES: int = 3

@@ -194,6 +194,7 @@
         dockOpen: false,
         chartCollapsed: true,
         filter: '',
+        mapSelectedRows: new Set(),
         desktopPreference: true,
         autoCollapsed: false,
         lastAppliedResultId: null,
@@ -203,6 +204,15 @@
             this._buildShell();
             this._moveProductionNodes();
             this._bind();
+            document.addEventListener('jeen:osm-map-select', (event) => {
+                const indexes = Array.isArray(event.detail?.rowIndexes) ? event.detail.rowIndexes : [];
+                this.mapSelectedRows = new Set(indexes.map(Number));
+                this.renderTable();
+                const first = indexes[0];
+                const target = document.querySelector(`#v3-grid [data-source-row="${first}"]`);
+                target?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            });
+            document.addEventListener('jeen:osm-map-ready', () => this.renderTable());
             this.setTab('conversation');
             this._renderEmptySuggestions();
             this._applyResponsive();
@@ -922,6 +932,7 @@
             const results = turn.result.results;
             const columns = results.columns || [];
             const allRows = normalizeRows(results);
+            const mapActive = document.documentElement.dataset.jeenOsmMapActive === 'true';
             let filtered = filterResultRows(results, this.filter);
             const presentation = window.JeenLegacyBridge?.getTablePresentation?.() || {
                 formats: {}, derived: [], sortColumn: null, sortDirection: 'asc',
@@ -978,15 +989,19 @@
                     ? (presentation.sortDirection === 'desc' ? ' ↓' : ' ↑') : '';
                 return `<button class="v3-grid-cell${descriptor.numeric ? ' is-numeric' : ''}${descriptor.derived ? ' is-derived' : ''}" ${descriptor.derived ? '' : `data-col="${descriptor.sourceIndex}"`} title="${esc(descriptor.name)}">${esc(descriptor.name)}${sort}</button>`;
             }).join('')}</div>`;
-            const rowHtml = (row, visibleIndex) => `<div class="v3-grid-row" data-row="${visibleIndex}">${descriptors.map((descriptor) => {
+            const rowHtml = (row, visibleIndex) => {
+                const sourceIndex = allRows.indexOf(row);
+                const selected = mapActive && this.mapSelectedRows.has(sourceIndex);
+                return `<div class="v3-grid-row${selected ? ' is-map-selected' : ''}" data-row="${visibleIndex}" data-source-row="${sourceIndex}"${mapActive ? ' title="Focus map at this location"' : ''}>${descriptors.map((descriptor) => {
                 const raw = descriptor.derived
                     ? derivedValues.get(descriptor.sourceIndex)?.[visibleIndex]
                     : rowValue(row, columns[descriptor.sourceIndex], descriptor.sourceIndex);
                 const rendered = descriptor.derived
                     ? (descriptor.derived.type === 'pct_total' && raw != null ? `${formatCompact(raw)}%` : formatCompact(raw))
                     : (window.JeenLegacyBridge?.formatTableValue?.(raw, descriptor.sourceIndex, descriptor.numeric) ?? (raw ?? '—'));
-                return `<div class="v3-grid-cell${descriptor.numeric ? ' is-numeric' : ''}${descriptor.derived ? ' is-derived' : ''}" title="${esc(rendered)}">${esc(rendered)}</div>`;
-            }).join('')}</div>`;
+                    return `<div class="v3-grid-cell${descriptor.numeric ? ' is-numeric' : ''}${descriptor.derived ? ' is-derived' : ''}" title="${esc(rendered)}">${esc(rendered)}</div>`;
+                }).join('')}</div>`;
+            };
             const bindGridActions = () => {
                 grid.querySelectorAll('[data-col]').forEach((header) => {
                     const index = Number(header.dataset.col);
@@ -998,6 +1013,17 @@
                 });
                 grid.querySelectorAll('[data-row]').forEach((row) => {
                     row.addEventListener('contextmenu', (event) => window.showRowMenu?.(event, Number(row.dataset.row)));
+                    row.addEventListener('click', (event) => {
+                        if (event.defaultPrevented || !mapActive) return;
+                        const sourceRow = Number(row.dataset.sourceRow);
+                        if (Number.isInteger(sourceRow) && sourceRow >= 0) {
+                            this.mapSelectedRows = new Set([sourceRow]);
+                            this.renderTable();
+                            document.dispatchEvent(new CustomEvent('jeen:osm-table-focus', {
+                                detail: { rowIndexes: [sourceRow] },
+                            }));
+                        }
+                    });
                 });
             };
             wrap.onscroll = null;

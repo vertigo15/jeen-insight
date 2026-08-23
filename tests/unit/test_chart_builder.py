@@ -453,8 +453,39 @@ def test_osm_map_emits_one_point_overlay_and_aggregates_coordinates():
     assert north["value"] == 30
     assert north["value2"] == 6
     assert north["rowCount"] == 2
+    assert north["rowIndexes"] == [0, 1]
+    assert north["placeKey"] == "north"
     assert osm["matched"] == 2
     assert osm["rowCount"] == 3
+
+
+def test_osm_map_counts_raw_geography_rows_without_using_key_as_measure():
+    rows = [
+        {"GeographyKey": 1, "City": "Paris", "State": "Texas", "Country": "United States"},
+        {"GeographyKey": 2, "City": "Paris", "State": "Texas", "Country": "United States"},
+    ]
+    opt = build_chart_option(
+        _bar_spec(
+            chart_type="osm_map",
+            x="City",
+            location="City",
+            location_parts={"place": "City", "admin1": "State", "country": "Country"},
+            y=["__row_count__"],
+            value="__row_count__",
+            aggregate="count",
+            resolved_locations={
+                "paris|texas|united states": {
+                    "status": "resolved", "lat": 33.66, "lng": -95.55,
+                },
+            },
+        ),
+        _dataset(rows, ["GeographyKey", "City", "State", "Country"]),
+    )
+
+    point = opt["jeenOsmMap"]["overlays"][0]["points"][0]
+    assert point["label"] == "Paris, Texas, United States"
+    assert point["value"] == 2
+    assert point["rowIndexes"] == [0, 1]
 
 
 def test_osm_map_uses_persisted_place_resolution_without_network():

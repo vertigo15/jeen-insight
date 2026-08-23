@@ -26,6 +26,7 @@ from src.api.llm_params import (
 from src.api.map_geocoding import (
     chart_capabilities,
     geocoding_enabled,
+    infer_geo_roles,
     osm_maps_enabled,
     resolve_osm_locations,
 )
@@ -219,9 +220,10 @@ _GENERATE_SYSTEM_PROMPT = (
     '  "map_mode": "choropleth|points|null",\n'
     '  "map_name": "world|world_detailed|israel_districts|null",\n'
     '  "location": "<country/region/district/city column for map charts, or null>",\n'
+    '  "location_parts": {"place":"<city/place>", "admin1":"<state/province>", "country":"<country>", "postal":"<postal code>"}  // OPTIONAL for compound point-map geocoding,\n'
     '  "latitude": "<latitude column for point maps, or null>",\n'
     '  "longitude": "<longitude/lng column for point maps, or null>",\n'
-    '  "value": "<numeric measure column for map charts, or null>",\n'
+    '  "value": "<numeric measure column for map charts, __row_count__ for a location count, or null>",\n'
     '  "value2": "<optional second numeric measure for OpenStreetMap point size, or null>",\n'
     '  "map_quality": "standard|detailed|null",\n'
     '  "map_palette": "blue|green|purple|orange|null",\n'
@@ -316,6 +318,11 @@ _OSM_MAP_PROMPT = (
     "data with latitude/longitude, or a city/place location column.\n"
     "- Use `value` for marker color. With a second meaningful numeric measure, "
     "set `value2` to encode marker radius; otherwise omit it.\n"
+    "- Prefer a detected latitude/longitude pair when it has high coverage. If "
+    "using names, set `location_parts` with place plus state/province and country "
+    "when available; never geocode an IP address or postal code alone.\n"
+    "- When a raw geography result has no real measure, use value `__row_count__` "
+    "and aggregate `count`; never use a key/code/identifier as a map measure.\n"
     "- Prefer the existing Flat Map (`map`) for country, region, or district "
     "choropleths. Never use `osm_map` for a high-cardinality identifier.\n"
 )
@@ -374,7 +381,8 @@ def _columns_from_profile(profile: dict) -> tuple[list[str], list[str], list[str
 # Numeric columns whose name ends in an identifier/ordinal token (month_number,
 # year, order_id, …) are dimensions, not measures — never auto-pick them for y.
 _IDENTIFIER_RE = re.compile(
-    r"(^|_)(id|number|no|num|year|month|day|quarter|qtr|week|rank|index|idx|seq)s?$",
+    r"(id|key|code|number|no|num|year|month|day|quarter|qtr|week|"
+    r"rank|index|idx|seq|postal|zip|ip|locator)s?$",
     re.I,
 )
 _LATITUDE_RE = re.compile(r"(^|_)(lat|latitude)$", re.I)
@@ -386,11 +394,10 @@ _LOCATION_RE = re.compile(
 _GEO_HINT_PATTERNS = {
     "latitude": re.compile(r"\b(latitude|lat)\b", re.I),
     "longitude": re.compile(r"\b(longitude|lon|lng|long)\b", re.I),
-    "location": re.compile(
-        r"\b(country|nation|region|district|state|province|city|town|municipality|"
-        r"locality|location|place|address|postal(?:\s+code)?|zip)\b",
-        re.I,
-    ),
+    "place": re.compile(r"\b(city|town|municipality|locality|location|place)\b", re.I),
+    "admin1": re.compile(r"\b(state|province|region|district)\b", re.I),
+    "country": re.compile(r"\b(country|nation)\b", re.I),
+    "postal": re.compile(r"\b(postal(?:\s+code)?|zip)\b", re.I),
 }
 
 
@@ -454,6 +461,30 @@ def _geo_hints_blob(hints: dict[str, str]) -> str:
     )
 
 
+def _geo_roles_blob(roles: dict[str, Any]) -> str:
+    """Serialize only inferred column names/coverage, never raw place values."""
+    candidates = roles.get("candidates") if isinstance(roles, dict) else {}
+    pairs = roles.get("coordinate_pairs") if isinstance(roles, dict) else []
+    lines = []
+    for role in ("place", "admin1", "country", "postal", "latitude", "longitude"):
+        columns = candidates.get(role) if isinstance(candidates, dict) else None
+        if columns:
+            lines.append(f"- {role}: {', '.join(columns)}")
+    for pair in pairs[:3] if isinstance(pairs, list) else []:
+        if isinstance(pair, dict):
+            lines.append(
+                f"- coordinate pair: {pair.get('latitude')} + {pair.get('longitude')} "
+                f"({int(float(pair.get('coverage', 0)) * 100)}% valid)"
+            )
+    if not lines:
+        return ""
+    return (
+        "\n\nDetected geographic candidates (use only these exact columns; "
+        "never use identifiers, IP addresses, or postal codes as a measure):\n"
+        + "\n".join(lines)
+    )
+
+
 def _validate_chart_spec(
     spec: dict,
     *,
@@ -464,7 +495,15 @@ def _validate_chart_spec(
     x_col: Optional[str] = None,
     y_col: Optional[str] = None,
     series_col: Optional[str] = None,
+    location_col: Optional[str] = None,
+    latitude_col: Optional[str] = None,
+    longitude_col: Optional[str] = None,
+    location_parts_override: Optional[dict[str, str]] = None,
+    value_col: Optional[str] = None,
+    value2_col: Optional[str] = None,
+    aggregate_override: Optional[str] = None,
     geo_hints: Optional[dict[str, str]] = None,
+    geo_roles: Optional[dict[str, Any]] = None,
     osm_enabled: bool = True,
 ) -> dict:
     """Clamp the LLM spec to safe, real values and apply user overrides.
@@ -477,6 +516,20 @@ def _validate_chart_spec(
     numeric_set = set(numeric_cols)
     non_numeric = [c for c in column_names if c not in numeric_set]
     geo_hints = geo_hints or {}
+    geo_roles = geo_roles or {}
+    geo_candidates = geo_roles.get("candidates") if isinstance(geo_roles, dict) else {}
+    geo_candidates = geo_candidates if isinstance(geo_candidates, dict) else {}
+    coordinate_pairs = geo_roles.get("coordinate_pairs") if isinstance(geo_roles, dict) else []
+    coordinate_pairs = coordinate_pairs if isinstance(coordinate_pairs, list) else []
+
+    def geo_candidate(role: str) -> Optional[str]:
+        hinted = geo_hints.get(role)
+        if hinted in column_names:
+            return hinted
+        candidates = geo_candidates.get(role)
+        if isinstance(candidates, list):
+            return next((column for column in candidates if column in column_names), None)
+        return None
 
     if not isinstance(spec, dict):
         spec = {}
@@ -541,15 +594,39 @@ def _validate_chart_spec(
     value = value_cols[0] if value_cols else (y[0] if y else None)
     value2_cols = [c for c in _coerce_columns(spec.get("value2"), lowered) if c in numeric_set]
     value2 = value2_cols[0] if value2_cols else next((c for c in y if c != value), None)
+    raw_location_parts = spec.get("location_parts")
+    location_parts = {}
+    if isinstance(raw_location_parts, dict):
+        for role in ("place", "admin1", "country", "postal"):
+            column = raw_location_parts.get(role)
+            if isinstance(column, str) and column in column_names:
+                location_parts[role] = column
 
     if not location:
-        location = geo_hints.get("location") or _first_name_matching(non_numeric, _LOCATION_RE)
+        location = geo_candidate("place") or _first_name_matching(non_numeric, _LOCATION_RE)
         if not location and chart_type != "osm_map":
             location = x
     if not latitude:
-        latitude = geo_hints.get("latitude") or _first_name_matching(numeric_cols, _LATITUDE_RE)
+        latitude = geo_candidate("latitude") or _first_name_matching(numeric_cols, _LATITUDE_RE)
     if not longitude:
-        longitude = geo_hints.get("longitude") or _first_name_matching(numeric_cols, _LONGITUDE_RE)
+        longitude = geo_candidate("longitude") or _first_name_matching(numeric_cols, _LONGITUDE_RE)
+    if not location_parts:
+        for role in ("place", "admin1", "country", "postal"):
+            column = geo_candidate(role)
+            if column:
+                location_parts[role] = column
+        if location and "place" not in location_parts:
+            location_parts["place"] = location
+    if location_parts.get("place"):
+        location = location_parts["place"]
+    if coordinate_pairs:
+        strongest_pair = coordinate_pairs[0]
+        if (
+            isinstance(strongest_pair, dict)
+            and float(strongest_pair.get("coverage", 0)) >= 0.5
+        ):
+            latitude = latitude or strongest_pair.get("latitude")
+            longitude = longitude or strongest_pair.get("longitude")
 
     if forced_type and forced_type not in ("auto", "", None):
         forced = forced_type.strip().lower()
@@ -614,6 +691,8 @@ def _validate_chart_spec(
     aggregate = str(spec.get("aggregate", "")).strip().lower()
     if aggregate not in _ALLOWED_AGGREGATES:
         aggregate = "sum"
+    if aggregate_override and aggregate_override.strip().lower() in _ALLOWED_AGGREGATES:
+        aggregate = aggregate_override.strip().lower()
 
     sort = str(spec.get("sort", "")).strip().lower()
     if sort not in _ALLOWED_SORTS:
@@ -653,6 +732,28 @@ def _validate_chart_spec(
         y = [y_col]
         if chart_type in ("map", "osm_map"):
             value = y_col
+    if location_col and location_col in column_names:
+        location = location_col
+        location_parts["place"] = location_col
+    if latitude_col and latitude_col in numeric_set:
+        latitude = latitude_col
+    if longitude_col and longitude_col in numeric_set:
+        longitude = longitude_col
+    if isinstance(location_parts_override, dict):
+        for role in ("place", "admin1", "country", "postal"):
+            column = location_parts_override.get(role)
+            if isinstance(column, str) and column in column_names:
+                location_parts[role] = column
+        if location_parts.get("place"):
+            location = location_parts["place"]
+    if value_col == "__row_count__":
+        value = "__row_count__"
+    elif value_col and value_col in numeric_set:
+        value = value_col
+    if value2_col and value2_col in numeric_set and value2_col != value:
+        value2 = value2_col
+    elif value2_col == "":
+        value2 = None
     if series_col is not None:
         series = series_col if series_col in column_names else None
     if series == x:
@@ -661,6 +762,12 @@ def _validate_chart_spec(
     if x_parts and series in x_parts:
         series = None
     if chart_type == "osm_map":
+        if not value or _looks_like_identifier(value):
+            value = real_measures[0] if real_measures else "__row_count__"
+        if value == "__row_count__":
+            aggregate = "count"
+            if not isinstance(spec.get("title"), str) or not spec.get("title", "").strip():
+                title = f"Location count by {location or x}"
         y = [value] if value else []
         if value2 and value2 != value:
             y.append(value2)
@@ -683,10 +790,12 @@ def _validate_chart_spec(
         "map_mode": map_mode or None,
         "map_name": map_name or None,
         "location": location,
+        "location_parts": location_parts,
         "latitude": latitude,
         "longitude": longitude,
         "value": value,
         "value2": value2 if chart_type == "osm_map" and value2 != value else None,
+        "geo_roles": geo_roles,
         "map_quality": map_quality,
         "map_palette": map_palette,
         "show_labels": show_labels,
@@ -753,6 +862,7 @@ async def generate_chart(request: GenerateChartRequest):
             detail="Could not determine chartable columns for this result set.",
         )
     geo_hints = await _load_geo_hints(request.connection, column_names)
+    geo_roles = infer_geo_roles(dataset, geo_hints)
 
     # 3. Build the decision prompt (profile + intent + user overrides).
     instruction_parts: list[str] = []
@@ -772,6 +882,21 @@ async def generate_chart(request: GenerateChartRequest):
         mapping.append(f"y = {request.y_column}")
     if request.series_column:
         mapping.append(f"series = {request.series_column}")
+    for label, value in (
+        ("place", request.location_column),
+        ("latitude", request.latitude_column),
+        ("longitude", request.longitude_column),
+        ("value", request.value_column),
+        ("size value", request.value2_column),
+        ("aggregate", request.aggregate),
+    ):
+        if value:
+            mapping.append(f"{label} = {value}")
+    if request.location_parts:
+        mapping.append(
+            "location parts = "
+            + ", ".join(f"{role}:{column}" for role, column in request.location_parts.items())
+        )
     if mapping:
         instruction_parts.append(
             "User-selected column mapping (MUST follow): " + "; ".join(mapping)
@@ -782,7 +907,8 @@ async def generate_chart(request: GenerateChartRequest):
     user_prompt = (
         "Choose the best chart for this dataset and return the JSON spec.\n\n"
         f"Dataset profile (computed over ALL {profile.get('row_count', 0)} rows):\n"
-        f"{_profile_blob(profile)}{_geo_hints_blob(geo_hints)}{instruction_blob}\n\n"
+        f"{_profile_blob(profile)}{_geo_hints_blob(geo_hints)}"
+        f"{_geo_roles_blob(geo_roles)}{instruction_blob}\n\n"
         f"Sample rows (first {len(sample)} of {profile.get('row_count', 0)}, for "
         "SHAPE/MEANING ONLY — do not copy these values into the chart):\n"
         + json.dumps(sample, indent=2, default=str)
@@ -817,7 +943,15 @@ async def generate_chart(request: GenerateChartRequest):
             x_col=request.x_column,
             y_col=request.y_column,
             series_col=request.series_column,
+            location_col=request.location_column,
+            latitude_col=request.latitude_column,
+            longitude_col=request.longitude_column,
+            location_parts_override=request.location_parts,
+            value_col=request.value_column,
+            value2_col=request.value2_column,
+            aggregate_override=request.aggregate,
             geo_hints=geo_hints,
+            geo_roles=geo_roles,
             osm_enabled=osm_maps_enabled(),
         )
         if not spec["x"] or not spec["y"]:

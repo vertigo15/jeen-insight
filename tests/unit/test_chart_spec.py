@@ -301,3 +301,64 @@ def test_osm_map_is_not_selected_when_disabled():
     assert spec["chart_type"] == "horizontal_bar"
 
 
+def test_osm_map_uses_compound_geo_roles_and_virtual_row_count():
+    spec = _validate_chart_spec(
+        {"chart_type": "osm_map"},
+        column_names=[
+            "GeographyKey", "City", "StateProvinceName",
+            "EnglishCountryRegionName", "PostalCode",
+        ],
+        numeric_cols=["GeographyKey"],
+        date_cols=[],
+        geo_roles={
+            "candidates": {
+                "place": ["City"],
+                "admin1": ["StateProvinceName"],
+                "country": ["EnglishCountryRegionName"],
+                "postal": ["PostalCode"],
+            },
+            "coordinate_pairs": [],
+        },
+    )
+
+    assert spec["location"] == "City"
+    assert spec["location_parts"] == {
+        "place": "City",
+        "admin1": "StateProvinceName",
+        "country": "EnglishCountryRegionName",
+        "postal": "PostalCode",
+    }
+    assert spec["value"] == "__row_count__"
+    assert spec["aggregate"] == "count"
+    assert spec["y"] == ["__row_count__"]
+
+
+def test_osm_map_user_bindings_override_model_selection():
+    spec = _validate_chart_spec(
+        {
+            "chart_type": "osm_map",
+            "location": "WrongPlace",
+            "value": "sales",
+            "aggregate": "sum",
+        },
+        column_names=["WrongPlace", "City", "Country", "latitude", "longitude", "sales", "orders"],
+        numeric_cols=["latitude", "longitude", "sales", "orders"],
+        date_cols=[],
+        location_col="City",
+        latitude_col="latitude",
+        longitude_col="longitude",
+        location_parts_override={"place": "City", "country": "Country"},
+        value_col="orders",
+        value2_col="sales",
+        aggregate_override="avg",
+    )
+
+    assert spec["location"] == "City"
+    assert spec["location_parts"] == {"place": "City", "country": "Country"}
+    assert spec["latitude"] == "latitude"
+    assert spec["longitude"] == "longitude"
+    assert spec["value"] == "orders"
+    assert spec["value2"] == "sales"
+    assert spec["aggregate"] == "avg"
+
+

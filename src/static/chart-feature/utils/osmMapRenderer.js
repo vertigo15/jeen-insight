@@ -18,12 +18,31 @@ const MAP_STYLES = `
 .osm-map-tiles img { position: absolute; width: 256px; height: 256px; max-width: none; user-select: none; }
 .osm-map-marker { position: absolute; transform: translate(-50%, -50%); border: 2px solid rgba(255,255,255,.92); border-radius: 50%; box-shadow: 0 1px 4px rgba(15,23,42,.38); opacity: .86; cursor: pointer; pointer-events: auto; padding: 0; transition: transform 120ms ease, opacity 120ms ease; }
 .osm-map-marker:hover, .osm-map-marker:focus-visible { transform: translate(-50%, -50%) scale(1.16); opacity: 1; outline: 2px solid #312e81; outline-offset: 2px; }
+.osm-map-marker.is-selected { transform: translate(-50%, -50%) scale(1.22); opacity: 1; outline: 3px solid #312e81; outline-offset: 3px; z-index: 3; }
 .osm-map-legend, .osm-map-attribution { position: absolute; z-index: 2; background: rgba(255,255,255,.93); border: 1px solid rgba(100,116,139,.42); border-radius: 6px; box-shadow: 0 1px 3px rgba(15,23,42,.16); color: #1e293b; font: 12px/1.35 system-ui, sans-serif; }
 .osm-map-legend { left: 12px; bottom: 12px; padding: 7px 9px; display: grid; gap: 2px; }
 .osm-map-legend-color::before { content: ''; display: inline-block; width: 24px; height: 7px; margin-right: 6px; border-radius: 999px; background: linear-gradient(90deg,#e0f2fe,#0369a1); vertical-align: middle; }
 .osm-map-legend-size::before { content: '●'; display: inline-block; width: 24px; margin-right: 6px; color: #0369a1; text-align: center; vertical-align: middle; }
 .osm-map-attribution { right: 6px; bottom: 6px; padding: 3px 5px; font-size: 10px; }
 .osm-map-attribution a { color: #1e40af; }
+.osm-map-controls { position: absolute; z-index: 3; top: 12px; left: 12px; display: flex; gap: 4px; padding: 4px; background: rgba(255,255,255,.93); border: 1px solid rgba(100,116,139,.42); border-radius: 7px; box-shadow: 0 1px 3px rgba(15,23,42,.16); }
+.osm-map-controls button { min-width: 29px; height: 28px; border: 0; border-radius: 4px; color: #1e293b; background: transparent; cursor: pointer; font: 600 14px/1 system-ui,sans-serif; }
+.osm-map-controls button:hover, .osm-map-controls button:focus-visible { color: #312e81; background: #ede9fe; outline: 0; }
+.osm-map-sidebar { position: absolute; z-index: 3; top: 12px; right: 12px; width: min(278px, calc(100% - 84px)); max-height: calc(100% - 64px); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 9px; padding: 11px; color: #1e293b; background: rgba(255,255,255,.96); border: 1px solid rgba(100,116,139,.42); border-radius: 8px; box-shadow: 0 4px 18px rgba(15,23,42,.2); font: 12px/1.4 system-ui,sans-serif; }
+.osm-map-sidebar.is-collapsed { width: auto; min-width: 0; padding: 4px; display: block; }
+.osm-map-sidebar.is-collapsed > :not(.osm-map-sidebar-heading) { display: none; }
+.osm-map-sidebar-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 650; }
+.osm-map-sidebar-toggle { width: 27px; height: 27px; border: 0; border-radius: 4px; color: #1e293b; background: transparent; cursor: pointer; font-size: 17px; }
+.osm-map-sidebar-toggle:hover, .osm-map-sidebar-toggle:focus-visible { color: #312e81; background: #ede9fe; outline: 0; }
+.osm-map-search { width: 100%; box-sizing: border-box; min-height: 31px; padding: 6px 8px; color: #1e293b; background: #fff; border: 1px solid #cbd5e1; border-radius: 5px; font: inherit; }
+.osm-map-search:focus { border-color: #6d5bb1; outline: 2px solid rgba(109,91,177,.22); }
+.osm-map-search-results { max-height: 190px; overflow: auto; display: grid; gap: 3px; }
+.osm-map-search-result { width: 100%; padding: 7px 8px; overflow: hidden; color: #334155; text-align: left; text-overflow: ellipsis; white-space: nowrap; background: transparent; border: 0; border-radius: 4px; cursor: pointer; font: inherit; }
+.osm-map-search-result:hover, .osm-map-search-result:focus-visible, .osm-map-search-result.is-selected { color: #312e81; background: #ede9fe; outline: 0; }
+.osm-map-search-empty { color: #64748b; padding: 5px 2px; }
+.osm-map-details { padding-top: 8px; border-top: 1px solid #e2e8f0; color: #475569; }
+.osm-map-details strong { display: block; color: #1e293b; margin-bottom: 2px; font-weight: 650; }
+.osm-map-status { color: #64748b; font-size: 11px; }
 `;
 
 function ensureStyles() {
@@ -99,8 +118,9 @@ export function radiusForValue(value, min, max) {
 }
 
 export class OsmMapRenderer {
-    constructor(containerId) {
+    constructor(containerId, hooks = {}) {
         this.containerId = containerId;
+        this.hooks = hooks;
         this.container = null;
         this.root = null;
         this.tiles = null;
@@ -110,6 +130,11 @@ export class OsmMapRenderer {
         this.center = null;
         this.zoom = 2;
         this.drag = null;
+        this.selectedPlaceKey = null;
+        this.sidebar = null;
+        this.sidebarSearch = null;
+        this.sidebarResults = null;
+        this.sidebarDetails = null;
         this.resizeObserver = null;
         this._onWheel = (event) => this._handleWheel(event);
         this._onPointerDown = (event) => this._handlePointerDown(event);
@@ -142,7 +167,14 @@ export class OsmMapRenderer {
         this.tiles.className = 'osm-map-tiles';
         this.markers = document.createElement('div');
         this.markers.className = 'osm-map-markers';
-        this.root.append(this.tiles, this.markers, this._buildLegend(overlay), this._buildAttribution(map));
+        this.root.append(
+            this.tiles,
+            this.markers,
+            this._buildControls(),
+            this._buildSidebar(overlay),
+            this._buildLegend(overlay),
+            this._buildAttribution(map),
+        );
         container.appendChild(this.root);
 
         const fitted = fitMapView(map.extent, container.clientWidth || 900, container.clientHeight || 520);
@@ -174,6 +206,150 @@ export class OsmMapRenderer {
             legend.appendChild(size);
         }
         return legend;
+    }
+
+    _buildControls() {
+        const controls = document.createElement('div');
+        controls.className = 'osm-map-controls';
+        const actions = [
+            { action: 'fit', label: 'Fit map to data', text: '⌖' },
+            { action: 'zoom-in', label: 'Zoom in', text: '+' },
+            { action: 'zoom-out', label: 'Zoom out', text: '−' },
+            { action: 'reset', label: 'Reset map view', text: '↺' },
+        ];
+        actions.forEach(({ action, label, text }) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.dataset.action = action;
+            button.title = label;
+            button.setAttribute('aria-label', label);
+            button.textContent = text;
+            button.addEventListener('pointerdown', (event) => event.stopPropagation());
+            button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                this._handleControl(action);
+            });
+            controls.appendChild(button);
+        });
+        return controls;
+    }
+
+    _buildSidebar(overlay) {
+        const sidebar = document.createElement('aside');
+        sidebar.className = 'osm-map-sidebar';
+        sidebar.setAttribute('aria-label', 'Map locations');
+
+        const heading = document.createElement('div');
+        heading.className = 'osm-map-sidebar-heading';
+        const title = document.createElement('span');
+        title.textContent = 'Locations';
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'osm-map-sidebar-toggle';
+        toggle.setAttribute('aria-expanded', 'true');
+        toggle.setAttribute('aria-label', 'Collapse map sidebar');
+        toggle.textContent = '×';
+        toggle.addEventListener('pointerdown', (event) => event.stopPropagation());
+        toggle.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const collapsed = sidebar.classList.toggle('is-collapsed');
+            toggle.textContent = collapsed ? '☰' : '×';
+            toggle.setAttribute('aria-expanded', String(!collapsed));
+            toggle.setAttribute('aria-label', collapsed ? 'Expand map sidebar' : 'Collapse map sidebar');
+        });
+        heading.append(title, toggle);
+
+        const search = document.createElement('input');
+        search.className = 'osm-map-search';
+        search.type = 'search';
+        search.placeholder = 'Search mapped locations';
+        search.autocomplete = 'off';
+        search.setAttribute('aria-label', 'Search mapped locations');
+        search.addEventListener('pointerdown', (event) => event.stopPropagation());
+        search.addEventListener('input', () => this._renderSidebarResults(search.value));
+
+        const results = document.createElement('div');
+        results.className = 'osm-map-search-results';
+        results.setAttribute('role', 'list');
+        results.setAttribute('aria-live', 'polite');
+
+        const details = document.createElement('div');
+        details.className = 'osm-map-details';
+        this.sidebar = sidebar;
+        this.sidebarSearch = search;
+        this.sidebarResults = results;
+        this.sidebarDetails = details;
+        sidebar.append(heading, search, results, details);
+        if (window.matchMedia?.('(max-width: 620px)').matches) {
+            sidebar.classList.add('is-collapsed');
+            toggle.textContent = '☰';
+            toggle.setAttribute('aria-expanded', 'false');
+            toggle.setAttribute('aria-label', 'Expand map sidebar');
+        }
+        this._renderSidebarResults('');
+        this._renderSidebarDetails(overlay);
+        return sidebar;
+    }
+
+    _renderSidebarResults(query) {
+        if (!this.sidebarResults) return;
+        const text = String(query || '').trim().toLocaleLowerCase();
+        const points = this.map?.overlays?.[0]?.points || [];
+        const matches = points
+            .filter((point) => !text || String(point.label || '').toLocaleLowerCase().includes(text))
+            .slice(0, 25);
+        this.sidebarResults.textContent = '';
+        if (!matches.length) {
+            const empty = document.createElement('div');
+            empty.className = 'osm-map-search-empty';
+            empty.textContent = text ? 'No mapped locations found.' : 'No locations were mapped.';
+            this.sidebarResults.appendChild(empty);
+            return;
+        }
+        matches.forEach((point) => {
+            const result = document.createElement('button');
+            result.type = 'button';
+            result.className = 'osm-map-search-result';
+            result.setAttribute('role', 'listitem');
+            result.classList.toggle('is-selected', point.placeKey === this.selectedPlaceKey);
+            result.textContent = point.label || 'Unnamed location';
+            result.title = point.label || 'Unnamed location';
+            result.addEventListener('pointerdown', (event) => event.stopPropagation());
+            result.addEventListener('click', (event) => {
+                event.stopPropagation();
+                this._focusPoint(point, true);
+            });
+            this.sidebarResults.appendChild(result);
+        });
+    }
+
+    _renderSidebarDetails(overlay = this.map?.overlays?.[0]) {
+        if (!this.sidebarDetails) return;
+        const points = overlay?.points || [];
+        const point = points.find((candidate) => candidate.placeKey === this.selectedPlaceKey);
+        this.sidebarDetails.textContent = '';
+        if (point) {
+            const format = makeValueFormatter(this.config?.jeenFormat || { kind: 'number', compact: true });
+            const title = document.createElement('strong');
+            title.textContent = point.label || 'Selected location';
+            const values = document.createElement('div');
+            const rowCount = point.rowCount > 1 ? ` · ${point.rowCount} rows` : '';
+            values.textContent = `${overlay.metric || 'Value'}: ${format(point.value)}${rowCount}`;
+            this.sidebarDetails.append(title, values);
+            if (point.value2 != null) {
+                const size = document.createElement('div');
+                size.textContent = `${overlay.sizeMetric || 'Size'}: ${format(point.value2)}`;
+                this.sidebarDetails.appendChild(size);
+            }
+            return;
+        }
+        const status = document.createElement('div');
+        status.className = 'osm-map-status';
+        const unmatched = Number(this.map?.unmatchedCount || 0);
+        status.textContent = unmatched
+            ? `${points.length} mapped · ${unmatched} could not be mapped`
+            : `${points.length} mapped location${points.length === 1 ? '' : 's'}`;
+        this.sidebarDetails.appendChild(status);
     }
 
     _buildAttribution(map) {
@@ -249,13 +425,63 @@ export class OsmMapRenderer {
             marker.style.width = `${radius * 2}px`;
             marker.style.height = `${radius * 2}px`;
             marker.style.backgroundColor = colorForValue(point.value, colorRange.min, colorRange.max);
+            marker.classList.toggle('is-selected', point.placeKey === this.selectedPlaceKey);
             const rows = point.rowCount > 1 ? ` (${point.rowCount} rows)` : '';
             const secondary = point.value2 == null ? '' : `\n${overlay.sizeMetric}: ${format(point.value2)}`;
             const label = `${point.label}\n${overlay.metric}: ${format(point.value)}${secondary}${rows}`;
             marker.title = label;
             marker.setAttribute('aria-label', label.replaceAll('\n', ', '));
+            marker.addEventListener('pointerdown', (event) => event.stopPropagation());
+            marker.addEventListener('click', (event) => {
+                event.stopPropagation();
+                this._focusPoint(point, true);
+            });
             this.markers.appendChild(marker);
         }
+    }
+
+    _handleControl(action) {
+        if (action === 'zoom-in') {
+            this.zoom = clamp(this.zoom + 1, 1, 19);
+        } else if (action === 'zoom-out') {
+            this.zoom = clamp(this.zoom - 1, 1, 19);
+        } else {
+            const fitted = fitMapView(
+                this.map?.extent,
+                this.root?.clientWidth || 900,
+                this.root?.clientHeight || 520,
+            );
+            this.center = fitted.center;
+            this.zoom = fitted.zoom;
+            if (action === 'reset') this.selectedPlaceKey = null;
+        }
+        this._render();
+        this._renderSidebarResults(this.sidebarSearch?.value || '');
+        this._renderSidebarDetails();
+    }
+
+    _focusPoint(point, emitSelection = false) {
+        if (!point || !this.center) return;
+        this.center = { lat: Number(point.lat), lng: Number(point.lng) };
+        this.zoom = Math.max(this.zoom, 8);
+        this.selectedPlaceKey = point.placeKey || null;
+        this._render();
+        this._renderSidebarResults(this.sidebarSearch?.value || '');
+        this._renderSidebarDetails();
+        if (emitSelection && typeof this.hooks.onSelect === 'function') {
+            this.hooks.onSelect({
+                placeKey: this.selectedPlaceKey,
+                rowIndexes: Array.isArray(point.rowIndexes) ? point.rowIndexes : [],
+            });
+        }
+    }
+
+    focusRows(rowIndexes) {
+        const sought = new Set((rowIndexes || []).map(Number));
+        const point = this.map?.overlays?.[0]?.points?.find((candidate) =>
+            (candidate.rowIndexes || []).some((index) => sought.has(Number(index)))
+        );
+        if (point) this._focusPoint(point);
     }
 
     _handleWheel(event) {
@@ -304,5 +530,10 @@ export class OsmMapRenderer {
         this.map = null;
         this.center = null;
         this.drag = null;
+        this.selectedPlaceKey = null;
+        this.sidebar = null;
+        this.sidebarSearch = null;
+        this.sidebarResults = null;
+        this.sidebarDetails = null;
     }
 }

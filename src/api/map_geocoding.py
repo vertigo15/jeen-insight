@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 import time
 import unicodedata
 from dataclasses import dataclass
 from typing import Any, Iterable
+from urllib.parse import quote
 
 import httpx
 
@@ -32,6 +34,19 @@ _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _request_lock = asyncio.Lock()
 _last_request_at = 0.0
 
+_LATITUDE_NAME_RE = re.compile(r"(^|_)(lat|latitude)$", re.I)
+_LONGITUDE_NAME_RE = re.compile(r"(^|_)(lon|lng|long|longitude)$", re.I)
+_PLACE_NAME_RE = re.compile(r"(city|town|municipality|locality|place)", re.I)
+_ADMIN1_NAME_RE = re.compile(r"(state|province|district|region)", re.I)
+_COUNTRY_NAME_RE = re.compile(r"(country|nation)", re.I)
+_POSTAL_NAME_RE = re.compile(r"(postal|zip)", re.I)
+_UNSAFE_LOCATION_NAME_RE = re.compile(r"(\bip\b|ip_?address|address|locator)", re.I)
+_IDENTIFIER_NAME_RE = re.compile(
+    r"(id|key|code|number|no|num|year|month|day|quarter|qtr|week|"
+    r"rank|index|idx|seq)s?$",
+    re.I,
+)
+
 
 def location_key(value: Any) -> str:
     """Return a stable, case-insensitive key without exposing it in logs."""
@@ -49,6 +64,97 @@ def valid_coordinates(latitude: Any, longitude: Any) -> bool:
     return math.isfinite(lat) and math.isfinite(lng) and -90 <= lat <= 90 and -180 <= lng <= 180
 
 
+def _row_cell(row: Any, column: str, index: int) -> Any:
+    if isinstance(row, dict):
+        return row.get(column)
+    if isinstance(row, (list, tuple)) and 0 <= index < len(row):
+        return row[index]
+    return None
+
+
+def _metadata_role_hints(metadata_hints: dict[str, str] | None) -> dict[str, list[str]]:
+    hints = metadata_hints or {}
+    aliases = {"location": "place", "latitude": "latitude", "longitude": "longitude"}
+    result: dict[str, list[str]] = {}
+    for source_role, column in hints.items():
+        role = aliases.get(source_role)
+        if role and isinstance(column, str) and column:
+            result.setdefault(role, []).append(column)
+    return result
+
+
+def infer_geo_roles(
+    dataset: dict[str, Any], metadata_hints: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """Return safe, ranked geographic-column candidates for a result dataset.
+
+    This only examines result column names and values already available to the
+    chart request. It deliberately excludes address/IP/identifier-like fields
+    from location and measure suggestions.
+    """
+    columns = [str(column) for column in (dataset.get("columns") or [])]
+    rows = list(dataset.get("rows") or [])
+    candidates: dict[str, list[str]] = {
+        "latitude": [], "longitude": [], "place": [], "admin1": [], "country": [], "postal": [],
+    }
+    metadata = _metadata_role_hints(metadata_hints)
+
+    for column in columns:
+        name = column.strip()
+        if not name:
+            continue
+        unsafe = bool(_UNSAFE_LOCATION_NAME_RE.search(name))
+        identifier = bool(_IDENTIFIER_NAME_RE.search(name))
+        if name in metadata.get("latitude", []) or (
+            _LATITUDE_NAME_RE.search(name) and not identifier
+        ):
+            candidates["latitude"].append(name)
+        if name in metadata.get("longitude", []) or (
+            _LONGITUDE_NAME_RE.search(name) and not identifier
+        ):
+            candidates["longitude"].append(name)
+        if unsafe:
+            continue
+        if name in metadata.get("place", []) or (_PLACE_NAME_RE.search(name) and not identifier):
+            candidates["place"].append(name)
+        if (
+            _ADMIN1_NAME_RE.search(name)
+            and not _COUNTRY_NAME_RE.search(name)
+            and not identifier
+        ):
+            candidates["admin1"].append(name)
+        if _COUNTRY_NAME_RE.search(name):
+            candidates["country"].append(name)
+        if _POSTAL_NAME_RE.search(name):
+            candidates["postal"].append(name)
+
+    valid_pairs: list[dict[str, Any]] = []
+    for latitude in candidates["latitude"]:
+        lat_index = columns.index(latitude)
+        for longitude in candidates["longitude"]:
+            lng_index = columns.index(longitude)
+            matched = 0
+            non_null = 0
+            for row in rows:
+                lat = _row_cell(row, latitude, lat_index)
+                lng = _row_cell(row, longitude, lng_index)
+                if lat is not None or lng is not None:
+                    non_null += 1
+                if valid_coordinates(lat, lng) and not (float(lat) == 0 and float(lng) == 0):
+                    matched += 1
+            coverage = matched / max(1, len(rows))
+            if coverage:
+                valid_pairs.append({
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "coverage": round(coverage, 4),
+                    "matched": matched,
+                    "non_null": non_null,
+                })
+    valid_pairs.sort(key=lambda pair: (-pair["coverage"], pair["latitude"], pair["longitude"]))
+    return {"candidates": candidates, "coordinate_pairs": valid_pairs}
+
+
 def osm_maps_enabled() -> bool:
     """Map rendering is dark until an operator explicitly enables a tile source."""
     return bool(settings.OSM_MAPS_ENABLED and settings.OSM_TILE_URL.strip())
@@ -58,8 +164,11 @@ def geocoding_enabled() -> bool:
     """Only an explicitly configured provider may receive place names."""
     return bool(
         osm_maps_enabled()
-        and settings.OSM_GEOCODER_PROVIDER.strip().lower() == "nominatim"
-        and settings.OSM_GEOCODER_BASE_URL.strip()
+        and settings.OSM_GEOCODER_PROVIDER.strip().lower() in {"nominatim", "maptiler"}
+        and (
+            settings.OSM_GEOCODER_BASE_URL.strip()
+            or settings.OSM_GEOCODER_PROVIDER.strip().lower() == "maptiler"
+        )
     )
 
 
@@ -91,7 +200,11 @@ def _cache_set(key: str, value: dict[str, Any]) -> None:
 
 
 def _local_resolution(label: str) -> dict[str, Any] | None:
-    city = lookup_israel_city(label)
+    parts = [part.strip() for part in label.split(",") if part.strip()]
+    country = parts[-1].casefold() if len(parts) > 1 else ""
+    if country and country not in {"israel", "ישראל"}:
+        return None
+    city = lookup_israel_city(parts[0] if parts else label)
     if not city or not valid_coordinates(city.get("lat"), city.get("lng")):
         return None
     return {
@@ -149,6 +262,56 @@ async def _nominatim_resolution(label: str) -> dict[str, Any]:
     return {"status": "unresolved", "source": "provider"}
 
 
+async def _maptiler_resolution(label: str) -> dict[str, Any]:
+    """Resolve one compound place through MapTiler's GeoJSON geocoding API."""
+    global _last_request_at
+
+    timeout = max(0.1, float(settings.OSM_GEOCODER_TIMEOUT_SECONDS))
+    min_interval = max(0.0, float(settings.OSM_GEOCODER_MIN_INTERVAL_SECONDS))
+    base_url = settings.OSM_GEOCODER_BASE_URL.strip() or "https://api.maptiler.com/geocoding"
+    api_key = settings.OSM_GEOCODER_API_KEY or settings.OSM_TILE_API_KEY
+    if not api_key:
+        return {"status": "unresolved", "source": "disabled"}
+
+    async with _request_lock:
+        remaining = min_interval - (time.monotonic() - _last_request_at)
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+                response = await client.get(
+                    f"{base_url.rstrip('/')}/{quote(label, safe='')}.json",
+                    params={"key": api_key, "limit": 5},
+                )
+            _last_request_at = time.monotonic()
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            # Do not log the raw location: it can be personal data.
+            return {"status": "unresolved", "source": "provider_error"}
+
+    features = payload.get("features") if isinstance(payload, dict) else None
+    if not isinstance(features, list):
+        return {"status": "unresolved", "source": "provider_error"}
+    coordinates: set[tuple[float, float]] = set()
+    for feature in features:
+        geometry = feature.get("geometry") if isinstance(feature, dict) else None
+        coordinate = geometry.get("coordinates") if isinstance(geometry, dict) else None
+        if (
+            not isinstance(coordinate, list)
+            or len(coordinate) < 2
+            or not valid_coordinates(coordinate[1], coordinate[0])
+        ):
+            continue
+        coordinates.add((round(float(coordinate[1]), 7), round(float(coordinate[0]), 7)))
+    if len(coordinates) == 1:
+        lat, lng = coordinates.pop()
+        return {"status": "resolved", "lat": lat, "lng": lng, "source": "provider"}
+    if len(coordinates) > 1:
+        return {"status": "ambiguous", "source": "provider"}
+    return {"status": "unresolved", "source": "provider"}
+
+
 async def resolve_place_queries(queries: Iterable[PlaceQuery]) -> dict[str, dict[str, Any]]:
     """Resolve unique place names with local lookup first, then configured HTTP."""
     unique: dict[str, PlaceQuery] = {query.key: query for query in queries if query.key and query.label}
@@ -157,7 +320,7 @@ async def resolve_place_queries(queries: Iterable[PlaceQuery]) -> dict[str, dict
 
     for index, (key, query) in enumerate(unique.items()):
         if max_places and index >= max_places:
-            result[key] = {"status": "unresolved", "source": "limit"}
+            result[key] = {"status": "limited", "source": "limit"}
             continue
         cached = _cache_get(key)
         if cached:
@@ -171,7 +334,12 @@ async def resolve_place_queries(queries: Iterable[PlaceQuery]) -> dict[str, dict
         if not geocoding_enabled():
             result[key] = {"status": "unresolved", "source": "disabled"}
             continue
-        resolved = await _nominatim_resolution(query.label)
+        provider = settings.OSM_GEOCODER_PROVIDER.strip().lower()
+        resolved = (
+            await _maptiler_resolution(query.label)
+            if provider == "maptiler"
+            else await _nominatim_resolution(query.label)
+        )
         _cache_set(key, resolved)
         result[key] = resolved
     return result
@@ -189,21 +357,36 @@ async def resolve_osm_locations(spec: dict[str, Any], dataset: dict[str, Any]) -
     """Find rows needing a place lookup and resolve each unique place once."""
     columns = dataset.get("columns") or []
     rows = dataset.get("rows") or []
-    location_name = spec.get("location") or spec.get("x")
+    location_parts = spec.get("location_parts")
+    location_parts = location_parts if isinstance(location_parts, dict) else {}
+    location_name = location_parts.get("place") or spec.get("location") or spec.get("x")
     latitude_name = spec.get("latitude")
     longitude_name = spec.get("longitude")
     location_index = columns.index(location_name) if location_name in columns else -1
     latitude_index = columns.index(latitude_name) if latitude_name in columns else -1
     longitude_index = columns.index(longitude_name) if longitude_name in columns else -1
+    context_columns = [
+        location_parts.get(role)
+        for role in ("place", "admin1", "country", "postal")
+        if location_parts.get(role) in columns
+    ]
+    context_indexes = {column: columns.index(column) for column in context_columns}
     queries: list[PlaceQuery] = []
 
     for row in rows:
         lat = _read_cell(row, latitude_name, latitude_index)
         lng = _read_cell(row, longitude_name, longitude_index)
-        if valid_coordinates(lat, lng):
+        if valid_coordinates(lat, lng) and not (float(lat) == 0 and float(lng) == 0):
             continue
-        label = str(_read_cell(row, location_name, location_index) or "").strip()
-        key = location_key(label)
+        parts = [
+            str(_read_cell(row, column, context_indexes[column]) or "").strip()
+            for column in context_columns
+        ]
+        if not parts and location_index >= 0:
+            parts = [str(_read_cell(row, location_name, location_index) or "").strip()]
+        parts = [part for part in parts if part]
+        label = ", ".join(parts)
+        key = location_key("|".join(parts))
         if key:
             queries.append(PlaceQuery(key=key, label=label))
 

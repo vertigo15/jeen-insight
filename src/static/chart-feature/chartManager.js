@@ -68,6 +68,10 @@ export class ChartManager {
         this._chartAbort = null;
         this._disposed = false;
         this._themeObserver = null;
+        this._onOsmTableFocus = (event) => {
+            this.osmMapRenderer?.focusRows(event.detail?.rowIndexes || []);
+        };
+        document.addEventListener('jeen:osm-table-focus', this._onOsmTableFocus);
 
         console.log('[ChartManager] Initialized');
     }
@@ -277,6 +281,7 @@ export class ChartManager {
 
             // Get selected chart type
             const selectedType = this.chartTypeSelector.getSelectedType();
+            this.chartOptionsPanel?.setChartType(selectedType);
             this._syncMapControls(selectedType);
 
             // Call LLM to generate chart
@@ -299,6 +304,7 @@ export class ChartManager {
 
         // Show visual feedback
         this.showToast(`Generating ${chartType === 'auto' ? 'LLM-recommended' : chartType} chart...`, 'info');
+        this.chartOptionsPanel?.setChartType(chartType);
         this._syncMapControls(chartType);
 
         // Regenerate chart with new type
@@ -379,9 +385,7 @@ export class ChartManager {
             const connection = (typeof getActiveConnection === 'function') ? getActiveConnection() : '';
             // Only fields the user explicitly picked override the LLM. On Auto
             // this is empty, so the LLM is free to choose x/y/series + combo.
-            const overrides = (this.chartOptionsPanel && chartType !== 'map' && chartType !== 'osm_map')
-                ? this.chartOptionsPanel.getOverrides()
-                : {};
+            const overrides = this.chartOptionsPanel ? this.chartOptionsPanel.getOverrides() : {};
             const ctxQueryId  = (this.ctx && this.ctx.queryId != null) ? this.ctx.queryId : window.currentQueryId;
             const ctxQuestion = (this.ctx && this.ctx.question != null) ? this.ctx.question : window.currentQuestion;
             const payload = {
@@ -393,6 +397,13 @@ export class ChartManager {
             if (overrides.xColumn) payload.x_column = overrides.xColumn;
             if (overrides.yColumn) payload.y_column = overrides.yColumn;
             if (overrides.seriesColumn) payload.series_column = overrides.seriesColumn;
+            if (overrides.locationColumn) payload.location_column = overrides.locationColumn;
+            if (overrides.latitudeColumn) payload.latitude_column = overrides.latitudeColumn;
+            if (overrides.longitudeColumn) payload.longitude_column = overrides.longitudeColumn;
+            if (overrides.locationParts) payload.location_parts = overrides.locationParts;
+            if (overrides.valueColumn) payload.value_column = overrides.valueColumn;
+            if (overrides.value2Column !== undefined) payload.value2_column = overrides.value2Column;
+            if (overrides.aggregate) payload.aggregate = overrides.aggregate;
 
             let serverMs = 0;
             let cacheStatus = 'result hit';
@@ -435,6 +446,7 @@ export class ChartManager {
                 console.log('[ChartManager] User-requested type:', chartType);
             }
             this._syncMapControls(data.chart_type || chartType);
+            this.chartOptionsPanel?.setChartType(data.chart_type || chartType);
 
             // Reflect the LLM's actual column choices in the mapping dropdowns so
             // the panel matches the chart and later tweaks start from there.
@@ -558,8 +570,14 @@ export class ChartManager {
             try {
                 this.chartContainer?.dispose();
                 this.osmMapRenderer?.dispose();
-                this.osmMapRenderer = new OsmMapRenderer('chart-display-container');
+                this.osmMapRenderer = new OsmMapRenderer('chart-display-container', {
+                    onSelect: (detail) => document.dispatchEvent(new CustomEvent(
+                        'jeen:osm-map-select', { detail }
+                    )),
+                });
                 this.osmMapRenderer.render(displayConfig);
+                document.documentElement.dataset.jeenOsmMapActive = 'true';
+                document.dispatchEvent(new CustomEvent('jeen:osm-map-ready'));
                 const chartConfig = {
                     type: 'osm_map',
                     options: displayConfig,
@@ -578,6 +596,7 @@ export class ChartManager {
             }
             return;
         }
+        delete document.documentElement.dataset.jeenOsmMapActive;
         this.osmMapRenderer?.dispose();
         if (!this.state.isEChartsLoaded) {
             await this.loadECharts();
@@ -1161,7 +1180,12 @@ export class ChartManager {
         // dropdown sync), so an Auto chart isn't re-fetched after we mirror the
         // LLM's columns into the panel.
         const o = this.chartOptionsPanel ? this.chartOptionsPanel.getOverrides() : {};
-        const mapKey = [o.xColumn || '', o.yColumn || '', o.seriesColumn || ''].join('|');
+        const mapKey = [
+            o.xColumn || '', o.yColumn || '', o.seriesColumn || '',
+            o.locationColumn || '', o.latitudeColumn || '', o.longitudeColumn || '',
+            JSON.stringify(o.locationParts || {}),
+            o.valueColumn || '', o.value2Column || '', o.aggregate || '',
+        ].join('|');
         // Scope to the turn (Chat) so two differently-worded turns with the same
         // data don't reuse each other's chart. Ask mode (no ctx) is unscoped.
         const ctxSeed = this.ctx ? String(this.ctx.queryId || this.ctx.question || '') : '';
@@ -1237,7 +1261,7 @@ export class ChartManager {
             if (this.chartOptionsPanel) this.chartOptionsPanel.hide();
             if (this.mapOptionsPanel) this.mapOptionsPanel.show();
         } else if (chartType === 'osm_map') {
-            if (this.chartOptionsPanel) this.chartOptionsPanel.hide();
+            if (this.chartOptionsPanel) this.chartOptionsPanel.show();
             if (this.mapOptionsPanel) this.mapOptionsPanel.hide();
         } else {
             if (this.chartOptionsPanel) this.chartOptionsPanel.show();
@@ -1344,7 +1368,11 @@ export class ChartManager {
         }
         const shown = Array.isArray(meta.unmatched) ? meta.unmatched.join(', ') : '';
         const suffix = meta.unmatchedCount > (meta.unmatched?.length || 0) ? '...' : '';
-        host.textContent = `${meta.unmatchedCount} location${meta.unmatchedCount === 1 ? '' : 's'} not matched: ${shown}${suffix}`;
+        const statuses = Object.entries(meta.unmatchedByStatus || {})
+            .filter(([, count]) => Number(count) > 0)
+            .map(([status, count]) => `${count} ${status}`)
+            .join(', ');
+        host.textContent = `${meta.unmatchedCount} location${meta.unmatchedCount === 1 ? '' : 's'} not matched${statuses ? ` (${statuses})` : ''}: ${shown}${suffix}`;
         host.style.display = 'block';
     }
 
@@ -1527,6 +1555,8 @@ export class ChartManager {
             this._themeObserver.disconnect();
             this._themeObserver = null;
         }
+        document.removeEventListener('jeen:osm-table-focus', this._onOsmTableFocus);
+        delete document.documentElement.dataset.jeenOsmMapActive;
         console.log('[ChartManager] Disposed');
     }
 }

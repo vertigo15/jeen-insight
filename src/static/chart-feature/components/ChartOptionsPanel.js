@@ -14,7 +14,7 @@ const TOGGLE_DEFS = [
 
 // Numeric columns whose NAME ends in an identifier/ordinal token are dimensions
 // (e.g. month_number, year, order_id), not measures — don't default Y to them.
-const IDENTIFIER_RE = /(^|_)(id|number|no|num|year|month|day|quarter|qtr|week|rank|index|idx|seq)s?$/i;
+const IDENTIFIER_RE = /(id|key|code|number|no|num|year|month|day|quarter|qtr|week|rank|index|idx|seq)s?$/i;
 
 function looksLikeIdentifier(name) {
     return IDENTIFIER_RE.test(name || '');
@@ -49,9 +49,18 @@ export class ChartOptionsPanel {
         this.hooks = hooks || {};
         this.columns = [];
         this.mapping = { xColumn: '', yColumn: '', seriesColumn: '' };
+        this.mapMapping = {
+            locationColumn: '', latitudeColumn: '', longitudeColumn: '',
+            placeColumn: '', admin1Column: '', countryColumn: '', postalColumn: '',
+            valueColumn: '', value2Column: '', aggregate: 'sum',
+        };
         // Which fields the USER explicitly chose. Only these are sent as
         // overrides — auto-defaults must NOT clobber the LLM's column choice.
         this.userSet = { xColumn: false, yColumn: false, seriesColumn: false };
+        this.mapUserSet = Object.fromEntries(
+            Object.keys(this.mapMapping).map((key) => [key, false])
+        );
+        this.chartType = 'bar';
         this.toggles = { dataLabels: false, legend: true, dataZoom: false, sortDesc: false };
         // Column pickers are collapsed by default (mockup: "Columns ▾" disclosure).
         this._columnsOpen = false;
@@ -65,8 +74,17 @@ export class ChartOptionsPanel {
     setColumns(columns, analysis = null) {
         this.columns = columns || [];
         this.mapping = defaultMapping(this.columns, analysis);
+        this.mapMapping = {
+            ...this.mapMapping,
+            locationColumn: this.mapping.xColumn,
+            placeColumn: this.mapping.xColumn,
+            valueColumn: this.mapping.yColumn,
+        };
         // New dataset → nothing is user-chosen yet.
         this.userSet = { xColumn: false, yColumn: false, seriesColumn: false };
+        this.mapUserSet = Object.fromEntries(
+            Object.keys(this.mapMapping).map((key) => [key, false])
+        );
         if (this._mounted) this._syncSelects();
     }
 
@@ -79,6 +97,25 @@ export class ChartOptionsPanel {
      * changed. On the initial Auto run this is empty, so the LLM decides x/y/series.
      */
     getOverrides() {
+        if (this.chartType === 'osm_map') {
+            const out = {};
+            const keys = [
+                'locationColumn', 'latitudeColumn', 'longitudeColumn', 'placeColumn',
+                'admin1Column', 'countryColumn', 'postalColumn', 'valueColumn',
+                'value2Column', 'aggregate',
+            ];
+            for (const key of keys) {
+                if (this.mapUserSet[key]) out[key] = this.mapMapping[key];
+            }
+            const parts = {
+                place: out.placeColumn,
+                admin1: out.admin1Column,
+                country: out.countryColumn,
+                postal: out.postalColumn,
+            };
+            if (Object.values(parts).some(Boolean)) out.locationParts = parts;
+            return out;
+        }
         const out = {};
         for (const k of ['xColumn', 'yColumn', 'seriesColumn']) {
             if (this.userSet[k] && this.mapping[k]) out[k] = this.mapping[k];
@@ -98,7 +135,25 @@ export class ChartOptionsPanel {
         if (spec.x) this.mapping.xColumn = spec.x;
         if (y) this.mapping.yColumn = y;
         this.mapping.seriesColumn = spec.series || '';
+        if (spec.location) this.mapMapping.locationColumn = spec.location;
+        if (spec.latitude) this.mapMapping.latitudeColumn = spec.latitude;
+        if (spec.longitude) this.mapMapping.longitudeColumn = spec.longitude;
+        if (spec.value) this.mapMapping.valueColumn = spec.value;
+        this.mapMapping.value2Column = spec.value2 || '';
+        this.mapMapping.aggregate = spec.aggregate || this.mapMapping.aggregate || 'sum';
+        const parts = spec.location_parts || {};
+        this.mapMapping.placeColumn = parts.place || spec.location || '';
+        this.mapMapping.admin1Column = parts.admin1 || '';
+        this.mapMapping.countryColumn = parts.country || '';
+        this.mapMapping.postalColumn = parts.postal || '';
         if (this._mounted) this._syncSelects();
+    }
+
+    setChartType(chartType) {
+        const next = chartType === 'osm_map' ? 'osm_map' : 'standard';
+        if (this.chartType === next) return;
+        this.chartType = next;
+        if (this._mounted) this.render();
     }
 
     getToggles() {
@@ -130,6 +185,11 @@ export class ChartOptionsPanel {
     render() {
         const container = document.getElementById(this.containerId);
         if (!container) return;
+        if (this.chartType === 'osm_map') {
+            this._renderMapBindings(container);
+            this._mounted = true;
+            return;
+        }
 
         const caret = '<svg class="chart-cols-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
             '<path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -210,6 +270,10 @@ export class ChartOptionsPanel {
     }
 
     _syncSelects() {
+        if (this.chartType === 'osm_map') {
+            this._fillMapSelects();
+            return;
+        }
         const numericCols = this.columns.filter((c) => c.type === 'numeric');
         const yCols = numericCols.length ? numericCols : this.columns;
         this._fillSelect('chart-opt-x', this.columns, this.mapping.xColumn, () => true);
@@ -223,6 +287,89 @@ export class ChartOptionsPanel {
         if (this.hooks.onColumnsChange) {
             this.hooks.onColumnsChange(this.getMapping());
         }
+    }
+
+    _renderMapBindings(container) {
+        const caret = '<svg class="chart-cols-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+            '<path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+        container.innerHTML = `
+            <button type="button" class="chart-cols-btn${this._columnsOpen ? ' is-open' : ''}" id="chart-cols-btn"
+                    aria-expanded="${this._columnsOpen ? 'true' : 'false'}" aria-controls="chart-cols-expand"
+                    title="Choose map location and values">
+                <span>Map bindings</span>${caret}
+            </button>
+            <div class="chart-cols-expand chart-map-bindings" id="chart-cols-expand"${this._columnsOpen ? '' : ' hidden'}>
+                <label class="chart-col-field"><span>Location label</span><select id="map-opt-location" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>City / place</span><select id="map-opt-place" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>State / province</span><select id="map-opt-admin1" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>Country</span><select id="map-opt-country" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>Postal code</span><select id="map-opt-postal" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>Latitude</span><select id="map-opt-latitude" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>Longitude</span><select id="map-opt-longitude" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>Color / value</span><select id="map-opt-value" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>Size (optional)</span><select id="map-opt-value2" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>Aggregate</span>
+                    <select id="map-opt-aggregate" class="chart-options-select">
+                        ${['sum', 'avg', 'count', 'min', 'max', 'none'].map((value) =>
+                            `<option value="${value}"${value === this.mapMapping.aggregate ? ' selected' : ''}>${value}</option>`
+                        ).join('')}
+                    </select>
+                </label>
+            </div>
+        `;
+        this._fillMapSelects();
+        document.getElementById('chart-cols-btn')?.addEventListener('click', () => this._toggleColumns());
+        const fields = {
+            'map-opt-location': 'locationColumn',
+            'map-opt-place': 'placeColumn',
+            'map-opt-admin1': 'admin1Column',
+            'map-opt-country': 'countryColumn',
+            'map-opt-postal': 'postalColumn',
+            'map-opt-latitude': 'latitudeColumn',
+            'map-opt-longitude': 'longitudeColumn',
+            'map-opt-value': 'valueColumn',
+            'map-opt-value2': 'value2Column',
+            'map-opt-aggregate': 'aggregate',
+        };
+        Object.entries(fields).forEach(([id, field]) => {
+            document.getElementById(id)?.addEventListener('change', (event) => {
+                this.mapMapping[field] = event.target.value;
+                this.mapUserSet[field] = true;
+                if (field === 'placeColumn') {
+                    this.mapMapping.locationColumn = event.target.value;
+                    this.mapUserSet.locationColumn = true;
+                }
+                if (this.hooks.onColumnsChange) this.hooks.onColumnsChange(this.getMapping());
+            });
+        });
+    }
+
+    _fillMapSelects() {
+        const all = this.columns;
+        const numeric = this.columns.filter((column) => column.type === 'numeric');
+        const measure = numeric.filter((column) => !looksLikeIdentifier(column.name));
+        const values = measure.length ? measure : numeric;
+        const fill = (id, columns, selected, empty = true, virtualCount = false) => {
+            const select = document.getElementById(id);
+            if (!select) return;
+            let html = empty ? '<option value="">— none —</option>' : '';
+            if (virtualCount) {
+                html += `<option value="__row_count__"${selected === '__row_count__' ? ' selected' : ''}>Row count</option>`;
+            }
+            html += columns.map((column) =>
+                `<option value="${column.name}"${column.name === selected ? ' selected' : ''}>${column.name}</option>`
+            ).join('');
+            select.innerHTML = html || '<option value="">—</option>';
+        };
+        fill('map-opt-location', all, this.mapMapping.locationColumn);
+        fill('map-opt-place', all, this.mapMapping.placeColumn);
+        fill('map-opt-admin1', all, this.mapMapping.admin1Column);
+        fill('map-opt-country', all, this.mapMapping.countryColumn);
+        fill('map-opt-postal', all, this.mapMapping.postalColumn);
+        fill('map-opt-latitude', numeric, this.mapMapping.latitudeColumn);
+        fill('map-opt-longitude', numeric, this.mapMapping.longitudeColumn);
+        fill('map-opt-value', values, this.mapMapping.valueColumn, false, true);
+        fill('map-opt-value2', values, this.mapMapping.value2Column);
     }
 
     _onToggle(key) {
