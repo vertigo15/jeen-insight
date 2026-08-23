@@ -192,7 +192,7 @@
         activeTab: 'conversation',
         dockTab: 'sql',
         dockOpen: false,
-        chartCollapsed: false,
+        chartCollapsed: true,
         filter: '',
         desktopPreference: true,
         autoCollapsed: false,
@@ -292,7 +292,7 @@
                           <span id="v3-chart-caption" class="v3-caption">Chart</span>
                           <span class="v3-toolbar-spacer"></span>
                           <div id="v3-chart-types" class="v3-chart-types"></div>
-                          <button id="v3-chart-toggle" class="v3-text-btn">Collapse</button>
+                          <button id="v3-chart-toggle" class="v3-text-btn">Expand</button>
                         </div>
                         <div id="v3-chart-frame" class="v3-chart-frame"></div>
                         <div id="v3-chart-edit" class="v3-chart-edit"></div>

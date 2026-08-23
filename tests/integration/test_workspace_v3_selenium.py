@@ -157,6 +157,12 @@ def test_workspace_structure_empty_and_responsive(driver):
 def test_result_turn_trace_table_dock_and_error_preservation(driver):
     _inject_success(driver)
     assert driver.find_element(By.ID, "v3-chart-block").is_displayed()
+    assert not driver.find_element(By.ID, "v3-chart-frame").is_displayed()
+    chart_toggle = driver.find_element(By.ID, "v3-chart-toggle")
+    assert chart_toggle.text == "Expand"
+    chart_toggle.click()
+    assert driver.find_element(By.ID, "v3-chart-frame").is_displayed()
+    assert chart_toggle.text == "Collapse"
     assert driver.find_element(By.ID, "v3-table-block").is_displayed()
     assert len(driver.find_elements(By.CSS_SELECTOR, ".v3-grid-row")) == 4
 
