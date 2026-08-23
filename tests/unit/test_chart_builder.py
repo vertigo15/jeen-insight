@@ -421,6 +421,81 @@ def test_israel_city_points_use_local_lookup_without_lat_lng():
     assert len(point["value"]) == 3
 
 
+def test_osm_map_emits_one_point_overlay_and_aggregates_coordinates():
+    rows = [
+        {"store": "North", "latitude": 32.08, "longitude": 34.78, "sales": 10, "orders": 2},
+        {"store": "North duplicate", "latitude": 32.08, "longitude": 34.78, "sales": 20, "orders": 4},
+        {"store": "South", "latitude": 31.77, "longitude": 35.21, "sales": 5, "orders": 1},
+    ]
+    opt = build_chart_option(
+        _bar_spec(
+            chart_type="osm_map",
+            x="store",
+            location="store",
+            latitude="latitude",
+            longitude="longitude",
+            y=["sales", "orders"],
+            value="sales",
+            value2="orders",
+            aggregate="sum",
+        ),
+        _dataset(rows, ["store", "latitude", "longitude", "sales", "orders"]),
+    )
+    assert opt["series"] == []
+    osm = opt["jeenOsmMap"]
+    assert osm["basemap"]["tileUrl"] == "/api/map-tiles/{z}/{x}/{y}"
+    overlay = osm["overlays"][0]
+    assert overlay["type"] == "circles"
+    assert overlay["metric"] == "sales"
+    assert overlay["sizeMetric"] == "orders"
+    assert len(overlay["points"]) == 2
+    north = next(point for point in overlay["points"] if point["lat"] == 32.08)
+    assert north["value"] == 30
+    assert north["value2"] == 6
+    assert north["rowCount"] == 2
+    assert osm["matched"] == 2
+    assert osm["rowCount"] == 3
+
+
+def test_osm_map_uses_persisted_place_resolution_without_network():
+    rows = [{"place": "Elsewhere", "sales": 8}]
+    opt = build_chart_option(
+        _bar_spec(
+            chart_type="osm_map",
+            x="place",
+            location="place",
+            y=["sales"],
+            value="sales",
+            resolved_locations={
+                "elsewhere": {"status": "resolved", "lat": 48.8566, "lng": 2.3522},
+            },
+        ),
+        _dataset(rows, ["place", "sales"]),
+    )
+    point = opt["jeenOsmMap"]["overlays"][0]["points"][0]
+    assert point["lat"] == 48.8566
+    assert point["lng"] == 2.3522
+    assert opt["jeenOsmMap"]["unmatchedCount"] == 0
+
+
+def test_osm_map_rejects_invalid_coordinates_as_unmatched():
+    rows = [{"place": "Impossible", "latitude": 190, "longitude": 400, "sales": 8}]
+    opt = build_chart_option(
+        _bar_spec(
+            chart_type="osm_map",
+            x="place",
+            location="place",
+            latitude="latitude",
+            longitude="longitude",
+            y=["sales"],
+            value="sales",
+        ),
+        _dataset(rows, ["place", "latitude", "longitude", "sales"]),
+    )
+    assert opt["jeenOsmMap"]["overlays"][0]["points"] == []
+    assert opt["jeenOsmMap"]["unmatched"] == ["Impossible"]
+
+
 
 
 def test_map_assets_have_no_dateline_rendering_jumps():

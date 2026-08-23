@@ -26,6 +26,7 @@ export const CHART_TYPE_OPTIONS = [
     { value: 'heatmap',        label: 'Heatmap',                icon: 'M4 4h16v16H4zM4 12h16M12 4v16' },
     { value: 'gauge',          label: 'Gauge / KPI',            icon: 'M12 13l4-4M4 17a8 8 0 0116 0' },
     { value: 'map',            label: 'Flat Map',               icon: 'M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2zM9 4v14M15 6v14' },
+    { value: 'osm_map',        label: 'OpenStreetMap',          icon: 'M12 21s7-4.4 7-11a7 7 0 10-14 0c0 6.6 7 11 7 11zM12 13a3 3 0 100-6 3 3 0 000 6z' },
 ];
 
 /** @type {Set<string>} */

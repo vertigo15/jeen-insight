@@ -25,6 +25,26 @@ class Settings(BaseSettings):
     APP_PORT: int = 8000
     LOG_LEVEL: str = "INFO"
 
+    # OpenStreetMap point visualizations are disabled until a tile provider is
+    # explicitly configured.  Tile and geocoder credentials stay server-side:
+    # the browser receives only a same-origin tile proxy URL.
+    OSM_MAPS_ENABLED: bool = False
+    OSM_TILE_URL: str = ""
+    OSM_TILE_API_KEY: str = ""
+    OSM_TILE_API_KEY_HEADER: str = "Authorization"
+    OSM_TILE_TIMEOUT_SECONDS: float = 10.0
+    # The first adapter is Nominatim-compatible.  Keep this blank unless the
+    # deployment has an approved managed or self-hosted endpoint.
+    OSM_GEOCODER_PROVIDER: str = ""
+    OSM_GEOCODER_BASE_URL: str = ""
+    OSM_GEOCODER_API_KEY: str = ""
+    OSM_GEOCODER_API_KEY_HEADER: str = "Authorization"
+    OSM_GEOCODER_USER_AGENT: str = "Jeen Insights map geocoder"
+    OSM_GEOCODER_TIMEOUT_SECONDS: float = 5.0
+    OSM_GEOCODER_MIN_INTERVAL_SECONDS: float = 1.0
+    OSM_GEOCODER_CACHE_TTL_SECONDS: int = 86400
+    OSM_GEOCODER_MAX_UNIQUE_PLACES: int = 250
+
     # LangGraph agent settings
     LANGGRAPH_MAX_RETRIES: int = 3
     LANGGRAPH_MAX_HISTORY_TOKENS: int = 3000

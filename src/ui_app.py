@@ -1307,6 +1307,18 @@ def _forward(api_path: str, *, timeout: float = 30) -> Any:
                         content_type=resp.headers.get("Content-Type", "application/json"))
 
 
+@app.route("/api/chart-capabilities", methods=["GET"])
+def chart_capabilities_proxy():
+    """Expose non-sensitive chart feature flags to the browser."""
+    return _forward("/api/chart-capabilities", timeout=10)
+
+
+@app.route("/api/map-tiles/<int:z>/<int:x>/<int:y>", methods=["GET"])
+def map_tiles_proxy(z: int, x: int, y: int):
+    """Keep configured map-tile credentials on the API side of the proxy."""
+    return _forward(f"/api/map-tiles/{z}/{x}/{y}", timeout=30)
+
+
 @app.route("/api/mcp/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE"])
 def mcp_proxy(subpath: str):
     """Generic proxy for all /api/mcp/* routes (admin-only settings surface)."""
