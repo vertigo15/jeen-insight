@@ -1190,7 +1190,9 @@ export class ChartManager {
         // data don't reuse each other's chart. Ask mode (no ctx) is unscoped.
         const ctxSeed = this.ctx ? String(this.ctx.queryId || this.ctx.question || '') : '';
         const ctxKey = ctxSeed ? '_' + this.simpleHash(ctxSeed) : '';
-        return `chart_llm_${dataHash}_${chartType}_${mapKey}${ctxKey}`;
+        // Bump when chart payload semantics change so a prior browser session
+        // cannot reuse an OSM result generated before a geocoding fix.
+        return `chart_llm_v2_${dataHash}_${chartType}_${mapKey}${ctxKey}`;
     }
 
     _withQuickToggles(config) {
