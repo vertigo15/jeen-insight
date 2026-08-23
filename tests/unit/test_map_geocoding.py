@@ -91,3 +91,30 @@ def test_compound_place_query_uses_city_state_country(monkeypatch):
     assert seen[0].label == "Paris, Texas, United States, 75460"
     assert seen[0].key == "paris|texas|united states|75460"
     assert resolved[seen[0].key]["status"] == "unresolved"
+
+
+def test_maptiler_search_results_use_geojson_lng_lat_and_deduplicate():
+    results = map_geocoding._maptiler_search_results(
+        {
+            "features": [
+                {
+                    "place_name": "Los Angeles, California, United States",
+                    "geometry": {"coordinates": [-118.2437, 34.0522]},
+                },
+                {
+                    "text": "Duplicate Los Angeles",
+                    "geometry": {"coordinates": [-118.2437, 34.0522]},
+                },
+                {
+                    "text": "Invalid",
+                    "geometry": {"coordinates": [300, 120]},
+                },
+            ]
+        }
+    )
+
+    assert results == [{
+        "label": "Los Angeles, California, United States",
+        "lat": 34.0522,
+        "lng": -118.2437,
+    }]

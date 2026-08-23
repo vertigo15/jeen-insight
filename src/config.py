@@ -33,8 +33,9 @@ class Settings(BaseSettings):
     OSM_TILE_API_KEY: str = ""
     OSM_TILE_API_KEY_HEADER: str = "Authorization"
     OSM_TILE_TIMEOUT_SECONDS: float = 10.0
-    # The first adapter is Nominatim-compatible.  Keep this blank unless the
-    # deployment has an approved managed or self-hosted endpoint.
+    # Approved adapters are `nominatim` (managed/self-hosted compatible
+    # endpoint) and `maptiler` (uses its default endpoint when BASE_URL is
+    # blank). Keep this blank unless the deployment is approved for geocoding.
     OSM_GEOCODER_PROVIDER: str = ""
     OSM_GEOCODER_BASE_URL: str = ""
     OSM_GEOCODER_API_KEY: str = ""

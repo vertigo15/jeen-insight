@@ -281,7 +281,12 @@ async def _maptiler_resolution(label: str) -> dict[str, Any]:
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
                 response = await client.get(
                     f"{base_url.rstrip('/')}/{quote(label, safe='')}.json",
-                    params={"key": api_key, "limit": 5},
+                    # A compound city/state/country label is already
+                    # disambiguated. MapTiler ranks its best match first, while
+                    # asking for five results made legitimate cities look
+                    # ambiguous merely because nearby administrative features
+                    # were returned too.
+                    params={"key": api_key, "limit": 1},
                 )
             _last_request_at = time.monotonic()
             response.raise_for_status()
@@ -310,6 +315,116 @@ async def _maptiler_resolution(label: str) -> dict[str, Any]:
     if len(coordinates) > 1:
         return {"status": "ambiguous", "source": "provider"}
     return {"status": "unresolved", "source": "provider"}
+
+
+def _maptiler_search_results(payload: Any) -> list[dict[str, Any]]:
+    """Normalize safe browser-facing search results from MapTiler GeoJSON."""
+    features = payload.get("features") if isinstance(payload, dict) else None
+    if not isinstance(features, list):
+        return []
+    results: list[dict[str, Any]] = []
+    seen: set[tuple[float, float]] = set()
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        geometry = feature.get("geometry")
+        coordinate = geometry.get("coordinates") if isinstance(geometry, dict) else None
+        if (
+            not isinstance(coordinate, list)
+            or len(coordinate) < 2
+            or not valid_coordinates(coordinate[1], coordinate[0])
+        ):
+            continue
+        lat, lng = round(float(coordinate[1]), 7), round(float(coordinate[0]), 7)
+        if (lat, lng) in seen:
+            continue
+        seen.add((lat, lng))
+        label = str(feature.get("place_name") or feature.get("text") or "").strip()
+        if not label:
+            continue
+        results.append({"label": label, "lat": lat, "lng": lng})
+    return results
+
+
+async def _maptiler_place_search(query: str) -> list[dict[str, Any]]:
+    """Search MapTiler's managed geocoder without exposing its credential."""
+    global _last_request_at
+
+    timeout = max(0.1, float(settings.OSM_GEOCODER_TIMEOUT_SECONDS))
+    min_interval = max(0.0, float(settings.OSM_GEOCODER_MIN_INTERVAL_SECONDS))
+    base_url = settings.OSM_GEOCODER_BASE_URL.strip() or "https://api.maptiler.com/geocoding"
+    api_key = settings.OSM_GEOCODER_API_KEY or settings.OSM_TILE_API_KEY
+    if not api_key:
+        return []
+    async with _request_lock:
+        remaining = min_interval - (time.monotonic() - _last_request_at)
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+                response = await client.get(
+                    f"{base_url.rstrip('/')}/{quote(query, safe='')}.json",
+                    params={"key": api_key, "limit": 5},
+                )
+            _last_request_at = time.monotonic()
+            response.raise_for_status()
+            return _maptiler_search_results(response.json())
+        except (httpx.HTTPError, ValueError):
+            return []
+
+
+async def _nominatim_place_search(query: str) -> list[dict[str, Any]]:
+    """Search a configured Nominatim-compatible service for map navigation."""
+    global _last_request_at
+
+    timeout = max(0.1, float(settings.OSM_GEOCODER_TIMEOUT_SECONDS))
+    min_interval = max(0.0, float(settings.OSM_GEOCODER_MIN_INTERVAL_SECONDS))
+    headers = {"User-Agent": settings.OSM_GEOCODER_USER_AGENT.strip() or "Jeen Insights"}
+    if settings.OSM_GEOCODER_API_KEY:
+        headers[settings.OSM_GEOCODER_API_KEY_HEADER.strip() or "Authorization"] = (
+            settings.OSM_GEOCODER_API_KEY
+        )
+    async with _request_lock:
+        remaining = min_interval - (time.monotonic() - _last_request_at)
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+                response = await client.get(
+                    settings.OSM_GEOCODER_BASE_URL,
+                    params={"q": query, "format": "jsonv2", "limit": 5, "addressdetails": 1},
+                    headers=headers,
+                )
+            _last_request_at = time.monotonic()
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return []
+    if not isinstance(payload, list):
+        return []
+    results = []
+    for item in payload:
+        if not isinstance(item, dict) or not valid_coordinates(item.get("lat"), item.get("lon")):
+            continue
+        label = str(item.get("display_name") or "").strip()
+        if label:
+            results.append({
+                "label": label,
+                "lat": round(float(item["lat"]), 7),
+                "lng": round(float(item["lon"]), 7),
+            })
+    return results
+
+
+async def search_osm_places(query: str) -> list[dict[str, Any]]:
+    """Return up to five provider-ranked navigation results for a user query."""
+    normalized = " ".join(str(query or "").split())[:200]
+    if len(normalized) < 2 or not geocoding_enabled():
+        return []
+    provider = settings.OSM_GEOCODER_PROVIDER.strip().lower()
+    if provider == "maptiler":
+        return await _maptiler_place_search(normalized)
+    return await _nominatim_place_search(normalized)
 
 
 async def resolve_place_queries(queries: Iterable[PlaceQuery]) -> dict[str, dict[str, Any]]:

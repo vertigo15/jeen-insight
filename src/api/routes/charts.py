@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from src.api.chart_builder import build_chart_option, profile_dataset
 from src.api.dependencies import get_history_service, require_user_id, resolve_agent
@@ -29,6 +29,7 @@ from src.api.map_geocoding import (
     infer_geo_roles,
     osm_maps_enabled,
     resolve_osm_locations,
+    search_osm_places,
 )
 from src.api.models import (
     ChatMessage,
@@ -43,6 +44,9 @@ from src.api.result_cache import result_cache
 from src.config import settings
 
 logger = logging.getLogger(__name__)
+# httpx logs full request URLs at INFO. Tile and MapTiler geocoder URLs carry
+# their credential as a query parameter, so do not emit those URLs to app logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 router = APIRouter(prefix="/api", tags=["charts"])
 
 
@@ -92,6 +96,14 @@ async def proxy_map_tile(z: int, x: int, y: int):
         media_type=content_type,
         headers={"Cache-Control": "private, max-age=3600"},
     )
+
+
+@router.get("/map-search")
+async def map_search(q: str = Query(min_length=2, max_length=200)):
+    """Proxy managed place search for map navigation without exposing an API key."""
+    if not geocoding_enabled():
+        raise HTTPException(status_code=503, detail="Place search is not configured")
+    return {"results": await search_osm_places(q)}
 
 
 async def _verify_query_owner(*, query_id: Optional[str], user_id: str, connection: str) -> None:

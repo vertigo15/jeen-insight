@@ -527,6 +527,29 @@ def test_osm_map_rejects_invalid_coordinates_as_unmatched():
     assert opt["jeenOsmMap"]["unmatched"] == ["Impossible"]
 
 
+def test_osm_map_reports_unmatched_status_by_unique_location():
+    rows = [
+        {"city": "Unresolved City", "sales": 3},
+        {"city": "Unresolved City", "sales": 4},
+    ]
+    opt = build_chart_option(
+        _bar_spec(
+            chart_type="osm_map",
+            x="city",
+            location="city",
+            y=["sales"],
+            value="sales",
+            resolved_locations={
+                "unresolved city": {"status": "limited", "source": "limit"},
+            },
+        ),
+        _dataset(rows, ["city", "sales"]),
+    )
+
+    assert opt["jeenOsmMap"]["unmatchedCount"] == 1
+    assert opt["jeenOsmMap"]["unmatchedByStatus"] == {"limited": 1}
+
+
 
 
 def test_map_assets_have_no_dateline_rendering_jumps():

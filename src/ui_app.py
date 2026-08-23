@@ -1319,6 +1319,12 @@ def map_tiles_proxy(z: int, x: int, y: int):
     return _forward(f"/api/map-tiles/{z}/{x}/{y}", timeout=30)
 
 
+@app.route("/api/map-search", methods=["GET"])
+def map_search_proxy():
+    """Proxy managed place search without exposing map-provider credentials."""
+    return _forward("/api/map-search", timeout=15)
+
+
 @app.route("/api/mcp/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE"])
 def mcp_proxy(subpath: str):
     """Generic proxy for all /api/mcp/* routes (admin-only settings surface)."""

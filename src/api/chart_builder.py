@@ -1132,7 +1132,7 @@ def _build_osm_map(spec, rows, ctx):
 
     grouped: Dict[tuple[float, float], Dict[str, Any]] = {}
     unmatched: List[str] = []
-    unmatched_by_status: Dict[str, int] = {}
+    unmatched_by_status: Dict[str, set[str]] = {}
     for row_index, row in enumerate(rows):
         label_parts = [
             _as_label(_read_cell(row, column, location_part_indexes[column]))
@@ -1165,7 +1165,7 @@ def _build_osm_map(spec, rows, ctx):
                 )
                 if status == "unresolved":
                     status = "unmatched"
-                unmatched_by_status[status] = unmatched_by_status.get(status, 0) + 1
+                unmatched_by_status.setdefault(status, set()).add(resolution_key or label)
                 continue
 
         primary = 1.0 if aggregate == "count" else _to_number(_read_cell(row, value_name, value_index))
@@ -1244,7 +1244,9 @@ def _build_osm_map(spec, rows, ctx):
             "rowCount": sum(point["rowCount"] for point in points),
             "unmatchedCount": len(unmatched),
             "unmatched": unmatched[:20],
-            "unmatchedByStatus": unmatched_by_status,
+            "unmatchedByStatus": {
+                status: len(keys) for status, keys in unmatched_by_status.items()
+            },
             "showUnmatched": show_unmatched,
         },
     }
