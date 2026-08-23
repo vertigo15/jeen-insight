@@ -21,9 +21,6 @@
 
 import { CHART_TYPE_OPTIONS, CHART_TYPE_VALUES, getChartTypeOption } from '../chartTypes.js?v=78';
 
-/** Available chart types (shared with settings + preferences). */
-const CHART_TYPES = CHART_TYPE_OPTIONS;
-
 const CARET_SVG =
     '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
     '<path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -57,8 +54,17 @@ export class ChartTypeSelector {
      * @param {string} containerId - ID of container to render selector in
      * @param {Function} onChange - Callback when chart type changes (chartType) => void
      */
-    constructor(containerId, onChange) {
+    constructor(containerId, onChange, options = {}) {
         this.containerId = containerId;
+        const allowedValues = options.allowedTypes instanceof Set
+            ? options.allowedTypes
+            : (Array.isArray(options.allowedTypes) ? new Set(options.allowedTypes) : null);
+        this.chartTypes = allowedValues
+            ? CHART_TYPE_OPTIONS.filter((type) => allowedValues.has(type.value))
+            : CHART_TYPE_OPTIONS.slice();
+        if (!this.chartTypes.some((type) => type.value === 'auto')) {
+            this.chartTypes.unshift(getChartTypeOption('auto'));
+        }
 
         // Honour the user's saved default chart type from the settings panel;
         // fall back to 'auto' if missing or invalid.
@@ -68,7 +74,9 @@ export class ChartTypeSelector {
                 defaultType = window.JeenPreferences.getAll().chartType || 'auto';
             }
         } catch (_) { /* keep 'auto' on any failure */ }
-        if (!CHART_TYPE_VALUES.has(defaultType)) defaultType = 'auto';
+        if (!CHART_TYPE_VALUES.has(defaultType) || !this.chartTypes.some((type) => type.value === defaultType)) {
+            defaultType = 'auto';
+        }
 
         this.currentType = defaultType;
         this.onChange = onChange;
@@ -133,7 +141,7 @@ export class ChartTypeSelector {
         menu.setAttribute('role', 'listbox');
         menu.setAttribute('aria-label', 'Chart type');
         menu.hidden = true;
-        menu.innerHTML = CHART_TYPES.map((t, i) => this._itemHtml(t, i)).join('');
+        menu.innerHTML = this.chartTypes.map((t, i) => this._itemHtml(t, i)).join('');
 
         menu.addEventListener('mousedown', (e) => e.preventDefault()); // keep button focus
         menu.addEventListener('click', (e) => {
@@ -189,7 +197,7 @@ export class ChartTypeSelector {
         window.addEventListener('scroll', this._onReposition, true);
         window.addEventListener('resize', this._onReposition);
 
-        const selIdx = CHART_TYPES.findIndex((t) => t.value === this.currentType);
+        const selIdx = this.chartTypes.findIndex((t) => t.value === this.currentType);
         this._setActive(selIdx >= 0 ? selIdx : 0, true);
     }
 
@@ -261,12 +269,12 @@ export class ChartTypeSelector {
             case 'ArrowDown': e.preventDefault(); this._move(1); break;
             case 'ArrowUp': e.preventDefault(); this._move(-1); break;
             case 'Home': e.preventDefault(); this._setActive(0, true); break;
-            case 'End': e.preventDefault(); this._setActive(CHART_TYPES.length - 1, true); break;
+            case 'End': e.preventDefault(); this._setActive(this.chartTypes.length - 1, true); break;
             case 'Enter':
             case ' ':
             case 'Spacebar':
                 e.preventDefault();
-                if (this.activeIndex >= 0) this._selectByValue(CHART_TYPES[this.activeIndex].value);
+                if (this.activeIndex >= 0) this._selectByValue(this.chartTypes[this.activeIndex].value);
                 break;
             case 'Escape':
                 e.preventDefault();
@@ -283,8 +291,8 @@ export class ChartTypeSelector {
 
     _move(delta) {
         let i = this.activeIndex + delta;
-        if (i < 0) i = CHART_TYPES.length - 1;
-        if (i >= CHART_TYPES.length) i = 0;
+        if (i < 0) i = this.chartTypes.length - 1;
+        if (i >= this.chartTypes.length) i = 0;
         this._setActive(i, true);
     }
 
@@ -349,6 +357,7 @@ export class ChartTypeSelector {
     // ── Public API (unchanged surface) ──────────────────────────────────────
 
     handleTypeChange(chartType) {
+        if (!this.chartTypes.some((type) => type.value === chartType)) return;
         if (chartType === this.currentType) return;
         console.log('[ChartTypeSelector] Chart type changed to:', chartType);
         this.currentType = chartType;
@@ -356,7 +365,7 @@ export class ChartTypeSelector {
     }
 
     setType(chartType) {
-        if (!CHART_TYPE_VALUES.has(chartType)) return;
+        if (!CHART_TYPE_VALUES.has(chartType) || !this.chartTypes.some((type) => type.value === chartType)) return;
         this.currentType = chartType;
         this._updateButton();
         this._refreshSelectedStates();
@@ -371,7 +380,9 @@ export class ChartTypeSelector {
      */
     setRecommendation(recommendedType) {
         this.llmRecommendation =
-            (recommendedType && CHART_TYPE_VALUES.has(recommendedType)) ? recommendedType : null;
+            (recommendedType && this.chartTypes.some((type) => type.value === recommendedType))
+                ? recommendedType
+                : null;
         console.log('[ChartTypeSelector] LLM recommended:', this.llmRecommendation);
         if (this.currentType === 'auto') this._updateButton();
     }

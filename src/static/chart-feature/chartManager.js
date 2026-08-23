@@ -17,6 +17,8 @@ import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v
 import { ChartChat } from './components/ChartChat.js?v=73';
 import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js';
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
+import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=1';
+import { CHART_TYPE_VALUES } from './chartTypes.js?v=79';
 
 /**
  * Main chart manager class
@@ -40,6 +42,8 @@ export class ChartManager {
         this.chartOptionsPanel = null;
         this.mapOptionsPanel = null;
         this.chartChat = null;
+        this.osmMapRenderer = null;
+        this.chartCapabilities = { osm_map: { enabled: false, geocoding_enabled: false } };
         this.llmRecommendedType = null;
         this.currentChartSpec = null;
         // Baseline (LLM-generated) config — Reset reverts to this.
@@ -97,6 +101,7 @@ export class ChartManager {
         console.log('[ChartManager] Initializing with results');
 
         this.state.currentData = results;
+        await this._loadChartCapabilities();
 
         // Analyze data (for type detection only)
         this.dataAnalysis = analyzeData(results);
@@ -137,9 +142,13 @@ export class ChartManager {
         if (this.chartTypeSelector && typeof this.chartTypeSelector.destroy === 'function') {
             this.chartTypeSelector.destroy();
         }
-        this.chartTypeSelector = new ChartTypeSelector('chart-type-selector-container', (chartType) => {
-            this.handleChartTypeChange(chartType);
-        });
+        const allowedTypes = new Set(CHART_TYPE_VALUES);
+        if (!this.chartCapabilities?.osm_map?.enabled) allowedTypes.delete('osm_map');
+        this.chartTypeSelector = new ChartTypeSelector(
+            'chart-type-selector-container',
+            (chartType) => this.handleChartTypeChange(chartType),
+            { allowedTypes },
+        );
         this.chartTypeSelector.render();
 
         // Column mapping + quick visual toggles
@@ -199,6 +208,20 @@ export class ChartManager {
         }
 
         console.log('[ChartManager] Components initialized');
+    }
+
+    async _loadChartCapabilities() {
+        try {
+            const response = await fetch('/api/chart-capabilities', { credentials: 'same-origin' });
+            if (!response.ok) throw new Error(`API returned ${response.status}`);
+            const capabilities = await response.json();
+            if (capabilities && typeof capabilities === 'object') {
+                this.chartCapabilities = capabilities;
+            }
+        } catch (error) {
+            // Keep maps dark when the capability endpoint is unavailable.
+            console.warn('[ChartManager] Chart capabilities unavailable:', error);
+        }
     }
 
     /**
@@ -313,20 +336,24 @@ export class ChartManager {
                 // raw ECharts config (has `series`). Read both.
                 const config = (parsed && parsed.chartConfig) ? parsed.chartConfig : parsed;
                 const cachedRec = (parsed && parsed.recommendedType) ? parsed.recommendedType : null;
-                if (this._disposed) return;
-                // Restore the "<Type> · Auto" button label from cache so it
-                // survives cache hits (setRecommendation is only called on a
-                // fresh network response otherwise).
-                if (chartType === 'auto' && cachedRec && this.chartTypeSelector) {
-                    this.chartTypeSelector.setRecommendation(cachedRec);
+                if (this._isOsmMapOption(config) && !this.chartCapabilities?.osm_map?.enabled) {
+                    sessionStorage.removeItem(cacheKey);
+                } else {
+                    if (this._disposed) return;
+                    // Restore the "<Type> · Auto" button label from cache so it
+                    // survives cache hits (setRecommendation is only called on a
+                    // fresh network response otherwise).
+                    if (chartType === 'auto' && cachedRec && this.chartTypeSelector) {
+                        this.chartTypeSelector.setRecommendation(cachedRec);
+                    }
+                    const renderStart = performance.now();
+                    await this.renderChart(config);
+                    this._devTrace('done', {
+                        metrics: { cache: 'browser hit', chart_type: chartType, render_ms: Math.round(performance.now() - renderStart) },
+                        detail: 'Rendered cached chart config.',
+                    });
+                    return;
                 }
-                const renderStart = performance.now();
-                await this.renderChart(config);
-                this._devTrace('done', {
-                    metrics: { cache: 'browser hit', chart_type: chartType, render_ms: Math.round(performance.now() - renderStart) },
-                    detail: 'Rendered cached chart config.',
-                });
-                return;
             }
 
             console.log('[ChartManager] Calling LLM API for type:', chartType);
@@ -339,7 +366,9 @@ export class ChartManager {
             const connection = (typeof getActiveConnection === 'function') ? getActiveConnection() : '';
             // Only fields the user explicitly picked override the LLM. On Auto
             // this is empty, so the LLM is free to choose x/y/series + combo.
-            const overrides = (this.chartOptionsPanel && chartType !== 'map') ? this.chartOptionsPanel.getOverrides() : {};
+            const overrides = (this.chartOptionsPanel && chartType !== 'map' && chartType !== 'osm_map')
+                ? this.chartOptionsPanel.getOverrides()
+                : {};
             const ctxQueryId  = (this.ctx && this.ctx.queryId != null) ? this.ctx.queryId : window.currentQueryId;
             const ctxQuestion = (this.ctx && this.ctx.question != null) ? this.ctx.question : window.currentQuestion;
             const payload = {
@@ -380,7 +409,7 @@ export class ChartManager {
             // The server returns a complete ECharts config built from the full
             // dataset. Just render it.
             const chartConfig = data.chart_config;
-            if (!chartConfig || !chartConfig.series) {
+            if (!chartConfig || (!chartConfig.series && !chartConfig.jeenOsmMap)) {
                 throw new Error('Could not build a chart for this data');
             }
 
@@ -502,9 +531,6 @@ export class ChartManager {
      */
     async renderChart(echartsConfig) {
         console.log('[ChartManager] Rendering chart with LLM config');
-        if (!this.state.isEChartsLoaded) {
-            await this.loadECharts();
-        }
 
         // Capture the unmodified baseline so Reset can always restore it.
         // Deep-clone so later edits to currentEchartsOptions don't mutate it.
@@ -515,6 +541,34 @@ export class ChartManager {
         }
 
         const displayConfig = this._withQuickToggles(echartsConfig);
+        if (this._isOsmMapOption(displayConfig)) {
+            try {
+                this.chartContainer?.dispose();
+                this.osmMapRenderer?.dispose();
+                this.osmMapRenderer = new OsmMapRenderer('chart-display-container');
+                this.osmMapRenderer.render(displayConfig);
+                const chartConfig = {
+                    type: 'osm_map',
+                    options: displayConfig,
+                    isEnhanced: true,
+                };
+                this.state.currentConfig = chartConfig;
+                this.currentEchartsOptions = displayConfig;
+                this._syncMapControls('osm_map');
+                this._renderMapFeedback(displayConfig);
+                if (this.chartChat) this.chartChat.disable();
+                this._enableChartActions(false);
+                console.log('[ChartManager] OpenStreetMap chart rendered successfully');
+            } catch (error) {
+                console.error('[ChartManager] Failed to render OpenStreetMap chart:', error);
+                this.chartContainer?.showError('Failed to render map: ' + error.message);
+            }
+            return;
+        }
+        this.osmMapRenderer?.dispose();
+        if (!this.state.isEChartsLoaded) {
+            await this.loadECharts();
+        }
         await ensureMapsForOption(displayConfig);
 
         const chartConfig = {
@@ -1045,6 +1099,7 @@ export class ChartManager {
 
     _withQuickToggles(config) {
         if (!config) return config;
+        if (this._isOsmMapOption(config)) return config;
         let out = config;
         if (this.chartOptionsPanel && !isMapOption(config)) {
             out = this.chartOptionsPanel.applyTogglesTo(config, this.originalConfig);
@@ -1109,6 +1164,9 @@ export class ChartManager {
         if (chartType === 'map') {
             if (this.chartOptionsPanel) this.chartOptionsPanel.hide();
             if (this.mapOptionsPanel) this.mapOptionsPanel.show();
+        } else if (chartType === 'osm_map') {
+            if (this.chartOptionsPanel) this.chartOptionsPanel.hide();
+            if (this.mapOptionsPanel) this.mapOptionsPanel.hide();
         } else {
             if (this.chartOptionsPanel) this.chartOptionsPanel.show();
             if (this.mapOptionsPanel) this.mapOptionsPanel.hide();
@@ -1206,7 +1264,7 @@ export class ChartManager {
             host.className = 'map-feedback';
             chart.insertAdjacentElement('afterend', host);
         }
-        const meta = config?.jeenMap;
+        const meta = config?.jeenMap || config?.jeenOsmMap;
         if (!meta || meta.showUnmatched === false || !meta.unmatchedCount) {
             host.style.display = 'none';
             host.textContent = '';
@@ -1219,8 +1277,13 @@ export class ChartManager {
     }
 
     _optionChartType(option) {
+        if (this._isOsmMapOption(option)) return 'osm_map';
         if (isMapOption(option)) return 'map';
         return option?.series?.[0]?.type || 'bar';
+    }
+
+    _isOsmMapOption(option) {
+        return !!(option && typeof option === 'object' && option.jeenOsmMap);
     }
 
     /**
@@ -1379,6 +1442,10 @@ export class ChartManager {
         }
         if (this.chartContainer) {
             this.chartContainer.dispose();
+        }
+        if (this.osmMapRenderer) {
+            this.osmMapRenderer.dispose();
+            this.osmMapRenderer = null;
         }
         // Remove the chart-type dropdown's portaled menu + global listeners.
         if (this.chartTypeSelector && typeof this.chartTypeSelector.destroy === 'function') {

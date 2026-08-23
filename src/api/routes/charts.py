@@ -6,9 +6,10 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
-from fastapi import APIRouter, HTTPException
+import httpx
+from fastapi import APIRouter, HTTPException, Response
 
 from src.api.chart_builder import build_chart_option, profile_dataset
 from src.api.dependencies import get_history_service, require_user_id, resolve_agent
@@ -22,6 +23,12 @@ from src.api.llm_params import (
     ENHANCE_CHART_PARAMS,
     GENERATE_CHART_PARAMS,
 )
+from src.api.map_geocoding import (
+    chart_capabilities,
+    geocoding_enabled,
+    osm_maps_enabled,
+    resolve_osm_locations,
+)
 from src.api.models import (
     ChatMessage,
     DerivedSeriesSpec,
@@ -32,9 +39,58 @@ from src.api.models import (
     GenerateChartResponse,
 )
 from src.api.result_cache import result_cache
+from src.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["charts"])
+
+
+@router.get("/chart-capabilities")
+async def get_chart_capabilities():
+    """Expose UI-safe chart feature flags without leaking provider secrets."""
+    return chart_capabilities()
+
+
+@router.get("/map-tiles/{z}/{x}/{y}")
+async def proxy_map_tile(z: int, x: int, y: int):
+    """Proxy configured raster tiles so tile credentials never reach the browser."""
+    if not osm_maps_enabled():
+        raise HTTPException(status_code=404, detail="OpenStreetMap maps are not enabled")
+    if not 0 <= z <= 19 or not 0 <= x < 2**z or not 0 <= y < 2**z:
+        raise HTTPException(status_code=422, detail="Invalid map tile coordinates")
+
+    template = settings.OSM_TILE_URL.strip()
+    if not all(token in template for token in ("{z}", "{x}", "{y}")):
+        logger.error("OSM_TILE_URL must contain {z}, {x}, and {y} placeholders")
+        raise HTTPException(status_code=503, detail="Map tiles are misconfigured")
+
+    url = (
+        template.replace("{z}", str(z))
+        .replace("{x}", str(x))
+        .replace("{y}", str(y))
+        .replace("{api_key}", settings.OSM_TILE_API_KEY)
+    )
+    headers: dict[str, str] = {}
+    if settings.OSM_TILE_API_KEY and "{api_key}" not in template:
+        headers[settings.OSM_TILE_API_KEY_HEADER.strip() or "Authorization"] = settings.OSM_TILE_API_KEY
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=max(0.1, float(settings.OSM_TILE_TIMEOUT_SECONDS)),
+            follow_redirects=False,
+        ) as client:
+            upstream = await client.get(url, headers=headers)
+        upstream.raise_for_status()
+    except httpx.HTTPError:
+        logger.warning("Configured map tile provider request failed")
+        raise HTTPException(status_code=502, detail="Map tile provider is unavailable") from None
+
+    content_type = upstream.headers.get("content-type", "image/png").split(";")[0]
+    return Response(
+        content=upstream.content,
+        media_type=content_type,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 async def _verify_query_owner(*, query_id: Optional[str], user_id: str, connection: str) -> None:
@@ -96,7 +152,7 @@ def _format_recent_messages(messages: Optional[List[ChatMessage]]) -> str:
 # ----------------------------------------------------------------------
 _ALLOWED_CHART_TYPES = {
     "bar", "line", "area", "pie", "donut", "scatter", "horizontal_bar",
-    "stacked_bar", "stacked_area", "combo", "heatmap", "gauge", "map",
+    "stacked_bar", "stacked_area", "combo", "heatmap", "gauge", "map", "osm_map",
 }
 _ALLOWED_AGGREGATES = {"sum", "avg", "count", "min", "max", "none"}
 _ALLOWED_SORTS = {"asc", "desc", "none"}
@@ -146,7 +202,7 @@ _GENERATE_SYSTEM_PROMPT = (
     "all number formatting. Decide the encoding; the app builds it.\n\n"
     "Return ONLY valid JSON (no markdown fences, no comments, no prose). Schema:\n"
     "{\n"
-    '  "chart_type": "bar|line|area|pie|donut|scatter|horizontal_bar|stacked_bar|stacked_area|combo|heatmap|gauge|map",\n'
+    '  "chart_type": "bar|line|area|pie|donut|scatter|horizontal_bar|stacked_bar|stacked_area|combo|heatmap|gauge|map|osm_map",\n'
     '  "x": "<column for the category or time axis (pie/donut label dimension)>",\n'
     '  "x_parts": ["<col>", "<col>"]  // OPTIONAL: 2+ columns to join into one ordered axis label, e.g. ["year","month"]. Omit or null otherwise.,\n'
     '  "y": ["<one or more numeric measure columns>"],\n'
@@ -166,6 +222,7 @@ _GENERATE_SYSTEM_PROMPT = (
     '  "latitude": "<latitude column for point maps, or null>",\n'
     '  "longitude": "<longitude/lng column for point maps, or null>",\n'
     '  "value": "<numeric measure column for map charts, or null>",\n'
+    '  "value2": "<optional second numeric measure for OpenStreetMap point size, or null>",\n'
     '  "map_quality": "standard|detailed|null",\n'
     '  "map_palette": "blue|green|purple|orange|null",\n'
     '  "show_labels": <true|false|null>,\n'
@@ -253,6 +310,29 @@ _GENERATE_SYSTEM_PROMPT = (
     "- Use the sample rows ONLY to understand shape/meaning, never to copy values."
 )
 
+_OSM_MAP_PROMPT = (
+    "\n\nOPENSTREETMAP POINT MAPS:\n"
+    "- `osm_map` is enabled for this deployment. Choose it only for point-level "
+    "data with latitude/longitude, or a city/place location column.\n"
+    "- Use `value` for marker color. With a second meaningful numeric measure, "
+    "set `value2` to encode marker radius; otherwise omit it.\n"
+    "- Prefer the existing Flat Map (`map`) for country, region, or district "
+    "choropleths. Never use `osm_map` for a high-cardinality identifier.\n"
+)
+
+
+def _generation_system_prompt() -> str:
+    """Advertise OSM only when the backend is configured to render it."""
+    if not osm_maps_enabled():
+        return _GENERATE_SYSTEM_PROMPT
+    geocoder_note = (
+        "Configured place-name geocoding is available."
+        if geocoding_enabled()
+        else "Only existing coordinates and bundled local city lookups are available; "
+        "do not select `osm_map` for other place names."
+    )
+    return _GENERATE_SYSTEM_PROMPT + _OSM_MAP_PROMPT + f"\n- {geocoder_note}\n"
+
 
 def _coerce_columns(value, lowered: dict[str, str]) -> list[str]:
     """Map LLM-provided column names back to their canonical spelling, dropping
@@ -303,6 +383,15 @@ _LOCATION_RE = re.compile(
     r"(country|nation|region|district|state|province|city|town|municipality|locality|location)",
     re.I,
 )
+_GEO_HINT_PATTERNS = {
+    "latitude": re.compile(r"\b(latitude|lat)\b", re.I),
+    "longitude": re.compile(r"\b(longitude|lon|lng|long)\b", re.I),
+    "location": re.compile(
+        r"\b(country|nation|region|district|state|province|city|town|municipality|"
+        r"locality|location|place|address|postal(?:\s+code)?|zip)\b",
+        re.I,
+    ),
+}
 
 
 def _looks_like_identifier(name: str) -> bool:
@@ -311,6 +400,58 @@ def _looks_like_identifier(name: str) -> bool:
 
 def _first_name_matching(columns: list[str], pattern: re.Pattern) -> Optional[str]:
     return next((c for c in columns if pattern.search(c or "")), None)
+
+
+def _geo_hints_from_metadata_columns(
+    metadata_columns: list[dict[str, Any]], column_names: list[str]
+) -> dict[str, str]:
+    """Extract advisory geo roles from curated column descriptions.
+
+    Descriptions may be authored in a consistent form such as
+    ``Geographic role: latitude (WGS84)``.  They are hints only: callers still
+    validate that latitude/longitude values are numeric and in range.
+    """
+    result_by_name = {name.casefold(): name for name in column_names}
+    hints: dict[str, str] = {}
+    for column in metadata_columns:
+        if not isinstance(column, dict):
+            continue
+        result_name = result_by_name.get(str(column.get("column") or "").casefold())
+        description = column.get("description")
+        if not result_name or not isinstance(description, str):
+            continue
+        for role, pattern in _GEO_HINT_PATTERNS.items():
+            if role not in hints and pattern.search(description):
+                hints[role] = result_name
+    return hints
+
+
+async def _load_geo_hints(connection: str, column_names: list[str]) -> dict[str, str]:
+    """Read cached Jeen Metadata descriptions without making charts depend on it."""
+    from src.api import state
+
+    loader = state.metadata_loader
+    if loader is None or not connection:
+        return {}
+    try:
+        columns = await loader.load_columns(connection)
+    except Exception:  # noqa: BLE001
+        logger.debug("Chart geo hints unavailable from metadata", exc_info=True)
+        return {}
+    return _geo_hints_from_metadata_columns(columns, column_names)
+
+
+def _geo_hints_blob(hints: dict[str, str]) -> str:
+    if not hints:
+        return ""
+    lines = [
+        f"- {role}: {column}"
+        for role, column in sorted(hints.items())
+    ]
+    return (
+        "\n\nCatalog geographic hints (advisory; use exact column names and do not "
+        "invent coordinates):\n" + "\n".join(lines)
+    )
 
 
 def _validate_chart_spec(
@@ -323,6 +464,8 @@ def _validate_chart_spec(
     x_col: Optional[str] = None,
     y_col: Optional[str] = None,
     series_col: Optional[str] = None,
+    geo_hints: Optional[dict[str, str]] = None,
+    osm_enabled: bool = True,
 ) -> dict:
     """Clamp the LLM spec to safe, real values and apply user overrides.
 
@@ -333,6 +476,7 @@ def _validate_chart_spec(
     lowered = {c.lower(): c for c in column_names}
     numeric_set = set(numeric_cols)
     non_numeric = [c for c in column_names if c not in numeric_set]
+    geo_hints = geo_hints or {}
 
     if not isinstance(spec, dict):
         spec = {}
@@ -395,18 +539,25 @@ def _validate_chart_spec(
     longitude = longitude_cols[0] if longitude_cols else None
     value_cols = [c for c in _coerce_columns(spec.get("value"), lowered) if c in numeric_set]
     value = value_cols[0] if value_cols else (y[0] if y else None)
+    value2_cols = [c for c in _coerce_columns(spec.get("value2"), lowered) if c in numeric_set]
+    value2 = value2_cols[0] if value2_cols else next((c for c in y if c != value), None)
 
     if not location:
-        location = _first_name_matching(non_numeric, _LOCATION_RE) or x
+        location = geo_hints.get("location") or _first_name_matching(non_numeric, _LOCATION_RE)
+        if not location and chart_type != "osm_map":
+            location = x
     if not latitude:
-        latitude = _first_name_matching(numeric_cols, _LATITUDE_RE)
+        latitude = geo_hints.get("latitude") or _first_name_matching(numeric_cols, _LATITUDE_RE)
     if not longitude:
-        longitude = _first_name_matching(numeric_cols, _LONGITUDE_RE)
+        longitude = geo_hints.get("longitude") or _first_name_matching(numeric_cols, _LONGITUDE_RE)
 
     if forced_type and forced_type not in ("auto", "", None):
         forced = forced_type.strip().lower()
         if forced in _ALLOWED_CHART_TYPES:
             chart_type = forced
+
+    if chart_type == "osm_map" and not osm_enabled:
+        chart_type = "horizontal_bar"
 
     if chart_type == "map":
         if not map_mode:
@@ -433,6 +584,17 @@ def _validate_chart_spec(
             map_mode = ""
         elif value:
             y = [value]
+            if location:
+                x = location
+
+    if chart_type == "osm_map":
+        can_render_points = bool(value and latitude and longitude) or bool(value and location)
+        if not can_render_points:
+            chart_type = "horizontal_bar"
+        else:
+            y = [value]
+            if value2 and value2 != value:
+                y.append(value2)
             if location:
                 x = location
 
@@ -484,12 +646,12 @@ def _validate_chart_spec(
     # ── User overrides from the column-mapping panel (MUST win) ──────────
     if x_col and x_col in column_names:
         x = x_col
-        if chart_type == "map":
+        if chart_type in ("map", "osm_map"):
             location = x_col
         x_parts = None  # explicit single-column choice overrides a composite axis
     if y_col and y_col in column_names:
         y = [y_col]
-        if chart_type == "map":
+        if chart_type in ("map", "osm_map"):
             value = y_col
     if series_col is not None:
         series = series_col if series_col in column_names else None
@@ -498,6 +660,10 @@ def _validate_chart_spec(
     # A composite part must not double as the series split.
     if x_parts and series in x_parts:
         series = None
+    if chart_type == "osm_map":
+        y = [value] if value else []
+        if value2 and value2 != value:
+            y.append(value2)
 
     return {
         "chart_type": chart_type,
@@ -520,6 +686,7 @@ def _validate_chart_spec(
         "latitude": latitude,
         "longitude": longitude,
         "value": value,
+        "value2": value2 if chart_type == "osm_map" and value2 != value else None,
         "map_quality": map_quality,
         "map_palette": map_palette,
         "show_labels": show_labels,
@@ -559,6 +726,11 @@ async def generate_chart(request: GenerateChartRequest):
     )
     agent = await resolve_agent(request.connection)
     chart_type_param = (request.chart_type or "auto").strip().lower()
+    if chart_type_param == "osm_map" and not osm_maps_enabled():
+        raise HTTPException(
+            status_code=422,
+            detail="OpenStreetMap maps are not configured for this deployment.",
+        )
 
     # 1. Resolve the dataset: cache first, then client-sent fallback.
     dataset = result_cache.get(
@@ -580,6 +752,7 @@ async def generate_chart(request: GenerateChartRequest):
             status_code=422,
             detail="Could not determine chartable columns for this result set.",
         )
+    geo_hints = await _load_geo_hints(request.connection, column_names)
 
     # 3. Build the decision prompt (profile + intent + user overrides).
     instruction_parts: list[str] = []
@@ -609,7 +782,7 @@ async def generate_chart(request: GenerateChartRequest):
     user_prompt = (
         "Choose the best chart for this dataset and return the JSON spec.\n\n"
         f"Dataset profile (computed over ALL {profile.get('row_count', 0)} rows):\n"
-        f"{_profile_blob(profile)}{instruction_blob}\n\n"
+        f"{_profile_blob(profile)}{_geo_hints_blob(geo_hints)}{instruction_blob}\n\n"
         f"Sample rows (first {len(sample)} of {profile.get('row_count', 0)}, for "
         "SHAPE/MEANING ONLY — do not copy these values into the chart):\n"
         + json.dumps(sample, indent=2, default=str)
@@ -619,7 +792,7 @@ async def generate_chart(request: GenerateChartRequest):
     try:
         response = await agent.llm.generate(
             messages=[
-                {"role": "system", "content": _GENERATE_SYSTEM_PROMPT},
+                {"role": "system", "content": _generation_system_prompt()},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=GENERATE_CHART_PARAMS.temperature,
@@ -644,12 +817,16 @@ async def generate_chart(request: GenerateChartRequest):
             x_col=request.x_column,
             y_col=request.y_column,
             series_col=request.series_column,
+            geo_hints=geo_hints,
+            osm_enabled=osm_maps_enabled(),
         )
         if not spec["x"] or not spec["y"]:
             raise HTTPException(
                 status_code=422,
                 detail="Could not determine chartable columns for this result set.",
             )
+        if spec["chart_type"] == "osm_map":
+            spec["resolved_locations"] = await resolve_osm_locations(spec, dataset)
 
         # 4. Build the actual ECharts option from the FULL dataset.
         try:
@@ -665,7 +842,7 @@ async def generate_chart(request: GenerateChartRequest):
             chart_type=spec["chart_type"],
             chart_spec=spec,
             prompt=user_prompt,
-            system_message=_GENERATE_SYSTEM_PROMPT,
+            system_message=_generation_system_prompt(),
         )
     except HTTPException:
         raise

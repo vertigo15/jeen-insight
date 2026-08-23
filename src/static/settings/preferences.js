@@ -43,7 +43,7 @@ const ALLOWED_THEMES = new Set(['light', 'dark', 'system']);
 const ALLOWED_ROW_LIMITS = new Set([25, 100, 500, 1000]);
 const ALLOWED_CHART_TYPES = new Set([
     'auto', 'bar', 'line', 'pie', 'area', 'scatter', 'horizontal_bar',
-    'stacked_bar', 'stacked_area', 'donut', 'combo', 'heatmap', 'gauge', 'map',
+    'stacked_bar', 'stacked_area', 'donut', 'combo', 'heatmap', 'gauge', 'map', 'osm_map',
 ]);
 const ALLOWED_AUTO_INSIGHTS = new Set(['on', 'off']);
 const ALLOWED_AI_ANALYTICS  = new Set(['on', 'off']);

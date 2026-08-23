@@ -24,6 +24,7 @@ from src.api.map_locations import (
     infer_map_name,
     lookup_israel_city,
 )
+from src.api.map_geocoding import location_key, valid_coordinates
 
 # Measure names that belong on a combo chart's SECONDARY (right) axis as a line:
 # percentages, rates and period-over-period change metrics live on a very
@@ -1069,6 +1070,154 @@ def _build_map(spec, rows, ctx):
     return _build_map_choropleth(spec, rows, ctx)
 
 
+def _new_point_cell(label: str, lat: float, lng: float) -> Dict[str, Any]:
+    return {
+        "label": label,
+        "lat": lat,
+        "lng": lng,
+        "rows": 0,
+        "primary": {"sum": 0.0, "count": 0, "rows": 0, "min": math.inf, "max": -math.inf, "first": None},
+        "secondary": {"sum": 0.0, "count": 0, "rows": 0, "min": math.inf, "max": -math.inf, "first": None},
+    }
+
+
+def _add_point_value(cell: Dict[str, Any], value: Optional[float], key: str) -> None:
+    bucket = cell[key]
+    bucket["rows"] += 1
+    if value is None:
+        return
+    bucket["sum"] += value
+    bucket["count"] += 1
+    bucket["min"] = min(bucket["min"], value)
+    bucket["max"] = max(bucket["max"], value)
+    if bucket["first"] is None:
+        bucket["first"] = value
+
+
+def _point_reduce(bucket: Dict[str, Any], aggregate: str) -> Optional[float]:
+    # `none` is only meaningful for a single row. Duplicate coordinates must
+    # collapse deterministically, matching the existing chart aggregation rule.
+    effective = "sum" if aggregate == "none" and bucket["rows"] > 1 else aggregate
+    return _reduce(bucket, effective)
+
+
+def _build_osm_map(spec, rows, ctx):
+    """Build a renderer-neutral raster-basemap + point-overlay payload."""
+    loc_name = spec.get("location") or ctx["x_name"]
+    loc_index = ctx["x_index"] if loc_name == ctx["x_name"] else (
+        ctx["columns"].index(loc_name) if loc_name in ctx["columns"] else -1
+    )
+    lat_name = spec.get("latitude")
+    lng_name = spec.get("longitude")
+    lat_index = ctx["columns"].index(lat_name) if lat_name in ctx["columns"] else -1
+    lng_index = ctx["columns"].index(lng_name) if lng_name in ctx["columns"] else -1
+    value_name = spec.get("value") or ctx["y_names"][0]
+    value_index = ctx["columns"].index(value_name) if value_name in ctx["columns"] else ctx["y_indexes"][0]
+    value2_name = spec.get("value2")
+    value2_index = ctx["columns"].index(value2_name) if value2_name in ctx["columns"] else -1
+    resolved_locations = spec.get("resolved_locations")
+    resolved_locations = resolved_locations if isinstance(resolved_locations, dict) else {}
+    aggregate = ctx["aggregate"]
+
+    grouped: Dict[tuple[float, float], Dict[str, Any]] = {}
+    unmatched: List[str] = []
+    for row in rows:
+        label = _as_label(_read_cell(row, loc_name, loc_index)) if loc_index >= 0 else ""
+        lat = _to_number(_read_cell(row, lat_name, lat_index)) if lat_index >= 0 else None
+        lng = _to_number(_read_cell(row, lng_name, lng_index)) if lng_index >= 0 else None
+        if not valid_coordinates(lat, lng):
+            city = lookup_israel_city(label)
+            resolved = resolved_locations.get(location_key(label))
+            if city and valid_coordinates(city.get("lat"), city.get("lng")):
+                lat, lng = float(city["lat"]), float(city["lng"])
+                label = city.get("name") or label
+            elif isinstance(resolved, dict) and resolved.get("status") == "resolved" and valid_coordinates(
+                resolved.get("lat"), resolved.get("lng")
+            ):
+                lat, lng = float(resolved["lat"]), float(resolved["lng"])
+            else:
+                if label and label not in unmatched:
+                    unmatched.append(label)
+                continue
+
+        primary = 1.0 if aggregate == "count" else _to_number(_read_cell(row, value_name, value_index))
+        if primary is None:
+            continue
+        secondary = _to_number(_read_cell(row, value2_name, value2_index)) if value2_index >= 0 else None
+        point_key = (round(float(lat), 7), round(float(lng), 7))
+        point = grouped.get(point_key)
+        if point is None:
+            point = _new_point_cell(label or value_name, point_key[0], point_key[1])
+            grouped[point_key] = point
+        point["rows"] += 1
+        _add_point_value(point, primary, "primary")
+        _add_point_value(point, secondary, "secondary")
+
+    points = []
+    for point in grouped.values():
+        value = _point_reduce(point["primary"], aggregate)
+        value2 = _point_reduce(point["secondary"], aggregate) if value2_name else None
+        if value is None:
+            continue
+        points.append(
+            {
+                "label": point["label"],
+                "lat": _round(point["lat"]),
+                "lng": _round(point["lng"]),
+                "value": _round(value),
+                "value2": _round(value2) if value2 is not None else None,
+                "rowCount": point["rows"],
+            }
+        )
+
+    primary_values = [point["value"] for point in points]
+    secondary_values = [point["value2"] for point in points if point["value2"] is not None]
+    latitudes = [point["lat"] for point in points]
+    longitudes = [point["lng"] for point in points]
+    show_unmatched = spec.get("show_unmatched")
+    show_unmatched = True if show_unmatched is None else bool(show_unmatched)
+
+    return {
+        # Maintains the existing chart response shape while telling ChartManager
+        # to use the dedicated OSM renderer instead of ECharts.
+        "series": [],
+        "jeenOsmMap": {
+            "basemap": {
+                "type": "raster",
+                "tileUrl": "/api/map-tiles/{z}/{x}/{y}",
+                "attribution": "© OpenStreetMap contributors",
+            },
+            "overlays": [
+                {
+                    "type": "circles",
+                    "metric": value_name,
+                    "sizeMetric": value2_name or value_name,
+                    "points": points,
+                    "colorRange": {
+                        "min": _round(min(primary_values)) if primary_values else 0,
+                        "max": _round(max(primary_values)) if primary_values else 1,
+                    },
+                    "sizeRange": {
+                        "min": _round(min(secondary_values or primary_values)) if (secondary_values or primary_values) else 0,
+                        "max": _round(max(secondary_values or primary_values)) if (secondary_values or primary_values) else 1,
+                    },
+                }
+            ],
+            "extent": {
+                "minLat": _round(min(latitudes)) if latitudes else None,
+                "maxLat": _round(max(latitudes)) if latitudes else None,
+                "minLng": _round(min(longitudes)) if longitudes else None,
+                "maxLng": _round(max(longitudes)) if longitudes else None,
+            },
+            "matched": len(points),
+            "rowCount": sum(point["rowCount"] for point in points),
+            "unmatchedCount": len(unmatched),
+            "unmatched": unmatched[:20],
+            "showUnmatched": show_unmatched,
+        },
+    }
+
+
 # ── entry point ──────────────────────────────────────────────────────────────
 
 def build_chart_option(spec: Dict[str, Any], dataset: Dict[str, Any]) -> Dict[str, Any]:
@@ -1123,6 +1272,8 @@ def build_chart_option(spec: Dict[str, Any], dataset: Dict[str, Any]) -> Dict[st
     ctype = str(spec.get("chart_type") or "bar").lower()
     if ctype == "map":
         opt = _build_map(spec, rows, ctx)
+    elif ctype == "osm_map":
+        opt = _build_osm_map(spec, rows, ctx)
     elif ctype == "pie":
         opt = _build_pie(spec, _build_matrix(rows, ctx), donut=False)
     elif ctype == "donut":
@@ -1156,6 +1307,15 @@ def build_chart_option(spec: Dict[str, Any], dataset: Dict[str, Any]) -> Dict[st
 def _option_values(opt: Dict[str, Any]):
     """Yield the numeric measure values from a built option (handles plain
     numbers, {value,…} items, and [x, y] pairs)."""
+    osm = opt.get("jeenOsmMap")
+    if isinstance(osm, dict):
+        for overlay in osm.get("overlays") or []:
+            if not isinstance(overlay, dict):
+                continue
+            for point in overlay.get("points") or []:
+                value = point.get("value") if isinstance(point, dict) else None
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    yield value
     for s in opt.get("series", []) or []:
         for v in (s.get("data") or []):
             if isinstance(v, dict):

@@ -259,3 +259,45 @@ def test_israel_city_map_infers_point_columns():
     assert spec["map_name"] == "israel_districts"
 
 
+def test_osm_map_uses_metadata_hints_and_two_measures():
+    spec = _validate_chart_spec(
+        {
+            "chart_type": "osm_map",
+            "location": "store_label",
+            "y": ["sales", "orders"],
+        },
+        column_names=["store_label", "northing", "easting", "sales", "orders"],
+        numeric_cols=["northing", "easting", "sales", "orders"],
+        date_cols=[],
+        geo_hints={
+            "latitude": "northing",
+            "longitude": "easting",
+            "location": "store_label",
+        },
+    )
+    assert spec["chart_type"] == "osm_map"
+    assert spec["latitude"] == "northing"
+    assert spec["longitude"] == "easting"
+    assert spec["location"] == "store_label"
+    assert spec["value"] == "sales"
+    assert spec["value2"] == "orders"
+    assert spec["y"] == ["sales", "orders"]
+
+
+def test_osm_map_is_not_selected_when_disabled():
+    spec = _validate_chart_spec(
+        {
+            "chart_type": "osm_map",
+            "location": "city",
+            "latitude": "latitude",
+            "longitude": "longitude",
+            "value": "sales",
+        },
+        column_names=["city", "latitude", "longitude", "sales"],
+        numeric_cols=["latitude", "longitude", "sales"],
+        date_cols=[],
+        osm_enabled=False,
+    )
+    assert spec["chart_type"] == "horizontal_bar"
+
+
