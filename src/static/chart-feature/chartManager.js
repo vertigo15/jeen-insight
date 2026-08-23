@@ -14,7 +14,7 @@ import { ChartToggle } from './components/ChartToggle.js';
 import { ChartTypeSelector } from './components/ChartTypeSelector.js?v=78';
 import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=71';
 import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v=1';
-import { ChartChat } from './components/ChartChat.js?v=73';
+import { ChartChat } from './components/ChartChat.js?v=100';
 import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js';
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
 import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=1';
@@ -24,10 +24,11 @@ import { CHART_TYPE_VALUES } from './chartTypes.js?v=79';
  * Main chart manager class
  */
 export class ChartManager {
-    constructor() {
+    constructor(options = {}) {
+        this.workspaceMode = Boolean(options.workspaceMode);
         /** @type {import('./types/chart.types.js').ChartState} */
         this.state = {
-            currentView: 'table',
+            currentView: this.workspaceMode ? 'chart' : 'table',
             currentChartType: 'bar',
             currentConfig: null,
             chartInstance: null,
@@ -61,11 +62,12 @@ export class ChartManager {
         // When false (Chat mode), skip rendering the segmented ChartToggle into
         // the Ask-only #chart-toggle-container so a Chat engine can't overwrite
         // Ask mode's toggle/listeners. Chat supplies its own per-turn toggle.
-        this.manageToggle = true;
+        this.manageToggle = !this.workspaceMode;
         // In-flight chart request control so a superseded / disposed engine
         // cannot render a late response into a relocated or returned-home node.
         this._chartAbort = null;
         this._disposed = false;
+        this._themeObserver = null;
 
         console.log('[ChartManager] Initialized');
     }
@@ -119,8 +121,12 @@ export class ChartManager {
             return;
         }
 
-        // Always default to table view (no auto-switch to chart)
-        console.log('[ChartManager] Initialization complete - defaulting to table view');
+        if (this.workspaceMode) {
+            await this.handleViewChange('chart');
+            console.log('[ChartManager] Initialization complete - workspace chart visible');
+        } else {
+            console.log('[ChartManager] Initialization complete - defaulting to table view');
+        }
     }
 
     /**
@@ -188,6 +194,13 @@ export class ChartManager {
 
         // Chart container
         this.chartContainer = new ChartContainer('chart-display-container');
+        if (this.workspaceMode && !this._themeObserver) {
+            this._themeObserver = new MutationObserver(() => this._refreshWorkspaceTheme());
+            this._themeObserver.observe(document.documentElement, {
+                attributes: true,
+                attributeFilter: ['data-theme'],
+            });
+        }
 
         // Chart export toolbar (Save PNG / Copy).
         this._mountChartActionsToolbar();
@@ -238,7 +251,7 @@ export class ChartManager {
         const tableContainer = this.tableEl || document.getElementById('results-display');
         const chartViewContainer = this.chartViewEl || document.getElementById('chart-view-container');
 
-        if (viewMode === 'table') {
+        if (viewMode === 'table' && !this.workspaceMode) {
             // Show table, hide chart
             if (tableContainer) tableContainer.style.display = 'block';
             if (chartViewContainer) chartViewContainer.style.display = 'none';
@@ -249,9 +262,9 @@ export class ChartManager {
             if (this.chartOptionsPanel) this.chartOptionsPanel.hide();
             if (this.mapOptionsPanel) this.mapOptionsPanel.hide();
         } else {
-            // Show chart, hide table
-            if (tableContainer) tableContainer.style.display = 'none';
-            if (chartViewContainer) chartViewContainer.style.display = 'flex';
+            // Workspace mode keeps chart and table visible together.
+            if (tableContainer) tableContainer.style.display = this.workspaceMode ? 'block' : 'none';
+            if (chartViewContainer) chartViewContainer.style.display = this.workspaceMode ? 'block' : 'flex';
 
             // Show chart type selector + options panel
             const selectorContainer = document.getElementById('chart-type-selector-container');
@@ -540,7 +553,7 @@ export class ChartManager {
             this.originalConfig = echartsConfig;
         }
 
-        const displayConfig = this._withQuickToggles(echartsConfig);
+        let displayConfig = this._withQuickToggles(echartsConfig);
         if (this._isOsmMapOption(displayConfig)) {
             try {
                 this.chartContainer?.dispose();
@@ -569,6 +582,7 @@ export class ChartManager {
         if (!this.state.isEChartsLoaded) {
             await this.loadECharts();
         }
+        displayConfig = this._withWorkspaceTheme(displayConfig);
         await ensureMapsForOption(displayConfig);
 
         const chartConfig = {
@@ -598,6 +612,64 @@ export class ChartManager {
         }
     }
 
+    _withWorkspaceTheme(option) {
+        if (!this.workspaceMode || !option || typeof option !== 'object') return option;
+        let themed;
+        try { themed = JSON.parse(JSON.stringify(option)); } catch (_) { themed = { ...option }; }
+        const style = getComputedStyle(document.documentElement);
+        const token = (name, fallback) => style.getPropertyValue(name).trim() || fallback;
+        const colors = [
+            token('--rose', '#8878c4'),
+            token('--plum', '#7a5ea8'),
+            token('--teal', '#4bb9c9'),
+            token('--err', '#d4574a'),
+        ];
+        const faint = token('--faint', '#b8b8bf');
+        const muted = token('--muted', '#98989f');
+        const border = token('--border', '#e9e9ec');
+        themed.backgroundColor = 'transparent';
+        themed.color = colors;
+        themed.textStyle = {
+            ...(themed.textStyle || {}),
+            color: muted,
+            fontFamily: 'Outfit, system-ui, sans-serif',
+            fontWeight: 300,
+        };
+        ['xAxis', 'yAxis'].forEach((key) => {
+            const axes = Array.isArray(themed[key]) ? themed[key] : themed[key] ? [themed[key]] : [];
+            axes.forEach((axis) => {
+                axis.axisLabel = {
+                    ...(axis.axisLabel || {}),
+                    color: key === 'xAxis' ? muted : faint,
+                    fontFamily: key === 'xAxis' ? 'Outfit, system-ui, sans-serif' : 'Geist Mono, monospace',
+                    fontSize: key === 'xAxis' ? 11 : 10.5,
+                };
+                axis.axisLine = { ...(axis.axisLine || {}), lineStyle: { ...(axis.axisLine?.lineStyle || {}), color: border } };
+                axis.axisTick = { ...(axis.axisTick || {}), lineStyle: { ...(axis.axisTick?.lineStyle || {}), color: border } };
+                axis.splitLine = { ...(axis.splitLine || {}), lineStyle: { ...(axis.splitLine?.lineStyle || {}), color: border } };
+            });
+        });
+        (Array.isArray(themed.series) ? themed.series : themed.series ? [themed.series] : []).forEach((series, index) => {
+            series.itemStyle = { ...(series.itemStyle || {}) };
+            if (!series.itemStyle.color) series.itemStyle.color = colors[index % colors.length];
+        });
+        return themed;
+    }
+
+    _refreshWorkspaceTheme() {
+        if (!this.workspaceMode || !this.chartContainer || !this.currentEchartsOptions) return;
+        const base = this.originalConfig || this.currentEchartsOptions;
+        if (this._isOsmMapOption(base)) return;
+        const displayConfig = this._withWorkspaceTheme(this._withQuickToggles(base));
+        this.currentEchartsOptions = displayConfig;
+        this.state.currentConfig = {
+            type: this._optionChartType(displayConfig),
+            options: displayConfig,
+            isEnhanced: true,
+        };
+        this.chartContainer.render(this.state.currentConfig);
+    }
+
     getSaveState() {
         return {
             chart_spec: this.currentChartSpec,
@@ -617,7 +689,7 @@ export class ChartManager {
         }
         const table = document.getElementById('results-display');
         const chart = document.getElementById('chart-view-container');
-        if (table) table.style.display = 'none';
+        if (table && !this.workspaceMode) table.style.display = 'none';
         if (chart) chart.style.display = 'block';
     }
 
@@ -1450,6 +1522,10 @@ export class ChartManager {
         // Remove the chart-type dropdown's portaled menu + global listeners.
         if (this.chartTypeSelector && typeof this.chartTypeSelector.destroy === 'function') {
             this.chartTypeSelector.destroy();
+        }
+        if (this._themeObserver) {
+            this._themeObserver.disconnect();
+            this._themeObserver = null;
         }
         console.log('[ChartManager] Disposed');
     }

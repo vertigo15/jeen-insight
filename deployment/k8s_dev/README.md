@@ -131,3 +131,17 @@ kubectl --context aks-jeen-dev-weu-001 --namespace jeen-data \
 `jeen-data` is GitOps-managed. For a durable deployment, have the platform
 team add this chart and the AKS overlay to the namespace's Argo CD source of
 truth; use direct Helm only as the approved interim delivery path.
+
+## CI/CD
+
+Pushes to `main` run `.github/workflows/deploy.yml`. After tests pass, the
+workflow builds immutable API and UI images, pushes both to ACR, and upgrades
+the `jeen-insights` Helm release in the `jeen-data` namespace on
+`aks-jeen-dev-weu-001`. The deployment waits for the ExternalSecret, performs
+an atomic Helm upgrade, verifies both rollout images, and checks the public
+health endpoint.
+
+The `github-actions-jeen-insights` service principal requires cluster-user
+access on the AKS resource and namespace-scoped AKS RBAC Admin access on
+`jeen-data`. Namespace admin is required because the chart manages an
+`ExternalSecret` custom resource.

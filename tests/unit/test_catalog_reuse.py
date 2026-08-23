@@ -30,6 +30,7 @@ from uuid import uuid4
 import pytest
 
 import src.agent.langgraph_agent.nodes.catalog as catalog_mod
+from src.api import state as api_state
 from src.agent.langgraph_agent.nodes.catalog import make_catalog_lookup
 from src.agent.langgraph_agent_dax.nodes.catalog import make_dax_catalog_lookup
 
@@ -74,6 +75,29 @@ def _state(**overrides) -> Dict[str, Any]:
     }
     base.update(overrides)
     return base
+
+
+@pytest.mark.asyncio
+async def test_question_uses_filtered_mcp_prompt():
+    server_service = AsyncMock()
+    server_service.get_catalog_source = AsyncMock(return_value="mcp")
+    client = AsyncMock()
+    client.load_filtered = AsyncMock(return_value=_BUNDLE)
+
+    with patch.object(api_state, "mcp_server_service", server_service):
+        with patch.object(api_state, "mcp_catalog_client", client):
+            bundle, meta = await catalog_mod._load_catalog_bundle(
+                "test_db",
+                MagicMock(),
+                question="sales by product",
+            )
+
+    client.load_filtered.assert_awaited_once_with(
+        "test_db", "sales by product"
+    )
+    assert bundle is _BUNDLE
+    assert meta["source"] == "mcp"
+    assert meta["filtered"] is True
 
 
 # ── SQL catalog_lookup ────────────────────────────────────────────────────────

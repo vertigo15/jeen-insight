@@ -692,6 +692,41 @@ class TestMcpCatalogClientLoadAll:
         for key in _empty_bundle():
             assert key in bundle
 
+    @pytest.mark.asyncio
+    async def test_load_filtered_calls_question_aware_prompt_tool(self):
+        health = _health_with_tools({
+            NEED_LIST_SOURCES: "list_connections",
+            NEED_LIST_TABLES: "get_catalog_prompt",
+            NEED_DESCRIBE_TABLE: "get_filtered_prompt",
+        })
+        server = _make_server(health=health)
+        client = self._make_client(server)
+        client._resolve_connection_id = AsyncMock(return_value=42)
+        client._call_tool = AsyncMock(return_value={
+            "prompt": (
+                "## Tables\n- DimDate\n"
+                "## Columns\n- DimDate.DateKey - Type: integer\n"
+                "## Source\nAdventureWorks | postgres"
+            ),
+            "meta": {"filtered": True},
+        })
+
+        bundle = await client.load_filtered(
+            "AdventureWorks", "sales by month"
+        )
+
+        client._call_tool.assert_awaited_once_with(
+            server,
+            "get_filtered_prompt",
+            {
+                "connection_id": 42,
+                "question": "sales by month",
+            },
+        )
+        assert "DimDate" in bundle["tables"]
+        assert "DimDate.DateKey" in bundle["columns"]
+        assert "AdventureWorks" in bundle["sources"]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # McpCatalogClient — inspector test calls

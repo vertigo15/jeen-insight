@@ -1,4 +1,4 @@
-name: CI / Deploy to Azure Container Apps
+name: CI / Deploy to AKS Dev
 
 on:
   push:
@@ -8,6 +8,11 @@ on:
 env:
   API_IMAGE: jeen-insights-api
   UI_IMAGE:  jeen-insights-ui
+  AKS_RESOURCE_GROUP: jeen-rg-dev-k8s
+  AKS_CLUSTER_NAME: aks-jeen-dev-weu-001
+  AKS_NAMESPACE: jeen-data
+  HELM_RELEASE: jeen-insights
+  DEV_URL: https://jeen-insights.dev.jeenai.app
 
 jobs:
   # ────────────────────────────────────────────────────────────────────
@@ -84,41 +89,90 @@ jobs:
           cache-to:   type=gha,mode=max
 
   # ────────────────────────────────────────────────────────────────────
-  # 3. Deploy to Azure Container Apps
+  # 3. Deploy to AKS development
   # ────────────────────────────────────────────────────────────────────
   deploy:
-    name: Deploy to Azure Container Apps
+    name: Deploy to AKS Dev
     runs-on: ubuntu-latest
     needs: build-and-push
-    environment: production       # optional: adds a manual approval gate in GitHub
+    environment:
+      name: development
+      url: https://jeen-insights.dev.jeenai.app
+    concurrency:
+      group: jeen-insights-aks-dev
+      cancel-in-progress: false
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Log in to Azure
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Deploy API container app
-        run: |
-          az containerapp update \
-            --name "${{ env.API_IMAGE }}" \
-            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-            --image "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.API_IMAGE }}:${{ needs.build-and-push.outputs.image-tag }}"
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v5
+        with:
+          version: v1.35.6
 
-      - name: Deploy UI container app
-        run: |
-          az containerapp update \
-            --name "${{ env.UI_IMAGE }}" \
-            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-            --image "${{ secrets.ACR_LOGIN_SERVER }}/${{ env.UI_IMAGE }}:${{ needs.build-and-push.outputs.image-tag }}"
+      - name: Set up Helm
+        uses: azure/setup-helm@v5
+        with:
+          version: v3.18.4
 
-      - name: Print deployed URLs
+      - name: Set up kubelogin
+        uses: azure/use-kubelogin@v1.2
+        with:
+          kubelogin-version: v0.2.19
+
+      - name: Connect to AKS dev
+        uses: azure/aks-set-context@v5
+        with:
+          resource-group: ${{ env.AKS_RESOURCE_GROUP }}
+          cluster-name: ${{ env.AKS_CLUSTER_NAME }}
+          admin: "false"
+          use-kubelogin: "true"
+
+      - name: Validate Helm release
         run: |
-          echo "API: $(az containerapp show \
-            --name ${{ env.API_IMAGE }} \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --query properties.configuration.ingress.fqdn -o tsv)"
-          echo "UI:  $(az containerapp show \
-            --name ${{ env.UI_IMAGE }} \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --query properties.configuration.ingress.fqdn -o tsv)"
+          helm dependency build deployment/k8s_dev
+          helm lint --with-subcharts deployment/k8s_dev \
+            --values deployment/k8s_dev/values.aks-dev.yaml \
+            --set jeen-insights-api.image.tag=${{ needs.build-and-push.outputs.image-tag }} \
+            --set jeen-insights-ui.image.tag=${{ needs.build-and-push.outputs.image-tag }}
+          kubectl --namespace "${AKS_NAMESPACE}" wait \
+            --for=condition=Ready \
+            externalsecret/jeen-insights-secrets-external \
+            --timeout=60s
+
+      - name: Deploy Helm release
+        run: |
+          helm upgrade --install "${HELM_RELEASE}" deployment/k8s_dev \
+            --namespace "${AKS_NAMESPACE}" \
+            --values deployment/k8s_dev/values.aks-dev.yaml \
+            --set jeen-insights-api.image.tag=${{ needs.build-and-push.outputs.image-tag }} \
+            --set jeen-insights-ui.image.tag=${{ needs.build-and-push.outputs.image-tag }} \
+            --atomic \
+            --wait \
+            --timeout 10m
+
+      - name: Verify AKS dev rollout
+        run: |
+          API_DEPLOYMENT="${HELM_RELEASE}-jeen-insights-api"
+          UI_DEPLOYMENT="${HELM_RELEASE}-jeen-insights-ui"
+          EXPECTED_API="${{ secrets.ACR_LOGIN_SERVER }}/${API_IMAGE}:${{ needs.build-and-push.outputs.image-tag }}"
+          EXPECTED_UI="${{ secrets.ACR_LOGIN_SERVER }}/${UI_IMAGE}:${{ needs.build-and-push.outputs.image-tag }}"
+
+          kubectl --namespace "${AKS_NAMESPACE}" rollout status \
+            deployment/"${API_DEPLOYMENT}" --timeout=5m
+          kubectl --namespace "${AKS_NAMESPACE}" rollout status \
+            deployment/"${UI_DEPLOYMENT}" --timeout=5m
+
+          test "$(kubectl --namespace "${AKS_NAMESPACE}" get deployment "${API_DEPLOYMENT}" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')" = "${EXPECTED_API}"
+          test "$(kubectl --namespace "${AKS_NAMESPACE}" get deployment "${UI_DEPLOYMENT}" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')" = "${EXPECTED_UI}"
+
+          curl --fail --silent --show-error \
+            --retry 6 --retry-delay 5 \
+            "${DEV_URL}/health"

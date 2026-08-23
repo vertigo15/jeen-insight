@@ -296,7 +296,17 @@ class SqlRunner(abc.ABC):
             )
             return error_result(structural_error, error_type="read_only_blocked")
 
-        capped_sql = self._apply_row_cap(sql, limit, max_rows)
+        effective_limit = max_rows if max_rows and max_rows > 0 else (limit or 0)
+        if limit and limit > 0:
+            effective_limit = min(limit, effective_limit) if effective_limit else limit
+        # Fetch one sentinel row beyond the visible cap. This proves whether the
+        # result was truncated without running a separate COUNT query.
+        probe_limit = effective_limit + 1 if effective_limit else 0
+        capped_sql = self._apply_row_cap(
+            sql,
+            probe_limit or limit,
+            probe_limit or max_rows,
+        )
         t0 = time.monotonic()
 
         try:
@@ -347,9 +357,18 @@ class SqlRunner(abc.ABC):
             len(rows or []),
         )
 
+        truncated = bool(effective_limit and len(rows or []) > effective_limit)
+        if truncated:
+            rows = list(rows[:effective_limit])
         if not rows:
             return {"columns": columns or [], "rows": [], "row_count": 0}
-        return {"columns": columns, "rows": rows, "row_count": len(rows)}
+        return {
+            "columns": columns,
+            "rows": rows,
+            "row_count": len(rows),
+            "truncated": truncated,
+            "cap": effective_limit or None,
+        }
 
     # -- shared helpers --------------------------------------------------------
     @staticmethod

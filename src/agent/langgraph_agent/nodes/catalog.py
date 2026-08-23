@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 async def _load_catalog_bundle(
     source_key: str,
     metadata_loader: MetadataLoader,
+    question: str = "",
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
     """
     Load the catalog bundle for *source_key*, routing to MCP or DB depending
@@ -47,7 +48,9 @@ async def _load_catalog_bundle(
     Falls back silently to the metadata DB on any MCP error.
     """
     t0 = time.monotonic()
-    bundle, meta = await _route_catalog_load(source_key, metadata_loader)
+    bundle, meta = await _route_catalog_load(
+        source_key, metadata_loader, question=question
+    )
     meta["load_ms"] = round((time.monotonic() - t0) * 1000)
     return bundle, meta
 
@@ -55,6 +58,8 @@ async def _load_catalog_bundle(
 async def _route_catalog_load(
     source_key: str,
     metadata_loader: MetadataLoader,
+    *,
+    question: str = "",
 ) -> Tuple[Dict[str, str], Dict[str, Any]]:
     """Pick the provider and load. See ``_load_catalog_bundle``."""
     meta: Dict[str, Any] = {"source": "db", "cache": None}
@@ -65,6 +70,23 @@ async def _route_catalog_load(
             catalog_source = await _state.mcp_server_service.get_catalog_source(source_key)
             if catalog_source == "mcp":
                 meta["source"] = "mcp"
+                if question.strip():
+                    try:
+                        bundle = await _state.mcp_catalog_client.load_filtered(
+                            source_key, question
+                        )
+                        meta["filtered"] = True
+                        logger.info(
+                            "catalog_lookup: using filtered MCP provider for source_key=%s",
+                            source_key,
+                        )
+                        return bundle, meta
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "catalog_lookup: filtered MCP load failed (%s); "
+                            "using full catalog",
+                            exc,
+                        )
                 # Probe cache state before loading so the trace can report HIT/MISS.
                 try:
                     active = await _state.mcp_server_service.get_active()
@@ -135,7 +157,11 @@ async def _acquire_catalog(
 
     logger.info("%s: loading metadata for source_key=%s", log_label, source_key)
     try:
-        bundle, meta = await _load_catalog_bundle(source_key, metadata_loader)
+        bundle, meta = await _load_catalog_bundle(
+            source_key,
+            metadata_loader,
+            question=str(state.get("question") or ""),
+        )
     except Exception as exc:  # noqa: BLE001 — fail closed rather than query blindly
         logger.error("%s: metadata load failed for source_key=%s: %s", log_label, source_key, exc)
         return {}, {"source": "db", "cache": None}, 0, failure_message
@@ -385,8 +411,33 @@ def _extract_table_names(tables_text: str) -> List[str]:
                 table_name = table_name.split(separator, 1)[0].strip()
                 break
         if table_name:
-            names.append(table_name.lower())
+            parts = _catalog_identifier_parts(table_name)
+            if parts:
+                # Validation compares sqlglot's bare ``Table.name``. MCP may
+                # return schema-qualified identifiers such as
+                # ``"public"."dimdate"``; retain the table component only.
+                names.append(parts[-1].lower())
     return names
+
+
+def _catalog_identifier_parts(identifier: str) -> List[str]:
+    """Split a catalog identifier and remove common SQL quoting.
+
+    Catalog providers can emit ``table.column``, ``public.table.column`` or
+    quoted equivalents. Metadata identifiers do not contain dots in practice,
+    so taking the final components is both portable and deterministic.
+    """
+    parts: List[str] = []
+    for raw in identifier.split("."):
+        part = raw.strip()
+        if len(part) >= 2 and (
+            (part[0] == part[-1] and part[0] in {'"', "'", "`"})
+            or (part[0] == "[" and part[-1] == "]")
+        ):
+            part = part[1:-1].strip()
+        if part:
+            parts.append(part)
+    return parts
 
 
 def _extract_columns(columns_text: str) -> Tuple[Dict[str, List[str]], List[str]]:
@@ -406,11 +457,11 @@ def _extract_columns(columns_text: str) -> Tuple[Dict[str, List[str]], List[str]
             continue
         # The qualified name is everything before the first " - " separator.
         qualified = stripped.split(" - ")[0].strip()
-        if "." not in qualified:
+        parts = _catalog_identifier_parts(qualified)
+        if len(parts) < 2:
             continue
-        table, _, column = qualified.partition(".")
-        table = table.strip().lower()
-        column = column.strip().lower()
+        table = parts[-2].lower()
+        column = parts[-1].lower()
         if not table or not column:
             continue
         table_columns.setdefault(table, [])
