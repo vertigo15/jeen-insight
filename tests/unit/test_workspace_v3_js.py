@@ -66,6 +66,20 @@ def test_workspace_bootstrap_hides_legacy_layout():
     assert "WorkspaceController.init();" in controller
 
 
+def test_workspace_chart_starts_collapsed_with_aligned_controls():
+    root = Path(__file__).resolve().parents[2]
+    styles = (root / "src/static/workspace/workspace.css").read_text()
+    controller = (
+        root / "src/static/workspace/workspaceController.js"
+    ).read_text()
+
+    assert "chartCollapsed: true" in controller
+    assert 'id="v3-chart-toggle" class="v3-text-btn">Expand</button>' in controller
+    assert ".v3-chart-types > .chart-type-selector-container {" in styles
+    assert "height: 30px;" in styles
+    assert "#v3-chart-toggle {" in styles
+
+
 def test_workspace_renders_findings_as_key_insights():
     root = Path(__file__).resolve().parents[2]
     styles = (root / "src/static/workspace/workspace.css").read_text()
