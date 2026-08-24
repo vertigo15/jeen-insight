@@ -444,6 +444,8 @@ def test_osm_map_emits_one_point_overlay_and_aggregates_coordinates():
     assert opt["series"] == []
     osm = opt["jeenOsmMap"]
     assert osm["basemap"]["tileUrl"] == "/api/map-tiles/{z}/{x}/{y}"
+    assert osm["layers"]["basemaps"][0]["id"] == "standard"
+    assert osm["layers"]["basemaps"][0]["tileUrl"] == "/api/map-tiles/{z}/{x}/{y}"
     overlay = osm["overlays"][0]
     assert overlay["type"] == "circles"
     assert overlay["metric"] == "sales"

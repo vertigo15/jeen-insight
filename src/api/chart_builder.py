@@ -25,6 +25,7 @@ from src.api.map_locations import (
     lookup_israel_city,
 )
 from src.api.map_geocoding import location_key, valid_coordinates
+from src.api.map_layers import browser_map_layers
 
 # Measure names that belong on a combo chart's SECONDARY (right) axis as a line:
 # percentages, rates and period-over-period change metrics live on a very
@@ -1218,6 +1219,7 @@ def _build_osm_map(spec, rows, ctx):
                 "tileUrl": "/api/map-tiles/{z}/{x}/{y}",
                 "attribution": "© OpenStreetMap contributors",
             },
+            "layers": browser_map_layers(),
             "overlays": [
                 {
                     "type": "circles",

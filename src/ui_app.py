@@ -1285,6 +1285,8 @@ def settings_update_runtime():
 
 def _forward(api_path: str, *, timeout: float = 30) -> Any:
     """Forward the current request (method/json/query) to the FastAPI backend."""
+    started_at = time.monotonic()
+    is_map_tile = api_path.startswith("/api/map-tiles/")
     target = f"{API_BASE_URL}{api_path}"
     qs = request.query_string.decode()
     if qs:
@@ -1303,8 +1305,24 @@ def _forward(api_path: str, *, timeout: float = 30) -> Any:
     try:
         return jsonify(resp.json()), resp.status_code
     except Exception:  # noqa: BLE001
-        return Response(resp.content, status=resp.status_code,
-                        content_type=resp.headers.get("Content-Type", "application/json"))
+        response_headers = {}
+        if is_map_tile:
+            for header_name in ("Cache-Control", "ETag", "Last-Modified", "Server-Timing"):
+                header_value = resp.headers.get(header_name)
+                if header_value:
+                    response_headers[header_name] = header_value
+            logger.info(
+                "osm_tile_forward status=%d elapsed_ms=%d bytes=%d",
+                resp.status_code,
+                round((time.monotonic() - started_at) * 1000),
+                len(resp.content),
+            )
+        return Response(
+            resp.content,
+            status=resp.status_code,
+            content_type=resp.headers.get("Content-Type", "application/json"),
+            headers=response_headers,
+        )
 
 
 @app.route("/api/chart-capabilities", methods=["GET"])
@@ -1317,6 +1335,12 @@ def chart_capabilities_proxy():
 def map_tiles_proxy(z: int, x: int, y: int):
     """Keep configured map-tile credentials on the API side of the proxy."""
     return _forward(f"/api/map-tiles/{z}/{x}/{y}", timeout=30)
+
+
+@app.route("/api/map-tiles/<layer_id>/<int:z>/<int:x>/<int:y>", methods=["GET"])
+def configured_map_tiles_proxy(layer_id: str, z: int, x: int, y: int):
+    """Proxy a server-approved named map layer without exposing its credentials."""
+    return _forward(f"/api/map-tiles/{layer_id}/{z}/{x}/{y}", timeout=30)
 
 
 @app.route("/api/map-search", methods=["GET"])

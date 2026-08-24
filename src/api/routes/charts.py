@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from src.api.chart_builder import build_chart_option, profile_dataset
 from src.api.dependencies import get_history_service, require_user_id, resolve_agent
@@ -31,6 +32,7 @@ from src.api.map_geocoding import (
     resolve_osm_locations,
     search_osm_places,
 )
+from src.api.map_layers import configured_map_layers, valid_tile_template
 from src.api.models import (
     ChatMessage,
     DerivedSeriesSpec,
@@ -56,46 +58,83 @@ async def get_chart_capabilities():
     return chart_capabilities()
 
 
-@router.get("/map-tiles/{z}/{x}/{y}")
-async def proxy_map_tile(z: int, x: int, y: int):
-    """Proxy configured raster tiles so tile credentials never reach the browser."""
+async def _proxy_map_tile(layer_id: str, z: int, x: int, y: int, request: Request):
+    """Proxy one approved raster layer without exposing provider credentials."""
+    started_at = time.monotonic()
     if not osm_maps_enabled():
         raise HTTPException(status_code=404, detail="OpenStreetMap maps are not enabled")
     if not 0 <= z <= 19 or not 0 <= x < 2**z or not 0 <= y < 2**z:
         raise HTTPException(status_code=422, detail="Invalid map tile coordinates")
 
-    template = settings.OSM_TILE_URL.strip()
-    if not all(token in template for token in ("{z}", "{x}", "{y}")):
-        logger.error("OSM_TILE_URL must contain {z}, {x}, and {y} placeholders")
+    layer = configured_map_layers().get(layer_id)
+    if layer is None:
+        raise HTTPException(status_code=404, detail="Map layer is unavailable")
+    template = layer.source_template
+    if not valid_tile_template(template):
+        logger.error("Map tile layer is misconfigured: %s", layer_id)
         raise HTTPException(status_code=503, detail="Map tiles are misconfigured")
 
     url = (
         template.replace("{z}", str(z))
         .replace("{x}", str(x))
         .replace("{y}", str(y))
-        .replace("{api_key}", settings.OSM_TILE_API_KEY)
+        .replace("{api_key}", layer.api_key)
     )
     headers: dict[str, str] = {}
-    if settings.OSM_TILE_API_KEY and "{api_key}" not in template:
-        headers[settings.OSM_TILE_API_KEY_HEADER.strip() or "Authorization"] = settings.OSM_TILE_API_KEY
+    if layer.api_key and "{api_key}" not in template:
+        headers[layer.api_key_header.strip() or "Authorization"] = layer.api_key
 
     try:
-        async with httpx.AsyncClient(
-            timeout=max(0.1, float(settings.OSM_TILE_TIMEOUT_SECONDS)),
-            follow_redirects=False,
-        ) as client:
+        client = getattr(request.app.state, "map_tile_client", None)
+        if client is None:
+            async with httpx.AsyncClient(
+                timeout=max(0.1, float(settings.OSM_TILE_TIMEOUT_SECONDS)),
+                follow_redirects=False,
+            ) as transient_client:
+                upstream = await transient_client.get(url, headers=headers)
+        else:
             upstream = await client.get(url, headers=headers)
         upstream.raise_for_status()
     except httpx.HTTPError:
-        logger.warning("Configured map tile provider request failed")
+        logger.warning(
+            "osm_tile_proxy layer=%s status=provider_error elapsed_ms=%d",
+            layer_id,
+            round((time.monotonic() - started_at) * 1000),
+        )
         raise HTTPException(status_code=502, detail="Map tile provider is unavailable") from None
 
     content_type = upstream.headers.get("content-type", "image/png").split(";")[0]
+    response_headers = {
+        "Cache-Control": "private, max-age=3600, stale-while-revalidate=600",
+        "Server-Timing": f"maptile;dur={round((time.monotonic() - started_at) * 1000)}",
+    }
+    for header_name in ("ETag", "Last-Modified"):
+        header_value = upstream.headers.get(header_name)
+        if header_value:
+            response_headers[header_name] = header_value
+    logger.info(
+        "osm_tile_proxy layer=%s status=200 elapsed_ms=%d bytes=%d",
+        layer_id,
+        round((time.monotonic() - started_at) * 1000),
+        len(upstream.content),
+    )
     return Response(
         content=upstream.content,
         media_type=content_type,
-        headers={"Cache-Control": "private, max-age=3600"},
+        headers=response_headers,
     )
+
+
+@router.get("/map-tiles/{layer_id}/{z}/{x}/{y}")
+async def proxy_configured_map_tile(layer_id: str, z: int, x: int, y: int, request: Request):
+    """Proxy a named, server-approved base or overlay raster layer."""
+    return await _proxy_map_tile(layer_id, z, x, y, request)
+
+
+@router.get("/map-tiles/{z}/{x}/{y}")
+async def proxy_map_tile(z: int, x: int, y: int, request: Request):
+    """Backward-compatible proxy for the configured Standard raster layer."""
+    return await _proxy_map_tile("standard", z, x, y, request)
 
 
 @router.get("/map-search")

@@ -12,6 +12,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
+import httpx
 from fastapi import FastAPI
 
 from src.agent import AgentRegistry, DaxAgentRegistry
@@ -248,6 +249,11 @@ async def lifespan(_app: FastAPI):
     _assert_kek()
 
     pool = await get_metadata_pool()
+    _app.state.map_tile_client = httpx.AsyncClient(
+        timeout=max(0.1, float(settings.OSM_TILE_TIMEOUT_SECONDS)),
+        follow_redirects=False,
+        limits=httpx.Limits(max_connections=40, max_keepalive_connections=12),
+    )
 
     state.metadata_loader    = MetadataLoader(pool)
     state.connection_service  = ConnectionService(pool)
@@ -433,6 +439,10 @@ async def lifespan(_app: FastAPI):
         yield
     finally:
         logger.info("👋 Shutting down Jeen Insights")
+        tile_client = getattr(_app.state, "map_tile_client", None)
+        if tile_client is not None:
+            await tile_client.aclose()
+            _app.state.map_tile_client = None
         if state.agent_registry:
             await state.agent_registry.close()
         if state.dax_agent_registry:

@@ -33,6 +33,16 @@ class Settings(BaseSettings):
     OSM_TILE_API_KEY: str = ""
     OSM_TILE_API_KEY_HEADER: str = "Authorization"
     OSM_TILE_TIMEOUT_SECONDS: float = 10.0
+    # Optional server-proxied marine layers. Seamarks are a transparent overlay
+    # (navigation marks, buoys, channels), while maritime is a MapTiler custom
+    # ocean style that must render the provider's maritime boundaries.
+    OSM_SEAMARKS_ENABLED: bool = False
+    OSM_SEAMARKS_TILE_URL: str = "https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png"
+    OSM_SEAMARKS_TILE_API_KEY: str = ""
+    OSM_SEAMARKS_TILE_API_KEY_HEADER: str = "Authorization"
+    OSM_MARITIME_TILE_URL: str = ""
+    OSM_MARITIME_TILE_API_KEY: str = ""
+    OSM_MARITIME_TILE_API_KEY_HEADER: str = ""
     # Approved adapters are `nominatim` (managed/self-hosted compatible
     # endpoint) and `maptiler` (uses its default endpoint when BASE_URL is
     # blank). Keep this blank unless the deployment is approved for geocoding.
