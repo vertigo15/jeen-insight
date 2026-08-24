@@ -8,6 +8,7 @@ payload.  It deliberately does not use an LLM or an MCP call.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import re
 import time
@@ -20,6 +21,9 @@ import httpx
 
 from src.api.map_locations import lookup_israel_city
 from src.config import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -481,27 +485,37 @@ async def search_osm_places(query: str) -> list[dict[str, Any]]:
 
 async def resolve_place_queries(queries: Iterable[PlaceQuery]) -> dict[str, dict[str, Any]]:
     """Resolve unique place names with local lookup first, then configured HTTP."""
+    started_at = time.monotonic()
     unique: dict[str, PlaceQuery] = {query.key: query for query in queries if query.key and query.label}
     max_places = max(0, int(settings.OSM_GEOCODER_MAX_UNIQUE_PLACES))
     result: dict[str, dict[str, Any]] = {}
     provider = settings.OSM_GEOCODER_PROVIDER.strip().lower()
     pending_maptiler: list[tuple[str, PlaceQuery]] = []
+    cached_count = 0
+    local_count = 0
+    limited_count = 0
+    disabled_count = 0
+    provider_count = 0
 
     for index, (key, query) in enumerate(unique.items()):
         if max_places and index >= max_places:
             result[key] = {"status": "limited", "source": "limit"}
+            limited_count += 1
             continue
         cached = _cache_get(key)
         if cached:
             result[key] = cached
+            cached_count += 1
             continue
         local = _local_resolution(query.label)
         if local:
             _cache_set(key, local)
             result[key] = local
+            local_count += 1
             continue
         if not geocoding_enabled():
             result[key] = {"status": "unresolved", "source": "disabled"}
+            disabled_count += 1
             continue
         if provider == "maptiler":
             pending_maptiler.append((key, query))
@@ -509,6 +523,7 @@ async def resolve_place_queries(queries: Iterable[PlaceQuery]) -> dict[str, dict
         resolved = await _nominatim_resolution(query.label)
         _cache_set(key, resolved)
         result[key] = resolved
+        provider_count += 1
 
     for start in range(0, len(pending_maptiler), _MAPTILER_BATCH_SIZE):
         chunk = pending_maptiler[start:start + _MAPTILER_BATCH_SIZE]
@@ -516,6 +531,18 @@ async def resolve_place_queries(queries: Iterable[PlaceQuery]) -> dict[str, dict
         for (key, _), resolved in zip(chunk, resolutions):
             _cache_set(key, resolved)
             result[key] = resolved
+            provider_count += 1
+    logger.info(
+        "osm_geocoding_resolution total=%d cached=%d local=%d provider=%d limited=%d "
+        "disabled=%d elapsed_ms=%d",
+        len(unique),
+        cached_count,
+        local_count,
+        provider_count,
+        limited_count,
+        disabled_count,
+        round((time.monotonic() - started_at) * 1000),
+    )
     return result
 
 
