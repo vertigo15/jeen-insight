@@ -33,6 +33,7 @@ class PlaceQuery:
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _request_lock = asyncio.Lock()
 _last_request_at = 0.0
+_MAPTILER_BATCH_SIZE = 50
 
 _LATITUDE_NAME_RE = re.compile(r"(^|_)(lat|latitude)$", re.I)
 _LONGITUDE_NAME_RE = re.compile(r"(^|_)(lon|lng|long|longitude)$", re.I)
@@ -262,39 +263,8 @@ async def _nominatim_resolution(label: str) -> dict[str, Any]:
     return {"status": "unresolved", "source": "provider"}
 
 
-async def _maptiler_resolution(label: str) -> dict[str, Any]:
-    """Resolve one compound place through MapTiler's GeoJSON geocoding API."""
-    global _last_request_at
-
-    timeout = max(0.1, float(settings.OSM_GEOCODER_TIMEOUT_SECONDS))
-    min_interval = max(0.0, float(settings.OSM_GEOCODER_MIN_INTERVAL_SECONDS))
-    base_url = settings.OSM_GEOCODER_BASE_URL.strip() or "https://api.maptiler.com/geocoding"
-    api_key = settings.OSM_GEOCODER_API_KEY or settings.OSM_TILE_API_KEY
-    if not api_key:
-        return {"status": "unresolved", "source": "disabled"}
-
-    async with _request_lock:
-        remaining = min_interval - (time.monotonic() - _last_request_at)
-        if remaining > 0:
-            await asyncio.sleep(remaining)
-        try:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-                response = await client.get(
-                    f"{base_url.rstrip('/')}/{quote(label, safe='')}.json",
-                    # A compound city/state/country label is already
-                    # disambiguated. MapTiler ranks its best match first, while
-                    # asking for five results made legitimate cities look
-                    # ambiguous merely because nearby administrative features
-                    # were returned too.
-                    params={"key": api_key, "limit": 1},
-                )
-            _last_request_at = time.monotonic()
-            response.raise_for_status()
-            payload = response.json()
-        except (httpx.HTTPError, ValueError):
-            # Do not log the raw location: it can be personal data.
-            return {"status": "unresolved", "source": "provider_error"}
-
+def _maptiler_feature_collection_resolution(payload: Any) -> dict[str, Any]:
+    """Convert one MapTiler FeatureCollection into the chart resolution schema."""
     features = payload.get("features") if isinstance(payload, dict) else None
     if not isinstance(features, list):
         return {"status": "unresolved", "source": "provider_error"}
@@ -315,6 +285,88 @@ async def _maptiler_resolution(label: str) -> dict[str, Any]:
     if len(coordinates) > 1:
         return {"status": "ambiguous", "source": "provider"}
     return {"status": "unresolved", "source": "provider"}
+
+
+async def _maptiler_batch_request(labels: list[str]) -> tuple[int, Any] | None:
+    """Fetch one MapTiler batch after rate limiting, without logging its URL."""
+    global _last_request_at
+
+    if not labels:
+        return 200, []
+    timeout = max(0.1, float(settings.OSM_GEOCODER_TIMEOUT_SECONDS))
+    min_interval = max(0.0, float(settings.OSM_GEOCODER_MIN_INTERVAL_SECONDS))
+    base_url = settings.OSM_GEOCODER_BASE_URL.strip() or "https://api.maptiler.com/geocoding"
+    api_key = settings.OSM_GEOCODER_API_KEY or settings.OSM_TILE_API_KEY
+    if not api_key:
+        return None
+    # MapTiler requires a literal semicolon between independently encoded
+    # queries; encoding the entire path would corrupt the batch delimiter.
+    encoded_labels = ";".join(quote(label, safe="") for label in labels)
+
+    async with _request_lock:
+        remaining = min_interval - (time.monotonic() - _last_request_at)
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+                response = await client.get(
+                    f"{base_url.rstrip('/')}/{encoded_labels}.json",
+                    # A compound city/state/country label is already
+                    # disambiguated. Keep only the top provider match so nearby
+                    # administrative features cannot create false ambiguity.
+                    params={"key": api_key, "limit": 1},
+                )
+            _last_request_at = time.monotonic()
+        except (httpx.HTTPError, ValueError):
+            return None
+    try:
+        return response.status_code, response.json()
+    except ValueError:
+        return None
+
+
+async def _maptiler_batch_resolution(labels: list[str]) -> list[dict[str, Any]]:
+    """Resolve up to 50 compound places through MapTiler in one request."""
+    if not labels:
+        return []
+    if len(labels) > _MAPTILER_BATCH_SIZE:
+        result: list[dict[str, Any]] = []
+        for start in range(0, len(labels), _MAPTILER_BATCH_SIZE):
+            result.extend(await _maptiler_batch_resolution(
+                labels[start:start + _MAPTILER_BATCH_SIZE]
+            ))
+        return result
+
+    response = await _maptiler_batch_request(labels)
+    if response is None:
+        status = "disabled" if not (
+            settings.OSM_GEOCODER_API_KEY or settings.OSM_TILE_API_KEY
+        ) else "provider_error"
+        return [{"status": "unresolved", "source": status}] * len(labels)
+
+    status_code, payload = response
+    if status_code == 400 and len(labels) > 1:
+        # MapTiler rejects an oversized path. Split only that bad batch so a
+        # single long city label cannot make every other location unavailable.
+        midpoint = len(labels) // 2
+        return (
+            await _maptiler_batch_resolution(labels[:midpoint])
+            + await _maptiler_batch_resolution(labels[midpoint:])
+        )
+    if status_code < 200 or status_code >= 300:
+        return [{"status": "unresolved", "source": "provider_error"}] * len(labels)
+
+    # MapTiler returns a FeatureCollection for one query and an ordered array
+    # of FeatureCollections for batches. Keep keys aligned with input labels.
+    collections = [payload] if len(labels) == 1 and isinstance(payload, dict) else payload
+    if not isinstance(collections, list) or len(collections) != len(labels):
+        return [{"status": "unresolved", "source": "provider_error"}] * len(labels)
+    return [_maptiler_feature_collection_resolution(item) for item in collections]
+
+
+async def _maptiler_resolution(label: str) -> dict[str, Any]:
+    """Backward-compatible single-place wrapper around batch geocoding."""
+    return (await _maptiler_batch_resolution([label]))[0]
 
 
 def _maptiler_search_results(payload: Any) -> list[dict[str, Any]]:
@@ -432,6 +484,8 @@ async def resolve_place_queries(queries: Iterable[PlaceQuery]) -> dict[str, dict
     unique: dict[str, PlaceQuery] = {query.key: query for query in queries if query.key and query.label}
     max_places = max(0, int(settings.OSM_GEOCODER_MAX_UNIQUE_PLACES))
     result: dict[str, dict[str, Any]] = {}
+    provider = settings.OSM_GEOCODER_PROVIDER.strip().lower()
+    pending_maptiler: list[tuple[str, PlaceQuery]] = []
 
     for index, (key, query) in enumerate(unique.items()):
         if max_places and index >= max_places:
@@ -449,14 +503,19 @@ async def resolve_place_queries(queries: Iterable[PlaceQuery]) -> dict[str, dict
         if not geocoding_enabled():
             result[key] = {"status": "unresolved", "source": "disabled"}
             continue
-        provider = settings.OSM_GEOCODER_PROVIDER.strip().lower()
-        resolved = (
-            await _maptiler_resolution(query.label)
-            if provider == "maptiler"
-            else await _nominatim_resolution(query.label)
-        )
+        if provider == "maptiler":
+            pending_maptiler.append((key, query))
+            continue
+        resolved = await _nominatim_resolution(query.label)
         _cache_set(key, resolved)
         result[key] = resolved
+
+    for start in range(0, len(pending_maptiler), _MAPTILER_BATCH_SIZE):
+        chunk = pending_maptiler[start:start + _MAPTILER_BATCH_SIZE]
+        resolutions = await _maptiler_batch_resolution([query.label for _, query in chunk])
+        for (key, _), resolved in zip(chunk, resolutions):
+            _cache_set(key, resolved)
+            result[key] = resolved
     return result
 
 

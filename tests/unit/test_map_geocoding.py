@@ -118,3 +118,145 @@ def test_maptiler_search_results_use_geojson_lng_lat_and_deduplicate():
         "lat": 34.0522,
         "lng": -118.2437,
     }]
+
+
+def _feature_collection(lat, lng):
+    return {"type": "FeatureCollection", "features": [{
+        "geometry": {"coordinates": [lng, lat]},
+    }]}
+
+
+def _enable_maptiler(monkeypatch, max_places=150):
+    monkeypatch.setattr(map_geocoding.settings, "OSM_MAPS_ENABLED", True)
+    monkeypatch.setattr(map_geocoding.settings, "OSM_TILE_URL", "https://tiles/{z}/{x}/{y}.png")
+    monkeypatch.setattr(map_geocoding.settings, "OSM_TILE_API_KEY", "test-key")
+    monkeypatch.setattr(map_geocoding.settings, "OSM_GEOCODER_PROVIDER", "maptiler")
+    monkeypatch.setattr(map_geocoding.settings, "OSM_GEOCODER_BASE_URL", "")
+    monkeypatch.setattr(map_geocoding.settings, "OSM_GEOCODER_MIN_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(map_geocoding.settings, "OSM_GEOCODER_MAX_UNIQUE_PLACES", max_places)
+    monkeypatch.setattr(map_geocoding, "_cache", {})
+    monkeypatch.setattr(map_geocoding, "_last_request_at", 0.0)
+
+
+def test_maptiler_batch_encodes_each_label_and_keeps_semicolon_delimiter(monkeypatch):
+    _enable_maptiler(monkeypatch)
+    calls = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return [_feature_collection(34.05, -118.24), _feature_collection(40.71, -74.0)]
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        async def get(self, url, params):
+            calls.append((url, params))
+            return Response()
+
+    monkeypatch.setattr(map_geocoding.httpx, "AsyncClient", lambda **_: Client())
+    resolved = asyncio.run(
+        map_geocoding._maptiler_batch_resolution(["Los Angeles", "Town;Name"])
+    )
+
+    assert calls == [(
+        "https://api.maptiler.com/geocoding/Los%20Angeles;Town%3BName.json",
+        {"key": "test-key", "limit": 1},
+    )]
+    assert [item["status"] for item in resolved] == ["resolved", "resolved"]
+
+
+def test_maptiler_batch_normalizes_single_feature_collection(monkeypatch):
+    _enable_maptiler(monkeypatch)
+
+    async def request(_):
+        return 200, _feature_collection(34.05, -118.24)
+
+    monkeypatch.setattr(map_geocoding, "_maptiler_batch_request", request)
+    resolved = asyncio.run(map_geocoding._maptiler_batch_resolution(["Los Angeles"]))
+
+    assert resolved == [{
+        "status": "resolved", "lat": 34.05, "lng": -118.24, "source": "provider",
+    }]
+
+
+def test_maptiler_batch_rejects_mismatched_response_without_reordering(monkeypatch):
+    _enable_maptiler(monkeypatch)
+
+    async def request(_):
+        return 200, [_feature_collection(34.05, -118.24)]
+
+    monkeypatch.setattr(map_geocoding, "_maptiler_batch_request", request)
+    resolved = asyncio.run(
+        map_geocoding._maptiler_batch_resolution(["Los Angeles", "New York"])
+    )
+
+    assert resolved == [
+        {"status": "unresolved", "source": "provider_error"},
+        {"status": "unresolved", "source": "provider_error"},
+    ]
+
+
+def test_maptiler_batch_splits_oversized_request_without_losing_results(monkeypatch):
+    _enable_maptiler(monkeypatch)
+    calls = []
+
+    async def request(labels):
+        calls.append(labels)
+        if len(labels) > 1:
+            return 400, {}
+        return 200, _feature_collection(34.05 if labels[0] == "Los Angeles" else 40.71, -118.24)
+
+    monkeypatch.setattr(map_geocoding, "_maptiler_batch_request", request)
+    resolved = asyncio.run(
+        map_geocoding._maptiler_batch_resolution(["Los Angeles", "New York"])
+    )
+
+    assert calls == [["Los Angeles", "New York"], ["Los Angeles"], ["New York"]]
+    assert [item["status"] for item in resolved] == ["resolved", "resolved"]
+
+
+def test_resolve_place_queries_batches_80_uncached_maptiler_places(monkeypatch):
+    _enable_maptiler(monkeypatch)
+    batches = []
+
+    async def batch(labels):
+        batches.append(labels)
+        return [{
+            "status": "resolved", "lat": 10 + index, "lng": 20 + index, "source": "provider",
+        } for index, _ in enumerate(labels)]
+
+    monkeypatch.setattr(map_geocoding, "_maptiler_batch_resolution", batch)
+    queries = [PlaceQuery(key=f"place-{index}", label=f"Place {index}") for index in range(80)]
+    resolved = asyncio.run(resolve_place_queries(queries))
+
+    assert [len(batch) for batch in batches] == [50, 30]
+    assert len(resolved) == 80
+    assert all(item["status"] == "resolved" for item in resolved.values())
+
+
+def test_resolve_place_queries_skips_cached_and_local_values_before_batch(monkeypatch):
+    _enable_maptiler(monkeypatch)
+    map_geocoding._cache_set("cached", {"status": "resolved", "lat": 1.0, "lng": 2.0, "source": "provider"})
+    batches = []
+
+    async def batch(labels):
+        batches.append(labels)
+        return [{"status": "resolved", "lat": 3.0, "lng": 4.0, "source": "provider"}]
+
+    monkeypatch.setattr(map_geocoding, "_maptiler_batch_resolution", batch)
+    resolved = asyncio.run(resolve_place_queries([
+        PlaceQuery(key="cached", label="Cached"),
+        PlaceQuery(key="tel aviv", label="Tel Aviv"),
+        PlaceQuery(key="los angeles", label="Los Angeles"),
+    ]))
+
+    assert batches == [["Los Angeles"]]
+    assert resolved["cached"]["lat"] == 1.0
+    assert resolved["tel aviv"]["source"] == "local"
+    assert resolved["los angeles"]["source"] == "provider"
