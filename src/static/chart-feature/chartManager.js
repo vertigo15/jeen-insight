@@ -17,7 +17,7 @@ import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v
 import { ChartChat } from './components/ChartChat.js?v=100';
 import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js';
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
-import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=3';
+import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=4';
 import { CHART_TYPE_VALUES } from './chartTypes.js?v=79';
 
 /**

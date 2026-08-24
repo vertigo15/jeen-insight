@@ -29,10 +29,12 @@ const MAP_STYLES = `
 .osm-map-legend-size::before { content: '●'; display: inline-block; width: 24px; margin-right: 6px; color: #0369a1; text-align: center; vertical-align: middle; }
 .osm-map-attribution { right: 6px; bottom: 6px; padding: 3px 5px; font-size: 10px; }
 .osm-map-attribution a { color: #1e40af; }
-.osm-map-controls { position: absolute; z-index: 3; top: 12px; left: 12px; display: flex; gap: 4px; padding: 4px; background: rgba(255,255,255,.93); border: 1px solid rgba(100,116,139,.42); border-radius: 7px; box-shadow: 0 1px 3px rgba(15,23,42,.16); }
-.osm-map-controls button { min-width: 29px; height: 28px; border: 0; border-radius: 4px; color: #1e293b; background: transparent; cursor: pointer; font: 600 14px/1 system-ui,sans-serif; }
-.osm-map-controls button:hover, .osm-map-controls button:focus-visible { color: #312e81; background: #ede9fe; outline: 0; }
-.osm-map-layers { position: absolute; z-index: 3; top: 52px; left: 12px; display: grid; gap: 6px; min-width: 156px; padding: 8px 9px; color: #1e293b; background: rgba(255,255,255,.94); border: 1px solid rgba(100,116,139,.42); border-radius: 7px; box-shadow: 0 1px 3px rgba(15,23,42,.16); font: 12px/1.3 system-ui,sans-serif; }
+.osm-map-controls { position: absolute; z-index: 3; top: 12px; left: 12px; display: flex; flex-direction: column; gap: 2px; padding: 3px; background: rgba(255,255,255,.93); border: 1px solid rgba(100,116,139,.42); border-radius: 7px; box-shadow: 0 1px 3px rgba(15,23,42,.16); }
+.osm-map-controls button { width: 31px; min-width: 31px; height: 30px; border: 0; border-radius: 4px; color: #1e293b; background: transparent; cursor: pointer; font: 600 17px/1 system-ui,sans-serif; }
+.osm-map-controls button[data-action="layers"] { margin-top: 3px; border-top: 1px solid #cbd5e1; border-radius: 0 0 4px 4px; }
+.osm-map-controls button:hover, .osm-map-controls button:focus-visible, .osm-map-controls button.is-active { color: #312e81; background: #ede9fe; outline: 0; }
+.osm-map-layers { position: absolute; z-index: 3; top: 12px; left: 56px; display: grid; gap: 6px; min-width: 194px; padding: 9px 10px; color: #1e293b; background: rgba(255,255,255,.96); border: 1px solid rgba(100,116,139,.42); border-radius: 7px; box-shadow: 0 4px 18px rgba(15,23,42,.2); font: 12px/1.3 system-ui,sans-serif; }
+.osm-map-layers[hidden] { display: none; }
 .osm-map-layers-heading { font-weight: 700; }
 .osm-map-layers-group { display: grid; gap: 4px; padding: 0; margin: 0; border: 0; }
 .osm-map-layers label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
@@ -199,6 +201,7 @@ export class OsmMapRenderer {
         this.activeBasemapId = null;
         this.activeOverlayIds = new Set();
         this.layersControl = null;
+        this.layersButton = null;
         this.attribution = null;
         this.center = null;
         this.zoom = 2;
@@ -218,6 +221,13 @@ export class OsmMapRenderer {
         this._onPointerDown = (event) => this._handlePointerDown(event);
         this._onPointerMove = (event) => this._handlePointerMove(event);
         this._onPointerUp = () => { this.drag = null; };
+        this._onKeyDown = (event) => {
+            if (event.key === 'Escape' && this.layersControl && !this.layersControl.hidden) {
+                event.preventDefault();
+                this._toggleLayersControl(false);
+                this.layersButton?.focus();
+            }
+        };
         this._onResize = () => this._scheduleRender();
     }
 
@@ -280,6 +290,7 @@ export class OsmMapRenderer {
         this.root.addEventListener('pointermove', this._onPointerMove);
         this.root.addEventListener('pointerup', this._onPointerUp);
         this.root.addEventListener('pointercancel', this._onPointerUp);
+        this.root.addEventListener('keydown', this._onKeyDown);
         if (typeof ResizeObserver !== 'undefined') {
             this.resizeObserver = new ResizeObserver(this._onResize);
             this.resizeObserver.observe(container);
@@ -307,10 +318,11 @@ export class OsmMapRenderer {
         const controls = document.createElement('div');
         controls.className = 'osm-map-controls';
         const actions = [
-            { action: 'fit', label: 'Fit map to data', text: '⌖' },
             { action: 'zoom-in', label: 'Zoom in', text: '+' },
             { action: 'zoom-out', label: 'Zoom out', text: '−' },
+            { action: 'fit', label: 'Fit map to data', text: '⌖' },
             { action: 'reset', label: 'Reset map view', text: '↺' },
+            { action: 'layers', label: 'Open map layers', text: '▤' },
         ];
         actions.forEach(({ action, label, text }) => {
             const button = document.createElement('button');
@@ -319,6 +331,11 @@ export class OsmMapRenderer {
             button.title = label;
             button.setAttribute('aria-label', label);
             button.textContent = text;
+            if (action === 'layers') {
+                button.setAttribute('aria-haspopup', 'dialog');
+                button.setAttribute('aria-expanded', 'false');
+                this.layersButton = button;
+            }
             button.addEventListener('pointerdown', (event) => event.stopPropagation());
             button.addEventListener('click', (event) => {
                 event.stopPropagation();
@@ -327,6 +344,16 @@ export class OsmMapRenderer {
             controls.appendChild(button);
         });
         return controls;
+    }
+
+    _toggleLayersControl(forceOpen) {
+        if (!this.layersControl) return;
+        const open = forceOpen ?? this.layersControl.hidden;
+        this.layersControl.hidden = !open;
+        this.layersButton?.classList.toggle('is-active', open);
+        this.layersButton?.setAttribute('aria-expanded', String(open));
+        this.layersButton?.setAttribute('aria-label', open ? 'Close map layers' : 'Open map layers');
+        if (open) this.layersControl.querySelector('input')?.focus();
     }
 
     _layerManifest() {
@@ -370,7 +397,12 @@ export class OsmMapRenderer {
     _buildLayersControl() {
         const panel = document.createElement('aside');
         panel.className = 'osm-map-layers';
+        panel.id = `${this.containerId}-map-layers`;
+        panel.hidden = true;
+        panel.setAttribute('role', 'dialog');
         panel.setAttribute('aria-label', 'Map layers');
+        panel.addEventListener('pointerdown', (event) => event.stopPropagation());
+        this.layersButton?.setAttribute('aria-controls', panel.id);
 
         const heading = document.createElement('div');
         heading.className = 'osm-map-layers-heading';
@@ -969,6 +1001,10 @@ export class OsmMapRenderer {
     }
 
     _handleControl(action) {
+        if (action === 'layers') {
+            this._toggleLayersControl();
+            return;
+        }
         if (action === 'zoom-in') {
             this.zoom = clamp(this.zoom + 1, 1, 19);
         } else if (action === 'zoom-out') {
@@ -1080,6 +1116,7 @@ export class OsmMapRenderer {
             this.root.removeEventListener('pointermove', this._onPointerMove);
             this.root.removeEventListener('pointerup', this._onPointerUp);
             this.root.removeEventListener('pointercancel', this._onPointerUp);
+            this.root.removeEventListener('keydown', this._onKeyDown);
         }
         if (this.container) this.container.innerHTML = '';
         this.container = null;
@@ -1100,6 +1137,7 @@ export class OsmMapRenderer {
         this.activeBasemapId = null;
         this.activeOverlayIds.clear();
         this.layersControl = null;
+        this.layersButton = null;
         this.attribution = null;
         this.center = null;
         this.drag = null;
