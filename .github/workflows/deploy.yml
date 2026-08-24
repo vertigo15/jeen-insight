@@ -138,8 +138,8 @@ jobs:
           helm dependency build deployment/k8s_dev
           helm lint --with-subcharts deployment/k8s_dev \
             --values deployment/k8s_dev/values.aks-dev.yaml \
-            --set jeen-insights-api.image.tag=${{ needs.build-and-push.outputs.image-tag }} \
-            --set jeen-insights-ui.image.tag=${{ needs.build-and-push.outputs.image-tag }}
+            --set-string jeen-insights-api.image.tag=${{ needs.build-and-push.outputs.image-tag }} \
+            --set-string jeen-insights-ui.image.tag=${{ needs.build-and-push.outputs.image-tag }}
           kubectl --namespace "${AKS_NAMESPACE}" wait \
             --for=condition=Ready \
             externalsecret/jeen-insights-secrets-external \
@@ -150,8 +150,8 @@ jobs:
           helm upgrade --install "${HELM_RELEASE}" deployment/k8s_dev \
             --namespace "${AKS_NAMESPACE}" \
             --values deployment/k8s_dev/values.aks-dev.yaml \
-            --set jeen-insights-api.image.tag=${{ needs.build-and-push.outputs.image-tag }} \
-            --set jeen-insights-ui.image.tag=${{ needs.build-and-push.outputs.image-tag }} \
+            --set-string jeen-insights-api.image.tag=${{ needs.build-and-push.outputs.image-tag }} \
+            --set-string jeen-insights-ui.image.tag=${{ needs.build-and-push.outputs.image-tag }} \
             --atomic \
             --wait \
             --timeout 10m
