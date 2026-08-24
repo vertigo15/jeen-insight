@@ -1,5 +1,8 @@
 """Tests for the server-approved OSM base and overlay layer manifest."""
 
+import json
+from pathlib import Path
+
 from src.api import map_layers
 
 
@@ -12,6 +15,18 @@ def test_map_layer_manifest_hides_disabled_or_invalid_optional_layers(monkeypatc
     assert [layer["id"] for layer in manifest["basemaps"]] == ["standard"]
     assert manifest["overlays"] == []
     assert manifest["basemaps"][0]["tileUrl"] == "/api/map-tiles/{z}/{x}/{y}"
+    assert manifest["vectorOverlays"] == [{
+        "id": "maritime-boundaries",
+        "label": "Maritime boundaries (reference)",
+        "kind": "vector",
+        "dataUrl": (
+            "/static/chart-feature/assets/maps/"
+            "ne_50m_admin_0_boundary_lines_maritime_indicator.geojson"
+        ),
+        "attribution": "Natural Earth (public domain)",
+        "attributionUrl": "https://www.naturalearthdata.com/",
+        "defaultVisible": False,
+    }]
 
 
 def test_map_layer_manifest_exposes_only_safe_proxy_urls(monkeypatch):
@@ -42,4 +57,19 @@ def test_map_layer_manifest_exposes_only_safe_proxy_urls(monkeypatch):
 def test_tile_template_requires_xyz_placeholders():
     assert map_layers.valid_tile_template("https://tiles.example/{z}/{x}/{y}.png")
     assert not map_layers.valid_tile_template("https://tiles.example/{z}/{x}.png")
+
+
+def test_bundled_maritime_reference_asset_is_geojson_lines():
+    asset = (
+        Path(__file__).resolve().parents[2]
+        / "src/static/chart-feature/assets/maps"
+        / "ne_50m_admin_0_boundary_lines_maritime_indicator.geojson"
+    )
+    payload = json.loads(asset.read_text(encoding="utf-8"))
+
+    assert payload["type"] == "FeatureCollection"
+    assert payload["features"]
+    assert {feature["geometry"]["type"] for feature in payload["features"]} <= {
+        "LineString", "MultiLineString",
+    }
 

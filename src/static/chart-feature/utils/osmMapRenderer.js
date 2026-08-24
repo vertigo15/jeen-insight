@@ -16,9 +16,10 @@ const MAP_STYLES = `
 .chart-display[data-chart-type="osm_map"] { height: min(680px, 70vh); min-height: 520px; padding: 0; overflow: hidden; }
 .osm-map { position: relative; width: 100%; height: 100%; min-height: 520px; overflow: hidden; background: #dceaf5; cursor: grab; touch-action: none; outline: none; }
 .osm-map:active { cursor: grabbing; }
-.osm-map-tiles, .osm-map-markers { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.osm-map-tiles, .osm-map-vectors, .osm-map-markers { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .osm-map-tile-pane { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .osm-map-tiles img { position: absolute; width: 256px; height: 256px; max-width: none; user-select: none; }
+.osm-map-vectors { width: 100%; height: 100%; }
 .osm-map-marker { position: absolute; transform: translate(-50%, -50%); border: 2px solid rgba(255,255,255,.92); border-radius: 50%; box-shadow: 0 1px 4px rgba(15,23,42,.38); opacity: .86; cursor: pointer; pointer-events: auto; padding: 0; transition: transform 120ms ease, opacity 120ms ease; }
 .osm-map-marker:hover, .osm-map-marker:focus-visible { transform: translate(-50%, -50%) scale(1.16); opacity: 1; outline: 2px solid #312e81; outline-offset: 2px; }
 .osm-map-marker.is-selected { transform: translate(-50%, -50%) scale(1.22); opacity: 1; outline: 3px solid #312e81; outline-offset: 3px; z-index: 3; }
@@ -180,11 +181,14 @@ export class OsmMapRenderer {
         this.container = null;
         this.root = null;
         this.tiles = null;
+        this.vectors = null;
         this.markers = null;
         this.tilePanes = new Map();
         this.tileCache = new Map();
         this.markerNodes = new Map();
         this.externalMarker = null;
+        this.vectorData = new Map();
+        this.vectorLoads = new Map();
         this.tileEpoch = 0;
         this.renderFrame = null;
         this.renderFrameIsAnimation = false;
@@ -251,10 +255,14 @@ export class OsmMapRenderer {
 
         this.tiles = document.createElement('div');
         this.tiles.className = 'osm-map-tiles';
+        this.vectors = document.createElement('canvas');
+        this.vectors.className = 'osm-map-vectors';
+        this.vectors.setAttribute('aria-hidden', 'true');
         this.markers = document.createElement('div');
         this.markers.className = 'osm-map-markers';
         this.root.append(
             this.tiles,
+            this.vectors,
             this.markers,
             this._buildControls(),
             this._buildLayersControl(),
@@ -336,7 +344,10 @@ export class OsmMapRenderer {
                     attributionUrl: 'https://www.openstreetmap.org/copyright',
                     defaultVisible: true,
                 }] : []),
-            overlays: Array.isArray(configured?.overlays) ? configured.overlays : [],
+            overlays: [
+                ...(Array.isArray(configured?.overlays) ? configured.overlays : []),
+                ...(Array.isArray(configured?.vectorOverlays) ? configured.vectorOverlays : []),
+            ],
         };
     }
 
@@ -348,6 +359,12 @@ export class OsmMapRenderer {
             (layer) => this.activeOverlayIds.has(layer.id),
         );
         return [...(basemap ? [basemap] : []), ...overlays];
+    }
+
+    _activeVectorLayers() {
+        return (this.layerManifest?.overlays || []).filter(
+            (layer) => layer.kind === 'vector' && this.activeOverlayIds.has(layer.id),
+        );
     }
 
     _buildLayersControl() {
@@ -675,6 +692,7 @@ export class OsmMapRenderer {
         const width = this.root.clientWidth || 900;
         const height = this.root.clientHeight || 520;
         const tiles = this._renderTiles(width, height);
+        const vectors = this._renderVectorLayers(width, height);
         const markers = this._renderMarkers(width, height);
         this._emitMetrics({
             elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
@@ -682,6 +700,7 @@ export class OsmMapRenderer {
             createdTiles: tiles.created,
             reusedTiles: tiles.reused,
             evictedTiles: tiles.evicted,
+            visibleVectorLayers: vectors.active,
             visibleMarkers: markers.visible,
             createdMarkers: markers.created,
             reusedMarkers: markers.reused,
@@ -761,6 +780,102 @@ export class OsmMapRenderer {
             reused,
             evicted,
         };
+    }
+
+    _renderVectorLayers(width, height) {
+        const layers = this._activeVectorLayers();
+        if (!this.vectors) return { active: 0 };
+        if (!layers.length) {
+            this.vectors.hidden = true;
+            return { active: 0 };
+        }
+
+        const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
+        const requiredWidth = Math.round(width * pixelRatio);
+        const requiredHeight = Math.round(height * pixelRatio);
+        if (this.vectors.width !== requiredWidth || this.vectors.height !== requiredHeight) {
+            this.vectors.width = requiredWidth;
+            this.vectors.height = requiredHeight;
+            this.vectors.style.width = `${width}px`;
+            this.vectors.style.height = `${height}px`;
+        }
+        this.vectors.hidden = false;
+        const context = this.vectors.getContext('2d');
+        if (!context) return { active: layers.length };
+        context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        context.clearRect(0, 0, width, height);
+
+        const projectedCenter = projectMercator(this.center.lat, this.center.lng, this.zoom);
+        for (const layer of layers) {
+            const lines = this.vectorData.get(layer.id);
+            if (!lines) {
+                this._loadVectorLayer(layer);
+                continue;
+            }
+            context.save();
+            context.strokeStyle = '#7c2d12';
+            context.globalAlpha = 0.72;
+            context.lineWidth = 1.25;
+            context.setLineDash([5, 4]);
+            context.beginPath();
+            for (const coordinates of lines) {
+                let previousX = null;
+                let started = false;
+                for (const coordinate of coordinates) {
+                    const lng = Number(coordinate?.[0]);
+                    const lat = Number(coordinate?.[1]);
+                    if (!validCoordinates(lat, lng)) {
+                        started = false;
+                        previousX = null;
+                        continue;
+                    }
+                    const projected = projectMercator(lat, lng, this.zoom);
+                    const left = projected.x - projectedCenter.x + width / 2;
+                    const top = projected.y - projectedCenter.y + height / 2;
+                    const crossedDateline = previousX != null
+                        && Math.abs(projected.x - previousX) > (TILE_SIZE * 2 ** this.zoom) / 2;
+                    if (!started || crossedDateline) {
+                        context.moveTo(left, top);
+                        started = true;
+                    } else {
+                        context.lineTo(left, top);
+                    }
+                    previousX = projected.x;
+                }
+            }
+            context.stroke();
+            context.restore();
+        }
+        return { active: layers.length };
+    }
+
+    _loadVectorLayer(layer) {
+        if (this.vectorLoads.has(layer.id) || !layer.dataUrl) return;
+        const load = fetch(layer.dataUrl)
+            .then((response) => {
+                if (!response.ok) throw new Error(`Vector layer unavailable (${response.status})`);
+                return response.json();
+            })
+            .then((payload) => {
+                const lines = [];
+                for (const feature of payload?.features || []) {
+                    const geometry = feature?.geometry || {};
+                    if (geometry.type === 'LineString' && Array.isArray(geometry.coordinates)) {
+                        lines.push(geometry.coordinates);
+                    } else if (geometry.type === 'MultiLineString' && Array.isArray(geometry.coordinates)) {
+                        lines.push(...geometry.coordinates.filter(Array.isArray));
+                    }
+                }
+                this.vectorData.set(layer.id, lines);
+                if (this.root) this._scheduleRender();
+            })
+            .catch((error) => {
+                console.warn('[OsmMapRenderer] Vector layer unavailable', error);
+            })
+            .finally(() => {
+                this.vectorLoads.delete(layer.id);
+            });
+        this.vectorLoads.set(layer.id, load);
     }
 
     _renderMarkers(width, height) {
@@ -970,11 +1085,14 @@ export class OsmMapRenderer {
         this.container = null;
         this.root = null;
         this.tiles = null;
+        this.vectors = null;
         this.markers = null;
         this.tilePanes.clear();
         this.tileCache.clear();
         this.markerNodes.clear();
         this.externalMarker = null;
+        this.vectorData.clear();
+        this.vectorLoads.clear();
         this.tileEpoch = 0;
         this.config = null;
         this.map = null;

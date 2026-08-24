@@ -107,5 +107,20 @@ def browser_map_layers() -> dict[str, list[dict[str, Any]]]:
         "overlays": [
             layer.browser_config() for layer in layers.values() if layer.kind == "overlay"
         ],
+        # Natural Earth is a bundled public-domain cartographic reference. It
+        # avoids a paid tile service and must never be presented as legal or
+        # navigational boundary data.
+        "vectorOverlays": [{
+            "id": "maritime-boundaries",
+            "label": "Maritime boundaries (reference)",
+            "kind": "vector",
+            "dataUrl": (
+                "/static/chart-feature/assets/maps/"
+                "ne_50m_admin_0_boundary_lines_maritime_indicator.geojson"
+            ),
+            "attribution": "Natural Earth (public domain)",
+            "attributionUrl": "https://www.naturalearthdata.com/",
+            "defaultVisible": False,
+        }],
     }
 
