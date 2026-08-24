@@ -51,4 +51,15 @@ assert.deepEqual(reconcile.reuse, [firstKey]);
 assert.deepEqual(reconcile.create, ['seamarks/8/other/other']);
 assert.deepEqual(reconcile.hide, ['standard/8/old/old']);
 
+const initialTileKeys = viewport.tiles.map((tile) =>
+    tileCacheKey('standard', 8, tile.x, tile.y)
+);
+const smallPan = visibleMapTiles({ lat: 32.0853, lng: 34.79 }, 8, 900, 520);
+const pannedTileKeys = smallPan.tiles.map((tile) =>
+    tileCacheKey('standard', 8, tile.x, tile.y)
+);
+const panReconcile = reconcileTileKeys(initialTileKeys, pannedTileKeys);
+assert.equal(panReconcile.create.length, 0);
+assert.equal(panReconcile.reuse.length, initialTileKeys.length);
+
 console.log('osm map renderer JS tests passed');
