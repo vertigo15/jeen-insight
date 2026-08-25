@@ -33,8 +33,28 @@ class Settings(BaseSettings):
     OSM_TILE_API_KEY: str = ""
     OSM_TILE_API_KEY_HEADER: str = "Authorization"
     OSM_TILE_TIMEOUT_SECONDS: float = 10.0
-    # The first adapter is Nominatim-compatible.  Keep this blank unless the
-    # deployment has an approved managed or self-hosted endpoint.
+    # Optional server-proxied marine layers. Seamarks are a transparent overlay
+    # (navigation marks, buoys, channels), while maritime is a MapTiler custom
+    # ocean style that must render the provider's maritime boundaries.
+    OSM_SEAMARKS_ENABLED: bool = False
+    OSM_SEAMARKS_TILE_URL: str = "https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png"
+    OSM_SEAMARKS_TILE_API_KEY: str = ""
+    OSM_SEAMARKS_TILE_API_KEY_HEADER: str = "Authorization"
+    OSM_MARITIME_TILE_URL: str = ""
+    OSM_MARITIME_TILE_API_KEY: str = ""
+    OSM_MARITIME_TILE_API_KEY_HEADER: str = ""
+    # Terrain is a server-proxied raster basemap. The approved default uses the
+    # same managed MapTiler key as Standard; it is disabled until enabled by a
+    # deployment overlay after provider access has been validated.
+    OSM_TERRAIN_ENABLED: bool = False
+    OSM_TERRAIN_TILE_URL: str = (
+        "https://api.maptiler.com/maps/outdoor/256/{z}/{x}/{y}.png?key={api_key}"
+    )
+    OSM_TERRAIN_TILE_API_KEY: str = ""
+    OSM_TERRAIN_TILE_API_KEY_HEADER: str = ""
+    # Approved adapters are `nominatim` (managed/self-hosted compatible
+    # endpoint) and `maptiler` (uses its default endpoint when BASE_URL is
+    # blank). Keep this blank unless the deployment is approved for geocoding.
     OSM_GEOCODER_PROVIDER: str = ""
     OSM_GEOCODER_BASE_URL: str = ""
     OSM_GEOCODER_API_KEY: str = ""
@@ -43,7 +63,9 @@ class Settings(BaseSettings):
     OSM_GEOCODER_TIMEOUT_SECONDS: float = 5.0
     OSM_GEOCODER_MIN_INTERVAL_SECONDS: float = 1.0
     OSM_GEOCODER_CACHE_TTL_SECONDS: int = 86400
-    OSM_GEOCODER_MAX_UNIQUE_PLACES: int = 250
+    # Bound a chart request so one result cannot turn into a long-running
+    # third-party geocoding job. The remaining unique places are marked limited.
+    OSM_GEOCODER_MAX_UNIQUE_PLACES: int = 50
 
     # LangGraph agent settings
     LANGGRAPH_MAX_RETRIES: int = 3

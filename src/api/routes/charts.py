@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from src.api.chart_builder import build_chart_option, profile_dataset
 from src.api.dependencies import get_history_service, require_user_id, resolve_agent
@@ -26,9 +27,12 @@ from src.api.llm_params import (
 from src.api.map_geocoding import (
     chart_capabilities,
     geocoding_enabled,
+    infer_geo_roles,
     osm_maps_enabled,
     resolve_osm_locations,
+    search_osm_places,
 )
+from src.api.map_layers import browser_map_layers, configured_map_layers, valid_tile_template
 from src.api.models import (
     ChatMessage,
     DerivedSeriesSpec,
@@ -42,6 +46,9 @@ from src.api.result_cache import result_cache
 from src.config import settings
 
 logger = logging.getLogger(__name__)
+# httpx logs full request URLs at INFO. Tile and MapTiler geocoder URLs carry
+# their credential as a query parameter, so do not emit those URLs to app logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 router = APIRouter(prefix="/api", tags=["charts"])
 
 
@@ -51,46 +58,91 @@ async def get_chart_capabilities():
     return chart_capabilities()
 
 
-@router.get("/map-tiles/{z}/{x}/{y}")
-async def proxy_map_tile(z: int, x: int, y: int):
-    """Proxy configured raster tiles so tile credentials never reach the browser."""
+async def _proxy_map_tile(layer_id: str, z: int, x: int, y: int, request: Request):
+    """Proxy one approved raster layer without exposing provider credentials."""
+    started_at = time.monotonic()
     if not osm_maps_enabled():
         raise HTTPException(status_code=404, detail="OpenStreetMap maps are not enabled")
     if not 0 <= z <= 19 or not 0 <= x < 2**z or not 0 <= y < 2**z:
         raise HTTPException(status_code=422, detail="Invalid map tile coordinates")
 
-    template = settings.OSM_TILE_URL.strip()
-    if not all(token in template for token in ("{z}", "{x}", "{y}")):
-        logger.error("OSM_TILE_URL must contain {z}, {x}, and {y} placeholders")
+    layer = configured_map_layers().get(layer_id)
+    if layer is None:
+        raise HTTPException(status_code=404, detail="Map layer is unavailable")
+    template = layer.source_template
+    if not valid_tile_template(template):
+        logger.error("Map tile layer is misconfigured: %s", layer_id)
         raise HTTPException(status_code=503, detail="Map tiles are misconfigured")
 
     url = (
         template.replace("{z}", str(z))
         .replace("{x}", str(x))
         .replace("{y}", str(y))
-        .replace("{api_key}", settings.OSM_TILE_API_KEY)
+        .replace("{api_key}", layer.api_key)
     )
     headers: dict[str, str] = {}
-    if settings.OSM_TILE_API_KEY and "{api_key}" not in template:
-        headers[settings.OSM_TILE_API_KEY_HEADER.strip() or "Authorization"] = settings.OSM_TILE_API_KEY
+    if layer.api_key and "{api_key}" not in template:
+        headers[layer.api_key_header.strip() or "Authorization"] = layer.api_key
 
     try:
-        async with httpx.AsyncClient(
-            timeout=max(0.1, float(settings.OSM_TILE_TIMEOUT_SECONDS)),
-            follow_redirects=False,
-        ) as client:
+        client = getattr(request.app.state, "map_tile_client", None)
+        if client is None:
+            async with httpx.AsyncClient(
+                timeout=max(0.1, float(settings.OSM_TILE_TIMEOUT_SECONDS)),
+                follow_redirects=False,
+            ) as transient_client:
+                upstream = await transient_client.get(url, headers=headers)
+        else:
             upstream = await client.get(url, headers=headers)
         upstream.raise_for_status()
     except httpx.HTTPError:
-        logger.warning("Configured map tile provider request failed")
+        logger.warning(
+            "osm_tile_proxy layer=%s status=provider_error elapsed_ms=%d",
+            layer_id,
+            round((time.monotonic() - started_at) * 1000),
+        )
         raise HTTPException(status_code=502, detail="Map tile provider is unavailable") from None
 
     content_type = upstream.headers.get("content-type", "image/png").split(";")[0]
+    response_headers = {
+        "Cache-Control": "private, max-age=3600, stale-while-revalidate=600",
+        "Server-Timing": f"maptile;dur={round((time.monotonic() - started_at) * 1000)}",
+    }
+    for header_name in ("ETag", "Last-Modified"):
+        header_value = upstream.headers.get(header_name)
+        if header_value:
+            response_headers[header_name] = header_value
+    logger.info(
+        "osm_tile_proxy layer=%s status=200 elapsed_ms=%d bytes=%d",
+        layer_id,
+        round((time.monotonic() - started_at) * 1000),
+        len(upstream.content),
+    )
     return Response(
         content=upstream.content,
         media_type=content_type,
-        headers={"Cache-Control": "private, max-age=3600"},
+        headers=response_headers,
     )
+
+
+@router.get("/map-tiles/{layer_id}/{z}/{x}/{y}")
+async def proxy_configured_map_tile(layer_id: str, z: int, x: int, y: int, request: Request):
+    """Proxy a named, server-approved base or overlay raster layer."""
+    return await _proxy_map_tile(layer_id, z, x, y, request)
+
+
+@router.get("/map-tiles/{z}/{x}/{y}")
+async def proxy_map_tile(z: int, x: int, y: int, request: Request):
+    """Backward-compatible proxy for the configured Standard raster layer."""
+    return await _proxy_map_tile("standard", z, x, y, request)
+
+
+@router.get("/map-search")
+async def map_search(q: str = Query(min_length=2, max_length=200)):
+    """Proxy managed place search for map navigation without exposing an API key."""
+    if not geocoding_enabled():
+        raise HTTPException(status_code=503, detail="Place search is not configured")
+    return {"results": await search_osm_places(q)}
 
 
 async def _verify_query_owner(*, query_id: Optional[str], user_id: str, connection: str) -> None:
@@ -112,6 +164,12 @@ _CHART_EDITOR_PROMPT_PATH = (
     / "prompts"
     / "chart_editor.md"
 )
+_MAP_CHART_EDITOR_PROMPT_PATH = (
+    Path(__file__).resolve().parent.parent.parent
+    / "agent"
+    / "prompts"
+    / "chart_map_editor.md"
+)
 _CHART_EDITOR_MAX_INSTRUCTION_CHARS = 500
 _CHART_EDITOR_MAX_RECENT_MESSAGES = 6
 _CHART_EDITOR_MAX_RECENT_CHARS = 1500
@@ -121,6 +179,11 @@ def _load_chart_editor_prompt() -> str:
     """Re-read the externalised prompt on every call so editing the .md file
     has zero deploy cost in dev."""
     return _CHART_EDITOR_PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def _load_map_chart_editor_prompt() -> str:
+    """Load the constrained map-edit prompt outside the ECharts-only editor."""
+    return _MAP_CHART_EDITOR_PROMPT_PATH.read_text(encoding="utf-8")
 
 
 def _format_recent_messages(messages: Optional[List[ChatMessage]]) -> str:
@@ -162,6 +225,7 @@ _ALLOWED_MAP_NAMES = {"world", "world_detailed", "israel_districts"}
 _ALLOWED_MAP_QUALITIES = {"standard", "detailed"}
 _ALLOWED_MAP_PALETTES = {"blue", "green", "purple", "orange"}
 _ALLOWED_MAP_FOCUS = {"world", "israel", "auto"}
+_ALLOWED_OSM_DATA_LAYER_MODES = {"auto", "points", "clusters"}
 
 
 def _profile_blob(profile: dict) -> str:
@@ -219,9 +283,10 @@ _GENERATE_SYSTEM_PROMPT = (
     '  "map_mode": "choropleth|points|null",\n'
     '  "map_name": "world|world_detailed|israel_districts|null",\n'
     '  "location": "<country/region/district/city column for map charts, or null>",\n'
+    '  "location_parts": {"place":"<city/place>", "admin1":"<state/province>", "country":"<country>", "postal":"<postal code>"}  // OPTIONAL for compound point-map geocoding,\n'
     '  "latitude": "<latitude column for point maps, or null>",\n'
     '  "longitude": "<longitude/lng column for point maps, or null>",\n'
-    '  "value": "<numeric measure column for map charts, or null>",\n'
+    '  "value": "<numeric measure column for map charts, __row_count__ for a location count, or null>",\n'
     '  "value2": "<optional second numeric measure for OpenStreetMap point size, or null>",\n'
     '  "map_quality": "standard|detailed|null",\n'
     '  "map_palette": "blue|green|purple|orange|null",\n'
@@ -316,6 +381,11 @@ _OSM_MAP_PROMPT = (
     "data with latitude/longitude, or a city/place location column.\n"
     "- Use `value` for marker color. With a second meaningful numeric measure, "
     "set `value2` to encode marker radius; otherwise omit it.\n"
+    "- Prefer a detected latitude/longitude pair when it has high coverage. If "
+    "using names, set `location_parts` with place plus state/province and country "
+    "when available; never geocode an IP address or postal code alone.\n"
+    "- When a raw geography result has no real measure, use value `__row_count__` "
+    "and aggregate `count`; never use a key/code/identifier as a map measure.\n"
     "- Prefer the existing Flat Map (`map`) for country, region, or district "
     "choropleths. Never use `osm_map` for a high-cardinality identifier.\n"
 )
@@ -374,7 +444,8 @@ def _columns_from_profile(profile: dict) -> tuple[list[str], list[str], list[str
 # Numeric columns whose name ends in an identifier/ordinal token (month_number,
 # year, order_id, …) are dimensions, not measures — never auto-pick them for y.
 _IDENTIFIER_RE = re.compile(
-    r"(^|_)(id|number|no|num|year|month|day|quarter|qtr|week|rank|index|idx|seq)s?$",
+    r"(id|key|code|number|no|num|year|month|day|quarter|qtr|week|"
+    r"rank|index|idx|seq|postal|zip|ip|locator)s?$",
     re.I,
 )
 _LATITUDE_RE = re.compile(r"(^|_)(lat|latitude)$", re.I)
@@ -386,11 +457,10 @@ _LOCATION_RE = re.compile(
 _GEO_HINT_PATTERNS = {
     "latitude": re.compile(r"\b(latitude|lat)\b", re.I),
     "longitude": re.compile(r"\b(longitude|lon|lng|long)\b", re.I),
-    "location": re.compile(
-        r"\b(country|nation|region|district|state|province|city|town|municipality|"
-        r"locality|location|place|address|postal(?:\s+code)?|zip)\b",
-        re.I,
-    ),
+    "place": re.compile(r"\b(city|town|municipality|locality|location|place)\b", re.I),
+    "admin1": re.compile(r"\b(state|province|region|district)\b", re.I),
+    "country": re.compile(r"\b(country|nation)\b", re.I),
+    "postal": re.compile(r"\b(postal(?:\s+code)?|zip)\b", re.I),
 }
 
 
@@ -454,6 +524,30 @@ def _geo_hints_blob(hints: dict[str, str]) -> str:
     )
 
 
+def _geo_roles_blob(roles: dict[str, Any]) -> str:
+    """Serialize only inferred column names/coverage, never raw place values."""
+    candidates = roles.get("candidates") if isinstance(roles, dict) else {}
+    pairs = roles.get("coordinate_pairs") if isinstance(roles, dict) else []
+    lines = []
+    for role in ("place", "admin1", "country", "postal", "latitude", "longitude"):
+        columns = candidates.get(role) if isinstance(candidates, dict) else None
+        if columns:
+            lines.append(f"- {role}: {', '.join(columns)}")
+    for pair in pairs[:3] if isinstance(pairs, list) else []:
+        if isinstance(pair, dict):
+            lines.append(
+                f"- coordinate pair: {pair.get('latitude')} + {pair.get('longitude')} "
+                f"({int(float(pair.get('coverage', 0)) * 100)}% valid)"
+            )
+    if not lines:
+        return ""
+    return (
+        "\n\nDetected geographic candidates (use only these exact columns; "
+        "never use identifiers, IP addresses, or postal codes as a measure):\n"
+        + "\n".join(lines)
+    )
+
+
 def _validate_chart_spec(
     spec: dict,
     *,
@@ -464,7 +558,15 @@ def _validate_chart_spec(
     x_col: Optional[str] = None,
     y_col: Optional[str] = None,
     series_col: Optional[str] = None,
+    location_col: Optional[str] = None,
+    latitude_col: Optional[str] = None,
+    longitude_col: Optional[str] = None,
+    location_parts_override: Optional[dict[str, str]] = None,
+    value_col: Optional[str] = None,
+    value2_col: Optional[str] = None,
+    aggregate_override: Optional[str] = None,
     geo_hints: Optional[dict[str, str]] = None,
+    geo_roles: Optional[dict[str, Any]] = None,
     osm_enabled: bool = True,
 ) -> dict:
     """Clamp the LLM spec to safe, real values and apply user overrides.
@@ -477,6 +579,20 @@ def _validate_chart_spec(
     numeric_set = set(numeric_cols)
     non_numeric = [c for c in column_names if c not in numeric_set]
     geo_hints = geo_hints or {}
+    geo_roles = geo_roles or {}
+    geo_candidates = geo_roles.get("candidates") if isinstance(geo_roles, dict) else {}
+    geo_candidates = geo_candidates if isinstance(geo_candidates, dict) else {}
+    coordinate_pairs = geo_roles.get("coordinate_pairs") if isinstance(geo_roles, dict) else []
+    coordinate_pairs = coordinate_pairs if isinstance(coordinate_pairs, list) else []
+
+    def geo_candidate(role: str) -> Optional[str]:
+        hinted = geo_hints.get(role)
+        if hinted in column_names:
+            return hinted
+        candidates = geo_candidates.get(role)
+        if isinstance(candidates, list):
+            return next((column for column in candidates if column in column_names), None)
+        return None
 
     if not isinstance(spec, dict):
         spec = {}
@@ -530,6 +646,9 @@ def _validate_chart_spec(
     show_labels = show_labels if isinstance(show_labels, bool) else None
     show_unmatched = spec.get("show_unmatched")
     show_unmatched = show_unmatched if isinstance(show_unmatched, bool) else True
+    data_layer_mode = str(spec.get("data_layer_mode", "")).strip().lower()
+    if data_layer_mode not in _ALLOWED_OSM_DATA_LAYER_MODES:
+        data_layer_mode = "auto"
 
     location_cols = _coerce_columns(spec.get("location"), lowered)
     location = location_cols[0] if location_cols else None
@@ -541,15 +660,39 @@ def _validate_chart_spec(
     value = value_cols[0] if value_cols else (y[0] if y else None)
     value2_cols = [c for c in _coerce_columns(spec.get("value2"), lowered) if c in numeric_set]
     value2 = value2_cols[0] if value2_cols else next((c for c in y if c != value), None)
+    raw_location_parts = spec.get("location_parts")
+    location_parts = {}
+    if isinstance(raw_location_parts, dict):
+        for role in ("place", "admin1", "country", "postal"):
+            column = raw_location_parts.get(role)
+            if isinstance(column, str) and column in column_names:
+                location_parts[role] = column
 
     if not location:
-        location = geo_hints.get("location") or _first_name_matching(non_numeric, _LOCATION_RE)
+        location = geo_candidate("place") or _first_name_matching(non_numeric, _LOCATION_RE)
         if not location and chart_type != "osm_map":
             location = x
     if not latitude:
-        latitude = geo_hints.get("latitude") or _first_name_matching(numeric_cols, _LATITUDE_RE)
+        latitude = geo_candidate("latitude") or _first_name_matching(numeric_cols, _LATITUDE_RE)
     if not longitude:
-        longitude = geo_hints.get("longitude") or _first_name_matching(numeric_cols, _LONGITUDE_RE)
+        longitude = geo_candidate("longitude") or _first_name_matching(numeric_cols, _LONGITUDE_RE)
+    if not location_parts:
+        for role in ("place", "admin1", "country", "postal"):
+            column = geo_candidate(role)
+            if column:
+                location_parts[role] = column
+        if location and "place" not in location_parts:
+            location_parts["place"] = location
+    if location_parts.get("place"):
+        location = location_parts["place"]
+    if coordinate_pairs:
+        strongest_pair = coordinate_pairs[0]
+        if (
+            isinstance(strongest_pair, dict)
+            and float(strongest_pair.get("coverage", 0)) >= 0.5
+        ):
+            latitude = latitude or strongest_pair.get("latitude")
+            longitude = longitude or strongest_pair.get("longitude")
 
     if forced_type and forced_type not in ("auto", "", None):
         forced = forced_type.strip().lower()
@@ -614,6 +757,8 @@ def _validate_chart_spec(
     aggregate = str(spec.get("aggregate", "")).strip().lower()
     if aggregate not in _ALLOWED_AGGREGATES:
         aggregate = "sum"
+    if aggregate_override and aggregate_override.strip().lower() in _ALLOWED_AGGREGATES:
+        aggregate = aggregate_override.strip().lower()
 
     sort = str(spec.get("sort", "")).strip().lower()
     if sort not in _ALLOWED_SORTS:
@@ -653,6 +798,28 @@ def _validate_chart_spec(
         y = [y_col]
         if chart_type in ("map", "osm_map"):
             value = y_col
+    if location_col and location_col in column_names:
+        location = location_col
+        location_parts["place"] = location_col
+    if latitude_col and latitude_col in numeric_set:
+        latitude = latitude_col
+    if longitude_col and longitude_col in numeric_set:
+        longitude = longitude_col
+    if isinstance(location_parts_override, dict):
+        for role in ("place", "admin1", "country", "postal"):
+            column = location_parts_override.get(role)
+            if isinstance(column, str) and column in column_names:
+                location_parts[role] = column
+        if location_parts.get("place"):
+            location = location_parts["place"]
+    if value_col == "__row_count__":
+        value = "__row_count__"
+    elif value_col and value_col in numeric_set:
+        value = value_col
+    if value2_col and value2_col in numeric_set and value2_col != value:
+        value2 = value2_col
+    elif value2_col == "":
+        value2 = None
     if series_col is not None:
         series = series_col if series_col in column_names else None
     if series == x:
@@ -661,6 +828,12 @@ def _validate_chart_spec(
     if x_parts and series in x_parts:
         series = None
     if chart_type == "osm_map":
+        if not value or _looks_like_identifier(value):
+            value = real_measures[0] if real_measures else "__row_count__"
+        if value == "__row_count__":
+            aggregate = "count"
+            if not isinstance(spec.get("title"), str) or not spec.get("title", "").strip():
+                title = f"Location count by {location or x}"
         y = [value] if value else []
         if value2 and value2 != value:
             y.append(value2)
@@ -683,14 +856,17 @@ def _validate_chart_spec(
         "map_mode": map_mode or None,
         "map_name": map_name or None,
         "location": location,
+        "location_parts": location_parts,
         "latitude": latitude,
         "longitude": longitude,
         "value": value,
         "value2": value2 if chart_type == "osm_map" and value2 != value else None,
+        "geo_roles": geo_roles,
         "map_quality": map_quality,
         "map_palette": map_palette,
         "show_labels": show_labels,
         "show_unmatched": show_unmatched,
+        "data_layer_mode": data_layer_mode,
         "map_focus": map_focus,
         "stacked": bool(spec.get("stacked")),
         "smooth": bool(spec.get("smooth")),
@@ -753,6 +929,7 @@ async def generate_chart(request: GenerateChartRequest):
             detail="Could not determine chartable columns for this result set.",
         )
     geo_hints = await _load_geo_hints(request.connection, column_names)
+    geo_roles = infer_geo_roles(dataset, geo_hints)
 
     # 3. Build the decision prompt (profile + intent + user overrides).
     instruction_parts: list[str] = []
@@ -772,6 +949,21 @@ async def generate_chart(request: GenerateChartRequest):
         mapping.append(f"y = {request.y_column}")
     if request.series_column:
         mapping.append(f"series = {request.series_column}")
+    for label, value in (
+        ("place", request.location_column),
+        ("latitude", request.latitude_column),
+        ("longitude", request.longitude_column),
+        ("value", request.value_column),
+        ("size value", request.value2_column),
+        ("aggregate", request.aggregate),
+    ):
+        if value:
+            mapping.append(f"{label} = {value}")
+    if request.location_parts:
+        mapping.append(
+            "location parts = "
+            + ", ".join(f"{role}:{column}" for role, column in request.location_parts.items())
+        )
     if mapping:
         instruction_parts.append(
             "User-selected column mapping (MUST follow): " + "; ".join(mapping)
@@ -782,7 +974,8 @@ async def generate_chart(request: GenerateChartRequest):
     user_prompt = (
         "Choose the best chart for this dataset and return the JSON spec.\n\n"
         f"Dataset profile (computed over ALL {profile.get('row_count', 0)} rows):\n"
-        f"{_profile_blob(profile)}{_geo_hints_blob(geo_hints)}{instruction_blob}\n\n"
+        f"{_profile_blob(profile)}{_geo_hints_blob(geo_hints)}"
+        f"{_geo_roles_blob(geo_roles)}{instruction_blob}\n\n"
         f"Sample rows (first {len(sample)} of {profile.get('row_count', 0)}, for "
         "SHAPE/MEANING ONLY — do not copy these values into the chart):\n"
         + json.dumps(sample, indent=2, default=str)
@@ -817,7 +1010,15 @@ async def generate_chart(request: GenerateChartRequest):
             x_col=request.x_column,
             y_col=request.y_column,
             series_col=request.series_column,
+            location_col=request.location_column,
+            latitude_col=request.latitude_column,
+            longitude_col=request.longitude_column,
+            location_parts_override=request.location_parts,
+            value_col=request.value_column,
+            value2_col=request.value2_column,
+            aggregate_override=request.aggregate,
             geo_hints=geo_hints,
+            geo_roles=geo_roles,
             osm_enabled=osm_maps_enabled(),
         )
         if not spec["x"] or not spec["y"]:
@@ -854,6 +1055,224 @@ async def generate_chart(request: GenerateChartRequest):
 # ----------------------------------------------------------------------
 # Chart chat: per-session, natural-language edits
 # ----------------------------------------------------------------------
+_MAP_EDIT_SPEC_FIELDS = {
+    "location", "location_parts", "latitude", "longitude", "value", "value2",
+    "aggregate", "value_format", "currency_symbol", "show_unmatched", "title",
+    "y_label", "map_palette", "data_layer_mode",
+}
+
+
+def _is_osm_map_edit(request: EditChartRequest) -> bool:
+    spec = request.chart_spec if isinstance(request.chart_spec, dict) else {}
+    return (
+        spec.get("chart_type") == "osm_map"
+        or isinstance(request.current_config.get("jeenOsmMap"), dict)
+    )
+
+
+def _dataset_from_edit_request(request: EditChartRequest) -> Optional[dict]:
+    if request.all_data and request.column_names:
+        return {"columns": list(request.column_names), "rows": request.all_data}
+    return None
+
+
+def _validate_map_view_commands(commands: Any) -> list[dict[str, Any]]:
+    """Allow only deterministic browser commands over server-approved layers."""
+    manifest = browser_map_layers()
+    basemaps = {layer["id"] for layer in manifest.get("basemaps", [])}
+    overlays = {
+        layer["id"]
+        for section in ("overlays", "vectorOverlays")
+        for layer in manifest.get(section, [])
+    }
+    accepted: list[dict[str, Any]] = []
+    for command in commands if isinstance(commands, list) else []:
+        if not isinstance(command, dict):
+            continue
+        op = str(command.get("op") or "").strip()
+        if op == "set_basemap" and command.get("layer_id") in basemaps:
+            accepted.append({"op": op, "layer_id": command["layer_id"]})
+        elif op == "set_overlays":
+            layer_ids = command.get("layer_ids")
+            if isinstance(layer_ids, list):
+                accepted.append({
+                    "op": op,
+                    "layer_ids": [layer_id for layer_id in layer_ids if layer_id in overlays],
+                })
+        elif op == "set_user_data_visible" and isinstance(command.get("visible"), bool):
+            accepted.append({"op": op, "visible": command["visible"]})
+        elif op == "set_data_mode" and command.get("mode") in _ALLOWED_OSM_DATA_LAYER_MODES:
+            accepted.append({"op": op, "mode": command["mode"]})
+        elif op == "fit_extent":
+            accepted.append({"op": op})
+        elif op == "focus_place" and isinstance(command.get("query"), str):
+            query = command["query"].strip()[:200]
+            if query:
+                accepted.append({"op": op, "query": query})
+        elif op == "select_place" and isinstance(command.get("place_key"), str):
+            place_key = command["place_key"].strip()[:256]
+            if place_key:
+                accepted.append({"op": op, "place_key": place_key})
+        elif op == "clear_selection":
+            accepted.append({"op": op})
+        elif op == "toggle_sidebar" and isinstance(command.get("collapsed"), bool):
+            accepted.append({"op": op, "collapsed": command["collapsed"]})
+    return accepted
+
+
+async def _edit_osm_map_chart(
+    request: EditChartRequest,
+    instruction: str,
+    agent: Any,
+) -> EditChartResponse:
+    """Turn an LLM map edit into a validated spec rebuild plus safe view commands."""
+    base_spec = request.chart_spec if isinstance(request.chart_spec, dict) else {}
+    if base_spec.get("chart_type") != "osm_map":
+        return EditChartResponse(
+            chart_config=request.current_config,
+            chart_type="osm_map",
+            notes="This map needs its chart specification before it can be edited.",
+            out_of_scope=True,
+        )
+
+    column_types_blob = (
+        "\n".join(f"- {c.name} ({c.type})" for c in request.columns) or "(unknown)"
+    )
+    from src.api import state as app_state
+    if app_state.prompt_cache:
+        try:
+            template = await app_state.prompt_cache.get_content("chart_map_editor")
+            model_override = await app_state.prompt_cache.get_model_override("chart_map_editor")
+        except Exception:
+            template = _load_map_chart_editor_prompt()
+            model_override = None
+    else:
+        template = _load_map_chart_editor_prompt()
+        model_override = None
+    system_prompt = template.format(
+        instruction=instruction,
+        chart_spec=json.dumps(base_spec, ensure_ascii=False),
+        layer_manifest=json.dumps(browser_map_layers(), ensure_ascii=False),
+        column_names=json.dumps(request.column_names, ensure_ascii=False),
+        column_types=column_types_blob,
+        recent_messages=_format_recent_messages(request.recent_messages),
+    )
+    try:
+        response = await agent.llm.generate(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": instruction},
+            ],
+            temperature=EDIT_CHART_PARAMS.temperature,
+            max_tokens=EDIT_CHART_PARAMS.max_tokens,
+            model_override=model_override,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Map chart edit LLM call failed")
+        return EditChartResponse(
+            chart_config=request.current_config,
+            chart_type="osm_map",
+            chart_spec=base_spec,
+            notes=f"Sorry, the map-edit service is unavailable right now ({exc}).",
+            out_of_scope=True,
+            prompt=system_prompt,
+        )
+
+    parsed = extract_json_object(response.get("content") or "")
+    if not isinstance(parsed, dict):
+        return EditChartResponse(
+            chart_config=request.current_config,
+            chart_type="osm_map",
+            chart_spec=base_spec,
+            notes="I couldn't apply that map edit. Please rephrase it.",
+            out_of_scope=True,
+            prompt=system_prompt,
+        )
+    notes = parsed.get("notes")
+    notes = notes.strip()[:300] if isinstance(notes, str) and notes.strip() else None
+    if bool(parsed.get("out_of_scope")):
+        return EditChartResponse(
+            chart_config=request.current_config,
+            chart_type="osm_map",
+            chart_spec=base_spec,
+            notes=notes,
+            out_of_scope=True,
+            prompt=system_prompt,
+        )
+
+    raw_patch = parsed.get("spec_patch")
+    patch = {
+        key: value for key, value in raw_patch.items()
+        if key in _MAP_EDIT_SPEC_FIELDS
+    } if isinstance(raw_patch, dict) else {}
+    view_commands = _validate_map_view_commands(parsed.get("view_commands"))
+    if not patch:
+        return EditChartResponse(
+            chart_config=request.current_config,
+            chart_type="osm_map",
+            chart_spec=base_spec,
+            view_commands=view_commands,
+            notes=notes,
+            out_of_scope=False,
+            rebuild_required=False,
+            prompt=system_prompt,
+        )
+
+    user_id = require_user_id(request.user_id)
+    await _verify_query_owner(
+        query_id=request.query_id, user_id=user_id, connection=request.connection
+    )
+    dataset = result_cache.get(
+        user_id=user_id, connection=request.connection, query_id=request.query_id,
+    ) or _dataset_from_edit_request(request)
+    if dataset is None:
+        raise HTTPException(status_code=409, detail="cache_miss")
+    profile = profile_dataset(dataset)
+    column_names, numeric_cols, date_cols = _columns_from_profile(profile)
+    geo_hints = await _load_geo_hints(request.connection, column_names)
+    geo_roles = infer_geo_roles(dataset, geo_hints)
+    merged = {**base_spec, **patch, "chart_type": "osm_map"}
+    if isinstance(patch.get("location_parts"), dict):
+        merged["location_parts"] = patch["location_parts"]
+    spec = _validate_chart_spec(
+        merged,
+        column_names=column_names,
+        numeric_cols=numeric_cols,
+        date_cols=date_cols,
+        forced_type="osm_map",
+        value_col=patch.get("value") if "value" in patch else None,
+        value2_col=(
+            "" if "value2" in patch and patch["value2"] is None
+            else (patch.get("value2") if "value2" in patch else None)
+        ),
+        aggregate_override=patch.get("aggregate") if "aggregate" in patch else None,
+        geo_hints=geo_hints,
+        geo_roles=geo_roles,
+        osm_enabled=osm_maps_enabled(),
+    )
+    if spec["chart_type"] != "osm_map":
+        return EditChartResponse(
+            chart_config=request.current_config,
+            chart_type="osm_map",
+            chart_spec=base_spec,
+            notes="Those bindings do not produce a valid point map.",
+            out_of_scope=True,
+            prompt=system_prompt,
+        )
+    spec["resolved_locations"] = await resolve_osm_locations(spec, dataset)
+    chart_config = build_chart_option(spec, dataset)
+    return EditChartResponse(
+        chart_config=chart_config,
+        chart_type="osm_map",
+        chart_spec=spec,
+        view_commands=view_commands,
+        notes=notes,
+        out_of_scope=False,
+        rebuild_required=True,
+        prompt=system_prompt,
+    )
+
+
 @router.post("/edit-chart", response_model=EditChartResponse)
 async def edit_chart(request: EditChartRequest):
     """Apply a natural-language edit to the current ECharts config.
@@ -871,6 +1290,8 @@ async def edit_chart(request: EditChartRequest):
 
     agent = await resolve_agent(request.connection)
     instruction = instruction[:_CHART_EDITOR_MAX_INSTRUCTION_CHARS]
+    if _is_osm_map_edit(request):
+        return await _edit_osm_map_chart(request, instruction, agent)
 
     column_types_blob = (
         "\n".join(f"- {c.name} ({c.type})" for c in request.columns) or "(unknown)"

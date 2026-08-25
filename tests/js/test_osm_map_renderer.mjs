@@ -7,8 +7,11 @@ import {
     colorForValue,
     fitMapView,
     projectMercator,
+    reconcileTileKeys,
     radiusForValue,
+    tileCacheKey,
     unprojectMercator,
+    visibleMapTiles,
 } from '../../src/static/chart-feature/utils/osmMapRenderer.js';
 
 const point = projectMercator(32.0853, 34.7818, 8);
@@ -33,5 +36,30 @@ assert.ok(world.zoom >= 1 && world.zoom <= 4);
 assert.equal(radiusForValue(5, 5, 5), 16);
 assert.ok(radiusForValue(10, 0, 10) > radiusForValue(0, 0, 10));
 assert.match(colorForValue(5, 0, 10), /^rgb\(/);
+
+const viewport = visibleMapTiles({ lat: 32.0853, lng: 34.7818 }, 8, 900, 520);
+assert.ok(viewport.tiles.length > 12);
+assert.ok(viewport.tiles.every((tile) => tile.wrappedX >= 0 && tile.wrappedX < 2 ** 8));
+const firstTile = viewport.tiles[0];
+const firstKey = tileCacheKey('standard', 8, firstTile.x, firstTile.y);
+assert.equal(firstKey, `standard/8/${firstTile.x}/${firstTile.y}`);
+const reconcile = reconcileTileKeys(
+    [firstKey, 'standard/8/old/old'],
+    [firstKey, 'seamarks/8/other/other'],
+);
+assert.deepEqual(reconcile.reuse, [firstKey]);
+assert.deepEqual(reconcile.create, ['seamarks/8/other/other']);
+assert.deepEqual(reconcile.hide, ['standard/8/old/old']);
+
+const initialTileKeys = viewport.tiles.map((tile) =>
+    tileCacheKey('standard', 8, tile.x, tile.y)
+);
+const smallPan = visibleMapTiles({ lat: 32.0853, lng: 34.79 }, 8, 900, 520);
+const pannedTileKeys = smallPan.tiles.map((tile) =>
+    tileCacheKey('standard', 8, tile.x, tile.y)
+);
+const panReconcile = reconcileTileKeys(initialTileKeys, pannedTileKeys);
+assert.equal(panReconcile.create.length, 0);
+assert.equal(panReconcile.reuse.length, initialTileKeys.length);
 
 console.log('osm map renderer JS tests passed');

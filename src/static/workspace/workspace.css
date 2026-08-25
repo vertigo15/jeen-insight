@@ -534,6 +534,8 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-grid { display: grid; min-width: max-content; }
 .v3-grid-row { display: grid; grid-template-columns: var(--v3-columns); min-width: 100%; border-bottom: 1px solid var(--border); }
 .v3-grid-row:last-child { border-bottom: 0; }
+.v3-grid-row:not(.v3-grid-head) { cursor: pointer; }
+.v3-grid-row.is-map-selected { background: color-mix(in srgb, var(--lavender) 34%, transparent); box-shadow: inset 3px 0 0 var(--plum); }
 .v3-grid-head { position: sticky; top: 0; z-index: 2; background: var(--soft); }
 .v3-grid-cell { min-width: 0; overflow: hidden; padding: 13px 18px; color: var(--text); font-size: 13.5px; font-weight: 300; text-overflow: ellipsis; white-space: nowrap; }
 .v3-grid-head .v3-grid-cell { padding: 12px 18px; color: var(--muted); font-size: 12.5px; font-weight: 400; }

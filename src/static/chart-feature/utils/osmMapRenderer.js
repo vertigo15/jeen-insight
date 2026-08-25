@@ -10,20 +10,62 @@ import { makeValueFormatter } from './valueFormat.js?v=73';
 const TILE_SIZE = 256;
 const MAX_LATITUDE = 85.05112878;
 const STYLE_ID = 'jeen-osm-map-styles';
+const TILE_OVERSCAN = 1;
+const MAX_CACHED_TILES = 192;
+const MAX_DOM_MARKERS = 300;
+const CLUSTER_CELL_SIZE = 48;
+const COLOR_PALETTES = {
+    blue: [[224, 242, 254], [3, 105, 161]],
+    green: [[220, 252, 231], [21, 128, 61]],
+    purple: [[243, 232, 255], [126, 34, 206]],
+    orange: [[255, 237, 213], [194, 65, 12]],
+};
 const MAP_STYLES = `
 .chart-display[data-chart-type="osm_map"] { height: min(680px, 70vh); min-height: 520px; padding: 0; overflow: hidden; }
 .osm-map { position: relative; width: 100%; height: 100%; min-height: 520px; overflow: hidden; background: #dceaf5; cursor: grab; touch-action: none; outline: none; }
 .osm-map:active { cursor: grabbing; }
-.osm-map-tiles, .osm-map-markers { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.osm-map-tiles, .osm-map-vectors, .osm-map-markers { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.osm-map-tile-pane { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .osm-map-tiles img { position: absolute; width: 256px; height: 256px; max-width: none; user-select: none; }
+.osm-map-vectors { width: 100%; height: 100%; }
 .osm-map-marker { position: absolute; transform: translate(-50%, -50%); border: 2px solid rgba(255,255,255,.92); border-radius: 50%; box-shadow: 0 1px 4px rgba(15,23,42,.38); opacity: .86; cursor: pointer; pointer-events: auto; padding: 0; transition: transform 120ms ease, opacity 120ms ease; }
 .osm-map-marker:hover, .osm-map-marker:focus-visible { transform: translate(-50%, -50%) scale(1.16); opacity: 1; outline: 2px solid #312e81; outline-offset: 2px; }
+.osm-map-marker.is-selected { transform: translate(-50%, -50%) scale(1.22); opacity: 1; outline: 3px solid #312e81; outline-offset: 3px; z-index: 3; }
 .osm-map-legend, .osm-map-attribution { position: absolute; z-index: 2; background: rgba(255,255,255,.93); border: 1px solid rgba(100,116,139,.42); border-radius: 6px; box-shadow: 0 1px 3px rgba(15,23,42,.16); color: #1e293b; font: 12px/1.35 system-ui, sans-serif; }
 .osm-map-legend { left: 12px; bottom: 12px; padding: 7px 9px; display: grid; gap: 2px; }
 .osm-map-legend-color::before { content: ''; display: inline-block; width: 24px; height: 7px; margin-right: 6px; border-radius: 999px; background: linear-gradient(90deg,#e0f2fe,#0369a1); vertical-align: middle; }
 .osm-map-legend-size::before { content: '●'; display: inline-block; width: 24px; margin-right: 6px; color: #0369a1; text-align: center; vertical-align: middle; }
 .osm-map-attribution { right: 6px; bottom: 6px; padding: 3px 5px; font-size: 10px; }
 .osm-map-attribution a { color: #1e40af; }
+.osm-map-controls { position: absolute; z-index: 3; top: 12px; left: 12px; display: flex; flex-direction: column; gap: 2px; padding: 3px; background: rgba(255,255,255,.93); border: 1px solid rgba(100,116,139,.42); border-radius: 7px; box-shadow: 0 1px 3px rgba(15,23,42,.16); }
+.osm-map-controls button { width: 31px; min-width: 31px; height: 30px; border: 0; border-radius: 4px; color: #1e293b; background: transparent; cursor: pointer; font: 600 17px/1 system-ui,sans-serif; }
+.osm-map-controls button[data-action="layers"] { margin-top: 3px; border-top: 1px solid #cbd5e1; border-radius: 0 0 4px 4px; }
+.osm-map-controls button:hover, .osm-map-controls button:focus-visible, .osm-map-controls button.is-active { color: #312e81; background: #ede9fe; outline: 0; }
+.osm-map-layers { position: absolute; z-index: 3; top: 12px; left: 56px; display: grid; gap: 6px; min-width: 194px; padding: 9px 10px; color: #1e293b; background: rgba(255,255,255,.96); border: 1px solid rgba(100,116,139,.42); border-radius: 7px; box-shadow: 0 4px 18px rgba(15,23,42,.2); font: 12px/1.3 system-ui,sans-serif; }
+.osm-map-layers[hidden] { display: none; }
+.osm-map-layers-heading { font-weight: 700; }
+.osm-map-layers-group { display: grid; gap: 4px; padding: 0; margin: 0; border: 0; }
+.osm-map-layers label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.osm-map-layers input { margin: 0; }
+.osm-map-layers select { min-width: 0; margin-left: auto; font: inherit; }
+.osm-map-sidebar { position: absolute; z-index: 3; top: 12px; right: 12px; width: min(278px, calc(100% - 84px)); max-height: calc(100% - 64px); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 9px; padding: 11px; color: #1e293b; background: rgba(255,255,255,.96); border: 1px solid rgba(100,116,139,.42); border-radius: 8px; box-shadow: 0 4px 18px rgba(15,23,42,.2); font: 12px/1.4 system-ui,sans-serif; }
+.osm-map-sidebar.is-collapsed { width: auto; min-width: 0; padding: 4px; display: block; }
+.osm-map-sidebar.is-collapsed > :not(.osm-map-sidebar-heading) { display: none; }
+.osm-map-sidebar-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 650; }
+.osm-map-sidebar-toggle { width: 27px; height: 27px; border: 0; border-radius: 4px; color: #1e293b; background: transparent; cursor: pointer; font-size: 17px; }
+.osm-map-sidebar-toggle:hover, .osm-map-sidebar-toggle:focus-visible { color: #312e81; background: #ede9fe; outline: 0; }
+.osm-map-search { width: 100%; box-sizing: border-box; min-height: 31px; padding: 6px 8px; color: #1e293b; background: #fff; border: 1px solid #cbd5e1; border-radius: 5px; font: inherit; }
+.osm-map-search:focus { border-color: #6d5bb1; outline: 2px solid rgba(109,91,177,.22); }
+.osm-map-search-results { max-height: 190px; overflow: auto; display: grid; gap: 3px; }
+.osm-map-search-section { margin: 5px 2px 1px; color: #64748b; font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.osm-map-search-result { width: 100%; padding: 7px 8px; overflow: hidden; color: #334155; text-align: left; text-overflow: ellipsis; white-space: nowrap; background: transparent; border: 0; border-radius: 4px; cursor: pointer; font: inherit; }
+.osm-map-search-result:hover, .osm-map-search-result:focus-visible, .osm-map-search-result.is-selected { color: #312e81; background: #ede9fe; outline: 0; }
+.osm-map-search-empty { color: #64748b; padding: 5px 2px; }
+.osm-map-marker.is-search-result { background: #7c3aed !important; border-radius: 7px 7px 7px 0; transform: translate(-50%, -100%) rotate(-45deg); }
+.osm-map-marker.is-search-result > span { display: block; transform: rotate(45deg); }
+.osm-map-details { padding-top: 8px; border-top: 1px solid #e2e8f0; color: #475569; }
+.osm-map-details strong { display: block; color: #1e293b; margin-bottom: 2px; font-weight: 650; }
+.osm-map-status { color: #64748b; font-size: 11px; }
 `;
 
 function ensureStyles() {
@@ -36,6 +78,11 @@ function ensureStyles() {
 
 function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
+}
+
+function validCoordinates(latitude, longitude) {
+    return Number.isFinite(latitude) && Number.isFinite(longitude)
+        && latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180;
 }
 
 function normalizeLongitude(longitude) {
@@ -85,10 +132,9 @@ export function fitMapView(extent, width, height) {
     return { center, zoom: 1 };
 }
 
-export function colorForValue(value, min, max) {
+export function colorForValue(value, min, max, palette = 'blue') {
     const ratio = max <= min ? 0.65 : clamp((Number(value) - min) / (max - min), 0, 1);
-    const start = [224, 242, 254];
-    const end = [3, 105, 161];
+    const [start, end] = COLOR_PALETTES[palette] || COLOR_PALETTES.blue;
     const rgb = start.map((channel, index) => Math.round(channel + (end[index] - channel) * ratio));
     return `rgb(${rgb.join(', ')})`;
 }
@@ -98,23 +144,101 @@ export function radiusForValue(value, min, max) {
     return Math.round(7 + ratio * 19);
 }
 
+
+export function tileCacheKey(layerId, zoom, tileX, tileY) {
+    return `${layerId}/${zoom}/${tileX}/${tileY}`;
+}
+
+
+export function visibleMapTiles(center, zoom, width, height, overscan = TILE_OVERSCAN) {
+    const projectedCenter = projectMercator(center.lat, center.lng, zoom);
+    const minTileX = Math.floor((projectedCenter.x - width / 2) / TILE_SIZE) - overscan;
+    const maxTileX = Math.floor((projectedCenter.x + width / 2) / TILE_SIZE) + overscan;
+    const minTileY = Math.floor((projectedCenter.y - height / 2) / TILE_SIZE) - overscan;
+    const maxTileY = Math.floor((projectedCenter.y + height / 2) / TILE_SIZE) + overscan;
+    const tileCount = 2 ** zoom;
+    const tiles = [];
+
+    for (let tileY = minTileY; tileY <= maxTileY; tileY += 1) {
+        if (tileY < 0 || tileY >= tileCount) continue;
+        for (let tileX = minTileX; tileX <= maxTileX; tileX += 1) {
+            tiles.push({
+                x: tileX,
+                y: tileY,
+                wrappedX: ((tileX % tileCount) + tileCount) % tileCount,
+            });
+        }
+    }
+    return { center: projectedCenter, tiles };
+}
+
+
+export function reconcileTileKeys(existingKeys, wantedKeys) {
+    const existing = new Set(existingKeys);
+    const wanted = new Set(wantedKeys);
+    return {
+        create: [...wanted].filter((key) => !existing.has(key)),
+        reuse: [...wanted].filter((key) => existing.has(key)),
+        hide: [...existing].filter((key) => !wanted.has(key)),
+    };
+}
+
+
 export class OsmMapRenderer {
-    constructor(containerId) {
+    constructor(containerId, hooks = {}) {
         this.containerId = containerId;
+        this.hooks = hooks;
         this.container = null;
         this.root = null;
         this.tiles = null;
+        this.vectors = null;
         this.markers = null;
+        this.tilePanes = new Map();
+        this.tileCache = new Map();
+        this.markerNodes = new Map();
+        this.externalMarker = null;
+        this.vectorData = new Map();
+        this.vectorLoads = new Map();
+        this.tileEpoch = 0;
+        this.renderFrame = null;
+        this.renderFrameIsAnimation = false;
+        this.pendingWheelDelta = 0;
         this.config = null;
         this.map = null;
+        this.layerManifest = null;
+        this.activeBasemapId = null;
+        this.activeOverlayIds = new Set();
+        this.activeDataLayerIds = new Set();
+        this.dataLayerMode = 'auto';
+        this.layersControl = null;
+        this.layersButton = null;
+        this.attribution = null;
         this.center = null;
         this.zoom = 2;
         this.drag = null;
+        this.selectedPlaceKey = null;
+        this.sidebar = null;
+        this.sidebarSearch = null;
+        this.sidebarResults = null;
+        this.sidebarDetails = null;
+        this.searchTimer = null;
+        this.searchAbort = null;
+        this.searchPending = false;
+        this.externalSearchResults = [];
+        this.externalLocation = null;
         this.resizeObserver = null;
         this._onWheel = (event) => this._handleWheel(event);
         this._onPointerDown = (event) => this._handlePointerDown(event);
         this._onPointerMove = (event) => this._handlePointerMove(event);
         this._onPointerUp = () => { this.drag = null; };
+        this._onKeyDown = (event) => {
+            if (event.key === 'Escape' && this.layersControl && !this.layersControl.hidden) {
+                event.preventDefault();
+                this._toggleLayersControl(false);
+                this.layersButton?.focus();
+            }
+        };
+        this._onResize = () => this._scheduleRender();
     }
 
     render(config) {
@@ -129,6 +253,25 @@ export class OsmMapRenderer {
         this.container = container;
         this.config = config;
         this.map = map;
+        this.layerManifest = this._layerManifest();
+        this.activeBasemapId = (
+            this.layerManifest.basemaps.find((layer) => layer.defaultVisible)?.id
+            || this.layerManifest.basemaps[0]?.id
+            || null
+        );
+        this.activeOverlayIds = new Set(
+            this.layerManifest.overlays
+                .filter((layer) => layer.defaultVisible)
+                .map((layer) => layer.id),
+        );
+        this.activeDataLayerIds = new Set(
+            this.layerManifest.dataLayers
+                .filter((layer) => layer.defaultVisible)
+                .map((layer) => layer.id),
+        );
+        this.dataLayerMode = ['auto', 'points', 'clusters'].includes(map.dataLayerMode)
+            ? map.dataLayerMode
+            : 'auto';
         container.innerHTML = '';
         container.dataset.chartType = 'osm_map';
 
@@ -140,9 +283,21 @@ export class OsmMapRenderer {
 
         this.tiles = document.createElement('div');
         this.tiles.className = 'osm-map-tiles';
+        this.vectors = document.createElement('canvas');
+        this.vectors.className = 'osm-map-vectors';
+        this.vectors.setAttribute('aria-hidden', 'true');
         this.markers = document.createElement('div');
         this.markers.className = 'osm-map-markers';
-        this.root.append(this.tiles, this.markers, this._buildLegend(overlay), this._buildAttribution(map));
+        this.root.append(
+            this.tiles,
+            this.vectors,
+            this.markers,
+            this._buildControls(),
+            this._buildLayersControl(),
+            this._buildSidebar(overlay),
+            this._buildLegend(overlay),
+            this._buildAttribution(map),
+        );
         container.appendChild(this.root);
 
         const fitted = fitMapView(map.extent, container.clientWidth || 900, container.clientHeight || 520);
@@ -153,11 +308,73 @@ export class OsmMapRenderer {
         this.root.addEventListener('pointermove', this._onPointerMove);
         this.root.addEventListener('pointerup', this._onPointerUp);
         this.root.addEventListener('pointercancel', this._onPointerUp);
+        this.root.addEventListener('keydown', this._onKeyDown);
         if (typeof ResizeObserver !== 'undefined') {
-            this.resizeObserver = new ResizeObserver(() => this._render());
+            this.resizeObserver = new ResizeObserver(this._onResize);
             this.resizeObserver.observe(container);
         }
-        this._render();
+        this._scheduleRender();
+    }
+
+    applyViewCommands(commands) {
+        let shouldFit = false;
+        for (const command of Array.isArray(commands) ? commands : []) {
+            if (!command || typeof command !== 'object') continue;
+            if (command.op === 'set_basemap') {
+                if (this.layerManifest?.basemaps?.some((layer) => layer.id === command.layer_id)) {
+                    this.activeBasemapId = command.layer_id;
+                }
+            } else if (command.op === 'set_overlays' && Array.isArray(command.layer_ids)) {
+                const allowed = new Set(
+                    (this.layerManifest?.overlays || []).map((layer) => layer.id),
+                );
+                this.activeOverlayIds = new Set(
+                    command.layer_ids.filter((layerId) => allowed.has(layerId)),
+                );
+            } else if (command.op === 'set_user_data_visible') {
+                if (command.visible) this.activeDataLayerIds.add('user-data');
+                else this.activeDataLayerIds.delete('user-data');
+            } else if (command.op === 'set_data_mode') {
+                if (['auto', 'points', 'clusters'].includes(command.mode)) {
+                    this.dataLayerMode = command.mode;
+                }
+            } else if (command.op === 'fit_extent') {
+                shouldFit = true;
+            } else if (command.op === 'select_place') {
+                const point = (this.map?.overlays?.[0]?.points || []).find(
+                    (candidate) => candidate.placeKey === command.place_key,
+                );
+                if (point) this._focusPoint(point, true);
+            } else if (command.op === 'clear_selection') {
+                this.selectedPlaceKey = null;
+                this._renderSidebarDetails();
+            } else if (command.op === 'toggle_sidebar' && this.sidebar) {
+                this.sidebar.classList.toggle('is-collapsed', command.collapsed);
+                const toggle = this.sidebar.querySelector('.osm-map-sidebar-toggle');
+                if (toggle) {
+                    toggle.textContent = command.collapsed ? '☰' : '×';
+                    toggle.setAttribute('aria-expanded', String(!command.collapsed));
+                }
+            } else if (command.op === 'focus_place' && typeof command.query === 'string') {
+                const query = command.query.trim();
+                if (query) {
+                    if (this.sidebarSearch) this.sidebarSearch.value = query;
+                    this._searchSidebar(query, true);
+                }
+            }
+        }
+        if (shouldFit) {
+            const fitted = fitMapView(
+                this.map?.extent,
+                this.root?.clientWidth || 900,
+                this.root?.clientHeight || 520,
+            );
+            this.center = fitted.center;
+            this.zoom = fitted.zoom;
+        }
+        this._syncLayerControl();
+        this._renderAttribution();
+        this._scheduleRender();
     }
 
     _buildLegend(overlay) {
@@ -176,86 +393,972 @@ export class OsmMapRenderer {
         return legend;
     }
 
+    _buildControls() {
+        const controls = document.createElement('div');
+        controls.className = 'osm-map-controls';
+        const actions = [
+            { action: 'zoom-in', label: 'Zoom in', text: '+' },
+            { action: 'zoom-out', label: 'Zoom out', text: '−' },
+            { action: 'fit', label: 'Fit map to data', text: '⌖' },
+            { action: 'reset', label: 'Reset map view', text: '↺' },
+            { action: 'layers', label: 'Open map layers', text: '▤' },
+        ];
+        actions.forEach(({ action, label, text }) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.dataset.action = action;
+            button.title = label;
+            button.setAttribute('aria-label', label);
+            button.textContent = text;
+            if (action === 'layers') {
+                button.setAttribute('aria-haspopup', 'dialog');
+                button.setAttribute('aria-expanded', 'false');
+                this.layersButton = button;
+            }
+            button.addEventListener('pointerdown', (event) => event.stopPropagation());
+            button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                this._handleControl(action);
+            });
+            controls.appendChild(button);
+        });
+        return controls;
+    }
+
+    _toggleLayersControl(forceOpen) {
+        if (!this.layersControl) return;
+        const open = forceOpen ?? this.layersControl.hidden;
+        this.layersControl.hidden = !open;
+        this.layersButton?.classList.toggle('is-active', open);
+        this.layersButton?.setAttribute('aria-expanded', String(open));
+        this.layersButton?.setAttribute('aria-label', open ? 'Close map layers' : 'Open map layers');
+        if (open) this.layersControl.querySelector('input')?.focus();
+    }
+
+    _layerManifest() {
+        const configured = this.map?.layers;
+        const fallback = this.map?.basemap;
+        return {
+            basemaps: Array.isArray(configured?.basemaps) && configured.basemaps.length
+                ? configured.basemaps
+                : (fallback ? [{
+                    id: 'standard',
+                    label: 'Standard',
+                    kind: 'basemap',
+                    tileUrl: fallback.tileUrl,
+                    attribution: fallback.attribution,
+                    attributionUrl: 'https://www.openstreetmap.org/copyright',
+                    defaultVisible: true,
+                }] : []),
+            overlays: [
+                ...(Array.isArray(configured?.overlays) ? configured.overlays : []),
+                ...(Array.isArray(configured?.vectorOverlays) ? configured.vectorOverlays : []),
+            ],
+            dataLayers: Array.isArray(configured?.dataLayers) ? configured.dataLayers : [{
+                id: 'user-data',
+                label: 'Your data',
+                kind: 'data',
+                defaultVisible: true,
+            }],
+        };
+    }
+
+    _activeTileLayers() {
+        const basemap = this.layerManifest?.basemaps?.find(
+            (layer) => layer.id === this.activeBasemapId,
+        );
+        const overlays = (this.layerManifest?.overlays || []).filter(
+            (layer) => this.activeOverlayIds.has(layer.id),
+        );
+        return [...(basemap ? [basemap] : []), ...overlays];
+    }
+
+    _activeVectorLayers() {
+        return (this.layerManifest?.overlays || []).filter(
+            (layer) => (
+                layer.kind === 'vector' || layer.kind === 'vector-points'
+            ) && this.activeOverlayIds.has(layer.id),
+        );
+    }
+
+    _buildLayersControl() {
+        const panel = document.createElement('aside');
+        panel.className = 'osm-map-layers';
+        panel.id = `${this.containerId}-map-layers`;
+        panel.hidden = true;
+        panel.setAttribute('role', 'dialog');
+        panel.setAttribute('aria-label', 'Map layers');
+        panel.addEventListener('pointerdown', (event) => event.stopPropagation());
+        this.layersButton?.setAttribute('aria-controls', panel.id);
+
+        const heading = document.createElement('div');
+        heading.className = 'osm-map-layers-heading';
+        heading.textContent = 'Layers';
+        panel.appendChild(heading);
+
+        const basemaps = this.layerManifest?.basemaps || [];
+        if (basemaps.length > 1) {
+            const group = document.createElement('fieldset');
+            group.className = 'osm-map-layers-group';
+            const legend = document.createElement('legend');
+            legend.textContent = 'Basemap';
+            group.appendChild(legend);
+            basemaps.forEach((layer) => {
+                const label = document.createElement('label');
+                const input = document.createElement('input');
+                input.type = 'radio';
+                input.name = `${this.containerId}-basemap`;
+                input.value = layer.id;
+                input.dataset.layerKind = 'basemap';
+                input.checked = layer.id === this.activeBasemapId;
+                input.addEventListener('pointerdown', (event) => event.stopPropagation());
+                input.addEventListener('change', () => {
+                    if (!input.checked) return;
+                    this.activeBasemapId = layer.id;
+                    this._renderAttribution();
+                    this._scheduleRender();
+                });
+                label.append(input, document.createTextNode(layer.label || layer.id));
+                group.appendChild(label);
+            });
+            panel.appendChild(group);
+        }
+
+        const overlays = this.layerManifest?.overlays || [];
+        if (overlays.length) {
+            const group = document.createElement('fieldset');
+            group.className = 'osm-map-layers-group';
+            const legend = document.createElement('legend');
+            legend.textContent = 'Overlays';
+            group.appendChild(legend);
+            overlays.forEach((layer) => {
+                const label = document.createElement('label');
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.value = layer.id;
+                input.dataset.layerKind = 'overlay';
+                input.checked = this.activeOverlayIds.has(layer.id);
+                input.addEventListener('pointerdown', (event) => event.stopPropagation());
+                input.addEventListener('change', () => {
+                    if (input.checked) this.activeOverlayIds.add(layer.id);
+                    else this.activeOverlayIds.delete(layer.id);
+                    this._renderAttribution();
+                    this._scheduleRender();
+                });
+                label.append(input, document.createTextNode(layer.label || layer.id));
+                group.appendChild(label);
+            });
+            panel.appendChild(group);
+        }
+
+        const dataLayers = this.layerManifest?.dataLayers || [];
+        if (dataLayers.length) {
+            const group = document.createElement('fieldset');
+            group.className = 'osm-map-layers-group';
+            const legend = document.createElement('legend');
+            legend.textContent = 'Your data';
+            group.appendChild(legend);
+            dataLayers.forEach((layer) => {
+                const label = document.createElement('label');
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.value = layer.id;
+                input.dataset.layerKind = 'data';
+                input.checked = this.activeDataLayerIds.has(layer.id);
+                input.addEventListener('pointerdown', (event) => event.stopPropagation());
+                input.addEventListener('change', () => {
+                    if (input.checked) this.activeDataLayerIds.add(layer.id);
+                    else this.activeDataLayerIds.delete(layer.id);
+                    this._scheduleRender();
+                });
+                label.append(input, document.createTextNode(layer.label || layer.id));
+                group.appendChild(label);
+            });
+
+            const modeLabel = document.createElement('label');
+            modeLabel.textContent = 'Display';
+            const mode = document.createElement('select');
+            mode.dataset.layerKind = 'data-mode';
+            mode.setAttribute('aria-label', 'User data display mode');
+            [
+                ['auto', 'Auto (performance)'],
+                ['points', 'Individual points'],
+                ['clusters', 'Clusters'],
+            ].forEach(([value, label]) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = label;
+                option.selected = value === this.dataLayerMode;
+                mode.appendChild(option);
+            });
+            mode.addEventListener('pointerdown', (event) => event.stopPropagation());
+            mode.addEventListener('change', () => {
+                this.dataLayerMode = mode.value;
+                this._scheduleRender();
+            });
+            modeLabel.appendChild(mode);
+            group.appendChild(modeLabel);
+            panel.appendChild(group);
+        }
+
+        this.layersControl = panel;
+        return panel;
+    }
+
+    _syncLayerControl() {
+        if (!this.layersControl) return;
+        this.layersControl.querySelectorAll('input[data-layer-kind="basemap"]').forEach((input) => {
+            input.checked = input.value === this.activeBasemapId;
+        });
+        this.layersControl.querySelectorAll('input[data-layer-kind="overlay"]').forEach((input) => {
+            input.checked = this.activeOverlayIds.has(input.value);
+        });
+        this.layersControl.querySelectorAll('input[data-layer-kind="data"]').forEach((input) => {
+            input.checked = this.activeDataLayerIds.has(input.value);
+        });
+        const mode = this.layersControl.querySelector('select[data-layer-kind="data-mode"]');
+        if (mode) mode.value = this.dataLayerMode;
+    }
+
+    _buildSidebar(overlay) {
+        const sidebar = document.createElement('aside');
+        sidebar.className = 'osm-map-sidebar';
+        sidebar.setAttribute('aria-label', 'Map locations');
+
+        const heading = document.createElement('div');
+        heading.className = 'osm-map-sidebar-heading';
+        const title = document.createElement('span');
+        title.textContent = 'Locations';
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'osm-map-sidebar-toggle';
+        toggle.setAttribute('aria-expanded', 'true');
+        toggle.setAttribute('aria-label', 'Collapse map sidebar');
+        toggle.textContent = '×';
+        toggle.addEventListener('pointerdown', (event) => event.stopPropagation());
+        toggle.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const collapsed = sidebar.classList.toggle('is-collapsed');
+            toggle.textContent = collapsed ? '☰' : '×';
+            toggle.setAttribute('aria-expanded', String(!collapsed));
+            toggle.setAttribute('aria-label', collapsed ? 'Expand map sidebar' : 'Collapse map sidebar');
+        });
+        heading.append(title, toggle);
+
+        const search = document.createElement('input');
+        search.className = 'osm-map-search';
+        search.type = 'search';
+        search.placeholder = 'Search places or mapped locations';
+        search.autocomplete = 'off';
+        search.setAttribute('aria-label', 'Search places or mapped locations');
+        search.addEventListener('pointerdown', (event) => event.stopPropagation());
+        search.addEventListener('input', () => this._searchSidebar(search.value));
+
+        const results = document.createElement('div');
+        results.className = 'osm-map-search-results';
+        results.setAttribute('role', 'list');
+        results.setAttribute('aria-live', 'polite');
+
+        const details = document.createElement('div');
+        details.className = 'osm-map-details';
+        this.sidebar = sidebar;
+        this.sidebarSearch = search;
+        this.sidebarResults = results;
+        this.sidebarDetails = details;
+        sidebar.append(heading, search, results, details);
+        if (window.matchMedia?.('(max-width: 620px)').matches) {
+            sidebar.classList.add('is-collapsed');
+            toggle.textContent = '☰';
+            toggle.setAttribute('aria-expanded', 'false');
+            toggle.setAttribute('aria-label', 'Expand map sidebar');
+        }
+        this._renderSidebarResults('');
+        this._renderSidebarDetails(overlay);
+        return sidebar;
+    }
+
+    _searchSidebar(query, focusFirstExternal = false) {
+        const text = String(query || '').trim();
+        this.externalSearchResults = [];
+        if (this.searchTimer) clearTimeout(this.searchTimer);
+        this.searchAbort?.abort();
+        this.searchPending = text.length >= 2;
+        this._renderSidebarResults(text);
+        if (text.length < 2) return;
+        this.searchTimer = setTimeout(() => {
+            this.searchTimer = null;
+            this._searchExternalPlaces(text, focusFirstExternal);
+        }, 300);
+    }
+
+    async _searchExternalPlaces(query, focusFirstExternal = false) {
+        this.searchAbort?.abort();
+        const controller = new AbortController();
+        this.searchAbort = controller;
+        try {
+            const response = await fetch(`/api/map-search?q=${encodeURIComponent(query)}`, {
+                signal: controller.signal,
+            });
+            if (!response.ok) {
+                if (this.sidebarSearch?.value.trim() === query) {
+                    this.searchPending = false;
+                    this._renderSidebarResults(query);
+                }
+                return;
+            }
+            const payload = await response.json();
+            if (this.sidebarSearch?.value.trim() !== query) return;
+            this.externalSearchResults = Array.isArray(payload?.results) ? payload.results : [];
+            this.searchPending = false;
+            this._renderSidebarResults(query);
+            if (focusFirstExternal && this.externalSearchResults[0]) {
+                this._focusExternalPlace(this.externalSearchResults[0]);
+            }
+        } catch (error) {
+            if (error?.name !== 'AbortError') console.warn('[OsmMapRenderer] Place search unavailable', error);
+            if (this.sidebarSearch?.value.trim() === query) {
+                this.searchPending = false;
+                this._renderSidebarResults(query);
+            }
+        } finally {
+            if (this.searchAbort === controller) this.searchAbort = null;
+        }
+    }
+
+    _appendSearchSection(label) {
+        const heading = document.createElement('div');
+        heading.className = 'osm-map-search-section';
+        heading.textContent = label;
+        this.sidebarResults.appendChild(heading);
+    }
+
+    _renderSidebarResults(query) {
+        if (!this.sidebarResults) return;
+        const text = String(query || '').trim().toLocaleLowerCase();
+        const points = this.map?.overlays?.[0]?.points || [];
+        const matches = points
+            .filter((point) => !text || String(point.label || '').toLocaleLowerCase().includes(text))
+            .slice(0, 25);
+        this.sidebarResults.textContent = '';
+        if (matches.length) {
+            if (text) this._appendSearchSection('Mapped results');
+            matches.forEach((point) => {
+                const result = document.createElement('button');
+                result.type = 'button';
+                result.className = 'osm-map-search-result';
+                result.setAttribute('role', 'listitem');
+                result.classList.toggle('is-selected', point.placeKey === this.selectedPlaceKey);
+                result.textContent = point.label || 'Unnamed location';
+                result.title = point.label || 'Unnamed location';
+                result.addEventListener('pointerdown', (event) => event.stopPropagation());
+                result.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    this._focusPoint(point, true);
+                });
+                this.sidebarResults.appendChild(result);
+            });
+        }
+        if (text && this.externalSearchResults.length) {
+            this._appendSearchSection('Place search');
+            this.externalSearchResults.slice(0, 5).forEach((place) => {
+                const result = document.createElement('button');
+                result.type = 'button';
+                result.className = 'osm-map-search-result';
+                result.setAttribute('role', 'listitem');
+                result.textContent = place.label || 'Unnamed place';
+                result.title = place.label || 'Unnamed place';
+                result.addEventListener('pointerdown', (event) => event.stopPropagation());
+                result.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    this._focusExternalPlace(place);
+                });
+                this.sidebarResults.appendChild(result);
+            });
+        }
+        if (!matches.length && !this.externalSearchResults.length) {
+            const empty = document.createElement('div');
+            empty.className = 'osm-map-search-empty';
+            empty.textContent = text
+                ? (this.searchPending ? 'Searching places…' : 'No matching places found.')
+                : 'No locations were mapped.';
+            this.sidebarResults.appendChild(empty);
+        }
+    }
+
+    _renderSidebarDetails(overlay = this.map?.overlays?.[0]) {
+        if (!this.sidebarDetails) return;
+        const points = overlay?.points || [];
+        const point = points.find((candidate) => candidate.placeKey === this.selectedPlaceKey);
+        this.sidebarDetails.textContent = '';
+        if (this.externalLocation) {
+            const title = document.createElement('strong');
+            title.textContent = this.externalLocation.label || 'Searched place';
+            const text = document.createElement('div');
+            text.textContent = 'Map search result';
+            this.sidebarDetails.append(title, text);
+            return;
+        }
+        if (point) {
+            const format = makeValueFormatter(this.config?.jeenFormat || { kind: 'number', compact: true });
+            const title = document.createElement('strong');
+            title.textContent = point.label || 'Selected location';
+            const values = document.createElement('div');
+            const rowCount = point.rowCount > 1 ? ` · ${point.rowCount} rows` : '';
+            values.textContent = `${overlay.metric || 'Value'}: ${format(point.value)}${rowCount}`;
+            this.sidebarDetails.append(title, values);
+            if (point.value2 != null) {
+                const size = document.createElement('div');
+                size.textContent = `${overlay.sizeMetric || 'Size'}: ${format(point.value2)}`;
+                this.sidebarDetails.appendChild(size);
+            }
+            return;
+        }
+        const status = document.createElement('div');
+        status.className = 'osm-map-status';
+        const unmatched = Number(this.map?.unmatchedCount || 0);
+        status.textContent = unmatched
+            ? `${points.length} mapped · ${unmatched} could not be mapped`
+            : `${points.length} mapped location${points.length === 1 ? '' : 's'}`;
+        this.sidebarDetails.appendChild(status);
+    }
+
     _buildAttribution(map) {
         const attribution = document.createElement('div');
         attribution.className = 'osm-map-attribution';
-        const link = document.createElement('a');
-        link.href = 'https://www.openstreetmap.org/copyright';
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
-        link.textContent = map.basemap?.attribution || '© OpenStreetMap contributors';
-        attribution.appendChild(link);
+        this.attribution = attribution;
+        this._renderAttribution(map);
         return attribution;
+    }
+
+    _renderAttribution(fallbackMap = this.map) {
+        if (!this.attribution) return;
+        const activeLayers = this._activeTileLayers();
+        const fallback = fallbackMap?.basemap;
+        const entries = activeLayers.length ? activeLayers : (fallback ? [{
+            attribution: fallback.attribution,
+            attributionUrl: 'https://www.openstreetmap.org/copyright',
+        }] : []);
+        this.attribution.textContent = '';
+        entries.forEach((layer, index) => {
+            if (index) this.attribution.append(document.createTextNode(' · '));
+            const link = document.createElement('a');
+            link.href = layer.attributionUrl || 'https://www.openstreetmap.org/copyright';
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = layer.attribution || '© OpenStreetMap contributors';
+            this.attribution.appendChild(link);
+        });
+    }
+
+    _scheduleRender() {
+        if (this.renderFrame != null) return;
+        const run = () => {
+            this.renderFrame = null;
+            this.renderFrameIsAnimation = false;
+            this._render();
+        };
+        if (typeof requestAnimationFrame === 'function') {
+            this.renderFrameIsAnimation = true;
+            this.renderFrame = requestAnimationFrame(run);
+        } else {
+            this.renderFrame = setTimeout(run, 0);
+        }
+    }
+
+    _emitMetrics(metrics) {
+        const detail = { type: 'osm-map-render', ...metrics };
+        this.hooks.onMetrics?.(detail);
+        document.dispatchEvent(new CustomEvent('jeen:osm-map-metrics', { detail }));
     }
 
     _render() {
         if (!this.root || !this.center || !this.map) return;
+        if (this.pendingWheelDelta) {
+            this.zoom = clamp(this.zoom + this.pendingWheelDelta, 1, 19);
+            this.pendingWheelDelta = 0;
+        }
+        const startedAt = performance.now();
         const width = this.root.clientWidth || 900;
         const height = this.root.clientHeight || 520;
-        this._renderTiles(width, height);
-        this._renderMarkers(width, height);
+        const tiles = this._renderTiles(width, height);
+        const vectors = this._renderVectorLayers(width, height);
+        const markers = this._renderMarkers(width, height);
+        this._emitMetrics({
+            elapsedMs: Math.round((performance.now() - startedAt) * 100) / 100,
+            visibleTiles: tiles.visible,
+            createdTiles: tiles.created,
+            reusedTiles: tiles.reused,
+            evictedTiles: tiles.evicted,
+            visibleVectorLayers: vectors.active,
+            visibleMarkers: markers.visible,
+            createdMarkers: markers.created,
+            reusedMarkers: markers.reused,
+        });
     }
 
     _renderTiles(width, height) {
-        const tileUrl = this.map.basemap?.tileUrl;
-        if (!tileUrl || !this.tiles) return;
-        const center = projectMercator(this.center.lat, this.center.lng, this.zoom);
-        const minTileX = Math.floor((center.x - width / 2) / TILE_SIZE);
-        const maxTileX = Math.floor((center.x + width / 2) / TILE_SIZE);
-        const minTileY = Math.floor((center.y - height / 2) / TILE_SIZE);
-        const maxTileY = Math.floor((center.y + height / 2) / TILE_SIZE);
-        const tileCount = 2 ** this.zoom;
-        this.tiles.textContent = '';
+        if (!this.tiles) return {
+            visible: 0, created: 0, reused: 0, evicted: 0,
+        };
+        const { center, tiles } = visibleMapTiles(this.center, this.zoom, width, height);
+        const activeLayers = this._activeTileLayers().filter((layer) => layer.tileUrl);
+        const activeLayerIds = new Set(activeLayers.map((layer) => layer.id));
+        const wanted = new Set();
+        let created = 0;
+        let reused = 0;
 
-        for (let tileY = minTileY; tileY <= maxTileY; tileY += 1) {
-            if (tileY < 0 || tileY >= tileCount) continue;
-            for (let tileX = minTileX; tileX <= maxTileX; tileX += 1) {
-                const wrappedX = ((tileX % tileCount) + tileCount) % tileCount;
-                const image = document.createElement('img');
-                image.alt = '';
-                image.draggable = false;
-                image.src = tileUrl
-                    .replace('{z}', String(this.zoom))
-                    .replace('{x}', String(wrappedX))
-                    .replace('{y}', String(tileY));
-                image.style.left = `${tileX * TILE_SIZE - center.x + width / 2}px`;
-                image.style.top = `${tileY * TILE_SIZE - center.y + height / 2}px`;
-                this.tiles.appendChild(image);
+        for (const [layerId, pane] of this.tilePanes.entries()) {
+            pane.hidden = !activeLayerIds.has(layerId);
+        }
+        for (const layer of activeLayers) {
+            let pane = this.tilePanes.get(layer.id);
+            if (!pane) {
+                pane = document.createElement('div');
+                pane.className = 'osm-map-tile-pane';
+                pane.dataset.layerId = layer.id;
+                this.tilePanes.set(layer.id, pane);
+                this.tiles.appendChild(pane);
+            }
+            pane.hidden = false;
+            for (const tile of tiles) {
+                const key = tileCacheKey(layer.id, this.zoom, tile.x, tile.y);
+                wanted.add(key);
+                let record = this.tileCache.get(key);
+                if (!record) {
+                    const image = document.createElement('img');
+                    image.alt = '';
+                    image.draggable = false;
+                    image.dataset.tileKey = key;
+                    image.src = layer.tileUrl
+                        .replace('{z}', String(this.zoom))
+                        .replace('{x}', String(tile.wrappedX))
+                        .replace('{y}', String(tile.y));
+                    pane.appendChild(image);
+                    record = { node: image, pane, lastUsed: 0 };
+                    this.tileCache.set(key, record);
+                    created += 1;
+                } else {
+                    reused += 1;
+                    if (record.node.parentElement !== pane) pane.appendChild(record.node);
+                }
+                record.lastUsed = ++this.tileEpoch;
+                record.node.hidden = false;
+                record.node.style.left = `${tile.x * TILE_SIZE - center.x + width / 2}px`;
+                record.node.style.top = `${tile.y * TILE_SIZE - center.y + height / 2}px`;
             }
         }
+
+        const reconciliation = reconcileTileKeys(this.tileCache.keys(), wanted);
+        for (const key of reconciliation.hide) {
+            const record = this.tileCache.get(key);
+            if (record) record.node.hidden = true;
+        }
+        const candidates = [...this.tileCache.entries()]
+            .filter(([key]) => reconciliation.hide.includes(key))
+            .sort(([, left], [, right]) => left.lastUsed - right.lastUsed);
+        let evicted = 0;
+        while (this.tileCache.size > MAX_CACHED_TILES && candidates.length) {
+            const [key, record] = candidates.shift();
+            record.node.remove();
+            this.tileCache.delete(key);
+            evicted += 1;
+        }
+        return {
+            visible: wanted.size,
+            created,
+            reused,
+            evicted,
+        };
     }
 
-    _renderMarkers(width, height) {
-        if (!this.markers) return;
-        const overlay = this.map.overlays?.[0] || {};
-        const format = makeValueFormatter(this.config?.jeenFormat || { kind: 'number', compact: true });
-        const center = projectMercator(this.center.lat, this.center.lng, this.zoom);
-        const colorRange = overlay.colorRange || {};
-        const sizeRange = overlay.sizeRange || colorRange;
-        this.markers.textContent = '';
+    _renderVectorLayers(width, height) {
+        const layers = this._activeVectorLayers();
+        if (!this.vectors) return { active: 0 };
+        if (!layers.length) {
+            this.vectors.hidden = true;
+            return { active: 0 };
+        }
 
+        const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
+        const requiredWidth = Math.round(width * pixelRatio);
+        const requiredHeight = Math.round(height * pixelRatio);
+        if (this.vectors.width !== requiredWidth || this.vectors.height !== requiredHeight) {
+            this.vectors.width = requiredWidth;
+            this.vectors.height = requiredHeight;
+            this.vectors.style.width = `${width}px`;
+            this.vectors.style.height = `${height}px`;
+        }
+        this.vectors.hidden = false;
+        const context = this.vectors.getContext('2d');
+        if (!context) return { active: layers.length };
+        context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        context.clearRect(0, 0, width, height);
+
+        const projectedCenter = projectMercator(this.center.lat, this.center.lng, this.zoom);
+        for (const layer of layers) {
+            if (Number.isFinite(Number(layer.minZoom)) && this.zoom < Number(layer.minZoom)) {
+                continue;
+            }
+            const vector = this.vectorData.get(layer.id);
+            if (!vector) {
+                this._loadVectorLayer(layer);
+                continue;
+            }
+            if (vector.lines.length) {
+                context.save();
+                context.strokeStyle = '#7c2d12';
+                context.globalAlpha = 0.72;
+                context.lineWidth = 1.25;
+                context.setLineDash([5, 4]);
+                context.beginPath();
+                for (const coordinates of vector.lines) {
+                    let previousX = null;
+                    let started = false;
+                    for (const coordinate of coordinates) {
+                        const lng = Number(coordinate?.[0]);
+                        const lat = Number(coordinate?.[1]);
+                        if (!validCoordinates(lat, lng)) {
+                            started = false;
+                            previousX = null;
+                            continue;
+                        }
+                        const projected = projectMercator(lat, lng, this.zoom);
+                        const left = projected.x - projectedCenter.x + width / 2;
+                        const top = projected.y - projectedCenter.y + height / 2;
+                        const crossedDateline = previousX != null
+                            && Math.abs(projected.x - previousX) > (TILE_SIZE * 2 ** this.zoom) / 2;
+                        if (!started || crossedDateline) {
+                            context.moveTo(left, top);
+                            started = true;
+                        } else {
+                            context.lineTo(left, top);
+                        }
+                        previousX = projected.x;
+                    }
+                }
+                context.stroke();
+                context.restore();
+            }
+            if (vector.points.length) {
+                this._renderVectorPoints(context, vector.points, projectedCenter, width, height);
+            }
+        }
+        return { active: layers.length };
+    }
+
+    _renderVectorPoints(context, points, projectedCenter, width, height) {
+        const clusters = new Map();
+        for (const point of points) {
+            const projected = projectMercator(point.lat, point.lng, this.zoom);
+            const left = projected.x - projectedCenter.x + width / 2;
+            const top = projected.y - projectedCenter.y + height / 2;
+            if (left < -12 || left > width + 12 || top < -12 || top > height + 12) continue;
+            const key = `${Math.floor(left / 20)}:${Math.floor(top / 20)}`;
+            const cluster = clusters.get(key) || { left, top, count: 0 };
+            cluster.count += 1;
+            clusters.set(key, cluster);
+        }
+        context.save();
+        context.fillStyle = '#0369a1';
+        context.globalAlpha = 0.78;
+        for (const cluster of clusters.values()) {
+            const radius = cluster.count > 1 ? Math.min(9, 4 + Math.log2(cluster.count)) : 3;
+            context.beginPath();
+            context.arc(cluster.left, cluster.top, radius, 0, Math.PI * 2);
+            context.fill();
+            if (cluster.count > 1 && this.zoom >= 6) {
+                context.fillStyle = '#ffffff';
+                context.globalAlpha = 1;
+                context.font = '9px system-ui, sans-serif';
+                context.textAlign = 'center';
+                context.textBaseline = 'middle';
+                context.fillText(String(cluster.count), cluster.left, cluster.top);
+                context.fillStyle = '#0369a1';
+                context.globalAlpha = 0.78;
+            }
+        }
+        context.restore();
+    }
+
+    _loadVectorLayer(layer) {
+        if (this.vectorLoads.has(layer.id) || !layer.dataUrl) return;
+        const load = fetch(layer.dataUrl)
+            .then((response) => {
+                if (!response.ok) throw new Error(`Vector layer unavailable (${response.status})`);
+                return response.json();
+            })
+            .then((payload) => {
+                const lines = [];
+                const points = [];
+                for (const feature of payload?.features || []) {
+                    const geometry = feature?.geometry || {};
+                    if (geometry.type === 'LineString' && Array.isArray(geometry.coordinates)) {
+                        lines.push(geometry.coordinates);
+                    } else if (geometry.type === 'MultiLineString' && Array.isArray(geometry.coordinates)) {
+                        lines.push(...geometry.coordinates.filter(Array.isArray));
+                    } else if (geometry.type === 'Point' && Array.isArray(geometry.coordinates)) {
+                        const [lng, lat] = geometry.coordinates.map(Number);
+                        if (validCoordinates(lat, lng)) {
+                            points.push({
+                                lat,
+                                lng,
+                                label: String(feature?.properties?.name || 'Port'),
+                                key: String(feature?.properties?.ne_id || `${lat}/${lng}`),
+                            });
+                        }
+                    } else if (geometry.type === 'MultiPoint' && Array.isArray(geometry.coordinates)) {
+                        geometry.coordinates.forEach((coordinate, index) => {
+                            const [lng, lat] = (coordinate || []).map(Number);
+                            if (validCoordinates(lat, lng)) {
+                                points.push({
+                                    lat,
+                                    lng,
+                                    label: String(feature?.properties?.name || 'Port'),
+                                    key: String(feature?.properties?.ne_id || `${lat}/${lng}/${index}`),
+                                });
+                            }
+                        });
+                    }
+                }
+                this.vectorData.set(layer.id, { lines, points });
+                if (this.root) this._scheduleRender();
+            })
+            .catch((error) => {
+                console.warn('[OsmMapRenderer] Vector layer unavailable', error);
+            })
+            .finally(() => {
+                this.vectorLoads.delete(layer.id);
+            });
+        this.vectorLoads.set(layer.id, load);
+    }
+
+    _displayDataPoints(overlay, center, width, height) {
+        if (!this.activeDataLayerIds.has('user-data')) return [];
+        const visible = [];
         for (const point of overlay.points || []) {
             const projected = projectMercator(point.lat, point.lng, this.zoom);
             const left = projected.x - center.x + width / 2;
             const top = projected.y - center.y + height / 2;
             if (left < -36 || left > width + 36 || top < -36 || top > height + 36) continue;
+            visible.push({ ...point, _left: left, _top: top });
+        }
+        const mode = this.dataLayerMode === 'auto'
+            ? (visible.length > MAX_DOM_MARKERS ? 'clusters' : 'points')
+            : this.dataLayerMode;
+        if (mode === 'points' && visible.length <= MAX_DOM_MARKERS) return visible;
+
+        const cells = new Map();
+        const aggregate = overlay.aggregate || 'sum';
+        for (const point of visible) {
+            const cellX = Math.floor(point._left / CLUSTER_CELL_SIZE);
+            const cellY = Math.floor(point._top / CLUSTER_CELL_SIZE);
+            const key = `${cellX}:${cellY}`;
+            let cluster = cells.get(key);
+            if (!cluster) {
+                cluster = {
+                    label: point.label,
+                    lat: point.lat,
+                    lng: point.lng,
+                    value: aggregate === 'min' ? Infinity : (aggregate === 'max' ? -Infinity : 0),
+                    value2: aggregate === 'min' ? Infinity : (aggregate === 'max' ? -Infinity : 0),
+                    _valueTotal: 0,
+                    _value2Total: 0,
+                    _weight: 0,
+                    rowCount: 0,
+                    rowIndexes: [],
+                    placeKey: `cluster:${this.zoom}:${key}`,
+                    _left: 0,
+                    _top: 0,
+                    _count: 0,
+                    isCluster: true,
+                };
+                cells.set(key, cluster);
+            }
+            const weight = Math.max(1, Number(point.rowCount) || 1);
+            const value = Number(point.value) || 0;
+            const value2 = Number(point.value2 ?? point.value) || 0;
+            if (aggregate === 'min') {
+                cluster.value = Math.min(cluster.value, value);
+                cluster.value2 = Math.min(cluster.value2, value2);
+            } else if (aggregate === 'max') {
+                cluster.value = Math.max(cluster.value, value);
+                cluster.value2 = Math.max(cluster.value2, value2);
+            } else if (aggregate === 'avg') {
+                cluster._valueTotal += value * weight;
+                cluster._value2Total += value2 * weight;
+                cluster._weight += weight;
+            } else {
+                cluster.value += value;
+                cluster.value2 += value2;
+            }
+            cluster.rowCount += weight;
+            cluster.rowIndexes.push(...(point.rowIndexes || []).slice(0, 200 - cluster.rowIndexes.length));
+            cluster._left += point._left;
+            cluster._top += point._top;
+            cluster._count += 1;
+        }
+        return [...cells.values()].map((cluster) => ({
+            ...cluster,
+            label: cluster._count === 1 ? cluster.label : `${cluster._count} locations`,
+            _left: cluster._left / cluster._count,
+            _top: cluster._top / cluster._count,
+            value: aggregate === 'avg' ? cluster._valueTotal / cluster._weight : cluster.value,
+            value2: aggregate === 'avg' ? cluster._value2Total / cluster._weight : cluster.value2,
+        }));
+    }
+
+    _renderMarkers(width, height) {
+        if (!this.markers) return { visible: 0, created: 0, reused: 0 };
+        const overlay = this.map.overlays?.[0] || {};
+        const format = makeValueFormatter(this.config?.jeenFormat || { kind: 'number', compact: true });
+        const center = projectMercator(this.center.lat, this.center.lng, this.zoom);
+        const colorRange = overlay.colorRange || {};
+        const sizeRange = overlay.sizeRange || colorRange;
+        const visible = new Set();
+        let created = 0;
+        let reused = 0;
+
+        for (const point of this._displayDataPoints(overlay, center, width, height)) {
+            const { _left: left, _top: top } = point;
+            const markerKey = point.placeKey || `${point.lat}/${point.lng}`;
+            visible.add(markerKey);
             const sizeValue = point.value2 ?? point.value;
             const radius = radiusForValue(sizeValue, sizeRange.min, sizeRange.max);
-            const marker = document.createElement('button');
-            marker.type = 'button';
-            marker.className = 'osm-map-marker';
+            let marker = this.markerNodes.get(markerKey);
+            if (!marker) {
+                marker = document.createElement('button');
+                marker.type = 'button';
+                marker.className = 'osm-map-marker';
+                marker.addEventListener('pointerdown', (event) => event.stopPropagation());
+                marker.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    this._focusPoint(marker._jeenPoint, true);
+                });
+                this.markerNodes.set(markerKey, marker);
+                this.markers.appendChild(marker);
+                created += 1;
+            } else {
+                reused += 1;
+            }
+            marker._jeenPoint = point;
             marker.style.left = `${left}px`;
             marker.style.top = `${top}px`;
             marker.style.width = `${radius * 2}px`;
             marker.style.height = `${radius * 2}px`;
-            marker.style.backgroundColor = colorForValue(point.value, colorRange.min, colorRange.max);
+            marker.style.backgroundColor = colorForValue(
+                point.value, colorRange.min, colorRange.max, overlay.palette,
+            );
+            marker.classList.toggle('is-selected', point.placeKey === this.selectedPlaceKey);
             const rows = point.rowCount > 1 ? ` (${point.rowCount} rows)` : '';
             const secondary = point.value2 == null ? '' : `\n${overlay.sizeMetric}: ${format(point.value2)}`;
             const label = `${point.label}\n${overlay.metric}: ${format(point.value)}${secondary}${rows}`;
             marker.title = label;
             marker.setAttribute('aria-label', label.replaceAll('\n', ', '));
-            this.markers.appendChild(marker);
+            marker.hidden = false;
         }
+        for (const [key, marker] of this.markerNodes.entries()) {
+            if (!visible.has(key)) {
+                marker.remove();
+                this.markerNodes.delete(key);
+            }
+        }
+        if (this.externalLocation) {
+            const projected = projectMercator(this.externalLocation.lat, this.externalLocation.lng, this.zoom);
+            const left = projected.x - center.x + width / 2;
+            const top = projected.y - center.y + height / 2;
+            let marker = this.externalMarker;
+            if (!marker) {
+                marker = document.createElement('button');
+                marker.type = 'button';
+                marker.className = 'osm-map-marker is-search-result';
+                const dot = document.createElement('span');
+                dot.textContent = '●';
+                marker.appendChild(dot);
+                marker.addEventListener('pointerdown', (event) => event.stopPropagation());
+                marker.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    this._renderSidebarDetails();
+                });
+                this.externalMarker = marker;
+                this.markers.appendChild(marker);
+            }
+            marker.style.left = `${left}px`;
+            marker.style.top = `${top}px`;
+            marker.style.width = '26px';
+            marker.style.height = '26px';
+            marker.title = this.externalLocation.label || 'Searched place';
+            marker.setAttribute('aria-label', marker.title);
+            marker.hidden = false;
+        } else if (this.externalMarker) {
+            this.externalMarker.remove();
+            this.externalMarker = null;
+        }
+        return { visible: visible.size, created, reused };
+    }
+
+    _handleControl(action) {
+        if (action === 'layers') {
+            this._toggleLayersControl();
+            return;
+        }
+        if (action === 'zoom-in') {
+            this.zoom = clamp(this.zoom + 1, 1, 19);
+        } else if (action === 'zoom-out') {
+            this.zoom = clamp(this.zoom - 1, 1, 19);
+        } else {
+            const fitted = fitMapView(
+                this.map?.extent,
+                this.root?.clientWidth || 900,
+                this.root?.clientHeight || 520,
+            );
+            this.center = fitted.center;
+            this.zoom = fitted.zoom;
+            if (action === 'reset') {
+                this.selectedPlaceKey = null;
+                this.externalLocation = null;
+            }
+        }
+        this._scheduleRender();
+        this._renderSidebarResults(this.sidebarSearch?.value || '');
+        this._renderSidebarDetails();
+    }
+
+    _focusPoint(point, emitSelection = false) {
+        if (!point || !this.center) return;
+        this.center = { lat: Number(point.lat), lng: Number(point.lng) };
+        this.zoom = Math.max(this.zoom, 8);
+        this.selectedPlaceKey = point.placeKey || null;
+        this.externalLocation = null;
+        this._scheduleRender();
+        this._renderSidebarResults(this.sidebarSearch?.value || '');
+        this._renderSidebarDetails();
+        if (emitSelection && typeof this.hooks.onSelect === 'function') {
+            this.hooks.onSelect({
+                placeKey: this.selectedPlaceKey,
+                rowIndexes: Array.isArray(point.rowIndexes) ? point.rowIndexes : [],
+            });
+        }
+    }
+
+    _focusExternalPlace(place) {
+        const lat = Number(place?.lat);
+        const lng = Number(place?.lng);
+        if (!validCoordinates(lat, lng)) return;
+        this.center = { lat, lng };
+        this.zoom = Math.max(this.zoom, 10);
+        this.selectedPlaceKey = null;
+        this.externalLocation = { label: String(place.label || 'Searched place'), lat, lng };
+        this._scheduleRender();
+        this._renderSidebarResults(this.sidebarSearch?.value || '');
+        this._renderSidebarDetails();
+    }
+
+    focusRows(rowIndexes) {
+        const sought = new Set((rowIndexes || []).map(Number));
+        const point = this.map?.overlays?.[0]?.points?.find((candidate) =>
+            (candidate.rowIndexes || []).some((index) => sought.has(Number(index)))
+        );
+        if (point) this._focusPoint(point);
     }
 
     _handleWheel(event) {
@@ -263,8 +1366,8 @@ export class OsmMapRenderer {
         const delta = event.deltaY < 0 ? 1 : -1;
         const next = clamp(this.zoom + delta, 1, 19);
         if (next !== this.zoom) {
-            this.zoom = next;
-            this._render();
+            this.pendingWheelDelta = delta;
+            this._scheduleRender();
         }
     }
 
@@ -282,27 +1385,66 @@ export class OsmMapRenderer {
             start.y - (event.clientY - this.drag.y),
             this.zoom,
         );
-        this._render();
+        this._scheduleRender();
     }
 
     dispose() {
         if (this.resizeObserver) this.resizeObserver.disconnect();
         this.resizeObserver = null;
+        if (this.renderFrame != null) {
+            if (this.renderFrameIsAnimation && typeof cancelAnimationFrame === 'function') {
+                cancelAnimationFrame(this.renderFrame);
+            } else {
+                clearTimeout(this.renderFrame);
+            }
+        }
+        this.renderFrame = null;
+        this.renderFrameIsAnimation = false;
+        this.pendingWheelDelta = 0;
+        if (this.searchTimer) clearTimeout(this.searchTimer);
+        this.searchTimer = null;
+        this.searchAbort?.abort();
+        this.searchAbort = null;
+        this.searchPending = false;
         if (this.root) {
             this.root.removeEventListener('wheel', this._onWheel);
             this.root.removeEventListener('pointerdown', this._onPointerDown);
             this.root.removeEventListener('pointermove', this._onPointerMove);
             this.root.removeEventListener('pointerup', this._onPointerUp);
             this.root.removeEventListener('pointercancel', this._onPointerUp);
+            this.root.removeEventListener('keydown', this._onKeyDown);
         }
         if (this.container) this.container.innerHTML = '';
         this.container = null;
         this.root = null;
         this.tiles = null;
+        this.vectors = null;
         this.markers = null;
+        this.tilePanes.clear();
+        this.tileCache.clear();
+        this.markerNodes.clear();
+        this.externalMarker = null;
+        this.vectorData.clear();
+        this.vectorLoads.clear();
+        this.tileEpoch = 0;
         this.config = null;
         this.map = null;
+        this.layerManifest = null;
+        this.activeBasemapId = null;
+        this.activeOverlayIds.clear();
+        this.activeDataLayerIds.clear();
+        this.dataLayerMode = 'auto';
+        this.layersControl = null;
+        this.layersButton = null;
+        this.attribution = null;
         this.center = null;
         this.drag = null;
+        this.selectedPlaceKey = null;
+        this.sidebar = null;
+        this.sidebarSearch = null;
+        this.sidebarResults = null;
+        this.sidebarDetails = null;
+        this.externalSearchResults = [];
+        this.externalLocation = null;
     }
 }

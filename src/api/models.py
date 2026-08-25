@@ -105,6 +105,15 @@ class GenerateChartRequest(BaseModel):
     x_column: Optional[str] = None
     y_column: Optional[str] = None
     series_column: Optional[str] = None
+    # Explicit map bindings. These are optional so the LLM can choose from the
+    # geo-role candidates on the first render; user changes always override it.
+    location_column: Optional[str] = None
+    latitude_column: Optional[str] = None
+    longitude_column: Optional[str] = None
+    location_parts: Optional[Dict[str, str]] = None
+    value_column: Optional[str] = None
+    value2_column: Optional[str] = None
+    aggregate: Optional[str] = None
 
 
 class GenerateChartResponse(BaseModel):
@@ -140,6 +149,12 @@ class EditChartRequest(BaseModel):
     column_names: List[str]
     sample_data: List[List[Any]]
     recent_messages: Optional[List[ChatMessage]] = None
+    # OSM edits use the compact spec and rebuild deterministically from the
+    # cached full dataset instead of letting the model alter point payloads.
+    chart_spec: Optional[Dict[str, Any]] = None
+    query_id: Optional[str] = None
+    user_id: Optional[str] = None
+    all_data: Optional[List[List[Any]]] = None
 
 
 class DerivedSeriesSpec(BaseModel):
@@ -155,6 +170,9 @@ class EditChartResponse(BaseModel):
     derived_series: List[DerivedSeriesSpec] = []
     notes: Optional[str] = None
     out_of_scope: bool = False
+    chart_spec: Optional[Dict[str, Any]] = None
+    view_commands: List[Dict[str, Any]] = []
+    rebuild_required: bool = False
     prompt: Optional[str] = None
     system_message: Optional[str] = None
 

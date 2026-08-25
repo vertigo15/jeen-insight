@@ -25,6 +25,7 @@ from src.api.map_locations import (
     lookup_israel_city,
 )
 from src.api.map_geocoding import location_key, valid_coordinates
+from src.api.map_layers import browser_map_layers
 
 # Measure names that belong on a combo chart's SECONDARY (right) axis as a line:
 # percentages, rates and period-over-period change metrics live on a very
@@ -1076,6 +1077,7 @@ def _new_point_cell(label: str, lat: float, lng: float) -> Dict[str, Any]:
         "lat": lat,
         "lng": lng,
         "rows": 0,
+        "rowIndexes": [],
         "primary": {"sum": 0.0, "count": 0, "rows": 0, "min": math.inf, "max": -math.inf, "first": None},
         "secondary": {"sum": 0.0, "count": 0, "rows": 0, "min": math.inf, "max": -math.inf, "first": None},
     }
@@ -1115,19 +1117,38 @@ def _build_osm_map(spec, rows, ctx):
     value_index = ctx["columns"].index(value_name) if value_name in ctx["columns"] else ctx["y_indexes"][0]
     value2_name = spec.get("value2")
     value2_index = ctx["columns"].index(value2_name) if value2_name in ctx["columns"] else -1
+    location_parts = spec.get("location_parts")
+    location_parts = location_parts if isinstance(location_parts, dict) else {}
+    location_part_columns = [
+        location_parts.get(role)
+        for role in ("place", "admin1", "country", "postal")
+        if location_parts.get(role) in ctx["columns"]
+    ]
+    location_part_indexes = {
+        column: ctx["columns"].index(column) for column in location_part_columns
+    }
     resolved_locations = spec.get("resolved_locations")
     resolved_locations = resolved_locations if isinstance(resolved_locations, dict) else {}
     aggregate = ctx["aggregate"]
 
     grouped: Dict[tuple[float, float], Dict[str, Any]] = {}
     unmatched: List[str] = []
-    for row in rows:
-        label = _as_label(_read_cell(row, loc_name, loc_index)) if loc_index >= 0 else ""
+    unmatched_by_status: Dict[str, set[str]] = {}
+    for row_index, row in enumerate(rows):
+        label_parts = [
+            _as_label(_read_cell(row, column, location_part_indexes[column]))
+            for column in location_part_columns
+        ]
+        label_parts = [part for part in label_parts if part]
+        label = ", ".join(label_parts) or (
+            _as_label(_read_cell(row, loc_name, loc_index)) if loc_index >= 0 else ""
+        )
+        resolution_key = location_key("|".join(label_parts)) or location_key(label)
         lat = _to_number(_read_cell(row, lat_name, lat_index)) if lat_index >= 0 else None
         lng = _to_number(_read_cell(row, lng_name, lng_index)) if lng_index >= 0 else None
-        if not valid_coordinates(lat, lng):
+        if not valid_coordinates(lat, lng) or (lat == 0 and lng == 0):
             city = lookup_israel_city(label)
-            resolved = resolved_locations.get(location_key(label))
+            resolved = resolved_locations.get(resolution_key)
             if city and valid_coordinates(city.get("lat"), city.get("lng")):
                 lat, lng = float(city["lat"]), float(city["lng"])
                 label = city.get("name") or label
@@ -1138,6 +1159,14 @@ def _build_osm_map(spec, rows, ctx):
             else:
                 if label and label not in unmatched:
                     unmatched.append(label)
+                status = (
+                    str(resolved.get("status") or "unmatched")
+                    if isinstance(resolved, dict)
+                    else "unmatched"
+                )
+                if status == "unresolved":
+                    status = "unmatched"
+                unmatched_by_status.setdefault(status, set()).add(resolution_key or label)
                 continue
 
         primary = 1.0 if aggregate == "count" else _to_number(_read_cell(row, value_name, value_index))
@@ -1150,6 +1179,7 @@ def _build_osm_map(spec, rows, ctx):
             point = _new_point_cell(label or value_name, point_key[0], point_key[1])
             grouped[point_key] = point
         point["rows"] += 1
+        point["rowIndexes"].append(row_index)
         _add_point_value(point, primary, "primary")
         _add_point_value(point, secondary, "secondary")
 
@@ -1167,6 +1197,8 @@ def _build_osm_map(spec, rows, ctx):
                 "value": _round(value),
                 "value2": _round(value2) if value2 is not None else None,
                 "rowCount": point["rows"],
+                "rowIndexes": point["rowIndexes"][:200],
+                "placeKey": location_key(point["label"]),
             }
         )
 
@@ -1176,6 +1208,13 @@ def _build_osm_map(spec, rows, ctx):
     longitudes = [point["lng"] for point in points]
     show_unmatched = spec.get("show_unmatched")
     show_unmatched = True if show_unmatched is None else bool(show_unmatched)
+    map_layers = browser_map_layers()
+    map_layers["dataLayers"] = [{
+        "id": "user-data",
+        "label": f"{value_name} data",
+        "kind": "data",
+        "defaultVisible": True,
+    }]
 
     return {
         # Maintains the existing chart response shape while telling ChartManager
@@ -1187,11 +1226,15 @@ def _build_osm_map(spec, rows, ctx):
                 "tileUrl": "/api/map-tiles/{z}/{x}/{y}",
                 "attribution": "© OpenStreetMap contributors",
             },
+            "layers": map_layers,
+            "dataLayerMode": spec.get("data_layer_mode") or "auto",
             "overlays": [
                 {
                     "type": "circles",
+                    "palette": spec.get("map_palette") or "blue",
                     "metric": value_name,
                     "sizeMetric": value2_name or value_name,
+                    "aggregate": aggregate,
                     "points": points,
                     "colorRange": {
                         "min": _round(min(primary_values)) if primary_values else 0,
@@ -1213,6 +1256,9 @@ def _build_osm_map(spec, rows, ctx):
             "rowCount": sum(point["rowCount"] for point in points),
             "unmatchedCount": len(unmatched),
             "unmatched": unmatched[:20],
+            "unmatchedByStatus": {
+                status: len(keys) for status, keys in unmatched_by_status.items()
+            },
             "showUnmatched": show_unmatched,
         },
     }
@@ -1242,7 +1288,10 @@ def build_chart_option(spec: Dict[str, Any], dataset: Dict[str, Any]) -> Dict[st
 
     raw_y = spec.get("y")
     y_list = raw_y if isinstance(raw_y, list) else [raw_y]
+    is_virtual_row_count = str(spec.get("value") or "") == "__row_count__"
     y_names = [n for n in y_list if isinstance(n, str) and n in columns]
+    if is_virtual_row_count and not y_names:
+        y_names = ["__row_count__"]
     if not y_names:
         raise ValueError("Spec has no valid measure column")
 

@@ -41,7 +41,9 @@ export class ChartChat {
      *   getCurrentConfig: () => object|null,
      *   getCurrentResults: () => object|null,
      *   getConnection: () => string,
-     *   onApply: (config: object, derivedSeries: Array, notes?: string|null) => void,
+     *   getCurrentSpec?: () => object|null,
+     *   getQueryId?: () => string|null,
+     *   onApply: (config: object, derivedSeries: Array, notes?: string|null, edit?: object) => void,
      *   onReset: () => void
      * }} hooks
      */
@@ -263,12 +265,23 @@ export class ChartChat {
 
         try {
             const payload = this._buildPayload(connection, instruction, config, results);
-            const resp = await fetch('/api/edit-chart', {
+            let resp = await fetch('/api/edit-chart', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
                 signal: this.inFlight.signal,
             });
+            if (resp.status === 409 && config?.jeenOsmMap) {
+                // Result caches are deliberately short-lived. Only resend full
+                // rows for a map rebuild after that rare miss, never on the
+                // normal view-only edit path.
+                resp = await fetch('/api/edit-chart', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ...payload, ...this._fallbackRows(results) }),
+                    signal: this.inFlight.signal,
+                });
+            }
 
             if (myRequestId !== this.idCounter) return; // superseded
 
@@ -296,7 +309,7 @@ export class ChartChat {
             // Apply via the parent (ChartManager owns the render loop + undo).
             if (this.hooks.onApply) {
                 try {
-                    this.hooks.onApply(newConfig, derived, note || null);
+                    this.hooks.onApply(newConfig, derived, note || null, data);
                 } catch (e) {
                     console.error('[ChartChat] onApply threw', e);
                     this._setStatus('Got a config back but failed to render it. The chart was not changed.', 'error');
@@ -334,10 +347,22 @@ export class ChartChat {
             connection,
             instruction,
             current_config: config,
+            chart_spec: this.hooks.getCurrentSpec ? this.hooks.getCurrentSpec() : null,
+            query_id: this.hooks.getQueryId ? this.hooks.getQueryId() : null,
             columns: typed,
             column_names: cols,
             sample_data: sample,
             recent_messages: this.messages.slice(-6).map(m => ({ role: m.role, content: m.content })),
+        };
+    }
+
+    _fallbackRows(results) {
+        const cols = (results && Array.isArray(results.columns)) ? results.columns : [];
+        const rows = (results && (results.data || results.rows)) || [];
+        return {
+            all_data: rows.map((row) => (
+                Array.isArray(row) ? row : cols.map((column) => row[column])
+            )),
         };
     }
 
