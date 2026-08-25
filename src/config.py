@@ -43,6 +43,15 @@ class Settings(BaseSettings):
     OSM_MARITIME_TILE_URL: str = ""
     OSM_MARITIME_TILE_API_KEY: str = ""
     OSM_MARITIME_TILE_API_KEY_HEADER: str = ""
+    # Terrain is a server-proxied raster basemap. The approved default uses the
+    # same managed MapTiler key as Standard; it is disabled until enabled by a
+    # deployment overlay after provider access has been validated.
+    OSM_TERRAIN_ENABLED: bool = False
+    OSM_TERRAIN_TILE_URL: str = (
+        "https://api.maptiler.com/maps/outdoor/256/{z}/{x}/{y}.png?key={api_key}"
+    )
+    OSM_TERRAIN_TILE_API_KEY: str = ""
+    OSM_TERRAIN_TILE_API_KEY_HEADER: str = ""
     # Approved adapters are `nominatim` (managed/self-hosted compatible
     # endpoint) and `maptiler` (uses its default endpoint when BASE_URL is
     # blank). Keep this blank unless the deployment is approved for geocoding.

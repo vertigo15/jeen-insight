@@ -125,6 +125,16 @@ PROMPT_REGISTRY: List[Dict[str, Any]] = [
         "path": _PROMPTS_DIR / "chart_editor.md",
     },
     {
+        "name": "chart_map_editor",
+        "label": "Map Chart Editor",
+        "group": "Other Features",
+        "description": (
+            "Receives an OpenStreetMap chart specification plus an approved layer "
+            "manifest. Returns a validated spec patch and safe map-view commands."
+        ),
+        "path": _PROMPTS_DIR / "chart_map_editor.md",
+    },
+    {
         "name": "insights",
         "label": "Insights",
         "group": "Other Features",

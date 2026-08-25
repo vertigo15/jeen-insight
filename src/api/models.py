@@ -149,6 +149,12 @@ class EditChartRequest(BaseModel):
     column_names: List[str]
     sample_data: List[List[Any]]
     recent_messages: Optional[List[ChatMessage]] = None
+    # OSM edits use the compact spec and rebuild deterministically from the
+    # cached full dataset instead of letting the model alter point payloads.
+    chart_spec: Optional[Dict[str, Any]] = None
+    query_id: Optional[str] = None
+    user_id: Optional[str] = None
+    all_data: Optional[List[List[Any]]] = None
 
 
 class DerivedSeriesSpec(BaseModel):
@@ -164,6 +170,9 @@ class EditChartResponse(BaseModel):
     derived_series: List[DerivedSeriesSpec] = []
     notes: Optional[str] = None
     out_of_scope: bool = False
+    chart_spec: Optional[Dict[str, Any]] = None
+    view_commands: List[Dict[str, Any]] = []
+    rebuild_required: bool = False
     prompt: Optional[str] = None
     system_message: Optional[str] = None
 

@@ -34,6 +34,7 @@ jeen-insights-api:
     OSM_GEOCODER_MAX_UNIQUE_PLACES: "150"
     OSM_GEOCODER_MIN_INTERVAL_SECONDS: "0.10"
     OSM_SEAMARKS_ENABLED: "true"
+    OSM_TERRAIN_ENABLED: "true"
   resources:
     requests:
       cpu: 250m

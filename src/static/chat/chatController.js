@@ -49,7 +49,7 @@
         fused_eval_analytics: 'Analyzed',
     };
 
-    const CHART_MANAGER_URL = '../chart-feature/chartManager.js?v=91';
+    const CHART_MANAGER_URL = '../chart-feature/chartManager.js?v=105';
     const MAX_TABLE_ROWS = 50;
 
     // Viz-head action icons (stroke inherits currentColor for hover/dark mode).

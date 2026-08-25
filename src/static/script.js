@@ -3812,7 +3812,7 @@ window._toggleTraceEvent = _toggleTraceEvent;
 async function initializeChartFeature(results) {
     // Dynamically import ChartManager if not already loaded
     if (!ChartManager) {
-        const module = await import('./chart-feature/chartManager.js?v=104');
+        const module = await import('./chart-feature/chartManager.js?v=105');
         ChartManager = module.ChartManager;
     }
 

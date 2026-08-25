@@ -32,7 +32,7 @@ from src.api.map_geocoding import (
     resolve_osm_locations,
     search_osm_places,
 )
-from src.api.map_layers import configured_map_layers, valid_tile_template
+from src.api.map_layers import browser_map_layers, configured_map_layers, valid_tile_template
 from src.api.models import (
     ChatMessage,
     DerivedSeriesSpec,
@@ -164,6 +164,12 @@ _CHART_EDITOR_PROMPT_PATH = (
     / "prompts"
     / "chart_editor.md"
 )
+_MAP_CHART_EDITOR_PROMPT_PATH = (
+    Path(__file__).resolve().parent.parent.parent
+    / "agent"
+    / "prompts"
+    / "chart_map_editor.md"
+)
 _CHART_EDITOR_MAX_INSTRUCTION_CHARS = 500
 _CHART_EDITOR_MAX_RECENT_MESSAGES = 6
 _CHART_EDITOR_MAX_RECENT_CHARS = 1500
@@ -173,6 +179,11 @@ def _load_chart_editor_prompt() -> str:
     """Re-read the externalised prompt on every call so editing the .md file
     has zero deploy cost in dev."""
     return _CHART_EDITOR_PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def _load_map_chart_editor_prompt() -> str:
+    """Load the constrained map-edit prompt outside the ECharts-only editor."""
+    return _MAP_CHART_EDITOR_PROMPT_PATH.read_text(encoding="utf-8")
 
 
 def _format_recent_messages(messages: Optional[List[ChatMessage]]) -> str:
@@ -214,6 +225,7 @@ _ALLOWED_MAP_NAMES = {"world", "world_detailed", "israel_districts"}
 _ALLOWED_MAP_QUALITIES = {"standard", "detailed"}
 _ALLOWED_MAP_PALETTES = {"blue", "green", "purple", "orange"}
 _ALLOWED_MAP_FOCUS = {"world", "israel", "auto"}
+_ALLOWED_OSM_DATA_LAYER_MODES = {"auto", "points", "clusters"}
 
 
 def _profile_blob(profile: dict) -> str:
@@ -634,6 +646,9 @@ def _validate_chart_spec(
     show_labels = show_labels if isinstance(show_labels, bool) else None
     show_unmatched = spec.get("show_unmatched")
     show_unmatched = show_unmatched if isinstance(show_unmatched, bool) else True
+    data_layer_mode = str(spec.get("data_layer_mode", "")).strip().lower()
+    if data_layer_mode not in _ALLOWED_OSM_DATA_LAYER_MODES:
+        data_layer_mode = "auto"
 
     location_cols = _coerce_columns(spec.get("location"), lowered)
     location = location_cols[0] if location_cols else None
@@ -851,6 +866,7 @@ def _validate_chart_spec(
         "map_palette": map_palette,
         "show_labels": show_labels,
         "show_unmatched": show_unmatched,
+        "data_layer_mode": data_layer_mode,
         "map_focus": map_focus,
         "stacked": bool(spec.get("stacked")),
         "smooth": bool(spec.get("smooth")),
@@ -1039,6 +1055,224 @@ async def generate_chart(request: GenerateChartRequest):
 # ----------------------------------------------------------------------
 # Chart chat: per-session, natural-language edits
 # ----------------------------------------------------------------------
+_MAP_EDIT_SPEC_FIELDS = {
+    "location", "location_parts", "latitude", "longitude", "value", "value2",
+    "aggregate", "value_format", "currency_symbol", "show_unmatched", "title",
+    "y_label", "map_palette", "data_layer_mode",
+}
+
+
+def _is_osm_map_edit(request: EditChartRequest) -> bool:
+    spec = request.chart_spec if isinstance(request.chart_spec, dict) else {}
+    return (
+        spec.get("chart_type") == "osm_map"
+        or isinstance(request.current_config.get("jeenOsmMap"), dict)
+    )
+
+
+def _dataset_from_edit_request(request: EditChartRequest) -> Optional[dict]:
+    if request.all_data and request.column_names:
+        return {"columns": list(request.column_names), "rows": request.all_data}
+    return None
+
+
+def _validate_map_view_commands(commands: Any) -> list[dict[str, Any]]:
+    """Allow only deterministic browser commands over server-approved layers."""
+    manifest = browser_map_layers()
+    basemaps = {layer["id"] for layer in manifest.get("basemaps", [])}
+    overlays = {
+        layer["id"]
+        for section in ("overlays", "vectorOverlays")
+        for layer in manifest.get(section, [])
+    }
+    accepted: list[dict[str, Any]] = []
+    for command in commands if isinstance(commands, list) else []:
+        if not isinstance(command, dict):
+            continue
+        op = str(command.get("op") or "").strip()
+        if op == "set_basemap" and command.get("layer_id") in basemaps:
+            accepted.append({"op": op, "layer_id": command["layer_id"]})
+        elif op == "set_overlays":
+            layer_ids = command.get("layer_ids")
+            if isinstance(layer_ids, list):
+                accepted.append({
+                    "op": op,
+                    "layer_ids": [layer_id for layer_id in layer_ids if layer_id in overlays],
+                })
+        elif op == "set_user_data_visible" and isinstance(command.get("visible"), bool):
+            accepted.append({"op": op, "visible": command["visible"]})
+        elif op == "set_data_mode" and command.get("mode") in _ALLOWED_OSM_DATA_LAYER_MODES:
+            accepted.append({"op": op, "mode": command["mode"]})
+        elif op == "fit_extent":
+            accepted.append({"op": op})
+        elif op == "focus_place" and isinstance(command.get("query"), str):
+            query = command["query"].strip()[:200]
+            if query:
+                accepted.append({"op": op, "query": query})
+        elif op == "select_place" and isinstance(command.get("place_key"), str):
+            place_key = command["place_key"].strip()[:256]
+            if place_key:
+                accepted.append({"op": op, "place_key": place_key})
+        elif op == "clear_selection":
+            accepted.append({"op": op})
+        elif op == "toggle_sidebar" and isinstance(command.get("collapsed"), bool):
+            accepted.append({"op": op, "collapsed": command["collapsed"]})
+    return accepted
+
+
+async def _edit_osm_map_chart(
+    request: EditChartRequest,
+    instruction: str,
+    agent: Any,
+) -> EditChartResponse:
+    """Turn an LLM map edit into a validated spec rebuild plus safe view commands."""
+    base_spec = request.chart_spec if isinstance(request.chart_spec, dict) else {}
+    if base_spec.get("chart_type") != "osm_map":
+        return EditChartResponse(
+            chart_config=request.current_config,
+            chart_type="osm_map",
+            notes="This map needs its chart specification before it can be edited.",
+            out_of_scope=True,
+        )
+
+    column_types_blob = (
+        "\n".join(f"- {c.name} ({c.type})" for c in request.columns) or "(unknown)"
+    )
+    from src.api import state as app_state
+    if app_state.prompt_cache:
+        try:
+            template = await app_state.prompt_cache.get_content("chart_map_editor")
+            model_override = await app_state.prompt_cache.get_model_override("chart_map_editor")
+        except Exception:
+            template = _load_map_chart_editor_prompt()
+            model_override = None
+    else:
+        template = _load_map_chart_editor_prompt()
+        model_override = None
+    system_prompt = template.format(
+        instruction=instruction,
+        chart_spec=json.dumps(base_spec, ensure_ascii=False),
+        layer_manifest=json.dumps(browser_map_layers(), ensure_ascii=False),
+        column_names=json.dumps(request.column_names, ensure_ascii=False),
+        column_types=column_types_blob,
+        recent_messages=_format_recent_messages(request.recent_messages),
+    )
+    try:
+        response = await agent.llm.generate(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": instruction},
+            ],
+            temperature=EDIT_CHART_PARAMS.temperature,
+            max_tokens=EDIT_CHART_PARAMS.max_tokens,
+            model_override=model_override,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Map chart edit LLM call failed")
+        return EditChartResponse(
+            chart_config=request.current_config,
+            chart_type="osm_map",
+            chart_spec=base_spec,
+            notes=f"Sorry, the map-edit service is unavailable right now ({exc}).",
+            out_of_scope=True,
+            prompt=system_prompt,
+        )
+
+    parsed = extract_json_object(response.get("content") or "")
+    if not isinstance(parsed, dict):
+        return EditChartResponse(
+            chart_config=request.current_config,
+            chart_type="osm_map",
+            chart_spec=base_spec,
+            notes="I couldn't apply that map edit. Please rephrase it.",
+            out_of_scope=True,
+            prompt=system_prompt,
+        )
+    notes = parsed.get("notes")
+    notes = notes.strip()[:300] if isinstance(notes, str) and notes.strip() else None
+    if bool(parsed.get("out_of_scope")):
+        return EditChartResponse(
+            chart_config=request.current_config,
+            chart_type="osm_map",
+            chart_spec=base_spec,
+            notes=notes,
+            out_of_scope=True,
+            prompt=system_prompt,
+        )
+
+    raw_patch = parsed.get("spec_patch")
+    patch = {
+        key: value for key, value in raw_patch.items()
+        if key in _MAP_EDIT_SPEC_FIELDS
+    } if isinstance(raw_patch, dict) else {}
+    view_commands = _validate_map_view_commands(parsed.get("view_commands"))
+    if not patch:
+        return EditChartResponse(
+            chart_config=request.current_config,
+            chart_type="osm_map",
+            chart_spec=base_spec,
+            view_commands=view_commands,
+            notes=notes,
+            out_of_scope=False,
+            rebuild_required=False,
+            prompt=system_prompt,
+        )
+
+    user_id = require_user_id(request.user_id)
+    await _verify_query_owner(
+        query_id=request.query_id, user_id=user_id, connection=request.connection
+    )
+    dataset = result_cache.get(
+        user_id=user_id, connection=request.connection, query_id=request.query_id,
+    ) or _dataset_from_edit_request(request)
+    if dataset is None:
+        raise HTTPException(status_code=409, detail="cache_miss")
+    profile = profile_dataset(dataset)
+    column_names, numeric_cols, date_cols = _columns_from_profile(profile)
+    geo_hints = await _load_geo_hints(request.connection, column_names)
+    geo_roles = infer_geo_roles(dataset, geo_hints)
+    merged = {**base_spec, **patch, "chart_type": "osm_map"}
+    if isinstance(patch.get("location_parts"), dict):
+        merged["location_parts"] = patch["location_parts"]
+    spec = _validate_chart_spec(
+        merged,
+        column_names=column_names,
+        numeric_cols=numeric_cols,
+        date_cols=date_cols,
+        forced_type="osm_map",
+        value_col=patch.get("value") if "value" in patch else None,
+        value2_col=(
+            "" if "value2" in patch and patch["value2"] is None
+            else (patch.get("value2") if "value2" in patch else None)
+        ),
+        aggregate_override=patch.get("aggregate") if "aggregate" in patch else None,
+        geo_hints=geo_hints,
+        geo_roles=geo_roles,
+        osm_enabled=osm_maps_enabled(),
+    )
+    if spec["chart_type"] != "osm_map":
+        return EditChartResponse(
+            chart_config=request.current_config,
+            chart_type="osm_map",
+            chart_spec=base_spec,
+            notes="Those bindings do not produce a valid point map.",
+            out_of_scope=True,
+            prompt=system_prompt,
+        )
+    spec["resolved_locations"] = await resolve_osm_locations(spec, dataset)
+    chart_config = build_chart_option(spec, dataset)
+    return EditChartResponse(
+        chart_config=chart_config,
+        chart_type="osm_map",
+        chart_spec=spec,
+        view_commands=view_commands,
+        notes=notes,
+        out_of_scope=False,
+        rebuild_required=True,
+        prompt=system_prompt,
+    )
+
+
 @router.post("/edit-chart", response_model=EditChartResponse)
 async def edit_chart(request: EditChartRequest):
     """Apply a natural-language edit to the current ECharts config.
@@ -1056,6 +1290,8 @@ async def edit_chart(request: EditChartRequest):
 
     agent = await resolve_agent(request.connection)
     instruction = instruction[:_CHART_EDITOR_MAX_INSTRUCTION_CHARS]
+    if _is_osm_map_edit(request):
+        return await _edit_osm_map_chart(request, instruction, agent)
 
     column_types_blob = (
         "\n".join(f"- {c.name} ({c.type})" for c in request.columns) or "(unknown)"

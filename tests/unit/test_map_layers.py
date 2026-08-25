@@ -26,6 +26,15 @@ def test_map_layer_manifest_hides_disabled_or_invalid_optional_layers(monkeypatc
         "attribution": "Natural Earth (public domain)",
         "attributionUrl": "https://www.naturalearthdata.com/",
         "defaultVisible": False,
+    }, {
+        "id": "ports-harbors",
+        "label": "Ports & harbors (reference)",
+        "kind": "vector-points",
+        "dataUrl": "/static/chart-feature/assets/maps/ne_10m_ports.geojson",
+        "attribution": "Natural Earth (public domain)",
+        "attributionUrl": "https://www.naturalearthdata.com/",
+        "minZoom": 3,
+        "defaultVisible": False,
     }]
 
 
@@ -54,6 +63,31 @@ def test_map_layer_manifest_exposes_only_safe_proxy_urls(monkeypatch):
     assert sources["maritime"].api_key == "private-key"
 
 
+def test_map_layer_manifest_exposes_enabled_terrain_as_safe_basemap(monkeypatch):
+    monkeypatch.setattr(map_layers.settings, "OSM_TERRAIN_ENABLED", True)
+    monkeypatch.setattr(
+        map_layers.settings,
+        "OSM_TERRAIN_TILE_URL",
+        "https://tiles.example.test/terrain/{z}/{x}/{y}.png?key={api_key}",
+    )
+    monkeypatch.setattr(map_layers.settings, "OSM_TERRAIN_TILE_API_KEY", "private-key")
+
+    manifest = map_layers.browser_map_layers()
+    sources = map_layers.configured_map_layers()
+
+    assert manifest["basemaps"][-1] == {
+        "id": "terrain",
+        "label": "Terrain & hillshade",
+        "kind": "basemap",
+        "tileUrl": "/api/map-tiles/terrain/{z}/{x}/{y}",
+        "attribution": "© MapTiler © OpenStreetMap contributors",
+        "attributionUrl": "https://www.maptiler.com/copyright/",
+        "defaultVisible": False,
+    }
+    assert "private-key" not in str(manifest)
+    assert sources["terrain"].api_key == "private-key"
+
+
 def test_tile_template_requires_xyz_placeholders():
     assert map_layers.valid_tile_template("https://tiles.example/{z}/{x}/{y}.png")
     assert not map_layers.valid_tile_template("https://tiles.example/{z}/{x}.png")
@@ -72,4 +106,16 @@ def test_bundled_maritime_reference_asset_is_geojson_lines():
     assert {feature["geometry"]["type"] for feature in payload["features"]} <= {
         "LineString", "MultiLineString",
     }
+
+
+def test_bundled_ports_reference_asset_is_geojson_points():
+    asset = (
+        Path(__file__).resolve().parents[2]
+        / "src/static/chart-feature/assets/maps/ne_10m_ports.geojson"
+    )
+    payload = json.loads(asset.read_text(encoding="utf-8"))
+
+    assert payload["type"] == "FeatureCollection"
+    assert len(payload["features"]) > 1_000
+    assert {feature["geometry"]["type"] for feature in payload["features"]} == {"Point"}
 

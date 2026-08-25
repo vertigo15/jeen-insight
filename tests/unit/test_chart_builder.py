@@ -446,10 +446,18 @@ def test_osm_map_emits_one_point_overlay_and_aggregates_coordinates():
     assert osm["basemap"]["tileUrl"] == "/api/map-tiles/{z}/{x}/{y}"
     assert osm["layers"]["basemaps"][0]["id"] == "standard"
     assert osm["layers"]["basemaps"][0]["tileUrl"] == "/api/map-tiles/{z}/{x}/{y}"
+    assert osm["layers"]["dataLayers"] == [{
+        "id": "user-data",
+        "label": "sales data",
+        "kind": "data",
+        "defaultVisible": True,
+    }]
+    assert osm["dataLayerMode"] == "auto"
     overlay = osm["overlays"][0]
     assert overlay["type"] == "circles"
     assert overlay["metric"] == "sales"
     assert overlay["sizeMetric"] == "orders"
+    assert overlay["aggregate"] == "sum"
     assert len(overlay["points"]) == 2
     north = next(point for point in overlay["points"] if point["lat"] == 32.08)
     assert north["value"] == 30

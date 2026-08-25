@@ -94,6 +94,22 @@ def configured_map_layers() -> dict[str, MapTileLayer]:
                 or settings.OSM_TILE_API_KEY_HEADER
             ),
         )
+    terrain_template = settings.OSM_TERRAIN_TILE_URL.strip()
+    if settings.OSM_TERRAIN_ENABLED and valid_tile_template(terrain_template):
+        layers["terrain"] = MapTileLayer(
+            id="terrain",
+            label="Terrain & hillshade",
+            kind="basemap",
+            tile_url="/api/map-tiles/terrain/{z}/{x}/{y}",
+            attribution="© MapTiler © OpenStreetMap contributors",
+            attribution_url="https://www.maptiler.com/copyright/",
+            source_template=terrain_template,
+            api_key=settings.OSM_TERRAIN_TILE_API_KEY or settings.OSM_TILE_API_KEY,
+            api_key_header=(
+                settings.OSM_TERRAIN_TILE_API_KEY_HEADER
+                or settings.OSM_TILE_API_KEY_HEADER
+            ),
+        )
     return layers
 
 
@@ -120,6 +136,15 @@ def browser_map_layers() -> dict[str, list[dict[str, Any]]]:
             ),
             "attribution": "Natural Earth (public domain)",
             "attributionUrl": "https://www.naturalearthdata.com/",
+            "defaultVisible": False,
+        }, {
+            "id": "ports-harbors",
+            "label": "Ports & harbors (reference)",
+            "kind": "vector-points",
+            "dataUrl": "/static/chart-feature/assets/maps/ne_10m_ports.geojson",
+            "attribution": "Natural Earth (public domain)",
+            "attributionUrl": "https://www.naturalearthdata.com/",
+            "minZoom": 3,
             "defaultVisible": False,
         }],
     }

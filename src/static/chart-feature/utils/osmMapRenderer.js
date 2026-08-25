@@ -12,6 +12,14 @@ const MAX_LATITUDE = 85.05112878;
 const STYLE_ID = 'jeen-osm-map-styles';
 const TILE_OVERSCAN = 1;
 const MAX_CACHED_TILES = 192;
+const MAX_DOM_MARKERS = 300;
+const CLUSTER_CELL_SIZE = 48;
+const COLOR_PALETTES = {
+    blue: [[224, 242, 254], [3, 105, 161]],
+    green: [[220, 252, 231], [21, 128, 61]],
+    purple: [[243, 232, 255], [126, 34, 206]],
+    orange: [[255, 237, 213], [194, 65, 12]],
+};
 const MAP_STYLES = `
 .chart-display[data-chart-type="osm_map"] { height: min(680px, 70vh); min-height: 520px; padding: 0; overflow: hidden; }
 .osm-map { position: relative; width: 100%; height: 100%; min-height: 520px; overflow: hidden; background: #dceaf5; cursor: grab; touch-action: none; outline: none; }
@@ -39,6 +47,7 @@ const MAP_STYLES = `
 .osm-map-layers-group { display: grid; gap: 4px; padding: 0; margin: 0; border: 0; }
 .osm-map-layers label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .osm-map-layers input { margin: 0; }
+.osm-map-layers select { min-width: 0; margin-left: auto; font: inherit; }
 .osm-map-sidebar { position: absolute; z-index: 3; top: 12px; right: 12px; width: min(278px, calc(100% - 84px)); max-height: calc(100% - 64px); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 9px; padding: 11px; color: #1e293b; background: rgba(255,255,255,.96); border: 1px solid rgba(100,116,139,.42); border-radius: 8px; box-shadow: 0 4px 18px rgba(15,23,42,.2); font: 12px/1.4 system-ui,sans-serif; }
 .osm-map-sidebar.is-collapsed { width: auto; min-width: 0; padding: 4px; display: block; }
 .osm-map-sidebar.is-collapsed > :not(.osm-map-sidebar-heading) { display: none; }
@@ -123,10 +132,9 @@ export function fitMapView(extent, width, height) {
     return { center, zoom: 1 };
 }
 
-export function colorForValue(value, min, max) {
+export function colorForValue(value, min, max, palette = 'blue') {
     const ratio = max <= min ? 0.65 : clamp((Number(value) - min) / (max - min), 0, 1);
-    const start = [224, 242, 254];
-    const end = [3, 105, 161];
+    const [start, end] = COLOR_PALETTES[palette] || COLOR_PALETTES.blue;
     const rgb = start.map((channel, index) => Math.round(channel + (end[index] - channel) * ratio));
     return `rgb(${rgb.join(', ')})`;
 }
@@ -200,6 +208,8 @@ export class OsmMapRenderer {
         this.layerManifest = null;
         this.activeBasemapId = null;
         this.activeOverlayIds = new Set();
+        this.activeDataLayerIds = new Set();
+        this.dataLayerMode = 'auto';
         this.layersControl = null;
         this.layersButton = null;
         this.attribution = null;
@@ -254,6 +264,14 @@ export class OsmMapRenderer {
                 .filter((layer) => layer.defaultVisible)
                 .map((layer) => layer.id),
         );
+        this.activeDataLayerIds = new Set(
+            this.layerManifest.dataLayers
+                .filter((layer) => layer.defaultVisible)
+                .map((layer) => layer.id),
+        );
+        this.dataLayerMode = ['auto', 'points', 'clusters'].includes(map.dataLayerMode)
+            ? map.dataLayerMode
+            : 'auto';
         container.innerHTML = '';
         container.dataset.chartType = 'osm_map';
 
@@ -295,6 +313,67 @@ export class OsmMapRenderer {
             this.resizeObserver = new ResizeObserver(this._onResize);
             this.resizeObserver.observe(container);
         }
+        this._scheduleRender();
+    }
+
+    applyViewCommands(commands) {
+        let shouldFit = false;
+        for (const command of Array.isArray(commands) ? commands : []) {
+            if (!command || typeof command !== 'object') continue;
+            if (command.op === 'set_basemap') {
+                if (this.layerManifest?.basemaps?.some((layer) => layer.id === command.layer_id)) {
+                    this.activeBasemapId = command.layer_id;
+                }
+            } else if (command.op === 'set_overlays' && Array.isArray(command.layer_ids)) {
+                const allowed = new Set(
+                    (this.layerManifest?.overlays || []).map((layer) => layer.id),
+                );
+                this.activeOverlayIds = new Set(
+                    command.layer_ids.filter((layerId) => allowed.has(layerId)),
+                );
+            } else if (command.op === 'set_user_data_visible') {
+                if (command.visible) this.activeDataLayerIds.add('user-data');
+                else this.activeDataLayerIds.delete('user-data');
+            } else if (command.op === 'set_data_mode') {
+                if (['auto', 'points', 'clusters'].includes(command.mode)) {
+                    this.dataLayerMode = command.mode;
+                }
+            } else if (command.op === 'fit_extent') {
+                shouldFit = true;
+            } else if (command.op === 'select_place') {
+                const point = (this.map?.overlays?.[0]?.points || []).find(
+                    (candidate) => candidate.placeKey === command.place_key,
+                );
+                if (point) this._focusPoint(point, true);
+            } else if (command.op === 'clear_selection') {
+                this.selectedPlaceKey = null;
+                this._renderSidebarDetails();
+            } else if (command.op === 'toggle_sidebar' && this.sidebar) {
+                this.sidebar.classList.toggle('is-collapsed', command.collapsed);
+                const toggle = this.sidebar.querySelector('.osm-map-sidebar-toggle');
+                if (toggle) {
+                    toggle.textContent = command.collapsed ? '☰' : '×';
+                    toggle.setAttribute('aria-expanded', String(!command.collapsed));
+                }
+            } else if (command.op === 'focus_place' && typeof command.query === 'string') {
+                const query = command.query.trim();
+                if (query) {
+                    if (this.sidebarSearch) this.sidebarSearch.value = query;
+                    this._searchSidebar(query, true);
+                }
+            }
+        }
+        if (shouldFit) {
+            const fitted = fitMapView(
+                this.map?.extent,
+                this.root?.clientWidth || 900,
+                this.root?.clientHeight || 520,
+            );
+            this.center = fitted.center;
+            this.zoom = fitted.zoom;
+        }
+        this._syncLayerControl();
+        this._renderAttribution();
         this._scheduleRender();
     }
 
@@ -375,6 +454,12 @@ export class OsmMapRenderer {
                 ...(Array.isArray(configured?.overlays) ? configured.overlays : []),
                 ...(Array.isArray(configured?.vectorOverlays) ? configured.vectorOverlays : []),
             ],
+            dataLayers: Array.isArray(configured?.dataLayers) ? configured.dataLayers : [{
+                id: 'user-data',
+                label: 'Your data',
+                kind: 'data',
+                defaultVisible: true,
+            }],
         };
     }
 
@@ -390,7 +475,9 @@ export class OsmMapRenderer {
 
     _activeVectorLayers() {
         return (this.layerManifest?.overlays || []).filter(
-            (layer) => layer.kind === 'vector' && this.activeOverlayIds.has(layer.id),
+            (layer) => (
+                layer.kind === 'vector' || layer.kind === 'vector-points'
+            ) && this.activeOverlayIds.has(layer.id),
         );
     }
 
@@ -422,6 +509,7 @@ export class OsmMapRenderer {
                 input.type = 'radio';
                 input.name = `${this.containerId}-basemap`;
                 input.value = layer.id;
+                input.dataset.layerKind = 'basemap';
                 input.checked = layer.id === this.activeBasemapId;
                 input.addEventListener('pointerdown', (event) => event.stopPropagation());
                 input.addEventListener('change', () => {
@@ -448,6 +536,7 @@ export class OsmMapRenderer {
                 const input = document.createElement('input');
                 input.type = 'checkbox';
                 input.value = layer.id;
+                input.dataset.layerKind = 'overlay';
                 input.checked = this.activeOverlayIds.has(layer.id);
                 input.addEventListener('pointerdown', (event) => event.stopPropagation());
                 input.addEventListener('change', () => {
@@ -462,8 +551,73 @@ export class OsmMapRenderer {
             panel.appendChild(group);
         }
 
+        const dataLayers = this.layerManifest?.dataLayers || [];
+        if (dataLayers.length) {
+            const group = document.createElement('fieldset');
+            group.className = 'osm-map-layers-group';
+            const legend = document.createElement('legend');
+            legend.textContent = 'Your data';
+            group.appendChild(legend);
+            dataLayers.forEach((layer) => {
+                const label = document.createElement('label');
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.value = layer.id;
+                input.dataset.layerKind = 'data';
+                input.checked = this.activeDataLayerIds.has(layer.id);
+                input.addEventListener('pointerdown', (event) => event.stopPropagation());
+                input.addEventListener('change', () => {
+                    if (input.checked) this.activeDataLayerIds.add(layer.id);
+                    else this.activeDataLayerIds.delete(layer.id);
+                    this._scheduleRender();
+                });
+                label.append(input, document.createTextNode(layer.label || layer.id));
+                group.appendChild(label);
+            });
+
+            const modeLabel = document.createElement('label');
+            modeLabel.textContent = 'Display';
+            const mode = document.createElement('select');
+            mode.dataset.layerKind = 'data-mode';
+            mode.setAttribute('aria-label', 'User data display mode');
+            [
+                ['auto', 'Auto (performance)'],
+                ['points', 'Individual points'],
+                ['clusters', 'Clusters'],
+            ].forEach(([value, label]) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = label;
+                option.selected = value === this.dataLayerMode;
+                mode.appendChild(option);
+            });
+            mode.addEventListener('pointerdown', (event) => event.stopPropagation());
+            mode.addEventListener('change', () => {
+                this.dataLayerMode = mode.value;
+                this._scheduleRender();
+            });
+            modeLabel.appendChild(mode);
+            group.appendChild(modeLabel);
+            panel.appendChild(group);
+        }
+
         this.layersControl = panel;
         return panel;
+    }
+
+    _syncLayerControl() {
+        if (!this.layersControl) return;
+        this.layersControl.querySelectorAll('input[data-layer-kind="basemap"]').forEach((input) => {
+            input.checked = input.value === this.activeBasemapId;
+        });
+        this.layersControl.querySelectorAll('input[data-layer-kind="overlay"]').forEach((input) => {
+            input.checked = this.activeOverlayIds.has(input.value);
+        });
+        this.layersControl.querySelectorAll('input[data-layer-kind="data"]').forEach((input) => {
+            input.checked = this.activeDataLayerIds.has(input.value);
+        });
+        const mode = this.layersControl.querySelector('select[data-layer-kind="data-mode"]');
+        if (mode) mode.value = this.dataLayerMode;
     }
 
     _buildSidebar(overlay) {
@@ -523,7 +677,7 @@ export class OsmMapRenderer {
         return sidebar;
     }
 
-    _searchSidebar(query) {
+    _searchSidebar(query, focusFirstExternal = false) {
         const text = String(query || '').trim();
         this.externalSearchResults = [];
         if (this.searchTimer) clearTimeout(this.searchTimer);
@@ -533,11 +687,11 @@ export class OsmMapRenderer {
         if (text.length < 2) return;
         this.searchTimer = setTimeout(() => {
             this.searchTimer = null;
-            this._searchExternalPlaces(text);
+            this._searchExternalPlaces(text, focusFirstExternal);
         }, 300);
     }
 
-    async _searchExternalPlaces(query) {
+    async _searchExternalPlaces(query, focusFirstExternal = false) {
         this.searchAbort?.abort();
         const controller = new AbortController();
         this.searchAbort = controller;
@@ -557,6 +711,9 @@ export class OsmMapRenderer {
             this.externalSearchResults = Array.isArray(payload?.results) ? payload.results : [];
             this.searchPending = false;
             this._renderSidebarResults(query);
+            if (focusFirstExternal && this.externalSearchResults[0]) {
+                this._focusExternalPlace(this.externalSearchResults[0]);
+            }
         } catch (error) {
             if (error?.name !== 'AbortError') console.warn('[OsmMapRenderer] Place search unavailable', error);
             if (this.sidebarSearch?.value.trim() === query) {
@@ -839,46 +996,88 @@ export class OsmMapRenderer {
 
         const projectedCenter = projectMercator(this.center.lat, this.center.lng, this.zoom);
         for (const layer of layers) {
-            const lines = this.vectorData.get(layer.id);
-            if (!lines) {
+            if (Number.isFinite(Number(layer.minZoom)) && this.zoom < Number(layer.minZoom)) {
+                continue;
+            }
+            const vector = this.vectorData.get(layer.id);
+            if (!vector) {
                 this._loadVectorLayer(layer);
                 continue;
             }
-            context.save();
-            context.strokeStyle = '#7c2d12';
-            context.globalAlpha = 0.72;
-            context.lineWidth = 1.25;
-            context.setLineDash([5, 4]);
-            context.beginPath();
-            for (const coordinates of lines) {
-                let previousX = null;
-                let started = false;
-                for (const coordinate of coordinates) {
-                    const lng = Number(coordinate?.[0]);
-                    const lat = Number(coordinate?.[1]);
-                    if (!validCoordinates(lat, lng)) {
-                        started = false;
-                        previousX = null;
-                        continue;
+            if (vector.lines.length) {
+                context.save();
+                context.strokeStyle = '#7c2d12';
+                context.globalAlpha = 0.72;
+                context.lineWidth = 1.25;
+                context.setLineDash([5, 4]);
+                context.beginPath();
+                for (const coordinates of vector.lines) {
+                    let previousX = null;
+                    let started = false;
+                    for (const coordinate of coordinates) {
+                        const lng = Number(coordinate?.[0]);
+                        const lat = Number(coordinate?.[1]);
+                        if (!validCoordinates(lat, lng)) {
+                            started = false;
+                            previousX = null;
+                            continue;
+                        }
+                        const projected = projectMercator(lat, lng, this.zoom);
+                        const left = projected.x - projectedCenter.x + width / 2;
+                        const top = projected.y - projectedCenter.y + height / 2;
+                        const crossedDateline = previousX != null
+                            && Math.abs(projected.x - previousX) > (TILE_SIZE * 2 ** this.zoom) / 2;
+                        if (!started || crossedDateline) {
+                            context.moveTo(left, top);
+                            started = true;
+                        } else {
+                            context.lineTo(left, top);
+                        }
+                        previousX = projected.x;
                     }
-                    const projected = projectMercator(lat, lng, this.zoom);
-                    const left = projected.x - projectedCenter.x + width / 2;
-                    const top = projected.y - projectedCenter.y + height / 2;
-                    const crossedDateline = previousX != null
-                        && Math.abs(projected.x - previousX) > (TILE_SIZE * 2 ** this.zoom) / 2;
-                    if (!started || crossedDateline) {
-                        context.moveTo(left, top);
-                        started = true;
-                    } else {
-                        context.lineTo(left, top);
-                    }
-                    previousX = projected.x;
                 }
+                context.stroke();
+                context.restore();
             }
-            context.stroke();
-            context.restore();
+            if (vector.points.length) {
+                this._renderVectorPoints(context, vector.points, projectedCenter, width, height);
+            }
         }
         return { active: layers.length };
+    }
+
+    _renderVectorPoints(context, points, projectedCenter, width, height) {
+        const clusters = new Map();
+        for (const point of points) {
+            const projected = projectMercator(point.lat, point.lng, this.zoom);
+            const left = projected.x - projectedCenter.x + width / 2;
+            const top = projected.y - projectedCenter.y + height / 2;
+            if (left < -12 || left > width + 12 || top < -12 || top > height + 12) continue;
+            const key = `${Math.floor(left / 20)}:${Math.floor(top / 20)}`;
+            const cluster = clusters.get(key) || { left, top, count: 0 };
+            cluster.count += 1;
+            clusters.set(key, cluster);
+        }
+        context.save();
+        context.fillStyle = '#0369a1';
+        context.globalAlpha = 0.78;
+        for (const cluster of clusters.values()) {
+            const radius = cluster.count > 1 ? Math.min(9, 4 + Math.log2(cluster.count)) : 3;
+            context.beginPath();
+            context.arc(cluster.left, cluster.top, radius, 0, Math.PI * 2);
+            context.fill();
+            if (cluster.count > 1 && this.zoom >= 6) {
+                context.fillStyle = '#ffffff';
+                context.globalAlpha = 1;
+                context.font = '9px system-ui, sans-serif';
+                context.textAlign = 'center';
+                context.textBaseline = 'middle';
+                context.fillText(String(cluster.count), cluster.left, cluster.top);
+                context.fillStyle = '#0369a1';
+                context.globalAlpha = 0.78;
+            }
+        }
+        context.restore();
     }
 
     _loadVectorLayer(layer) {
@@ -890,15 +1089,38 @@ export class OsmMapRenderer {
             })
             .then((payload) => {
                 const lines = [];
+                const points = [];
                 for (const feature of payload?.features || []) {
                     const geometry = feature?.geometry || {};
                     if (geometry.type === 'LineString' && Array.isArray(geometry.coordinates)) {
                         lines.push(geometry.coordinates);
                     } else if (geometry.type === 'MultiLineString' && Array.isArray(geometry.coordinates)) {
                         lines.push(...geometry.coordinates.filter(Array.isArray));
+                    } else if (geometry.type === 'Point' && Array.isArray(geometry.coordinates)) {
+                        const [lng, lat] = geometry.coordinates.map(Number);
+                        if (validCoordinates(lat, lng)) {
+                            points.push({
+                                lat,
+                                lng,
+                                label: String(feature?.properties?.name || 'Port'),
+                                key: String(feature?.properties?.ne_id || `${lat}/${lng}`),
+                            });
+                        }
+                    } else if (geometry.type === 'MultiPoint' && Array.isArray(geometry.coordinates)) {
+                        geometry.coordinates.forEach((coordinate, index) => {
+                            const [lng, lat] = (coordinate || []).map(Number);
+                            if (validCoordinates(lat, lng)) {
+                                points.push({
+                                    lat,
+                                    lng,
+                                    label: String(feature?.properties?.name || 'Port'),
+                                    key: String(feature?.properties?.ne_id || `${lat}/${lng}/${index}`),
+                                });
+                            }
+                        });
                     }
                 }
-                this.vectorData.set(layer.id, lines);
+                this.vectorData.set(layer.id, { lines, points });
                 if (this.root) this._scheduleRender();
             })
             .catch((error) => {
@@ -908,6 +1130,81 @@ export class OsmMapRenderer {
                 this.vectorLoads.delete(layer.id);
             });
         this.vectorLoads.set(layer.id, load);
+    }
+
+    _displayDataPoints(overlay, center, width, height) {
+        if (!this.activeDataLayerIds.has('user-data')) return [];
+        const visible = [];
+        for (const point of overlay.points || []) {
+            const projected = projectMercator(point.lat, point.lng, this.zoom);
+            const left = projected.x - center.x + width / 2;
+            const top = projected.y - center.y + height / 2;
+            if (left < -36 || left > width + 36 || top < -36 || top > height + 36) continue;
+            visible.push({ ...point, _left: left, _top: top });
+        }
+        const mode = this.dataLayerMode === 'auto'
+            ? (visible.length > MAX_DOM_MARKERS ? 'clusters' : 'points')
+            : this.dataLayerMode;
+        if (mode === 'points' && visible.length <= MAX_DOM_MARKERS) return visible;
+
+        const cells = new Map();
+        const aggregate = overlay.aggregate || 'sum';
+        for (const point of visible) {
+            const cellX = Math.floor(point._left / CLUSTER_CELL_SIZE);
+            const cellY = Math.floor(point._top / CLUSTER_CELL_SIZE);
+            const key = `${cellX}:${cellY}`;
+            let cluster = cells.get(key);
+            if (!cluster) {
+                cluster = {
+                    label: point.label,
+                    lat: point.lat,
+                    lng: point.lng,
+                    value: aggregate === 'min' ? Infinity : (aggregate === 'max' ? -Infinity : 0),
+                    value2: aggregate === 'min' ? Infinity : (aggregate === 'max' ? -Infinity : 0),
+                    _valueTotal: 0,
+                    _value2Total: 0,
+                    _weight: 0,
+                    rowCount: 0,
+                    rowIndexes: [],
+                    placeKey: `cluster:${this.zoom}:${key}`,
+                    _left: 0,
+                    _top: 0,
+                    _count: 0,
+                    isCluster: true,
+                };
+                cells.set(key, cluster);
+            }
+            const weight = Math.max(1, Number(point.rowCount) || 1);
+            const value = Number(point.value) || 0;
+            const value2 = Number(point.value2 ?? point.value) || 0;
+            if (aggregate === 'min') {
+                cluster.value = Math.min(cluster.value, value);
+                cluster.value2 = Math.min(cluster.value2, value2);
+            } else if (aggregate === 'max') {
+                cluster.value = Math.max(cluster.value, value);
+                cluster.value2 = Math.max(cluster.value2, value2);
+            } else if (aggregate === 'avg') {
+                cluster._valueTotal += value * weight;
+                cluster._value2Total += value2 * weight;
+                cluster._weight += weight;
+            } else {
+                cluster.value += value;
+                cluster.value2 += value2;
+            }
+            cluster.rowCount += weight;
+            cluster.rowIndexes.push(...(point.rowIndexes || []).slice(0, 200 - cluster.rowIndexes.length));
+            cluster._left += point._left;
+            cluster._top += point._top;
+            cluster._count += 1;
+        }
+        return [...cells.values()].map((cluster) => ({
+            ...cluster,
+            label: cluster._count === 1 ? cluster.label : `${cluster._count} locations`,
+            _left: cluster._left / cluster._count,
+            _top: cluster._top / cluster._count,
+            value: aggregate === 'avg' ? cluster._valueTotal / cluster._weight : cluster.value,
+            value2: aggregate === 'avg' ? cluster._value2Total / cluster._weight : cluster.value2,
+        }));
     }
 
     _renderMarkers(width, height) {
@@ -921,11 +1218,8 @@ export class OsmMapRenderer {
         let created = 0;
         let reused = 0;
 
-        for (const point of overlay.points || []) {
-            const projected = projectMercator(point.lat, point.lng, this.zoom);
-            const left = projected.x - center.x + width / 2;
-            const top = projected.y - center.y + height / 2;
-            if (left < -36 || left > width + 36 || top < -36 || top > height + 36) continue;
+        for (const point of this._displayDataPoints(overlay, center, width, height)) {
+            const { _left: left, _top: top } = point;
             const markerKey = point.placeKey || `${point.lat}/${point.lng}`;
             visible.add(markerKey);
             const sizeValue = point.value2 ?? point.value;
@@ -951,7 +1245,9 @@ export class OsmMapRenderer {
             marker.style.top = `${top}px`;
             marker.style.width = `${radius * 2}px`;
             marker.style.height = `${radius * 2}px`;
-            marker.style.backgroundColor = colorForValue(point.value, colorRange.min, colorRange.max);
+            marker.style.backgroundColor = colorForValue(
+                point.value, colorRange.min, colorRange.max, overlay.palette,
+            );
             marker.classList.toggle('is-selected', point.placeKey === this.selectedPlaceKey);
             const rows = point.rowCount > 1 ? ` (${point.rowCount} rows)` : '';
             const secondary = point.value2 == null ? '' : `\n${overlay.sizeMetric}: ${format(point.value2)}`;
@@ -1136,6 +1432,8 @@ export class OsmMapRenderer {
         this.layerManifest = null;
         this.activeBasemapId = null;
         this.activeOverlayIds.clear();
+        this.activeDataLayerIds.clear();
+        this.dataLayerMode = 'auto';
         this.layersControl = null;
         this.layersButton = null;
         this.attribution = null;

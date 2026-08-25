@@ -1208,6 +1208,13 @@ def _build_osm_map(spec, rows, ctx):
     longitudes = [point["lng"] for point in points]
     show_unmatched = spec.get("show_unmatched")
     show_unmatched = True if show_unmatched is None else bool(show_unmatched)
+    map_layers = browser_map_layers()
+    map_layers["dataLayers"] = [{
+        "id": "user-data",
+        "label": f"{value_name} data",
+        "kind": "data",
+        "defaultVisible": True,
+    }]
 
     return {
         # Maintains the existing chart response shape while telling ChartManager
@@ -1219,12 +1226,15 @@ def _build_osm_map(spec, rows, ctx):
                 "tileUrl": "/api/map-tiles/{z}/{x}/{y}",
                 "attribution": "© OpenStreetMap contributors",
             },
-            "layers": browser_map_layers(),
+            "layers": map_layers,
+            "dataLayerMode": spec.get("data_layer_mode") or "auto",
             "overlays": [
                 {
                     "type": "circles",
+                    "palette": spec.get("map_palette") or "blue",
                     "metric": value_name,
                     "sizeMetric": value2_name or value_name,
+                    "aggregate": aggregate,
                     "points": points,
                     "colorRange": {
                         "min": _round(min(primary_values)) if primary_values else 0,

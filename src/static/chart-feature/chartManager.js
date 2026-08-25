@@ -14,10 +14,10 @@ import { ChartToggle } from './components/ChartToggle.js';
 import { ChartTypeSelector } from './components/ChartTypeSelector.js?v=78';
 import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=71';
 import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v=1';
-import { ChartChat } from './components/ChartChat.js?v=100';
+import { ChartChat } from './components/ChartChat.js?v=101';
 import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js';
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
-import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=4';
+import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=5';
 import { CHART_TYPE_VALUES } from './chartTypes.js?v=79';
 
 /**
@@ -47,6 +47,7 @@ export class ChartManager {
         this.chartCapabilities = { osm_map: { enabled: false, geocoding_enabled: false } };
         this.llmRecommendedType = null;
         this.currentChartSpec = null;
+        this.originalChartSpec = null;
         // Baseline (LLM-generated) config — Reset reverts to this.
         this.originalConfig = null;
         // The current ECharts options object actually rendered.
@@ -217,7 +218,13 @@ export class ChartManager {
                 getCurrentConfig: () => this.currentEchartsOptions,
                 getCurrentResults: () => this.state.currentData,
                 getConnection: () => (typeof getActiveConnection === 'function' ? getActiveConnection() : ''),
-                onApply: (newConfig, derivedSpecs) => this.applyEditedConfig(newConfig, derivedSpecs),
+                getCurrentSpec: () => this.currentChartSpec,
+                getQueryId: () => (
+                    this.ctx?.queryId != null ? this.ctx.queryId : window.currentQueryId
+                ),
+                onApply: (newConfig, derivedSpecs, notes, edit) => (
+                    this.applyEditedConfig(newConfig, derivedSpecs, notes, edit)
+                ),
                 onReset: () => this.resetChartEdits(),
             });
             this.chartChat.mount();
@@ -327,6 +334,7 @@ export class ChartManager {
         // user starts on a clean baseline.
         if (this.chartChat) this.chartChat.reset();
         this.originalConfig = null;
+        this.originalChartSpec = null;
 
         // On a fresh Auto request, drop any stale recommendation so the button
         // shows "Auto" while loading (not the previous turn's "Bar · Auto").
@@ -359,6 +367,7 @@ export class ChartManager {
                     sessionStorage.removeItem(cacheKey);
                 } else {
                     if (this._disposed) return;
+                    this.currentChartSpec = parsed?.chartSpec || null;
                     // Restore the "<Type> · Auto" button label from cache so it
                     // survives cache hits (setRecommendation is only called on a
                     // fresh network response otherwise).
@@ -466,6 +475,7 @@ export class ChartManager {
             sessionStorage.setItem(cacheKey, JSON.stringify({
                 chartConfig,
                 recommendedType: data.chart_type || null,
+                chartSpec: data.chart_spec || null,
             }));
 
             if (this._disposed || _abortSignal.aborted) return;
@@ -564,6 +574,13 @@ export class ChartManager {
         } catch (_) {
             this.originalConfig = echartsConfig;
         }
+        try {
+            this.originalChartSpec = this.currentChartSpec
+                ? JSON.parse(JSON.stringify(this.currentChartSpec))
+                : null;
+        } catch (_) {
+            this.originalChartSpec = this.currentChartSpec;
+        }
 
         let displayConfig = this._withQuickToggles(echartsConfig);
         if (this._isOsmMapOption(displayConfig)) {
@@ -587,7 +604,7 @@ export class ChartManager {
                 this.currentEchartsOptions = displayConfig;
                 this._syncMapControls('osm_map');
                 this._renderMapFeedback(displayConfig);
-                if (this.chartChat) this.chartChat.disable();
+                if (this.chartChat) this.chartChat.enable();
                 this._enableChartActions(false);
                 console.log('[ChartManager] OpenStreetMap chart rendered successfully');
             } catch (error) {
@@ -723,10 +740,41 @@ export class ChartManager {
      * @param {object} newConfig
      * @param {Array} derivedSpecs
      */
-    applyEditedConfig(newConfig, derivedSpecs) {
+    applyEditedConfig(newConfig, derivedSpecs, _notes = null, edit = null) {
         if (!newConfig || typeof newConfig !== 'object') return;
 
         const previous = this.currentEchartsOptions;
+        if (this._isOsmMapOption(newConfig)) {
+            const previousSpec = this.currentChartSpec;
+            try {
+                if (edit?.rebuild_required) {
+                    this.osmMapRenderer?.render(newConfig);
+                    this.currentEchartsOptions = newConfig;
+                    this.state.currentConfig = {
+                        type: 'osm_map',
+                        options: newConfig,
+                        isEnhanced: true,
+                    };
+                    if (edit.chart_spec && typeof edit.chart_spec === 'object') {
+                        this.currentChartSpec = edit.chart_spec;
+                        this.chartOptionsPanel?.syncFromSpec(edit.chart_spec);
+                    }
+                    this._renderMapFeedback(newConfig);
+                }
+                if (Array.isArray(edit?.view_commands) && edit.view_commands.length) {
+                    this.osmMapRenderer?.applyViewCommands(edit.view_commands);
+                }
+                return;
+            } catch (error) {
+                console.error('[ChartManager] Failed to apply edited map:', error);
+                this.currentEchartsOptions = previous;
+                this.currentChartSpec = previousSpec;
+                if (previous) {
+                    try { this.osmMapRenderer?.render(previous); } catch (_) { /* logged above */ }
+                }
+                throw error;
+            }
+        }
         // Strip any prior __derived series the LLM may have echoed back, then
         // re-apply only the freshly-described overlays.
         const cleaned = stripDerivedSeries(newConfig);
@@ -781,6 +829,25 @@ export class ChartManager {
             baseline = JSON.parse(JSON.stringify(this.originalConfig));
         } catch (_) {
             baseline = this.originalConfig;
+        }
+        if (this._isOsmMapOption(baseline)) {
+            try {
+                this.osmMapRenderer?.render(baseline);
+                this.currentEchartsOptions = baseline;
+                this.state.currentConfig = {
+                    type: 'osm_map',
+                    options: baseline,
+                    isEnhanced: true,
+                };
+                this.currentChartSpec = this.originalChartSpec
+                    ? JSON.parse(JSON.stringify(this.originalChartSpec))
+                    : null;
+                this.chartOptionsPanel?.syncFromSpec(this.currentChartSpec || {});
+                this._renderMapFeedback(baseline);
+            } catch (error) {
+                console.error('[ChartManager] Failed to reset map:', error);
+            }
+            return;
         }
         const chartConfig = {
             type: this._optionChartType(baseline),
