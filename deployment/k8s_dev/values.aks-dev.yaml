@@ -48,7 +48,7 @@ jeen-insights-api:
 jeen-insights-ui:
   image:
     repository: jeendevregistry.azurecr.io/jeen-insights-ui
-    tag: 83c797be
+    tag: v3-ws-20260821103107
   env:
     SESSION_COOKIE_SECURE: "true"
     PUBLIC_APP_URL: https://jeen-insights.dev.jeenai.app

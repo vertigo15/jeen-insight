@@ -20,8 +20,9 @@ Design goals:
 
 The public entry point is :func:`link_bundle`, which takes the formatted
 metadata ``bundle`` (as produced by :class:`MetadataLoader`) and returns a new
-bundle whose ``tables`` / ``columns`` strings are pruned. All other bundle keys
-are passed through untouched.
+bundle whose ``tables`` / ``columns`` strings are pruned. Column statistics and
+sample-value evidence are pruned to the same selected columns; all other bundle
+keys are passed through untouched.
 """
 
 from __future__ import annotations
@@ -30,6 +31,11 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
+
+from src.metadata.identifiers import (
+    table_column_from_identifier,
+    table_name_from_identifier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,8 +118,10 @@ def _parse_tables(tables_text: str) -> List[_Table]:
                 break
         if not name:
             continue
-        low = name.lower()
-        toks = _tokenize(name)
+        low = table_name_from_identifier(name)
+        if not low:
+            continue
+        toks = _tokenize(low)
         toks |= _tokenize(desc)
         tables.append(_Table(name=low, line=raw_line.rstrip(), tokens=toks))
     return tables
@@ -126,11 +134,7 @@ def _parse_columns(columns_text: str) -> List[_Column]:
         if not stripped:
             continue
         qualified = stripped.split(" - ")[0].strip()
-        if "." not in qualified:
-            continue
-        table, _, column = qualified.partition(".")
-        table = table.strip().lower()
-        column = column.strip().lower()
+        table, column = table_column_from_identifier(qualified)
         if not table or not column:
             continue
         is_pk = "PK: true" in stripped
@@ -199,6 +203,31 @@ def _select_columns_for_table(
     # Re-emit in original catalog order for readability.
     chosen_set = {id(c) for c in chosen}
     return [c for c in table.columns if id(c) in chosen_set]
+
+
+def _filter_column_evidence(
+    evidence_text: str, selected_columns: Set[Tuple[str, str]]
+) -> str:
+    """Keep evidence entries whose leading ``table.column`` is selected.
+
+    MCP prompts use one bullet per statistic/sample in the common case, but
+    descriptions may wrap across multiple lines. A continuation line stays with
+    the preceding matching entry instead of leaking unrelated value examples
+    into the narrowed prompt.
+    """
+    if not evidence_text or not selected_columns:
+        return ""
+    kept: List[str] = []
+    keep_current = False
+    for line in evidence_text.splitlines():
+        stripped = line.lstrip("- ").strip()
+        qualified = stripped.split(" - ", 1)[0].strip()
+        table, column = table_column_from_identifier(qualified)
+        if table and column:
+            keep_current = (table, column) in selected_columns
+        if keep_current:
+            kept.append(line)
+    return "\n".join(kept)
 
 
 def link_bundle(
@@ -293,6 +322,18 @@ def link_bundle(
     new_bundle = dict(bundle)
     new_bundle["tables"] = "\n".join(kept_table_lines) + "\n" + note
     new_bundle["columns"] = "\n".join(kept_column_lines) + "\n" + note
+    selected_columns = {
+        pair
+        for line in kept_column_lines
+        if (pair := table_column_from_identifier(
+            line.lstrip("- ").strip().split(" - ", 1)[0].strip()
+        )) != ("", "")
+    }
+    for key in ("column_statistics", "column_samples"):
+        if key in new_bundle:
+            new_bundle[key] = _filter_column_evidence(
+                str(new_bundle.get(key) or ""), selected_columns
+            )
     logger.info(
         "schema_linker: pruned catalog to %d/%d tables, %d/%d columns",
         len(kept_table_lines), total_tables, len(kept_column_lines), total_columns,

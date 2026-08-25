@@ -58,6 +58,11 @@ from src.agent.langgraph_agent.nodes.catalog import make_catalog_lookup, make_pr
 from src.agent.langgraph_agent.nodes.eval import make_fused_eval_analytics
 from src.agent.langgraph_agent.nodes.execution import make_execute_query, trivial_result_check
 from src.agent.langgraph_agent.nodes.feedback import make_feedback_classifier
+from src.agent.langgraph_agent.nodes.filtering import (
+    empty_filter_result_check,
+    make_filter_grounder,
+    make_filter_planner,
+)
 from src.agent.langgraph_agent.nodes.memory import (
     make_memory_shrink_check,
     make_memory_summarizer,
@@ -82,6 +87,11 @@ from src.connectors import SqlRunner
 
 logger = logging.getLogger(__name__)
 
+# The value-grounding diagnostic introduces one bounded loop in addition to the
+# existing SQL repair loop. Keep retry budgets—not LangGraph's default 25
+# supersteps—as the effective bound for a legitimate recovery path.
+_GRAPH_RECURSION_LIMIT = 48
+
 
 # ── Node metadata for the trace panel ────────────────────────────────────────
 # (icon, type)  type is one of: llm | db | logic
@@ -91,11 +101,14 @@ _NODE_META: dict[str, tuple[str, str]] = {
     "fused_router":            ("🔀", "llm"),
     "memory_answer_generator": ("💬", "llm"),
     "catalog_lookup":          ("📦", "db"),
+    "filter_planner":          ("🎯", "llm"),
+    "filter_grounder":         ("🔎", "db"),
     "prompt_builder":          ("🔧", "logic"),
     "sql_generator":           ("🧠", "llm"),
     "sqlglot_validate":        ("✅", "logic"),
     "dlp_check":               ("🛡", "logic"),
     "execute_query":           ("▶", "db"),
+    "empty_filter_result_check": ("🧭", "logic"),
     "trivial_result_check":    ("⚡", "logic"),
     "fused_eval_analytics":    ("📊", "llm"),
     "feedback_classifier":     ("🔁", "logic"),
@@ -202,6 +215,9 @@ def build_graph(
     require_catalog_for_query: bool = True,
     enforce_schema_qualifier: bool = True,
     dlp_governed_columns: Optional[List[str]] = None,
+    filter_resolution_enabled: bool = True,
+    filter_max_domain_values: int = 1000,
+    filter_match_threshold: float = 78.0,
 ) -> Any:
     """Build and compile the LangGraph text-to-SQL agent.
 
@@ -249,11 +265,23 @@ def build_graph(
     n("fused_router",            make_fused_router(router_llm, prompt_loader))
     n("memory_answer_generator", make_memory_answer_generator(router_llm, prompt_loader))
     n("catalog_lookup",          make_catalog_lookup(metadata_loader, require_catalog_for_query))
+    n("filter_planner",          make_filter_planner(router_llm, prompt_loader))
+    n(
+        "filter_grounder",
+        make_filter_grounder(
+            sql_runner,
+            enabled=filter_resolution_enabled,
+            max_domain_values=filter_max_domain_values,
+            match_threshold=filter_match_threshold,
+            governed_columns=dlp_governed_columns,
+        ),
+    )
     n("prompt_builder",          make_prompt_builder(prompt_loader))
     n("sql_generator",           make_sql_generator(llm, prompt_loader))
     n("sqlglot_validate",        make_sqlglot_validate(sqlglot_validation_enabled, require_catalog_for_query, enforce_schema_qualifier))
     n("dlp_check",               make_dlp_check(dlp_enabled, dlp_governed_columns))
     n("execute_query",           make_execute_query(sql_runner))
+    n("empty_filter_result_check", empty_filter_result_check)
     n("trivial_result_check",    trivial_result_check)
     n("fused_eval_analytics",    make_fused_eval_analytics(llm, prompt_loader))
     n("feedback_classifier",     make_feedback_classifier(max_retries))
@@ -274,12 +302,15 @@ def build_graph(
     builder.add_conditional_edges("memory_answer_generator", _route_from_memory_answer)
 
     builder.add_conditional_edges("catalog_lookup", _route_from_catalog)
+    builder.add_conditional_edges("filter_planner", _route_from_filter_planner)
+    builder.add_conditional_edges("filter_grounder", _route_from_filter_grounder)
     builder.add_edge("prompt_builder", "sql_generator")
 
     builder.add_conditional_edges("sql_generator", _route_from_sql_gen)
     builder.add_conditional_edges("sqlglot_validate", _route_from_sqlglot)
     builder.add_conditional_edges("dlp_check", _route_from_dlp)
     builder.add_conditional_edges("execute_query", _route_from_execute)
+    builder.add_conditional_edges("empty_filter_result_check", _route_from_empty_filter)
     builder.add_conditional_edges(
         "trivial_result_check",
         _make_route_from_trivial(eval_analytics_enabled),
@@ -291,7 +322,9 @@ def build_graph(
     builder.add_edge("save_to_memory", "observability_log")
     builder.add_edge("observability_log", END)
 
-    compiled = builder.compile()
+    compiled = builder.compile().with_config(
+        {"recursion_limit": _GRAPH_RECURSION_LIMIT}
+    )
     logger.info("✅ LangGraph agent compiled — %d nodes", len(builder.nodes))
     return compiled
 
@@ -321,7 +354,15 @@ def _route_from_catalog(state: AgentState) -> str:
     # entirely and return a clear error rather than querying blindly.
     if state.get("catalog_blocked"):
         return "response_formatter"
-    return "prompt_builder"
+    return "filter_planner"
+
+
+def _route_from_filter_planner(state: AgentState) -> str:
+    return "response_formatter" if state.get("filter_clarification_required") else "filter_grounder"
+
+
+def _route_from_filter_grounder(state: AgentState) -> str:
+    return "response_formatter" if state.get("filter_clarification_required") else "prompt_builder"
 
 
 def _route_from_sql_gen(state: AgentState) -> str:
@@ -339,7 +380,11 @@ def _route_from_dlp(state: AgentState) -> str:
 
 
 def _route_from_execute(state: AgentState) -> str:
-    return "feedback_classifier" if state.get("exec_error") else "trivial_result_check"
+    return "feedback_classifier" if state.get("exec_error") else "empty_filter_result_check"
+
+
+def _route_from_empty_filter(state: AgentState) -> str:
+    return "feedback_classifier" if state.get("needs_filter_reground") else "trivial_result_check"
 
 
 def _make_route_from_trivial(eval_enabled: bool):
@@ -373,6 +418,8 @@ def _route_from_feedback(state: AgentState) -> str:
         return "response_formatter"
     if feedback == "missing_table":
         return "catalog_lookup"
+    if feedback == "resolve_filters":
+        return "filter_grounder"
     return "sql_generator"  # syntax | exec | semantic
 
 

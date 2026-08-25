@@ -1,13 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="100%" height="100%">
-  <!-- Background Rounded Square using exact brand violet -->
-  <rect width="32" height="32" rx="7" fill="oklch(52% 0.22 280)" />
-  
-  <!-- Bold, Centered "J" Glyph -->
-  <text x="50%" y="55%" 
-        font-family="system-ui, -apple-system, sans-serif" 
-        font-weight="800" 
-        font-size="18" 
-        fill="#FFFFFF" 
-        dominant-baseline="middle" 
+  <rect width="32" height="32" rx="7" fill="#1e2026" />
+  <text x="50%" y="55%"
+        font-family="Urbanist, system-ui, -apple-system, sans-serif"
+        font-weight="700"
+        font-size="18"
+        fill="#FFFFFF"
+        dominant-baseline="middle"
         text-anchor="middle">J</text>
 </svg>

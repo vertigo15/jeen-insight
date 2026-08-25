@@ -15,8 +15,12 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Jeen Insights — Data Analytics</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
+    <!-- Jeen fonts: Urbanist + Noto Sans Hebrew -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Hebrew:wght@400;500;600&family=Urbanist:ital,wght@0,300;0,400;0,500;0,600;0,700;0,900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=100">
-<link rel="stylesheet" href="{{ url_for('static', filename='workspace/workspace.css') }}?v=7">
+    <link rel="stylesheet" href="{{ url_for('static', filename='workspace/workspace.css') }}?v=7">
     <!-- CodeMirror 6 via ESM — exposes window.CodeMirrorService -->
     <script type="module">
       import { EditorView, lineNumbers } from 'https://esm.sh/@codemirror/view@6';

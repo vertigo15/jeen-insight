@@ -1,7 +1,8 @@
 <!-- PROMPT: dax_planner
      PLACEHOLDERS: {question}, {connection_display_name}, {measures}, {columns},
                    {tables}, {relationships}, {date_table}, {business_terms},
-                   {knowledge_pairs}, {conversation_summary}
+                   {knowledge_pairs}, {column_statistics}, {column_samples},
+                   {conversation_summary}
      USED BY: langgraph_agent_dax/nodes/planner.py -> dax_query_planner
      PURPOSE: Produce a typed, semantic query plan BEFORE any DAX is written.
               str.format template: every literal curly brace is doubled ({{ }}).
@@ -30,6 +31,12 @@ Marked Date table: {date_table}
 
 ## Curated examples
 {knowledge_pairs}
+
+## Column statistics
+{column_statistics}
+
+## Sample values
+{column_samples}
 
 ## Recent conversation
 {conversation_summary}

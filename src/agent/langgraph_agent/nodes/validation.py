@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Set
 from src.agent.langgraph_agent.state import AgentState
 from src.connectors.base import check_read_only_statements
 from src.connectors.dialects import sqlglot_dialect_for
+from src.metadata.identifiers import table_name_from_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,11 @@ def make_sqlglot_validate(
             return {"sqlglot_error": structural_error}
 
         # 3. Schema-qualifier check + 4. Table existence check.
-        known = {t.lower() for t in (state.get("known_tables") or [])}
+        known = {
+            normalized
+            for table_name in (state.get("known_tables") or [])
+            if (normalized := table_name_from_identifier(str(table_name)))
+        }
         expected_schema = (state.get("connection_schema") or "").strip().lower()
         expected_catalog = (state.get("connection_catalog") or "").strip().lower()
         for stmt in stmts:
@@ -184,6 +189,16 @@ def make_sqlglot_validate(
                     logger.info("sqlglot_validate: %s", col_error)
                     return {"sqlglot_error": col_error}
 
+        filter_error = _check_resolved_filters(
+            stmts,
+            state.get("filter_plan"),
+            table_columns,
+            sqlglot,
+        )
+        if filter_error:
+            logger.info("sqlglot_validate: %s", filter_error)
+            return {"sqlglot_error": filter_error}
+
         logger.info("sqlglot_validate: SQL passed validation")
         return {"sqlglot_error": None}
 
@@ -201,7 +216,9 @@ def _normalise_table_columns(raw: Any) -> Dict[str, Set[str]]:
     for table, cols in raw.items():
         if not table or not cols:
             continue
-        out[str(table).lower()] = {str(c).lower() for c in cols}
+        normalized = table_name_from_identifier(str(table))
+        if normalized:
+            out[normalized] = {str(c).lower() for c in cols}
     return out
 
 
@@ -261,6 +278,132 @@ def _check_columns(stmt, table_columns: Dict[str, Set[str]], sqlglot) -> Optiona
                     f"Column '{col.name}' not found in catalog for table "
                     f"'{single_table}'."
                 )
+    return None
+
+
+def _literal_values(expression, sqlglot) -> List[str]:
+    """Return scalar literal values below a SQLGlot expression."""
+    if expression is None:
+        return []
+    literals = []
+    if isinstance(expression, sqlglot.exp.Literal):
+        literals.append(str(expression.this))
+    literals.extend(
+        str(literal.this)
+        for literal in expression.find_all(sqlglot.exp.Literal)
+    )
+    return list(dict.fromkeys(literals))
+
+
+def _same_value(expected: object, actual: str) -> bool:
+    """Compare SQL literal values without accepting a numeric near-match."""
+    expected_text = str(expected).strip()
+    actual_text = str(actual).strip()
+    if expected_text.casefold() == actual_text.casefold():
+        return True
+    try:
+        from decimal import Decimal
+        return Decimal(expected_text) == Decimal(actual_text)
+    except Exception:  # noqa: BLE001 - text/date values are exact only
+        return False
+
+
+def _predicate_contains_target(predicate, table: str, column: str, table_columns, stmt, sqlglot) -> bool:
+    """True when a predicate references a planned column (including table alias)."""
+    aliases: Dict[str, str] = {}
+    for table_expr in stmt.find_all(sqlglot.exp.Table):
+        actual = (table_expr.name or "").lower()
+        alias = (table_expr.alias or "").lower()
+        if actual and alias:
+            aliases[alias] = actual
+    for col in predicate.find_all(sqlglot.exp.Column):
+        if (col.name or "").lower() != column:
+            continue
+        qualifier = (col.table or "").lower()
+        if not qualifier:
+            owners = [t for t, cols in table_columns.items() if column in cols]
+            if len(owners) == 1 and owners[0] == table:
+                return True
+        elif qualifier == table or aliases.get(qualifier) == table:
+            return True
+    return False
+
+
+def _check_resolved_filters(
+    stmts: List[Any],
+    plan: Any,
+    table_columns: Dict[str, Set[str]],
+    sqlglot,
+) -> Optional[str]:
+    """Ensure generated SQL retained the grounder's verified predicates.
+
+    This is intentionally conservative: only resolved filters are enforced and
+    only simple comparison/IN/BETWEEN predicates are inspected. Ambiguous or
+    unverified filters remain an LLM decision so a transient value-probe issue
+    cannot turn into a false SQL rejection.
+    """
+    if not isinstance(plan, dict):
+        return None
+    filters = [
+        item for item in (plan.get("filters") or [])
+        if isinstance(item, dict) and item.get("resolved")
+    ]
+    if not filters:
+        return None
+    for item in filters:
+        table = str(item.get("table") or "").lower()
+        column = str(item.get("column") or "").lower()
+        op = str(item.get("op") or "equals").lower()
+        expected = item.get("value")
+        if not table or not column:
+            continue
+        matched = False
+        for stmt in stmts:
+            if stmt is None:
+                continue
+            if op == "in":
+                predicates = stmt.find_all(sqlglot.exp.In)
+            elif op == "between":
+                predicates = stmt.find_all(sqlglot.exp.Between)
+            else:
+                exp_name = {
+                    "equals": "EQ", "gt": "GT", "gte": "GTE",
+                    "lt": "LT", "lte": "LTE",
+                }.get(op)
+                predicate_type = getattr(sqlglot.exp, exp_name, None) if exp_name else None
+                predicates = stmt.find_all(predicate_type) if predicate_type else []
+            for predicate in predicates:
+                if not _predicate_contains_target(
+                    predicate, table, column, table_columns, stmt, sqlglot
+                ):
+                    continue
+                if op == "in":
+                    actual_values = _literal_values(predicate, sqlglot)
+                    expected_values = expected if isinstance(expected, list) else [expected]
+                    if all(any(_same_value(value, actual) for actual in actual_values) for value in expected_values):
+                        matched = True
+                        break
+                elif op == "between":
+                    values = expected if isinstance(expected, list) else []
+                    actual_values = _literal_values(predicate, sqlglot)
+                    if len(values) == 2 and all(
+                        any(_same_value(value, actual) for actual in actual_values)
+                        for value in values
+                    ):
+                        matched = True
+                        break
+                else:
+                    actual_values = _literal_values(predicate, sqlglot)
+                    if any(_same_value(expected, actual) for actual in actual_values):
+                        matched = True
+                        break
+            if matched:
+                break
+        if not matched:
+            return (
+                f"Generated SQL did not preserve the verified filter "
+                f"'{table}.{column}' ({op})."
+            )
     return None
 
 

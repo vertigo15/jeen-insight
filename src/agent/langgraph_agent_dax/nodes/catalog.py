@@ -282,6 +282,16 @@ def make_dax_prompt_builder(prompt_loader: DaxPromptLoader):
             knowledge_pairs=bundle.get("knowledge_pairs", ""),
             business_terms=bundle.get("business_terms", ""),
         )
+        # DB-backed prompt versions may predate the catalog evidence fields.
+        # Keep the planner's resolved filters authoritative regardless of which
+        # template version is active.
+        system_prompt += (
+            "\n\n# Runtime Filter Evidence\n"
+            "Use every resolved plan filter exactly as written. Column statistics "
+            "and samples are hints, not proof that a value exists.\n"
+            f"Column statistics:\n{bundle.get('column_statistics', '')}\n"
+            f"Column sample values:\n{bundle.get('column_samples', '')}\n"
+        )
 
         structured_prompt: Dict[str, Any] = {
             "engine": "dax",
@@ -292,6 +302,8 @@ def make_dax_prompt_builder(prompt_loader: DaxPromptLoader):
             "tables": bundle.get("tables", ""),
             "knowledge_pairs": bundle.get("knowledge_pairs", ""),
             "business_terms": bundle.get("business_terms", ""),
+            "column_statistics": bundle.get("column_statistics", ""),
+            "column_samples": bundle.get("column_samples", ""),
             "plan": plan,
             "dialect_rules": dialect_rules,
             "current_question": state.get("question", ""),

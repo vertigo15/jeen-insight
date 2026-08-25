@@ -88,6 +88,9 @@ class JeenInsightsAgent:
             require_catalog_for_query=settings.REQUIRE_CATALOG_FOR_QUERY,
             enforce_schema_qualifier=settings.SCHEMA_QUALIFIER_VALIDATION_ENABLED,
             dlp_governed_columns=_parse_governed_columns(settings.DLP_GOVERNED_COLUMNS),
+            filter_resolution_enabled=settings.SQL_FILTER_RESOLUTION_ENABLED,
+            filter_max_domain_values=settings.SQL_FILTER_MAX_DOMAIN_VALUES,
+            filter_match_threshold=settings.SQL_FILTER_MATCH_THRESHOLD,
         )
         logger.info(
             "✅ LangGraph agent ready for source_key=%s", self.source_key
@@ -221,6 +224,18 @@ class JeenInsightsAgent:
                 "catalog_available": False,
                 "catalog_error": None,
                 "catalog_blocked": False,
+                # ── Filter planning / grounding ──────────────────────────
+                "filter_plan": None,
+                "resolved_filters": [],
+                "unresolved_filters": [],
+                "filter_ambiguities": [],
+                "filter_clarification_required": False,
+                "filter_resolution_attempts": 0,
+                "empty_filter_diagnostics": 0,
+                "needs_filter_reground": False,
+                "filter_resolution_enabled": runtime.sql_filter_resolution_enabled,
+                "filter_max_domain_values": runtime.sql_filter_max_domain_values,
+                "filter_match_threshold": runtime.sql_filter_match_threshold,
                 # ── SQL loop ────────────────────────────────────────────
                 "retry_count": 0,
                 "generated_sql": None,

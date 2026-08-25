@@ -50,6 +50,9 @@ NEED_KNOWLEDGE_PAIRS   = "knowledge_pairs"
 NEED_TABLES_RICH        = "tables_rich"
 NEED_LIST_COLUMNS       = "list_columns"
 NEED_KNOWLEDGE_QUESTIONS = "knowledge_questions"
+# Optional, bounded lookup used by the query graphs to verify a user-provided
+# categorical filter value against the source's canonical values.
+NEED_SEARCH_COLUMN_VALUES = "search_column_values"
 
 # Required needs — server cannot be activated until these are mapped.
 # NEED_LIST_SOURCES → list_connections  (connection list)
@@ -68,6 +71,7 @@ CATALOG_NEEDS = [
     {"key": NEED_TABLES_RICH,        "label": "Tables (rich: @ picker)",          "required": False},
     {"key": NEED_LIST_COLUMNS,       "label": "Columns (# autocomplete)",         "required": False},
     {"key": NEED_KNOWLEDGE_QUESTIONS,"label": "Knowledge questions (/ templates)","required": False},
+    {"key": NEED_SEARCH_COLUMN_VALUES, "label": "Search column values (filter grounding)", "required": False},
 ]
 
 # Human-readable labels for required needs, used in error messages.

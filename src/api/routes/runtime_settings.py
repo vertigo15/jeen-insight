@@ -30,6 +30,9 @@ class RuntimeSettingsResponse(BaseModel):
     dax_entity_max_domain_values: int
     dax_entity_match_threshold: float
     dax_entity_cross_column_enabled: bool
+    sql_filter_resolution_enabled: bool
+    sql_filter_max_domain_values: int
+    sql_filter_match_threshold: float
     bounds: Dict[str, Dict[str, float]]
 
 
@@ -41,6 +44,9 @@ class RuntimeSettingsUpdate(BaseModel):
     dax_entity_max_domain_values: int | None = None
     dax_entity_match_threshold: float | None = None
     dax_entity_cross_column_enabled: bool | None = None
+    sql_filter_resolution_enabled: bool | None = None
+    sql_filter_max_domain_values: int | None = None
+    sql_filter_match_threshold: float | None = None
 
 
 def _response(current: rs.RuntimeSettings) -> RuntimeSettingsResponse:
@@ -52,6 +58,9 @@ def _response(current: rs.RuntimeSettings) -> RuntimeSettingsResponse:
         dax_entity_max_domain_values=current.dax_entity_max_domain_values,
         dax_entity_match_threshold=current.dax_entity_match_threshold,
         dax_entity_cross_column_enabled=current.dax_entity_cross_column_enabled,
+        sql_filter_resolution_enabled=current.sql_filter_resolution_enabled,
+        sql_filter_max_domain_values=current.sql_filter_max_domain_values,
+        sql_filter_match_threshold=current.sql_filter_match_threshold,
         bounds=rs.bounds(),
     )
 

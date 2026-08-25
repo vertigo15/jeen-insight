@@ -105,6 +105,30 @@ async def test_question_uses_filtered_mcp_prompt():
 
 class TestSqlCatalogLookup:
     @pytest.mark.asyncio
+    async def test_empty_mcp_bundle_falls_back_to_metadata_db(self):
+        """MCP transport errors are returned as sentinels, not exceptions."""
+        server_service = MagicMock()
+        server_service.get_catalog_source = AsyncMock(return_value="mcp")
+        server_service.get_active = AsyncMock(return_value=None)
+        mcp_client = MagicMock()
+        mcp_client.load_all = AsyncMock(return_value={
+            "tables": "No tables registered.",
+            "columns": "No columns registered.",
+        })
+        metadata_loader = MagicMock()
+        metadata_loader.load_all = AsyncMock(return_value=_BUNDLE)
+
+        with patch("src.api.state.mcp_server_service", server_service), \
+             patch("src.api.state.mcp_catalog_client", mcp_client):
+            bundle, meta = await catalog_mod._route_catalog_load(
+                "test_db", metadata_loader
+            )
+
+        assert bundle is _BUNDLE
+        assert meta == {"source": "db", "cache": None}
+        metadata_loader.load_all.assert_awaited_once_with("test_db")
+
+    @pytest.mark.asyncio
     async def test_seeded_bundle_is_used_without_reloading(self):
         ctx, loader = _loader_patch()
         with ctx:

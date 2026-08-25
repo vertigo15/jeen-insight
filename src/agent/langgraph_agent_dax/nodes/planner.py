@@ -94,6 +94,8 @@ def make_dax_query_planner(llm: LangChainLlmService, prompt_loader: DaxPromptLoa
             date_table=date_table,
             business_terms=bundle.get("business_terms", ""),
             knowledge_pairs=bundle.get("knowledge_pairs", ""),
+            column_statistics=bundle.get("column_statistics", ""),
+            column_samples=bundle.get("column_samples", ""),
             conversation_summary=_recent_history(state.get("conversation_history")),
         )
         model_override = await prompt_loader.model_override_for("dax_planner")

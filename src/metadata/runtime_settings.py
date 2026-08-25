@@ -12,6 +12,9 @@ Keys (stored in ``app_settings``):
   - ``dax_entity_max_domain_values``     int    distinct values probed per column
   - ``dax_entity_match_threshold``       float  fuzzy-match score cutoff (0-100)
   - ``dax_entity_cross_column_enabled``  bool   search sibling columns on a miss
+  - ``sql_filter_resolution_enabled``    bool   text-to-SQL filter grounding
+  - ``sql_filter_max_domain_values``     int    distinct values probed per column
+  - ``sql_filter_match_threshold``       float  fuzzy-match score cutoff (0-100)
 
 Reads are served from a short-lived in-process cache so the hot query path
 doesn't hit the DB on every request; ``set_runtime_setting`` invalidates it.
@@ -53,6 +56,9 @@ _SPECS: Dict[str, _Spec] = {
     "dax_entity_max_domain_values": _Spec("int", 1, 100_000),
     "dax_entity_match_threshold": _Spec("float", 0.0, 100.0),
     "dax_entity_cross_column_enabled": _Spec("bool"),
+    "sql_filter_resolution_enabled": _Spec("bool"),
+    "sql_filter_max_domain_values": _Spec("int", 1, 100_000),
+    "sql_filter_match_threshold": _Spec("float", 0.0, 100.0),
 }
 
 _TRUTHY = ("1", "true", "yes", "on", "t")
@@ -69,6 +75,9 @@ class RuntimeSettings:
     dax_entity_max_domain_values: int
     dax_entity_match_threshold: float
     dax_entity_cross_column_enabled: bool
+    sql_filter_resolution_enabled: bool
+    sql_filter_max_domain_values: int
+    sql_filter_match_threshold: float
 
 
 def _defaults() -> RuntimeSettings:
@@ -80,6 +89,9 @@ def _defaults() -> RuntimeSettings:
         dax_entity_max_domain_values=settings.DAX_ENTITY_MAX_DOMAIN_VALUES,
         dax_entity_match_threshold=settings.DAX_ENTITY_MATCH_THRESHOLD,
         dax_entity_cross_column_enabled=settings.DAX_ENTITY_CROSS_COLUMN_ENABLED,
+        sql_filter_resolution_enabled=settings.SQL_FILTER_RESOLUTION_ENABLED,
+        sql_filter_max_domain_values=settings.SQL_FILTER_MAX_DOMAIN_VALUES,
+        sql_filter_match_threshold=settings.SQL_FILTER_MATCH_THRESHOLD,
     )
 
 
