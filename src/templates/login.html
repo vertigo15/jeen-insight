@@ -13,17 +13,16 @@
   <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=41">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Hebrew:wght@400;500;600&family=Urbanist:ital,wght@0,300;0,400;0,500;0,600;0,700;0,900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=83">
   <style>
-    /* ── Login page layout ── */
     html, body { height: 100%; margin: 0; }
     body {
       display: flex;
       align-items: center;
       justify-content: center;
       background: var(--color-bg);
-      font-family: var(--font-sans, 'Geist', system-ui, sans-serif);
+      font-family: var(--font-sans);
       min-height: 100vh;
     }
 
@@ -33,16 +32,14 @@
       padding: 24px 16px;
     }
 
-    /* ── Card ── */
     .login-card {
       background: var(--color-surface);
       border: 1px solid var(--color-border);
-      border-radius: 16px;
+      border-radius: var(--radius-lg);
       padding: 40px 36px 36px;
-      box-shadow: 0 4px 24px rgba(0,0,0,.08);
+      box-shadow: var(--shadow-md);
     }
 
-    /* ── Brand ── */
     .login-brand {
       display: flex;
       flex-direction: column;
@@ -53,59 +50,53 @@
     .login-logo {
       width: 48px;
       height: 48px;
-      border-radius: 12px;
-      background: oklch(52% 0.22 280);
+      border-radius: var(--radius-lg);
+      background: var(--btn-primary-bg);
       display: flex;
       align-items: center;
       justify-content: center;
       font-size: 22px;
-      font-weight: 800;
-      color: #fff;
-      letter-spacing: -1px;
-      font-family: var(--font-sans, 'Geist', system-ui, sans-serif);
+      font-weight: 700;
+      color: var(--btn-primary-fg);
+      letter-spacing: 0;
+      font-family: var(--font-sans);
       flex-shrink: 0;
     }
     .login-title {
-      font-size: 22px;
-      font-weight: 700;
+      font-size: var(--text-xl);
+      font-weight: var(--weight-medium);
       color: var(--color-text);
       margin: 0;
-      letter-spacing: -0.4px;
+      letter-spacing: 0;
       text-align: center;
+      line-height: 1.2;
     }
     .login-subtitle {
-      font-size: 13px;
+      font-size: var(--text-base);
       color: var(--color-muted);
       margin: 4px 0 0;
       text-align: center;
     }
 
-    /* ── Error banner ── */
     .login-error {
       display: flex;
       align-items: center;
       gap: 8px;
-      background: var(--color-error-bg, #fff0f0);
-      border: 1px solid var(--color-error-border, #ffd5d5);
-      border-radius: 8px;
+      background: var(--color-error-bg);
+      border: 1px solid color-mix(in srgb, var(--color-error) 35%, var(--color-border));
+      border-radius: var(--radius-md);
       padding: 10px 12px;
       margin-bottom: 20px;
-      font-size: 13px;
-      color: var(--color-error, #c0392b);
-    }
-    [data-theme="dark"] .login-error {
-      background: rgba(192,57,43,.15);
-      border-color: rgba(192,57,43,.35);
-      color: #ff7c7c;
+      font-size: var(--text-base);
+      color: var(--color-error);
     }
 
-    /* ── Form ── */
     .login-form { display: flex; flex-direction: column; gap: 16px; }
 
     .login-field { display: flex; flex-direction: column; gap: 6px; }
     .login-label {
-      font-size: 13px;
-      font-weight: 500;
+      font-size: var(--text-base);
+      font-weight: var(--weight-medium);
       color: var(--color-text);
     }
     .login-input {
@@ -114,20 +105,20 @@
       font-size: 14px;
       font-family: inherit;
       border: 1px solid var(--color-border);
-      border-radius: 8px;
-      background: var(--color-input-bg, var(--color-bg));
+      border-radius: var(--radius-md);
+      background: var(--color-surface);
       color: var(--color-text);
       outline: none;
       transition: border-color 0.15s, box-shadow 0.15s;
       box-sizing: border-box;
+      height: 40px;
     }
     .login-input:focus {
-      border-color: oklch(52% 0.22 280);
-      box-shadow: 0 0 0 3px oklch(52% 0.22 280 / 0.15);
+      border-color: var(--color-text);
+      box-shadow: var(--shadow-focus);
     }
-    .login-input::placeholder { color: var(--color-faint); }
+    .login-input::placeholder { color: var(--color-muted); }
 
-    /* Password field with show/hide toggle */
     .login-pw-wrap { position: relative; }
     .login-pw-wrap .login-input { padding-right: 40px; }
     .login-pw-toggle {
@@ -142,40 +133,40 @@
       padding: 4px;
       display: flex;
       align-items: center;
+      height: auto;
+      border-radius: var(--radius-pill);
     }
     .login-pw-toggle:hover { color: var(--color-text); }
 
-    /* ── Submit ── */
     .login-btn {
       width: 100%;
-      padding: 11px;
+      height: 40px;
+      padding: 8px 16px;
       border: none;
-      border-radius: 8px;
-      background: oklch(52% 0.22 280);
-      color: #fff;
+      border-radius: var(--radius-pill);
+      background: var(--btn-primary-bg);
+      color: var(--btn-primary-fg);
       font-size: 14px;
-      font-weight: 600;
+      font-weight: 500;
       font-family: inherit;
       cursor: pointer;
-      transition: background 0.15s, transform 0.1s;
+      transition: background 0.15s;
       margin-top: 4px;
     }
-    .login-btn:hover { background: oklch(46% 0.22 280); }
-    .login-btn:active { transform: scale(0.99); }
+    .login-btn:hover { background: var(--btn-primary-hover); }
+    .login-btn:active { background: var(--btn-primary-active); }
     .login-btn:disabled {
-      background: var(--color-border);
-      color: var(--color-muted);
+      background: var(--btn-primary-disabled);
+      color: var(--color-subtle);
       cursor: default;
-      transform: none;
     }
 
-    /* spinner inside button */
     .btn-spinner {
       display: inline-block;
       width: 14px;
       height: 14px;
       border: 2px solid rgba(255,255,255,.4);
-      border-top-color: #fff;
+      border-top-color: var(--btn-primary-fg);
       border-radius: 50%;
       animation: spin .6s linear infinite;
       vertical-align: middle;
@@ -183,7 +174,6 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* ── SSO divider ── */
     .login-divider {
       display: flex;
       align-items: center;
@@ -200,20 +190,20 @@
       background: var(--color-border);
     }
 
-    /* ── Microsoft SSO ── */
     .login-ms-btn {
       display: flex;
       align-items: center;
       justify-content: center;
       gap: 10px;
       width: 100%;
-      padding: 10px 12px;
+      height: 40px;
+      padding: 8px 16px;
       border: 1px solid var(--color-border);
-      border-radius: 8px;
+      border-radius: var(--radius-pill);
       background: var(--color-surface);
       color: var(--color-text);
       font-size: 14px;
-      font-weight: 600;
+      font-weight: 500;
       font-family: inherit;
       text-decoration: none;
       cursor: pointer;
@@ -221,7 +211,7 @@
       box-sizing: border-box;
     }
     .login-ms-btn:hover {
-      background: var(--color-bg);
+      background: var(--color-surface-2);
       border-color: var(--color-muted);
     }
     .login-ms-mark {

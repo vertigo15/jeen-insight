@@ -15,6 +15,7 @@ import decimal
 import json
 import logging
 import time
+from decimal import ROUND_HALF_UP
 from datetime import date, datetime, time as dt_time
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -141,6 +142,29 @@ def _type_name(value: Any) -> str:
     return "str"
 
 
+def _format_trivial_value(value: Any) -> str:
+    """Format a scalar answer using the same rules as result-table numbers."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, decimal.Decimal)):
+        return str(value)
+
+    try:
+        number = decimal.Decimal(str(value))
+    except decimal.InvalidOperation:
+        return str(value)
+    if not number.is_finite():
+        return str(value)
+
+    # Result tables group thousands and omit fractional noise at this scale.
+    if abs(number) >= 1000:
+        rounded = number.quantize(decimal.Decimal("1"), rounding=ROUND_HALF_UP)
+        return f"{rounded:,}"
+    if number == number.to_integral_value():
+        return f"{number:,.0f}"
+
+    # Match the table's four-decimal maximum for smaller values.
+    return f"{number:,.4f}".rstrip("0").rstrip(".")
+
+
 # ── response_formatter ────────────────────────────────────────────────────────
 
 
@@ -185,10 +209,7 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
             parts = []
             for col, val in row.items():
                 label = col.replace("_", " ").title()
-                if isinstance(val, (int, float)) and val == int(val):
-                    parts.append(f"{label}: {int(val):,}")
-                else:
-                    parts.append(f"{label}: {val}")
+                parts.append(f"{label}: {_format_trivial_value(val)}")
             answer = " | ".join(parts) if parts else None
     elif not state.get("generated_sql") and not answer:
         # Only fall back to clarification / error_context when no answer has been set.

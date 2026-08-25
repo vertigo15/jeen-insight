@@ -288,6 +288,42 @@ class TestSqlglotValidate:
         result = validate({"generated_sql": "SELECT id, name FROM customers", "known_tables": ["customers"]})
         assert result["sqlglot_error"] is None
 
+    def test_verified_filter_must_be_present_with_canonical_value(self):
+        validate = make_sqlglot_validate(enabled=True)
+        state = {
+            "generated_sql": "SELECT * FROM orders WHERE status = 'paid'",
+            "known_tables": ["orders"],
+            "table_columns": {"orders": ["status"]},
+            "filter_plan": {
+                "filters": [{
+                    "table": "orders",
+                    "column": "status",
+                    "op": "equals",
+                    "value": "Paid",
+                    "resolved": True,
+                }]
+            },
+        }
+        assert validate(state)["sqlglot_error"] is None
+
+    def test_verified_filter_rejects_dropped_or_rewritten_predicate(self):
+        validate = make_sqlglot_validate(enabled=True)
+        state = {
+            "generated_sql": "SELECT * FROM orders WHERE status = 'pending'",
+            "known_tables": ["orders"],
+            "table_columns": {"orders": ["status"]},
+            "filter_plan": {
+                "filters": [{
+                    "table": "orders",
+                    "column": "status",
+                    "op": "equals",
+                    "value": "Paid",
+                    "resolved": True,
+                }]
+            },
+        }
+        assert "did not preserve" in validate(state)["sqlglot_error"]
+
     def test_valid_cte_passes(self):
         validate = make_sqlglot_validate(enabled=True)
         state = {
@@ -350,6 +386,17 @@ class TestSqlglotValidate:
         state = {
             "generated_sql": "SELECT id FROM public.users",
             "known_tables": ["users"],
+            "connection_schema": "public",
+        }
+        assert validate(state)["sqlglot_error"] is None
+
+    def test_schema_qualified_catalog_name_matches_bare_sql_table(self):
+        """MCP names can be quoted/qualified while sqlglot exposes Table.name."""
+        validate = make_sqlglot_validate(enabled=True)
+        state = {
+            "generated_sql": "SELECT DateKey FROM dimdate",
+            "known_tables": ['"public"."dimdate"'],
+            "table_columns": {'"public"."dimdate"': ["datekey"]},
             "connection_schema": "public",
         }
         assert validate(state)["sqlglot_error"] is None
@@ -665,6 +712,9 @@ class TestExtractTableNames:
 
     def test_empty_string_returns_empty(self):
         assert _extract_table_names("") == []
+
+    def test_empty_catalog_sentinel_is_not_a_table(self):
+        assert _extract_table_names("No tables registered.") == []
 
     def test_skips_blank_lines(self):
         tables = "- FactSales\n\n\n- DimDate"

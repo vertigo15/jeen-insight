@@ -44,9 +44,10 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 from src.agent.langgraph_agent_dax.nodes.catalog import _extract_type
+from src.agent.langgraph_agent.nodes.filtering import normalize_typed_filter
 from src.agent.langgraph_agent_dax.nodes.dax_validate import (
     build_dax_dlp_regex,
     is_governed_name,
@@ -108,6 +109,7 @@ _NAMEY_HINTS = ("name", "model", "product", "category", "title", "label", "descr
 # A probe is per-request: it is bound to the dataset and the delegated token of
 # whoever asked the question, so it cannot be built until the state is in hand.
 ProbeFactory = Callable[[DaxAgentState], Optional["PowerBiValueProbe"]]
+McpSearch = Callable[[str, str, str], Awaitable[Sequence[str]]]
 
 
 # ── Catalog helpers ───────────────────────────────────────────────────────────
@@ -246,6 +248,10 @@ class _Ctx:
     max_domain_values: int
     threshold: float
     cross_column: bool
+    # MCP candidates are merely a search accelerator. A candidate is accepted
+    # only after the delegated Power BI probe confirms it is visible to the
+    # asking user, so MCP metadata can never bypass RLS.
+    mcp_search: Optional[McpSearch] = None
 
 
 def _governed(ctx: _Ctx, column: str) -> bool:
@@ -353,6 +359,46 @@ def _unverified(filter_dict: Dict[str, Any], reason: str) -> _Outcome:
     return _Outcome(filter_dict, "unverified", detail={"reason": reason})
 
 
+def _normalise_typed_plan_filters(
+    plan: Dict[str, Any],
+    filters: List[Any],
+    types: Dict[Tuple[str, str], str],
+) -> Tuple[List[Any], List[Dict[str, Any]]]:
+    """Normalize DAX date/number operands before entity lookup.
+
+    The entity resolver intentionally skips ranges because a wrong number/date
+    is not a spelling problem. It still needs deterministic parsing and range
+    ordering checks, otherwise the generator receives unvalidated operands.
+    """
+    out: List[Any] = []
+    errors: List[Dict[str, Any]] = []
+    for filter_dict in filters:
+        if not isinstance(filter_dict, dict):
+            out.append(filter_dict)
+            continue
+        parsed = parse_target(filter_dict.get("target"))
+        if not parsed:
+            out.append(filter_dict)
+            continue
+        data_type = types.get((parsed[0].lower(), parsed[1].lower()), "")
+        normalized, error = normalize_typed_filter(
+            filter_dict,
+            data_type,
+            normalize_numeric_scalar=False,
+        )
+        if error:
+            errors.append(
+                {
+                    "column": parsed[1],
+                    "value": filter_dict.get("value"),
+                    "candidates": [],
+                    "reason": error,
+                }
+            )
+        out.append(normalized)
+    return out, errors
+
+
 def _describe(needle: str, column: str, values: Sequence[str]) -> str:
     """One stated assumption for a literal that was corrected or widened."""
     if len(values) == 1:
@@ -374,6 +420,37 @@ async def _resolve_one(ctx: _Ctx, filter_dict: Dict[str, Any]) -> _Outcome:
 
     if _governed(ctx, column):
         return _unverified(filter_dict, "governed column")
+
+    # A catalog-side fuzzy search often finds a typo faster than reading a
+    # high-cardinality Power BI column. Treat it as a *candidate only*: verify
+    # the one suggested value using the user's delegated model query before
+    # changing the plan. Multiple candidates are intentionally left for the
+    # normal RLS-scoped resolver to disambiguate.
+    if ctx.mcp_search and len(needles) == 1:
+        try:
+            candidates = list(await ctx.mcp_search(table, column, needles[0]))
+        except Exception:  # noqa: BLE001 - optional acceleration fails open
+            candidates = []
+        if len(candidates) == 1:
+            probe_result = await ctx.probe.contains_values(
+                table,
+                column,
+                search_tokens(candidates[0]),
+                limit=_MAX_SUGGESTIONS,
+            )
+            canonical = (
+                exact_value(candidates[0], probe_result.values)
+                if probe_result.ok else None
+            )
+            if canonical is not None:
+                updated = _apply(filter_dict, [canonical], target=target)
+                if canonical == needles[0]:
+                    return _Outcome(updated, "verified")
+                return _Outcome(
+                    updated,
+                    "rewritten",
+                    assumption=_describe(needles[0], column, [canonical]),
+                )
 
     domain = await _domain(ctx, table, column)
     if domain is None:
@@ -600,12 +677,37 @@ def make_dax_entity_resolver(
 
         plan = state.get("query_plan") or {}
         filters = list(plan.get("filters") or [])
+        columns_text = (state.get("metadata_bundle") or {}).get("columns", "")
+        types = column_types(columns_text)
+        filters, typed_errors = _normalise_typed_plan_filters(plan, filters, types)
+        if typed_errors:
+            clarification = build_clarification([], typed_errors)
+            updated_plan = dict(plan)
+            updated_plan["filters"] = filters
+            return {
+                **base,
+                "query_plan": updated_plan,
+                "entity_ambiguities": typed_errors,
+                "unresolved_entities": [],
+                "clarification": clarification,
+                "answer": clarification,
+                "clarification_required": True,
+            }
         targets = [(i, f) for i, f in enumerate(filters) if _is_resolvable(f)][:_MAX_FILTERS]
         if not targets:
             # Clear any leftovers from an earlier pass: a stale unresolved entry
             # would keep sending the feedback router back here.
             logger.info("dax_entity_resolver: no literal filters to resolve")
-            return {**base, "unresolved_entities": [], "entity_ambiguities": []}
+            updates: Dict[str, Any] = {
+                **base,
+                "unresolved_entities": [],
+                "entity_ambiguities": [],
+            }
+            if filters != list(plan.get("filters") or []):
+                updated_plan = dict(plan)
+                updated_plan["filters"] = filters
+                updates["query_plan"] = updated_plan
+            return updates
 
         probe = build_probe(state)
         identity = await _authorize(probe)
@@ -622,13 +724,12 @@ def make_dax_entity_resolver(
                 ],
             }
 
-        columns_text = (state.get("metadata_bundle") or {}).get("columns", "")
         ctx = _Ctx(
             probe=probe,
             source_key=str(state.get("source_key") or ""),
             scope=f"{state.get('dataset_id') or ''}|{identity}",
             user_id=str(state.get("user_id") or ""),
-            types=column_types(columns_text),
+            types=types,
             display=column_display_names(columns_text),
             table_columns=state.get("table_columns") or {},
             dlp_re=dlp_re,
@@ -642,6 +743,7 @@ def make_dax_entity_resolver(
             cross_column=bool(
                 _setting(state, "entity_cross_column_enabled", cross_column_enabled)
             ),
+            mcp_search=_mcp_search_for_state(state),
         )
 
         # Only text columns are worth probing; skip the rest before spending a
@@ -715,6 +817,38 @@ async def _authorize(probe: Optional[PowerBiValueProbe]) -> Optional[str]:
     except Exception as exc:  # noqa: BLE001
         logger.info("dax_entity_resolver: authorization check failed: %s", exc)
         return None
+
+
+def _mcp_search_for_state(state: DaxAgentState) -> Optional[McpSearch]:
+    """Build an optional catalog candidate lookup for an MCP-backed catalog."""
+    if state.get("catalog_source_used") != "mcp":
+        return None
+    visibility_checked: Optional[bool] = None
+
+    async def search(table: str, column: str, needle: str) -> Sequence[str]:
+        nonlocal visibility_checked
+        try:
+            from src.api import state as app_state
+            client = app_state.mcp_catalog_client
+            if client is None:
+                return ()
+            if visibility_checked is None:
+                visibility_checked = await client.value_search_preserves_user_visibility()
+            if not visibility_checked:
+                return ()
+            result = await client.search_column_values(
+                str(state.get("source_key") or ""),
+                table=table,
+                column=column,
+                query=needle,
+                limit=_MAX_SUGGESTIONS,
+            )
+            return tuple(str(value) for value in result.get("values") or [])
+        except Exception:  # noqa: BLE001 - catalog lookup must not affect RLS path
+            logger.debug("dax_entity_resolver: MCP candidate search unavailable", exc_info=True)
+            return ()
+
+    return search
 
 
 def make_probe_factory(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.agent.langgraph_agent_dax.nodes import entity_resolver
 from src.agent.langgraph_agent_dax.nodes.entity_resolver import (
     build_clarification,
     column_display_names,
@@ -141,6 +142,39 @@ class TestCatalogHelpers:
 
 
 class TestResolution:
+    async def test_mcp_candidate_is_confirmed_by_delegated_probe(self, monkeypatch, probe):
+        p = probe(
+            _Probe(
+                contains={("Product", "Product Name"): ["Mountain-300"]}
+            )
+        )
+
+        async def candidates(_table, _column, _needle):
+            return ["Mountain-300"]
+
+        monkeypatch.setattr(
+            entity_resolver,
+            "_mcp_search_for_state",
+            lambda _state: candidates,
+        )
+        out = await _node(p)(
+            _state(
+                [{
+                    "target": "'Product'[Product Name]",
+                    "op": "equals",
+                    "value": "mountaiin 300",
+                }],
+                catalog_source_used="mcp",
+            )
+        )
+
+        assert p.distinct_calls == []
+        assert p.contains_calls == [
+            ("Product", "Product Name", ["moun", "300"])
+        ]
+        assert out["query_plan"]["filters"][0]["value"] == "Mountain-300"
+        assert out["query_plan"]["filters"][0]["resolved"] is True
+
     async def test_typo_resolves_to_the_matching_sizes(self, probe):
         p = probe(_Probe({("Product", "Product Name"): PRODUCTS}))
         out = await _node(p)(
@@ -510,7 +544,7 @@ class TestSkipRules:
         assert out["unresolved_entities"] == []
         assert "query_plan" not in out
 
-    async def test_non_text_column_is_not_probed(self, probe):
+    async def test_invalid_date_literal_is_not_probed_and_requests_clarification(self, probe):
         p = probe(_Probe())
         out = await _node(p)(
             _state(
@@ -518,7 +552,26 @@ class TestSkipRules:
             )
         )
         assert p.distinct_calls == []
-        assert out["unresolved_entities"][0]["reason"] == "non-text column"
+        assert out["clarification_required"] is True
+        assert "couldn't find" in out["clarification"].lower()
+
+    async def test_iso_date_range_is_normalised_without_a_value_probe(self, probe):
+        p = probe(_Probe())
+        out = await _node(p)(
+            _state(
+                [{
+                    "target": "'Product'[Sell Start Date]",
+                    "op": "between",
+                    "value": ["2026-01-01", "2026-01-31"],
+                    "value_kind": "expression",
+                }]
+            )
+        )
+        assert p.distinct_calls == []
+        assert out["query_plan"]["filters"][0]["value"] == [
+            "2026-01-01", "2026-01-31"
+        ]
+        assert out["query_plan"]["filters"][0]["resolved"] is True
 
     async def test_range_operator_is_ignored(self, probe):
         p = probe(_Probe())

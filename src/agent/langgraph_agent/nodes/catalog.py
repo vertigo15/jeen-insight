@@ -11,6 +11,7 @@ Both are factory functions that close over their dependencies.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any, Dict, List, Tuple
@@ -106,7 +107,20 @@ async def _route_catalog_load(
                 logger.info(
                     "catalog_lookup: using MCP provider for source_key=%s", source_key
                 )
-                return await _state.mcp_catalog_client.load_all(source_key), meta
+                bundle = await _state.mcp_catalog_client.load_all(source_key)
+                # McpCatalogClient intentionally degrades transport failures to
+                # a sentinel bundle instead of raising. Treat that sentinel as
+                # an MCP failure here so the documented metadata-DB fallback
+                # still happens; otherwise "No tables registered." becomes the
+                # only catalog table and every query burns its full retry budget.
+                if _extract_table_names(bundle.get("tables", "")):
+                    return bundle, meta
+                logger.warning(
+                    "catalog_lookup: MCP returned no usable tables for source_key=%s "
+                    "— falling back to metadata DB",
+                    source_key,
+                )
+                meta = {"source": "db", "cache": None}
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "catalog_lookup: MCP routing failed (%s) — falling back to metadata DB", exc
@@ -339,6 +353,21 @@ def make_prompt_builder(prompt_loader: PromptLoader):
             sources=prompt_bundle.get("sources", ""),
             knowledge_pairs=prompt_bundle.get("knowledge_pairs", ""),
             business_terms=prompt_bundle.get("business_terms", ""),
+            filter_plan=json.dumps(state.get("filter_plan") or {}, ensure_ascii=False),
+            column_statistics=prompt_bundle.get("column_statistics", ""),
+            column_samples=prompt_bundle.get("column_samples", ""),
+        )
+        # Active prompts may be DB-backed and predate the new placeholders.
+        # Append the dynamic contract so a stale template cannot silently cause
+        # SQL generation to ignore grounded values.
+        filter_context = json.dumps(state.get("filter_plan") or {}, ensure_ascii=False)
+        system_prompt += (
+            "\n\n# Runtime Filter Contract\n"
+            "Use every filter marked resolved exactly as written; do not retarget, "
+            "drop, or rewrite canonical values.\n"
+            f"Verified filter plan:\n{filter_context}\n"
+            f"Column statistics:\n{prompt_bundle.get('column_statistics', '')}\n"
+            f"Column sample values:\n{prompt_bundle.get('column_samples', '')}\n"
         )
 
         # structured_prompt is forwarded as-is to the UI "Show Prompt" panel.
@@ -350,6 +379,9 @@ def make_prompt_builder(prompt_loader: PromptLoader):
             "sources": prompt_bundle.get("sources", ""),
             "knowledge_pairs": prompt_bundle.get("knowledge_pairs", ""),
             "business_terms": prompt_bundle.get("business_terms", ""),
+            "column_statistics": prompt_bundle.get("column_statistics", ""),
+            "column_samples": prompt_bundle.get("column_samples", ""),
+            "filter_plan": state.get("filter_plan") or {},
             "schema_pruned": schema_pruned,
             "dialect_rules": dialect_rules,
             "conversation_history": [
@@ -390,19 +422,23 @@ def _extract_table_names(tables_text: str) -> List[str]:
 
     DB-backed metadata lines look like ``- TableName`` or
     ``- TableName - description``. MCP catalog prompts can use
-    ``TableName: description``. Keep only the table token so validation doesn't
-    mistake descriptions for table-name suffixes.
+    ``TableName: description`` and may schema-qualify/quote names as
+    ``"public"."TableName"``. Keep only the unqualified table component so it
+    matches sqlglot's ``Table.name`` during validation.
     """
     names: List[str] = []
     for line in tables_text.splitlines():
         stripped = line.lstrip("- ").strip()
         if not stripped:
             continue
-        lowered = stripped.lower().rstrip(":")
+        lowered = stripped.lower().rstrip(":.")
         if lowered in {
             "tables",
             "tables available for querying",
             "available tables",
+            "no tables registered",
+            "no tables available",
+            "no tables found",
         }:
             continue
         table_name = stripped

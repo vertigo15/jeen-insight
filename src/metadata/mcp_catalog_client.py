@@ -54,6 +54,7 @@ from .mcp_server_service import (
     NEED_LIST_SOURCES, NEED_LIST_TABLES, NEED_DESCRIBE_TABLE,
     NEED_LIST_RELATIONSHIPS, NEED_BUSINESS_GLOSSARY, NEED_KNOWLEDGE_PAIRS,
     NEED_TABLES_RICH, NEED_LIST_COLUMNS, NEED_KNOWLEDGE_QUESTIONS,
+    NEED_SEARCH_COLUMN_VALUES,
 )
 from .mcp_cache_service import (
     McpCacheService,
@@ -66,6 +67,8 @@ from .mcp_cache_service import (
     KEY_TABLES_RICH,
     KEY_KNOWLEDGE_QUESTIONS,
     KEY_COLUMNS_STRUCT,
+    KEY_COLUMN_STATISTICS,
+    KEY_COLUMN_SAMPLES,
     SOURCE_GLOBAL,
 )
 from .catalog_filter import filter_tables_rich, filter_columns
@@ -125,7 +128,8 @@ class McpCatalogClient:
     async def load_all(self, source_key: str) -> Dict[str, str]:
         """
         Return a MetadataLoader-compatible bundle for source_key.
-        Keys: tables, columns, relationships, sources, knowledge_pairs, business_terms.
+        Keys: tables, columns, relationships, sources, knowledge_pairs,
+        business_terms, column_statistics, column_samples.
 
         Calls get_catalog_prompt once → parses markdown → caches all 6 sections.
         Returns empty fallbacks on errors so the prompt degrades gracefully.
@@ -201,6 +205,90 @@ class McpCatalogClient:
             len(text),
         )
         return bundle
+    async def search_column_values(
+        self,
+        source_key: str,
+        *,
+        table: str,
+        column: str,
+        query: str,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """Return canonical values matching *query* in one catalogued column.
+
+        Value search is deliberately a direct MCP call, rather than an entry in
+        the shared catalog cache: a server may apply source-side row-level
+        visibility, but the cache key has no requesting-user identity. The graph
+        layer may cache an authorized response in its user-scoped value cache.
+
+        MCP providers have not standardised parameter names for this operation.
+        The health-check stores each tool's input schema, so build arguments
+        from the discovered property names instead of hard-coding a provider
+        contract. The return shape is stable for callers:
+        ``{"values": [str, ...], "complete": bool, "source": "mcp"}``.
+        """
+        server = await self._srv_svc.get_active()
+        if not server:
+            return _empty_value_search()
+
+        tool = server.get_tool_for_need(NEED_SEARCH_COLUMN_VALUES)
+        if not tool:
+            return _empty_value_search()
+
+        conn_id = await self._resolve_connection_id(server, source_key)
+        if conn_id is None:
+            return _empty_value_search()
+
+        descriptor = _tool_descriptor_for_need(server, NEED_SEARCH_COLUMN_VALUES)
+        args = _value_search_arguments(
+            descriptor,
+            connection_id=conn_id,
+            table=table,
+            column=column,
+            query=query,
+            limit=limit,
+        )
+        try:
+            raw = await self._call_tool(server, tool, args)
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "mcp: value search failed for %s.%s (%s)",
+                table, column, type(exc).__name__,
+            )
+            return _empty_value_search()
+        return _normalise_value_search(raw)
+
+    async def value_search_preserves_user_visibility(self) -> bool:
+        """Whether the active value-search tool explicitly declares user scope.
+
+        DAX always validates candidates with a delegated Power BI probe. This
+        capability check additionally prevents even candidate lookup through an
+        MCP server unless its discovery metadata says it preserves the caller's
+        visibility (for example, its row-level security context).
+        """
+        server = await self._srv_svc.get_active()
+        if not server or not server.get_tool_for_need(NEED_SEARCH_COLUMN_VALUES):
+            return False
+        descriptor = _tool_descriptor_for_need(server, NEED_SEARCH_COLUMN_VALUES)
+        annotations = descriptor.get("annotations") or {}
+        if not isinstance(annotations, dict):
+            return False
+        direct = (
+            annotations.get("user_scoped")
+            or annotations.get("userScoped")
+            or annotations.get("rls_enforced")
+            or annotations.get("rlsEnforced")
+            or annotations.get("jeen.ai/user_scoped")
+        )
+        visibility = str(
+            annotations.get("visibility_scope")
+            or annotations.get("visibilityScope")
+            or ""
+        ).lower()
+        explicit_true = direct is True or (
+            isinstance(direct, str) and direct.strip().lower() in {"true", "1", "yes"}
+        )
+        return explicit_true or visibility in {"user", "caller", "rls"}
 
     # ── Structured autocomplete datasets (`/`, `#`, `@`) ──────────────────────
 
@@ -468,6 +556,14 @@ class McpCatalogClient:
             self._cache_svc.set(server.id, source_key, KEY_RELATIONSHIPS,   sections["relationships"],   ttl),
             self._cache_svc.set(server.id, source_key, KEY_BUSINESS_TERMS,  sections["business_terms"],  ttl),
             self._cache_svc.set(server.id, source_key, KEY_KNOWLEDGE_PAIRS, sections["knowledge_pairs"], ttl),
+            self._cache_svc.set(
+                server.id, source_key, KEY_COLUMN_STATISTICS,
+                sections["column_statistics"], ttl,
+            ),
+            self._cache_svc.set(
+                server.id, source_key, KEY_COLUMN_SAMPLES,
+                sections["column_samples"], ttl,
+            ),
         )
 
         # sources — prefer the ## Source section from the prompt; fall back to
@@ -531,6 +627,28 @@ class McpCatalogClient:
         else:
             bundle["sources"] = "No source description."
 
+        # Statistics and samples are optional sections. A cache populated by an
+        # older server version remains usable; it simply provides no extra
+        # ranking evidence until the catalog is refreshed.
+        statistics_entry = await self._cache_svc.get(
+            server.id, source_key, KEY_COLUMN_STATISTICS, ttl
+        )
+        samples_entry = await self._cache_svc.get(
+            server.id, source_key, KEY_COLUMN_SAMPLES, ttl
+        )
+        column_statistics = (
+            statistics_entry.payload
+            if statistics_entry and not statistics_entry.is_stale
+            and isinstance(statistics_entry.payload, str)
+            else ""
+        )
+        column_samples = (
+            samples_entry.payload
+            if samples_entry and not samples_entry.is_stale
+            and isinstance(samples_entry.payload, str)
+            else ""
+        )
+
         return {
             "tables":          bundle[KEY_TABLES],
             "columns":         bundle[KEY_COLUMNS],
@@ -538,6 +656,8 @@ class McpCatalogClient:
             "sources":         bundle["sources"],
             "knowledge_pairs": bundle[KEY_KNOWLEDGE_PAIRS],
             "business_terms":  bundle[KEY_BUSINESS_TERMS],
+            "column_statistics": column_statistics,
+            "column_samples": column_samples,
         }
 
     # ── MCP protocol ─────────────────────────────────────────────────────────
@@ -678,12 +798,153 @@ def _normalise_tool_descriptor(tool: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _tool_descriptor_for_need(server: McpServer, need: str) -> Dict[str, Any]:
+    """Return the stored health descriptor for a mapped MCP capability."""
+    for tool in (server.health or {}).get("tools", []):
+        if isinstance(tool, dict) and tool.get("need") == need:
+            return tool
+    return {}
+
+
+def _normalise_schema_name(value: object) -> str:
+    """Compare JSON-schema property names independent of casing/separators."""
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def _value_search_arguments(
+    descriptor: Dict[str, Any],
+    *,
+    connection_id: int,
+    table: str,
+    column: str,
+    query: str,
+    limit: int,
+) -> Dict[str, Any]:
+    """Map semantic value-search inputs onto the tool's discovered schema."""
+    schema = descriptor.get("input_schema") or descriptor.get("inputSchema") or {}
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    bounded_limit = max(1, min(int(limit), 100))
+    if not isinstance(properties, dict) or not properties:
+        # Old health rows may not have persisted the input schema. This is the
+        # documented shape of the Jeen provider and is only a compatibility
+        # fallback; new calls use the discovered names below.
+        return {
+            "connection_id": connection_id,
+            "table": table,
+            "column": column,
+            "query": query,
+            "limit": bounded_limit,
+        }
+
+    aliases = {
+        "connection_id": (
+            "connection_id", "connectionid", "source_id", "sourceid",
+            "database_id", "databaseid",
+        ),
+        "table": ("table", "table_name", "tablename"),
+        "column": ("column", "column_name", "columnname"),
+        "query": ("query", "search", "search_term", "searchterm", "term", "value"),
+        "limit": ("limit", "max_results", "maxresults", "page_size", "pagesize"),
+    }
+    values: Dict[str, Any] = {
+        "connection_id": connection_id,
+        "table": table,
+        "column": column,
+        "query": query,
+        "limit": bounded_limit,
+    }
+    normalized_properties = {
+        _normalise_schema_name(name): name for name in properties
+    }
+    args: Dict[str, Any] = {}
+    for semantic, names in aliases.items():
+        target = next(
+            (
+                normalized_properties.get(_normalise_schema_name(name))
+                for name in names
+                if _normalise_schema_name(name) in normalized_properties
+            ),
+            None,
+        )
+        if target:
+            args[target] = values[semantic]
+    return args
+
+
+def _normalise_value_search(raw: Any) -> Dict[str, Any]:
+    """Normalize common MCP value-search payloads without inventing completeness."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = {"values": [raw]}
+
+    payload = raw if isinstance(raw, dict) else {}
+    if isinstance(raw, list):
+        items: Any = raw
+    else:
+        items = next(
+            (
+                payload.get(key)
+                for key in ("values", "matches", "items", "results", "data")
+                if isinstance(payload.get(key), list)
+            ),
+            [],
+        )
+
+    values: List[str] = []
+    seen: set[str] = set()
+    for item in items or []:
+        if isinstance(item, dict):
+            value = next(
+                (
+                    item.get(key)
+                    for key in ("canonical_value", "canonical", "value", "name", "label", "text")
+                    if item.get(key) is not None
+                ),
+                None,
+            )
+        else:
+            value = item
+        if value is None:
+            continue
+        text = str(value).strip()
+        key = text.casefold()
+        if text and key not in seen:
+            seen.add(key)
+            values.append(text)
+
+    complete = False
+    if payload:
+        if isinstance(payload.get("complete"), bool):
+            complete = payload["complete"]
+        elif isinstance(payload.get("is_complete"), bool):
+            complete = payload["is_complete"]
+        elif isinstance(payload.get("exhaustive"), bool):
+            complete = payload["exhaustive"]
+        elif isinstance(payload.get("truncated"), bool):
+            complete = not payload["truncated"]
+        elif isinstance(payload.get("has_more"), bool):
+            complete = not payload["has_more"]
+    return {"values": values, "complete": complete, "source": "mcp"}
+
+
+def _empty_value_search() -> Dict[str, Any]:
+    return {"values": [], "complete": False, "source": "mcp"}
+
+
 # ── Catalog markdown parser ───────────────────────────────────────────────────
 
 # Maps ``## Header`` text → MetadataLoader bundle key.
 _SECTION_MAP: Dict[str, str] = {
     "Tables":                       KEY_TABLES,
     "Columns":                      KEY_COLUMNS,
+    "Column Statistics":            KEY_COLUMN_STATISTICS,
+    "Column Stats":                 KEY_COLUMN_STATISTICS,
+    "Statistics":                   KEY_COLUMN_STATISTICS,
+    "Sample Values":                KEY_COLUMN_SAMPLES,
+    "Column Samples":               KEY_COLUMN_SAMPLES,
+    "Samples":                      KEY_COLUMN_SAMPLES,
     "Relationships (Foreign Keys)": KEY_RELATIONSHIPS,
     "Relationships":                KEY_RELATIONSHIPS,
     "Business Terms":               KEY_BUSINESS_TERMS,
@@ -707,6 +968,8 @@ def _parse_catalog_markdown(text: str) -> Dict[str, str]:
         "sources":         "",
         "knowledge_pairs": "",
         "business_terms":  "",
+        "column_statistics": "",
+        "column_samples": "",
     }
 
     parts = re.split(r"(?=^## )", text, flags=re.MULTILINE)
@@ -750,6 +1013,7 @@ _NEED_KEYWORDS: Dict[str, List[str]] = {
     NEED_TABLES_RICH:         ["tables_rich",        "list_tables_rich"],
     NEED_LIST_COLUMNS:        ["list_columns"],
     NEED_KNOWLEDGE_QUESTIONS: ["knowledge_questions", "list_knowledge_questions"],
+    NEED_SEARCH_COLUMN_VALUES: ["search_column_values", "search_values", "column_values"],
     NEED_LIST_TABLES:         ["get_catalog_prompt", "catalog_prompt", "list_tables",    "tables"],
     NEED_DESCRIBE_TABLE:      ["get_filtered_prompt","filtered_prompt","describe_table", "describe", "columns"],
     NEED_LIST_RELATIONSHIPS:  ["relationships",      "list_relations"],
@@ -859,4 +1123,6 @@ def _empty_bundle() -> Dict[str, str]:
         "sources":         "No source description.",
         "knowledge_pairs": "No knowledge pairs registered.",
         "business_terms":  "No business terms registered.",
+        "column_statistics": "",
+        "column_samples": "",
     }

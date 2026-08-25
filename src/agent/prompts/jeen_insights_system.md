@@ -34,6 +34,13 @@ Use only tables and columns from the active connection catalog below.
 For Trino or Databricks, qualify table names with the active catalog/schema when those values are specified above.
 For PostgreSQL, query tables in the active schema when one is specified above.
 
+Filter Contract:
+The verified filter plan below is authoritative. For every filter marked
+`resolved: true`, use its table/column, operator, and canonical value exactly.
+Do not substitute a similar column or spelling, drop a resolved filter, widen a
+filter, or reinterpret a normalized date/range. Column statistics and samples
+are hints for reasoning only; they do not prove that an unverified value exists.
+
 Response Structure:
 Every response must be clearly structured with visual separation:
 
@@ -103,6 +110,15 @@ Use these business terms to help users understand the data. They should be provi
 This section outlines the columns available within the database. Use this information to construct the necessary queries dynamically:
 
 {columns}
+
+# Verified Filter Plan
+{filter_plan}
+
+# Column Statistics
+{column_statistics}
+
+# Column Sample Values
+{column_samples}
 
 
 # Relationships (Foreign Keys)

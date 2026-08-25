@@ -35,6 +35,11 @@ KEY_COLUMNS       = "columns"
 KEY_RELATIONSHIPS = "relationships"
 KEY_BUSINESS_TERMS  = "business_terms"
 KEY_KNOWLEDGE_PAIRS = "knowledge_pairs"
+# Optional catalog evidence used to select and validate query filters. These
+# remain separate from ``KEY_COLUMNS`` so an older MCP catalog cache continues
+# to serve the core schema while the richer prompt is refreshed.
+KEY_COLUMN_STATISTICS = "column_statistics"
+KEY_COLUMN_SAMPLES    = "column_samples"
 
 # Structured autocomplete datasets (separate from the prompt bundle sections).
 KEY_TABLES_RICH        = "tables_rich"

@@ -182,6 +182,13 @@ class Settings(BaseSettings):
     # When a literal matches nothing in its target column, search sibling text
     # columns of the same table ("Mountain 300" is a model, not a product name).
     DAX_ENTITY_CROSS_COLUMN_ENABLED: bool = True
+    # SQL counterpart of DAX entity resolution. The planner binds filter intent
+    # to catalog columns; the resolver validates literal values before SQL is
+    # generated. It fails open when a source cannot supply a bounded read-only
+    # value lookup.
+    SQL_FILTER_RESOLUTION_ENABLED: bool = True
+    SQL_FILTER_MAX_DOMAIN_VALUES: int = 1000
+    SQL_FILTER_MATCH_THRESHOLD: float = 78.0
     # NOTE: there is deliberately no app-only (service-principal) or pre-minted
     # test-token escape hatch here. Power BI is read strictly through the
     # signed-in user's delegated grant so that the model's row-level security

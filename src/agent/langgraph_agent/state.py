@@ -84,6 +84,23 @@ class AgentState(TypedDict, total=False):
                                         # catalog_lookup clears it, so the explicit
                                         # refresh routes still get a real reload.
 
+    # ── Filter planning / value grounding ──────────────────────────────────
+    # A typed predicate plan is built from the question before SQL generation.
+    # Resolved filters contain canonical database values; unresolved filters
+    # never block an otherwise valid query but enable one empty-result retry.
+    filter_plan: Optional[Dict[str, Any]]
+    resolved_filters: List[Dict[str, Any]]
+    unresolved_filters: List[Dict[str, Any]]
+    filter_ambiguities: List[Dict[str, Any]]
+    filter_clarification_required: bool
+    filter_resolution_attempts: int
+    empty_filter_diagnostics: int
+    needs_filter_reground: bool
+    # Per-request snapshot of runtime filter controls.
+    filter_resolution_enabled: bool
+    filter_max_domain_values: int
+    filter_match_threshold: float
+
     # ── SQL generation loop ───────────────────────────────────────────────
     retry_count: int
     generated_sql: Optional[str]

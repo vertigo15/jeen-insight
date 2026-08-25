@@ -29,6 +29,7 @@ from src.metadata.mcp_server_service import (
     NEED_BUSINESS_GLOSSARY,
     NEED_KNOWLEDGE_PAIRS,
     NEED_LIST_SOURCES,
+    NEED_SEARCH_COLUMN_VALUES,
     REQUIRED_NEEDS,
 )
 from src.metadata.mcp_cache_service import (
@@ -52,6 +53,8 @@ from src.metadata.mcp_catalog_client import (
     _parse_catalog_markdown,
     _map_tool_to_need,
     _empty_bundle,
+    _normalise_value_search,
+    _value_search_arguments,
 )
 
 
@@ -425,7 +428,8 @@ class TestFormatters:
     def test_empty_bundle_has_all_keys(self):
         bundle = _empty_bundle()
         expected_keys = {"tables", "columns", "relationships", "sources",
-                         "knowledge_pairs", "business_terms"}
+                         "knowledge_pairs", "business_terms",
+                         "column_statistics", "column_samples"}
         assert set(bundle.keys()) == expected_keys
 
 
@@ -473,6 +477,7 @@ class TestMapToolToNeed:
         ("catalog.relationships",NEED_LIST_RELATIONSHIPS),
         ("catalog.glossary",     NEED_BUSINESS_GLOSSARY),
         ("knowledge_pairs_tool", NEED_KNOWLEDGE_PAIRS),
+        ("search_column_values", NEED_SEARCH_COLUMN_VALUES),
     ])
     def test_known_tool_names(self, tool_name, expected_need):
         assert _map_tool_to_need(tool_name) == expected_need
@@ -480,6 +485,56 @@ class TestMapToolToNeed:
     def test_unmapped_tool_returns_none(self):
         assert _map_tool_to_need("analytics.run_query") is None
         assert _map_tool_to_need("ping") is None
+
+
+class TestValueSearchNormalisation:
+    def test_uses_discovered_camel_case_arguments(self):
+        descriptor = {
+            "input_schema": {
+                "properties": {
+                    "connectionId": {},
+                    "tableName": {},
+                    "columnName": {},
+                    "searchTerm": {},
+                    "maxResults": {},
+                }
+            }
+        }
+        assert _value_search_arguments(
+            descriptor,
+            connection_id=7,
+            table="Product",
+            column="Name",
+            query="mountaiin",
+            limit=500,
+        ) == {
+            "connectionId": 7,
+            "tableName": "Product",
+            "columnName": "Name",
+            "searchTerm": "mountaiin",
+            "maxResults": 100,
+        }
+
+    def test_normalises_values_and_never_assumes_complete(self):
+        result = _normalise_value_search(
+            {
+                "matches": [
+                    {"canonical_value": "Mountain-300"},
+                    {"value": "Mountain-300"},
+                    {"label": "Mountain-500"},
+                ]
+            }
+        )
+        assert result == {
+            "values": ["Mountain-300", "Mountain-500"],
+            "complete": False,
+            "source": "mcp",
+        }
+
+    def test_honours_explicit_completeness(self):
+        assert _normalise_value_search(
+            {"values": ["APAC"], "truncated": False}
+        )["complete"] is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -562,6 +617,7 @@ class TestParseCatalogMarkdown:
         assert set(sections.keys()) == {
             "tables", "columns", "relationships",
             "sources", "knowledge_pairs", "business_terms",
+            "column_statistics", "column_samples",
         }
 
     def test_tables_section_extracted(self):
@@ -589,6 +645,14 @@ class TestParseCatalogMarkdown:
         sections = _parse_catalog_markdown(_SAMPLE_MARKDOWN)
         # Both ## Domain Context and ## Source go into sources
         assert "AdventureWorksDW" in sections["sources"]
+
+    def test_statistics_and_samples_are_preserved(self):
+        sections = _parse_catalog_markdown(
+            "## Column Statistics\n- orders.total - min: 1, max: 100\n"
+            "## Sample Values\n- orders.status - paid, pending\n"
+        )
+        assert sections["column_statistics"] == "- orders.total - min: 1, max: 100"
+        assert sections["column_samples"] == "- orders.status - paid, pending"
 
     def test_empty_string_returns_all_empty_keys(self):
         sections = _parse_catalog_markdown("")
@@ -726,6 +790,62 @@ class TestMcpCatalogClientLoadAll:
         assert "DimDate" in bundle["tables"]
         assert "DimDate.DateKey" in bundle["columns"]
         assert "AdventureWorks" in bundle["sources"]
+
+
+class TestMcpColumnValueSearch:
+    @pytest.mark.asyncio
+    async def test_search_uses_discovered_schema_and_normalises_response(self):
+        server = _make_server(health={
+            **_health_with_tools({
+                NEED_SEARCH_COLUMN_VALUES: "search_column_values",
+            }),
+            "tools": [{
+                "name": "search_column_values",
+                "need": NEED_SEARCH_COLUMN_VALUES,
+                "input_schema": {
+                    "properties": {
+                        "connectionId": {},
+                        "tableName": {},
+                        "columnName": {},
+                        "searchTerm": {},
+                        "maxResults": {},
+                    }
+                },
+            }],
+        })
+        srv_svc = AsyncMock()
+        srv_svc.get_active = AsyncMock(return_value=server)
+        client = McpCatalogClient(srv_svc, McpCacheService(_mock_pool()))
+        client._resolve_connection_id = AsyncMock(return_value=9)
+        client._call_tool = AsyncMock(return_value={
+            "values": [{"canonical_value": "Mountain-300"}],
+            "complete": True,
+        })
+
+        result = await client.search_column_values(
+            "AdventureWorks",
+            table="Product",
+            column="ModelName",
+            query="mountaiin",
+            limit=20,
+        )
+
+        assert result == {
+            "values": ["Mountain-300"],
+            "complete": True,
+            "source": "mcp",
+        }
+        client._call_tool.assert_awaited_once_with(
+            server,
+            "search_column_values",
+            {
+                "connectionId": 9,
+                "tableName": "Product",
+                "columnName": "ModelName",
+                "searchTerm": "mountaiin",
+                "maxResults": 20,
+            },
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

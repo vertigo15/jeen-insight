@@ -53,6 +53,8 @@ let lastQueryDurationMs = 0;
 let lastTotalDurationMs = 0;   // end-to-end: click Ask → results table painted
 let _lastAskStart       = 0;   // performance.now() captured when Ask was clicked
 let _lastResultData     = null;// last response payload, for the post-paint re-render
+let _askInFlight        = false;
+let _filterResultsTimer = null;
 
 // ── Autocomplete v3 state (used by SuggestionController) ────
 let recentQuestionsCache = [];      // string[]
@@ -424,12 +426,14 @@ async function askQuestion() {
         return;
     }
 
+    if (_askInFlight) return;
+    const connection = requireConnection();
+    if (!connection) return;
+    _askInFlight = true;
+
     // Immediately dismiss any open autocomplete dropdown so it doesn't block
     // the query submission or remain visible while loading.
     if (typeof SuggestionController !== 'undefined') SuggestionController.close();
-
-    // Save to history
-    saveToHistory(question);
 
     // Show loading state + dock the layout immediately (leave the hero).
     hideError();
@@ -437,12 +441,6 @@ async function askQuestion() {
     hideAskMetrics();
     setUiState('results');
     showLoading();
-
-    const connection = requireConnection();
-    if (!connection) {
-        hideLoading();
-        return;
-    }
 
     // Read user preferences (settings panel). Server enforces bounds; if any
     // value is missing or invalid the server falls back to its defaults.
@@ -485,6 +483,9 @@ async function askQuestion() {
 
         hideLoading();
         displayResults(data);
+        // Let the server persist the successful query before refreshing the
+        // sidebar; this avoids redundant early history requests.
+        saveToHistory(question);
 
         // Measure the true end-to-end wait: stop the timer on the animation
         // frame after displayResults paints the table, then refresh the run
@@ -498,6 +499,8 @@ async function askQuestion() {
         hideLoading();
         showError(`Error: ${error.message}`);
         console.error('Error:', error);
+    } finally {
+        _askInFlight = false;
     }
 }
 
@@ -573,7 +576,7 @@ function displayResults(data) {
     };
 
     if (data.error) {
-        resultsDisplay.innerHTML = `<div class="error-message">${data.error}</div>`;
+        resultsDisplay.innerHTML = `<div class="error-message">${escapeHtml(data.error)}</div>`;
         // Power BI (text-to-DAX) surfaces a delegated-OAuth connect prompt when
         // the signed-in user hasn't linked (or must re-link) their account.
         if (data.needs_connect) {
@@ -1045,6 +1048,11 @@ function sortTable(columnIndex) {
 
 // Filter results
 function filterResults() {
+    clearTimeout(_filterResultsTimer);
+    _filterResultsTimer = setTimeout(_applyResultFilter, 180);
+}
+
+function _applyResultFilter() {
     console.log('[Filter] Filter triggered');
     if (!currentResults) {
         console.warn('[Filter] No current results');
@@ -4698,7 +4706,11 @@ function filterByRowCell(rowIdx, colIdx) {
         return v !== null && v !== undefined && String(v).toLowerCase() === valStr;
     });
     const container = document.getElementById('table-container');
-    if (container) container.innerHTML = renderTable(currentResults, filtered);
+    if (container) {
+        container.innerHTML = renderTable(
+            currentResults, filtered.slice(0, _displayLimit)
+        );
+    }
     const rc = document.getElementById('row-count');
     if (rc) rc.textContent = filtered.length + ' of ' + allRows.length + ' rows \u2014 ' + escapeHtml(col) + ' = ' + escapeHtml(String(val));
 }

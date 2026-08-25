@@ -82,6 +82,51 @@ class TestLinkBundleLargeSchema:
         # A relevance note is appended.
         assert "most relevant" in out["tables"]
 
+    def test_prunes_column_statistics_and_samples_with_columns(self):
+        bundle = _make_bundle(30, 5)
+        bundle["tables"] += "\n- SalesOrders - customer orders and revenue"
+        bundle["columns"] += (
+            "\n- SalesOrders.revenue - Type: decimal, Description: order revenue"
+            "\n- SalesOrders.region - Type: text, Description: sales region"
+        )
+        bundle["column_statistics"] = (
+            "- Table0.col0 - min: 0, max: 1\n"
+            "- SalesOrders.revenue - min: 1, max: 100\n"
+        )
+        bundle["column_samples"] = (
+            "- Table0.col0 - internal\n"
+            "- SalesOrders.region - EMEA, APAC\n"
+        )
+
+        out, pruned = link_bundle(
+            bundle, "revenue by sales region", min_columns=60, max_tables=5
+        )
+
+        assert pruned is True
+        assert "SalesOrders.revenue" in out["column_statistics"]
+        assert "Table0.col0" not in out["column_statistics"]
+        assert "SalesOrders.region" in out["column_samples"]
+        assert "Table0.col0" not in out["column_samples"]
+
+    def test_schema_qualified_catalog_keeps_matching_columns(self):
+        bundle = _make_bundle(30, 5)
+        bundle["tables"] += '\n- "public"."DimTerritory" - sales regions'
+        bundle["columns"] += (
+            '\n- "public"."DimTerritory"."RegionName" - Type: text, Description: region'
+            '\n- "public"."DimTerritory"."SalesAmount" - Type: decimal, Description: sales'
+        )
+
+        out, pruned = link_bundle(
+            bundle,
+            "sales by region",
+            min_columns=60,
+            max_tables=5,
+        )
+
+        assert pruned is True
+        assert '"public"."DimTerritory"' in out["tables"]
+        assert '"public"."DimTerritory"."RegionName"' in out["columns"]
+
     def test_table_cap_respected(self):
         bundle = _make_bundle(40, 3)  # 120 columns, all similarly named
         out, pruned = link_bundle(

@@ -28,6 +28,20 @@ def make_feedback_classifier(max_retries: int):
 
     def feedback_classifier(state: AgentState) -> Dict[str, Any]:
         retry_count = state.get("retry_count") or 0
+
+        # A valid empty result with an unverified filter literal should first
+        # re-enter deterministic value grounding. Keep this budget independent
+        # of SQL-generation retries so a typo does not burn the syntax budget.
+        if state.get("needs_filter_reground"):
+            return {
+                "feedback_type": "resolve_filters",
+                "retry_count": retry_count,
+                "error_context": (
+                    "The query returned no rows and one or more filter values "
+                    "could not be verified. Re-check those values before retrying."
+                ),
+            }
+
         new_retry_count = retry_count + 1
 
         # Check exhaustion FIRST so we never exceed the cap

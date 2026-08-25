@@ -59,6 +59,7 @@
     const esc = (s) => (typeof window.escapeHtml === 'function'
         ? window.escapeHtml(String(s == null ? '' : s))
         : String(s == null ? '' : s));
+    const escAttr = (s) => esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     const fmtNum = (v) => (typeof window.formatNumeric === 'function'
         ? window.formatNumeric(v)
         : String(v));
@@ -385,6 +386,11 @@
                     turn.insightsManager = mgr;
                     setTimeout(() => mgr.generateInsights(turn.results, turn.question, turn.queryId, turn.sql), 0);
                 }
+            } else if (turn.error) {
+                wrap.innerHTML = this._wrapAssistant(
+                    `<div class="chat-card chat-error">${this._buildErrorHtml(turn.error)}</div>`
+                );
+                this.threadEl.appendChild(wrap);
             } else if (turn.answer) {
                 // Conversational text answer (no SQL executed) — e.g. a derived
                 // follow-up computed from memory. Show the real steps trail so it
@@ -392,7 +398,7 @@
                 wrap.innerHTML = this._wrapAssistant(`<div class="chat-card">${this._buildStepsHtml(data)}<div class="chat-answer-text">${esc(turn.answer).replace(/\n/g, '<br>')}</div></div>`);
                 this.threadEl.appendChild(wrap);
             } else {
-                wrap.innerHTML = this._wrapAssistant(`<div class="chat-card"><div class="chat-answer-text chat-muted">${esc(data.error || 'No results to display.')}</div></div>`);
+                wrap.innerHTML = this._wrapAssistant(`<div class="chat-card"><div class="chat-answer-text chat-muted">No results to display.</div></div>`);
                 this.threadEl.appendChild(wrap);
             }
 
@@ -706,7 +712,8 @@
                         html += `<td class="${cls} chat-null">\u2014</td>`;
                     } else {
                         const disp = numeric[i] ? fmtNum(cell) : String(cell);
-                        html += `<td class="${cls}">${esc(disp)}</td>`;
+                        const title = numeric[i] ? '' : ` title="${escAttr(String(cell))}"`;
+                        html += `<td class="${cls}"${title}>${esc(disp)}</td>`;
                     }
                 });
                 html += '</tr>';
@@ -1005,10 +1012,30 @@
                 + `</div>`;
         },
 
+        _buildErrorHtml(message) {
+            const raw = String(message || 'Something went wrong.').trim();
+            const available = raw.search(/\s+Available:\s*/i);
+            let summary = available >= 0 ? raw.slice(0, available).trim() : raw;
+
+            // Keep the card scannable while preserving diagnostics on demand.
+            if (summary.length > 260) {
+                const sentence = summary.slice(0, 260).lastIndexOf('. ');
+                summary = summary.slice(0, sentence > 80 ? sentence + 1 : 257).trim() + '\u2026';
+            }
+            const hasDetails = summary !== raw;
+            const details = hasDetails
+                ? `<details class="chat-error-details"><summary>Technical details</summary><pre>${esc(raw)}</pre></details>`
+                : '';
+            return `<span class="chat-error-icon" aria-hidden="true">\u26a0\ufe0f</span>`
+                + `<div class="chat-error-body"><div class="chat-error-message">${esc(summary)}</div>${details}</div>`;
+        },
+
         _appendError(message) {
             const el = document.createElement('div');
             el.className = 'chat-turn chat-assistant';
-            el.innerHTML = this._wrapAssistant(`<div class="chat-card chat-error"><span class="chat-error-icon">\u26a0\ufe0f</span><span>${esc(message)}</span></div>`);
+            el.innerHTML = this._wrapAssistant(
+                `<div class="chat-card chat-error">${this._buildErrorHtml(message)}</div>`
+            );
             this.threadEl.appendChild(el);
             this._scrollToBottom();
         },
