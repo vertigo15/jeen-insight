@@ -33,6 +33,8 @@ class RuntimeSettingsResponse(BaseModel):
     sql_filter_resolution_enabled: bool
     sql_filter_max_domain_values: int
     sql_filter_match_threshold: float
+    sql_filter_lookup_timeout_ms: int
+    sql_filter_cache_ttl_seconds: int
     bounds: Dict[str, Dict[str, float]]
 
 
@@ -47,6 +49,8 @@ class RuntimeSettingsUpdate(BaseModel):
     sql_filter_resolution_enabled: bool | None = None
     sql_filter_max_domain_values: int | None = None
     sql_filter_match_threshold: float | None = None
+    sql_filter_lookup_timeout_ms: int | None = None
+    sql_filter_cache_ttl_seconds: int | None = None
 
 
 def _response(current: rs.RuntimeSettings) -> RuntimeSettingsResponse:
@@ -61,6 +65,8 @@ def _response(current: rs.RuntimeSettings) -> RuntimeSettingsResponse:
         sql_filter_resolution_enabled=current.sql_filter_resolution_enabled,
         sql_filter_max_domain_values=current.sql_filter_max_domain_values,
         sql_filter_match_threshold=current.sql_filter_match_threshold,
+        sql_filter_lookup_timeout_ms=current.sql_filter_lookup_timeout_ms,
+        sql_filter_cache_ttl_seconds=current.sql_filter_cache_ttl_seconds,
         bounds=rs.bounds(),
     )
 

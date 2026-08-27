@@ -8,6 +8,7 @@ normalizes ranges and verifies categorical literals before the SQL-writing call.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -51,7 +52,7 @@ _SUGGESTION_THRESHOLD = 55.0
 _MAX_DOMAIN_VALUES = 1000
 _NUMERIC_RE = re.compile(r"[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?")
 _FILTER_INTENT_RE = re.compile(
-    r"\b(?:where|with|between|after|before|since|until|from|for|during|"
+    r"\b(?:where|with|between|after|before|since|until|from|for|during|in|on|"
     r"equals?|equal to|named|called|last\s+\d+|this\s+(?:week|month|year)|"
     r"\d{4}-\d{2}-\d{2})\b",
     re.IGNORECASE,
@@ -191,6 +192,21 @@ def normalize_typed_filter(
 
     normalise = _normalise_date if kind == "date" else _normalise_number
     raw = out.get("value")
+    # "Last N days" denotes an interval, not one calendar day. Convert it
+    # before scalar date normalization so the SQL/DAX generator cannot turn a
+    # range request into `date_column = <start-date>`.
+    if kind == "date" and op == "equals":
+        relative_days = re.fullmatch(r"last\s+(\d+)\s+days?", str(raw or "").strip().lower())
+        if relative_days:
+            anchor = today or datetime.now(timezone.utc).date()
+            days = int(relative_days.group(1))
+            out["op"] = "between"
+            out["value"] = [
+                (anchor - timedelta(days=days)).isoformat(),
+                anchor.isoformat(),
+            ]
+            out["resolved"] = True
+            return out, None
     if op == "between":
         values = raw if isinstance(raw, (list, tuple)) else []
         if len(values) != 2:
@@ -280,27 +296,37 @@ async def _lookup_values(
     column: str,
     needle: str,
     limit: int,
+    timeout_ms: int,
 ) -> Dict[str, Any]:
     """Use MCP only when it declares caller visibility; otherwise probe SQL."""
-    if state.get("catalog_source_used") == "mcp":
-        try:
-            from src.api import state as app_state
-            if (
-                app_state.mcp_catalog_client
-                and await app_state.mcp_catalog_client.value_search_preserves_user_visibility()
-            ):
-                result = await app_state.mcp_catalog_client.search_column_values(
-                    str(state.get("source_key") or ""),
-                    table=table,
-                    column=column,
-                    query=needle,
-                    limit=limit,
-                )
-                if result.get("values"):
-                    return result
-        except Exception:  # noqa: BLE001 - value grounding must fail open
-            logger.debug("filter_grounder: MCP value search unavailable", exc_info=True)
-    return await probe.values(table, column, needle, limit=limit)
+    async def lookup() -> Dict[str, Any]:
+        if state.get("catalog_source_used") == "mcp":
+            try:
+                from src.api import state as app_state
+                if (
+                    app_state.mcp_catalog_client
+                    and await app_state.mcp_catalog_client.value_search_preserves_user_visibility()
+                ):
+                    result = await app_state.mcp_catalog_client.search_column_values(
+                        str(state.get("source_key") or ""),
+                        table=table,
+                        column=column,
+                        query=needle,
+                        limit=limit,
+                    )
+                    if result.get("values"):
+                        return result
+            except Exception:  # noqa: BLE001 - value grounding must fail open
+                logger.debug("filter_grounder: MCP value search unavailable", exc_info=True)
+        return await probe.values(table, column, needle, limit=limit)
+
+    try:
+        return await asyncio.wait_for(
+            lookup(), timeout=max(1, int(timeout_ms)) / 1000
+        )
+    except asyncio.TimeoutError:
+        logger.info("filter_grounder: value lookup timed out for %s.%s", table, column)
+        return {"values": [], "complete": False, "source": "timeout"}
 
 
 def _classify(needle: str, values: Sequence[str], threshold: float) -> Tuple[str, List[str], bool]:
@@ -416,6 +442,8 @@ def make_filter_grounder(
     enabled: bool = True,
     max_domain_values: int = _MAX_DOMAIN_VALUES,
     match_threshold: float = 78.0,
+    lookup_timeout_ms: int = 5000,
+    cache_ttl_seconds: int = 900,
     governed_columns: Optional[Sequence[str]] = None,
 ):
     """Ground text filters and normalize typed ranges before SQL generation."""
@@ -494,24 +522,33 @@ def make_filter_grounder(
             failed = False
             for needle in needles:
                 cache_key = value_domain_cache.key(source_key, user_id, table, column, needle)
-                cached = value_domain_cache.get(cache_key)
+                cached = value_domain_cache.get(
+                    cache_key,
+                    max_age_seconds=int(
+                        state.get("filter_cache_ttl_seconds") or cache_ttl_seconds
+                    ),
+                )
                 if cached is not None:
                     lookup = {"values": list(cached.values), "complete": cached.complete, "source": "cache"}
                 else:
                     lookup = await _lookup_values(
                         state, probe, table, column, needle,
                         int(state.get("filter_max_domain_values") or max_domain_values),
+                        int(
+                            state.get("filter_lookup_timeout_ms")
+                            or lookup_timeout_ms
+                        ),
                     )
                     if lookup.get("complete") and lookup.get("values"):
                         value_domain_cache.put(
                             cache_key,
                             ValueDomain(tuple(lookup["values"]), complete=True),
                         )
-                kind, candidates, _exact = _classify(
+                kind, candidates, is_exact = _classify(
                     needle, lookup.get("values") or [],
                     float(state.get("filter_match_threshold") or match_threshold),
                 )
-                if kind == "single":
+                if kind == "single" and (is_exact or lookup.get("complete")):
                     canonical_values.extend(candidates)
                 elif kind == "refinement" and lookup.get("complete"):
                     canonical_values.extend(candidates)
@@ -530,7 +567,13 @@ def make_filter_grounder(
                     failed = True
                     break
                 else:
-                    unresolved.append({"target": item["target"], "value": needle, "reason": "lookup incomplete"})
+                    unresolved.append(
+                        {
+                            "target": item["target"],
+                            "value": needle,
+                            "reason": "lookup incomplete",
+                        }
+                    )
                     failed = True
                     break
             if failed:

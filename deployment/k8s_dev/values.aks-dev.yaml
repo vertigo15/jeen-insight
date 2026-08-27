@@ -16,6 +16,7 @@ global:
       kind: ClusterSecretStore
     secretMappings:
       APP_ENCRYPTION_KEY: JEEN-INSIGHTS-APP-ENCRYPTION-KEY
+      OSM_GEOCODER_API_KEY: JEEN-INSIGHTS-OSM-GEOCODER-API-KEY
   commonLabels:
     app.kubernetes.io/component: analytics
   nodeSelector:

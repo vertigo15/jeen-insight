@@ -33,6 +33,7 @@ from src.api.map_geocoding import (
     search_osm_places,
 )
 from src.api.map_layers import browser_map_layers, configured_map_layers, valid_tile_template
+from src.api.map_tile_cache import map_tile_cache
 from src.api.models import (
     ChatMessage,
     DerivedSeriesSpec,
@@ -58,6 +59,37 @@ async def get_chart_capabilities():
     return chart_capabilities()
 
 
+def _tile_cache_control() -> str:
+    """Browser cache window matches the server tile TTL, with a short stale window."""
+    max_age = max(0, int(settings.OSM_TILE_CACHE_TTL_SECONDS))
+    stale = min(86400, max(600, max_age // 7))
+    return f"private, max-age={max_age}, stale-while-revalidate={stale}"
+
+
+def _if_none_match(request: Request, etag: str) -> bool:
+    incoming = (request.headers.get("if-none-match") or "").strip()
+    return bool(etag and incoming == etag)
+
+
+def _tile_response_headers(
+    started_at: float,
+    *,
+    etag: str = "",
+    last_modified: str = "",
+    cache_status: str,
+) -> dict[str, str]:
+    headers = {
+        "Cache-Control": _tile_cache_control(),
+        "Server-Timing": f"maptile;dur={round((time.monotonic() - started_at) * 1000)}",
+        "X-Cache": cache_status,
+    }
+    if etag:
+        headers["ETag"] = etag
+    if last_modified:
+        headers["Last-Modified"] = last_modified
+    return headers
+
+
 async def _proxy_map_tile(layer_id: str, z: int, x: int, y: int, request: Request):
     """Proxy one approved raster layer without exposing provider credentials."""
     started_at = time.monotonic()
@@ -73,6 +105,22 @@ async def _proxy_map_tile(layer_id: str, z: int, x: int, y: int, request: Reques
     if not valid_tile_template(template):
         logger.error("Map tile layer is misconfigured: %s", layer_id)
         raise HTTPException(status_code=503, detail="Map tiles are misconfigured")
+
+    cached = map_tile_cache.get(layer_id, z, x, y)
+    if cached:
+        response_headers = _tile_response_headers(
+            started_at,
+            etag=cached.etag,
+            last_modified=cached.last_modified,
+            cache_status="HIT",
+        )
+        if _if_none_match(request, cached.etag):
+            return Response(status_code=304, headers=response_headers)
+        return Response(
+            content=cached.content,
+            media_type=cached.content_type,
+            headers=response_headers,
+        )
 
     url = (
         template.replace("{z}", str(z))
@@ -104,16 +152,26 @@ async def _proxy_map_tile(layer_id: str, z: int, x: int, y: int, request: Reques
         raise HTTPException(status_code=502, detail="Map tile provider is unavailable") from None
 
     content_type = upstream.headers.get("content-type", "image/png").split(";")[0]
-    response_headers = {
-        "Cache-Control": "private, max-age=3600, stale-while-revalidate=600",
-        "Server-Timing": f"maptile;dur={round((time.monotonic() - started_at) * 1000)}",
-    }
-    for header_name in ("ETag", "Last-Modified"):
-        header_value = upstream.headers.get(header_name)
-        if header_value:
-            response_headers[header_name] = header_value
+    etag = upstream.headers.get("ETag") or ""
+    last_modified = upstream.headers.get("Last-Modified") or ""
+    map_tile_cache.put(
+        layer_id,
+        z,
+        x,
+        y,
+        content=upstream.content,
+        content_type=content_type,
+        etag=etag,
+        last_modified=last_modified,
+    )
+    response_headers = _tile_response_headers(
+        started_at,
+        etag=etag,
+        last_modified=last_modified,
+        cache_status="MISS",
+    )
     logger.info(
-        "osm_tile_proxy layer=%s status=200 elapsed_ms=%d bytes=%d",
+        "osm_tile_proxy layer=%s status=200 cache=miss elapsed_ms=%d bytes=%d",
         layer_id,
         round((time.monotonic() - started_at) * 1000),
         len(upstream.content),
@@ -1117,6 +1175,8 @@ def _validate_map_view_commands(commands: Any) -> list[dict[str, Any]]:
             accepted.append({"op": op})
         elif op == "toggle_sidebar" and isinstance(command.get("collapsed"), bool):
             accepted.append({"op": op, "collapsed": command["collapsed"]})
+        elif op == "toggle_layers" and isinstance(command.get("open"), bool):
+            accepted.append({"op": op, "open": command["open"]})
     return accepted
 
 

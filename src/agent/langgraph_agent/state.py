@@ -100,6 +100,8 @@ class AgentState(TypedDict, total=False):
     filter_resolution_enabled: bool
     filter_max_domain_values: int
     filter_match_threshold: float
+    filter_lookup_timeout_ms: int
+    filter_cache_ttl_seconds: int
 
     # ── SQL generation loop ───────────────────────────────────────────────
     retry_count: int

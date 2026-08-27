@@ -1622,6 +1622,10 @@ export class SettingsPage {
         const cb = b.conversation_context_turns || { min: 0, max: 50 };
         const eb = b.dax_entity_max_domain_values || { min: 1, max: 100000 };
         const mb = b.dax_entity_match_threshold || { min: 0, max: 100 };
+        const sb = b.sql_filter_max_domain_values || { min: 1, max: 100000 };
+        const sm = b.sql_filter_match_threshold || { min: 0, max: 100 };
+        const st = b.sql_filter_lookup_timeout_ms || { min: 100, max: 60000 };
+        const sc = b.sql_filter_cache_ttl_seconds || { min: 1, max: 3600 };
 
         this._content.innerHTML = `
             <div class="sp-section-header">
@@ -1661,6 +1665,27 @@ export class SettingsPage {
                 ${this._row('Search related columns', 'When a value is not in the column the assistant picked, look for it in sibling columns of the same table (e.g. a model name given as a product name).', `
                     <label class="sp-switch"><input type="checkbox" id="sp-rt-entity-cross" ${data.dax_entity_cross_column_enabled ? 'checked' : ''}><span class="sp-switch-slider"></span></label>`)}
             </div>
+            <div class="sp-card">
+                <div class="sp-card-title">SQL Filter Grounding</div>
+                ${this._row('Resolve filter values', 'Check SQL filter values against authorized source values before query generation. It corrects one unambiguous typo and asks before choosing among alternatives.', `
+                    <label class="sp-switch"><input type="checkbox" id="sp-rt-sql-filter-on" ${data.sql_filter_resolution_enabled ? 'checked' : ''}><span class="sp-switch-slider"></span></label>`)}
+                ${this._row('Match threshold', `How close a source value must be to count as a typo correction. Range ${sm.min}–${sm.max}.`, `
+                    <input class="settings-select" type="number" id="sp-rt-sql-filter-threshold"
+                           min="${sm.min}" max="${sm.max}" step="1"
+                           value="${data.sql_filter_match_threshold}">`)}
+                ${this._row('Values read per column', `Maximum source values checked for one SQL filter. Higher improves coverage but can add latency. Range ${sb.min}–${sb.max}.`, `
+                    <input class="settings-select" type="number" id="sp-rt-sql-filter-domain"
+                           min="${sb.min}" max="${sb.max}" step="100"
+                           value="${data.sql_filter_max_domain_values}">`)}
+                ${this._row('Lookup deadline (ms)', `Stop a single MCP or database value lookup after this time and leave the literal unverified. Range ${st.min}–${st.max}.`, `
+                    <input class="settings-select" type="number" id="sp-rt-sql-filter-timeout"
+                           min="${st.min}" max="${st.max}" step="100"
+                           value="${data.sql_filter_lookup_timeout_ms}">`)}
+                ${this._row('Verified-value cache (seconds)', `How long user-scoped, complete value domains may be reused. Range ${sc.min}–${sc.max}.`, `
+                    <input class="settings-select" type="number" id="sp-rt-sql-filter-cache"
+                           min="${sc.min}" max="${sc.max}" step="30"
+                           value="${data.sql_filter_cache_ttl_seconds}">`)}
+            </div>
             <div class="sp-card-footer">
                 <button class="sp-btn-primary" id="sp-rt-save">Save</button>
             </div>
@@ -1675,6 +1700,11 @@ export class SettingsPage {
                 dax_entity_match_threshold: parseFloat(this._content.querySelector('#sp-rt-entity-threshold').value),
                 dax_entity_max_domain_values: parseInt(this._content.querySelector('#sp-rt-entity-domain').value, 10),
                 dax_entity_cross_column_enabled: this._content.querySelector('#sp-rt-entity-cross').checked,
+                sql_filter_resolution_enabled: this._content.querySelector('#sp-rt-sql-filter-on').checked,
+                sql_filter_match_threshold: parseFloat(this._content.querySelector('#sp-rt-sql-filter-threshold').value),
+                sql_filter_max_domain_values: parseInt(this._content.querySelector('#sp-rt-sql-filter-domain').value, 10),
+                sql_filter_lookup_timeout_ms: parseInt(this._content.querySelector('#sp-rt-sql-filter-timeout').value, 10),
+                sql_filter_cache_ttl_seconds: parseInt(this._content.querySelector('#sp-rt-sql-filter-cache').value, 10),
             };
             try {
                 const res = await fetch('/api/settings/runtime', {

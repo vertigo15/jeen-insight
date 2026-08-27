@@ -309,16 +309,25 @@ class ValueDomainCache:
             return ""
         return cls._SEP.join(parts)
 
-    def get(self, key: str) -> Optional[ValueDomain]:
+    def get(
+        self, key: str, *, max_age_seconds: Optional[int] = None
+    ) -> Optional[ValueDomain]:
+        """Return a cached domain, optionally under a caller-specific TTL.
+
+        SQL grounding snapshots its TTL per request, so a live runtime setting
+        can safely shorten cache reuse without mutating the shared cache's
+        policy for the DAX resolver.
+        """
         if not key:
             return None
+        ttl = self._ttl if max_age_seconds is None else max(1, int(max_age_seconds))
         now = time.monotonic()
         with self._lock:
             entry = self._store.get(key)
             if entry is None:
                 return None
             inserted, domain = entry
-            if now - inserted > self._ttl:
+            if now - inserted > ttl:
                 self._store.pop(key, None)
                 return None
             self._store.move_to_end(key)

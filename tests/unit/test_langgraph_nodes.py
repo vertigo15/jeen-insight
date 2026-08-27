@@ -324,6 +324,49 @@ class TestSqlglotValidate:
         }
         assert "did not preserve" in validate(state)["sqlglot_error"]
 
+    def test_verified_in_filter_rejects_widened_values(self):
+        validate = make_sqlglot_validate(enabled=True)
+        state = {
+            "generated_sql": (
+                "SELECT * FROM orders WHERE status IN ('Paid', 'Pending', 'Cancelled')"
+            ),
+            "known_tables": ["orders"],
+            "table_columns": {"orders": ["status"]},
+            "filter_plan": {
+                "filters": [{
+                    "table": "orders",
+                    "column": "status",
+                    "op": "in",
+                    "value": ["Paid", "Pending"],
+                    "resolved": True,
+                }]
+            },
+        }
+
+        assert "did not preserve" in validate(state)["sqlglot_error"]
+
+    def test_verified_between_filter_rejects_swapped_bounds(self):
+        validate = make_sqlglot_validate(enabled=True)
+        state = {
+            "generated_sql": (
+                "SELECT * FROM orders "
+                "WHERE order_date BETWEEN '2026-01-31' AND '2026-01-01'"
+            ),
+            "known_tables": ["orders"],
+            "table_columns": {"orders": ["order_date"]},
+            "filter_plan": {
+                "filters": [{
+                    "table": "orders",
+                    "column": "order_date",
+                    "op": "between",
+                    "value": ["2026-01-01", "2026-01-31"],
+                    "resolved": True,
+                }]
+            },
+        }
+
+        assert "did not preserve" in validate(state)["sqlglot_error"]
+
     def test_valid_cte_passes(self):
         validate = make_sqlglot_validate(enabled=True)
         state = {

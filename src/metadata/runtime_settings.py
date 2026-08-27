@@ -15,6 +15,8 @@ Keys (stored in ``app_settings``):
   - ``sql_filter_resolution_enabled``    bool   text-to-SQL filter grounding
   - ``sql_filter_max_domain_values``     int    distinct values probed per column
   - ``sql_filter_match_threshold``       float  fuzzy-match score cutoff (0-100)
+  - ``sql_filter_lookup_timeout_ms``     int    per-filter value lookup deadline
+  - ``sql_filter_cache_ttl_seconds``     int    user-scoped value-domain cache TTL
 
 Reads are served from a short-lived in-process cache so the hot query path
 doesn't hit the DB on every request; ``set_runtime_setting`` invalidates it.
@@ -59,6 +61,8 @@ _SPECS: Dict[str, _Spec] = {
     "sql_filter_resolution_enabled": _Spec("bool"),
     "sql_filter_max_domain_values": _Spec("int", 1, 100_000),
     "sql_filter_match_threshold": _Spec("float", 0.0, 100.0),
+    "sql_filter_lookup_timeout_ms": _Spec("int", 100, 60_000),
+    "sql_filter_cache_ttl_seconds": _Spec("int", 1, 3_600),
 }
 
 _TRUTHY = ("1", "true", "yes", "on", "t")
@@ -78,6 +82,8 @@ class RuntimeSettings:
     sql_filter_resolution_enabled: bool
     sql_filter_max_domain_values: int
     sql_filter_match_threshold: float
+    sql_filter_lookup_timeout_ms: int
+    sql_filter_cache_ttl_seconds: int
 
 
 def _defaults() -> RuntimeSettings:
@@ -92,6 +98,8 @@ def _defaults() -> RuntimeSettings:
         sql_filter_resolution_enabled=settings.SQL_FILTER_RESOLUTION_ENABLED,
         sql_filter_max_domain_values=settings.SQL_FILTER_MAX_DOMAIN_VALUES,
         sql_filter_match_threshold=settings.SQL_FILTER_MATCH_THRESHOLD,
+        sql_filter_lookup_timeout_ms=settings.SQL_FILTER_LOOKUP_TIMEOUT_MS,
+        sql_filter_cache_ttl_seconds=settings.SQL_FILTER_CACHE_TTL_SECONDS,
     )
 
 

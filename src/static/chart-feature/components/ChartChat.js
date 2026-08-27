@@ -192,7 +192,10 @@ export class ChartChat {
     _showApplied(label) {
         if (!this.mounted) return;
         this._appliedLabelEl.textContent = `Applied: ${label}`;
-        this._entryEl.hidden = true;
+        // Keep the edit box available after a successful change. Chart chat is
+        // conversational: users commonly follow an edit with "open layers" or
+        // another styling adjustment before deciding whether to reset.
+        this._entryEl.hidden = false;
         this._appliedEl.hidden = false;
     }
 

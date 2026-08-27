@@ -2513,6 +2513,9 @@ td.cell-id {
   flex: 1;
   min-width: 200px;
 }
+.chart-refine-entry[hidden],
+.chart-refine-applied[hidden],
+.chart-refine-status[hidden] { display: none !important; }
 .chart-refine-input {
   flex: 1;
   min-width: 0;

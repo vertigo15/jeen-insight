@@ -14,10 +14,10 @@ import { ChartToggle } from './components/ChartToggle.js';
 import { ChartTypeSelector } from './components/ChartTypeSelector.js?v=78';
 import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=71';
 import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v=1';
-import { ChartChat } from './components/ChartChat.js?v=101';
+import { ChartChat } from './components/ChartChat.js?v=102';
 import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js';
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
-import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=5';
+import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=7';
 import { CHART_TYPE_VALUES } from './chartTypes.js?v=79';
 
 /**

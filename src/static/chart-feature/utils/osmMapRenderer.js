@@ -11,7 +11,7 @@ const TILE_SIZE = 256;
 const MAX_LATITUDE = 85.05112878;
 const STYLE_ID = 'jeen-osm-map-styles';
 const TILE_OVERSCAN = 1;
-const MAX_CACHED_TILES = 192;
+const MAX_CACHED_TILES = 768;
 const MAX_DOM_MARKERS = 300;
 const CLUSTER_CELL_SIZE = 48;
 const COLOR_PALETTES = {
@@ -43,7 +43,9 @@ const MAP_STYLES = `
 .osm-map-controls button:hover, .osm-map-controls button:focus-visible, .osm-map-controls button.is-active { color: #312e81; background: #ede9fe; outline: 0; }
 .osm-map-layers { position: absolute; z-index: 3; top: 12px; left: 56px; display: grid; gap: 6px; min-width: 194px; padding: 9px 10px; color: #1e293b; background: rgba(255,255,255,.96); border: 1px solid rgba(100,116,139,.42); border-radius: 7px; box-shadow: 0 4px 18px rgba(15,23,42,.2); font: 12px/1.3 system-ui,sans-serif; }
 .osm-map-layers[hidden] { display: none; }
-.osm-map-layers-heading { font-weight: 700; }
+.osm-map-layers-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 700; }
+.osm-map-layers-close { width: 24px; height: 24px; padding: 0; border: 0; border-radius: 4px; color: #1e293b; background: transparent; cursor: pointer; font: 17px/1 system-ui,sans-serif; }
+.osm-map-layers-close:hover, .osm-map-layers-close:focus-visible { color: #312e81; background: #ede9fe; outline: 0; }
 .osm-map-layers-group { display: grid; gap: 4px; padding: 0; margin: 0; border: 0; }
 .osm-map-layers label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .osm-map-layers input { margin: 0; }
@@ -355,6 +357,8 @@ export class OsmMapRenderer {
                     toggle.textContent = command.collapsed ? '☰' : '×';
                     toggle.setAttribute('aria-expanded', String(!command.collapsed));
                 }
+            } else if (command.op === 'toggle_layers') {
+                this._toggleLayersControl(command.open === true);
             } else if (command.op === 'focus_place' && typeof command.query === 'string') {
                 const query = command.query.trim();
                 if (query) {
@@ -493,7 +497,21 @@ export class OsmMapRenderer {
 
         const heading = document.createElement('div');
         heading.className = 'osm-map-layers-heading';
-        heading.textContent = 'Layers';
+        const title = document.createElement('span');
+        title.textContent = 'Layers';
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'osm-map-layers-close';
+        close.textContent = '×';
+        close.title = 'Close map layers';
+        close.setAttribute('aria-label', 'Close map layers');
+        close.addEventListener('pointerdown', (event) => event.stopPropagation());
+        close.addEventListener('click', (event) => {
+            event.stopPropagation();
+            this._toggleLayersControl(false);
+            this.layersButton?.focus();
+        });
+        heading.append(title, close);
         panel.appendChild(heading);
 
         const basemaps = this.layerManifest?.basemaps || [];
@@ -928,6 +946,7 @@ export class OsmMapRenderer {
                     const image = document.createElement('img');
                     image.alt = '';
                     image.draggable = false;
+                    image.decoding = 'async';
                     image.dataset.tileKey = key;
                     image.src = layer.tileUrl
                         .replace('{z}', String(this.zoom))

@@ -230,6 +230,7 @@ class _Outcome:
     status: str  # verified | rewritten | ambiguous | not_found | unverified
     assumption: Optional[str] = None
     detail: Dict[str, Any] = field(default_factory=dict)
+    lookup_source: Optional[str] = None
 
 
 @dataclass
@@ -445,11 +446,14 @@ async def _resolve_one(ctx: _Ctx, filter_dict: Dict[str, Any]) -> _Outcome:
             if canonical is not None:
                 updated = _apply(filter_dict, [canonical], target=target)
                 if canonical == needles[0]:
-                    return _Outcome(updated, "verified")
+                    return _Outcome(
+                        updated, "verified", lookup_source="mcp+powerbi"
+                    )
                 return _Outcome(
                     updated,
                     "rewritten",
                     assumption=_describe(needles[0], column, [canonical]),
+                    lookup_source="mcp+powerbi",
                 )
 
     domain = await _domain(ctx, table, column)
@@ -937,6 +941,7 @@ def _collect(
                     "raw_value": original.get("value"),
                     "value": outcome.filter.get("value"),
                     "status": outcome.status,
+                    "lookup_source": outcome.lookup_source or "powerbi",
                 }
             )
         elif outcome.status == "ambiguous":
