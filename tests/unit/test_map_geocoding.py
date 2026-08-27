@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 
 from src.api import map_geocoding
 from src.api.map_geocoding import (
@@ -10,6 +11,7 @@ from src.api.map_geocoding import (
     infer_geo_roles,
     resolve_osm_locations,
     resolve_place_queries,
+    search_osm_places,
     valid_coordinates,
 )
 
@@ -130,11 +132,12 @@ def _enable_maptiler(monkeypatch, max_places=150):
     monkeypatch.setattr(map_geocoding.settings, "OSM_MAPS_ENABLED", True)
     monkeypatch.setattr(map_geocoding.settings, "OSM_TILE_URL", "https://tiles/{z}/{x}/{y}.png")
     monkeypatch.setattr(map_geocoding.settings, "OSM_TILE_API_KEY", "test-key")
+    monkeypatch.setattr(map_geocoding.settings, "OSM_GEOCODER_API_KEY", "test-key")
     monkeypatch.setattr(map_geocoding.settings, "OSM_GEOCODER_PROVIDER", "maptiler")
     monkeypatch.setattr(map_geocoding.settings, "OSM_GEOCODER_BASE_URL", "")
     monkeypatch.setattr(map_geocoding.settings, "OSM_GEOCODER_MIN_INTERVAL_SECONDS", 0.0)
     monkeypatch.setattr(map_geocoding.settings, "OSM_GEOCODER_MAX_UNIQUE_PLACES", max_places)
-    monkeypatch.setattr(map_geocoding, "_cache", {})
+    monkeypatch.setattr(map_geocoding, "_cache", OrderedDict())
     monkeypatch.setattr(map_geocoding, "_last_request_at", 0.0)
 
 
@@ -260,3 +263,33 @@ def test_resolve_place_queries_skips_cached_and_local_values_before_batch(monkey
     assert resolved["cached"]["lat"] == 1.0
     assert resolved["tel aviv"]["source"] == "local"
     assert resolved["los angeles"]["source"] == "provider"
+
+
+def test_place_search_reuses_cached_results(monkeypatch):
+    _enable_maptiler(monkeypatch)
+    calls = {"count": 0}
+
+    async def search(query):
+        calls["count"] += 1
+        return [{"label": query, "lat": 48.8566, "lng": 2.3522}]
+
+    monkeypatch.setattr(map_geocoding, "_maptiler_place_search", search)
+    first = asyncio.run(search_osm_places("Paris"))
+    second = asyncio.run(search_osm_places("paris"))
+
+    assert first == second == [{"label": "Paris", "lat": 48.8566, "lng": 2.3522}]
+    assert calls["count"] == 1
+
+
+def test_provider_errors_expire_faster_than_resolved_places(monkeypatch):
+    _enable_maptiler(monkeypatch)
+    monkeypatch.setattr(map_geocoding.settings, "OSM_GEOCODER_CACHE_TTL_SECONDS", 2592000)
+    monkeypatch.setattr(map_geocoding.settings, "OSM_GEOCODER_ERROR_CACHE_TTL_SECONDS", 300)
+
+    assert map_geocoding._cache_ttl_seconds(
+        {"status": "resolved", "lat": 1.0, "lng": 2.0, "source": "provider"}
+    ) == 2592000
+    assert map_geocoding._cache_ttl_seconds(
+        {"status": "unresolved", "source": "provider_error"}
+    ) == 300
+    assert map_geocoding._cache_ttl_seconds({"status": "search", "results": []}) == 300

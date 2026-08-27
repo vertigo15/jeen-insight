@@ -122,3 +122,14 @@ def test_map_edit_command_filter_does_not_accept_unknown_layer_or_action():
         {"op": "set_overlays", "layer_ids": ["untrusted"]},
         {"op": "open_url", "url": "https://example.test"},
     ]) == [{"op": "set_overlays", "layer_ids": []}]
+
+
+def test_map_edit_command_filter_allows_opening_and_closing_layers():
+    assert charts._validate_map_view_commands([
+        {"op": "toggle_layers", "open": True},
+        {"op": "toggle_layers", "open": False},
+        {"op": "toggle_layers", "open": "yes"},
+    ]) == [
+        {"op": "toggle_layers", "open": True},
+        {"op": "toggle_layers", "open": False},
+    ]

@@ -380,15 +380,37 @@ def _check_resolved_filters(
                 if op == "in":
                     actual_values = _literal_values(predicate, sqlglot)
                     expected_values = expected if isinstance(expected, list) else [expected]
-                    if all(any(_same_value(value, actual) for actual in actual_values) for value in expected_values):
+                    # A verified refinement set is exact. Accepting a
+                    # planned-value subset would let generated SQL silently
+                    # widen the filter with additional values.
+                    if (
+                        len(actual_values) == len(expected_values)
+                        and all(
+                            any(_same_value(value, actual) for actual in actual_values)
+                            for value in expected_values
+                        )
+                        and all(
+                            any(_same_value(expected_value, actual) for expected_value in expected_values)
+                            for actual in actual_values
+                        )
+                    ):
                         matched = True
                         break
                 elif op == "between":
                     values = expected if isinstance(expected, list) else []
                     actual_values = _literal_values(predicate, sqlglot)
-                    if len(values) == 2 and all(
-                        any(_same_value(value, actual) for actual in actual_values)
-                        for value in values
+                    # BETWEEN is ordered: checking membership alone would
+                    # accept swapped range bounds and silently invert the
+                    # meaning of a verified date/number interval.
+                    if (
+                        len(values) == 2
+                        and len(actual_values) == 2
+                        and all(
+                            _same_value(expected_value, actual_value)
+                            for expected_value, actual_value in zip(
+                                values, actual_values
+                            )
+                        )
                     ):
                         matched = True
                         break

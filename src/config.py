@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     OSM_TILE_API_KEY: str = ""
     OSM_TILE_API_KEY_HEADER: str = "Authorization"
     OSM_TILE_TIMEOUT_SECONDS: float = 10.0
+    # Server-side raster cache plus the browser max-age. Tiles change rarely;
+    # a week avoids repeat MapTiler fetches on pan/zoom. LRU bounds memory.
+    OSM_TILE_CACHE_TTL_SECONDS: int = 604800
+    OSM_TILE_CACHE_MAX_ENTRIES: int = 2048
     # Optional server-proxied marine layers. Seamarks are a transparent overlay
     # (navigation marks, buoys, channels), while maritime is a MapTiler custom
     # ocean style that must render the provider's maritime boundaries.
@@ -62,7 +66,9 @@ class Settings(BaseSettings):
     OSM_GEOCODER_USER_AGENT: str = "Jeen Insights map geocoder"
     OSM_GEOCODER_TIMEOUT_SECONDS: float = 5.0
     OSM_GEOCODER_MIN_INTERVAL_SECONDS: float = 1.0
-    OSM_GEOCODER_CACHE_TTL_SECONDS: int = 86400
+    OSM_GEOCODER_CACHE_TTL_SECONDS: int = 2592000
+    OSM_GEOCODER_ERROR_CACHE_TTL_SECONDS: int = 300
+    OSM_GEOCODER_CACHE_MAX_ENTRIES: int = 10000
     # Bound a chart request so one result cannot turn into a long-running
     # third-party geocoding job. The remaining unique places are marked limited.
     OSM_GEOCODER_MAX_UNIQUE_PLACES: int = 50
@@ -189,6 +195,11 @@ class Settings(BaseSettings):
     SQL_FILTER_RESOLUTION_ENABLED: bool = True
     SQL_FILTER_MAX_DOMAIN_VALUES: int = 1000
     SQL_FILTER_MATCH_THRESHOLD: float = 78.0
+    # Bound one MCP/SQL value probe and keep user-scoped verified domains short
+    # lived, so filter grounding cannot dominate a query's latency or leak
+    # stale RLS-visible values across policy changes.
+    SQL_FILTER_LOOKUP_TIMEOUT_MS: int = 5000
+    SQL_FILTER_CACHE_TTL_SECONDS: int = 900
     # NOTE: there is deliberately no app-only (service-principal) or pre-minted
     # test-token escape hatch here. Power BI is read strictly through the
     # signed-in user's delegated grant so that the model's row-level security

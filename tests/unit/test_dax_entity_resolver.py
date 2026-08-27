@@ -174,6 +174,7 @@ class TestResolution:
         ]
         assert out["query_plan"]["filters"][0]["value"] == "Mountain-300"
         assert out["query_plan"]["filters"][0]["resolved"] is True
+        assert out["resolved_entities"][0]["lookup_source"] == "mcp+powerbi"
 
     async def test_typo_resolves_to_the_matching_sizes(self, probe):
         p = probe(_Probe({("Product", "Product Name"): PRODUCTS}))

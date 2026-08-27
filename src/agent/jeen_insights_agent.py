@@ -91,6 +91,8 @@ class JeenInsightsAgent:
             filter_resolution_enabled=settings.SQL_FILTER_RESOLUTION_ENABLED,
             filter_max_domain_values=settings.SQL_FILTER_MAX_DOMAIN_VALUES,
             filter_match_threshold=settings.SQL_FILTER_MATCH_THRESHOLD,
+            filter_lookup_timeout_ms=settings.SQL_FILTER_LOOKUP_TIMEOUT_MS,
+            filter_cache_ttl_seconds=settings.SQL_FILTER_CACHE_TTL_SECONDS,
         )
         logger.info(
             "✅ LangGraph agent ready for source_key=%s", self.source_key
@@ -236,6 +238,8 @@ class JeenInsightsAgent:
                 "filter_resolution_enabled": runtime.sql_filter_resolution_enabled,
                 "filter_max_domain_values": runtime.sql_filter_max_domain_values,
                 "filter_match_threshold": runtime.sql_filter_match_threshold,
+                "filter_lookup_timeout_ms": runtime.sql_filter_lookup_timeout_ms,
+                "filter_cache_ttl_seconds": runtime.sql_filter_cache_ttl_seconds,
                 # ── SQL loop ────────────────────────────────────────────
                 "retry_count": 0,
                 "generated_sql": None,

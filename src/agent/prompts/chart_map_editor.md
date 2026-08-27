@@ -31,7 +31,8 @@ Return exactly this shape:
     {{"op":"focus_place","query":"<place name supplied by user>"}},
     {{"op":"select_place","place_key":"<existing point placeKey only>"}},
     {{"op":"clear_selection"}},
-    {{"op":"toggle_sidebar","collapsed":<boolean>}}
+    {{"op":"toggle_sidebar","collapsed":<boolean>}},
+    {{"op":"toggle_layers","open":<boolean>}}
   ],
   "notes": "<short description, optional>",
   "out_of_scope": <boolean>
@@ -46,6 +47,7 @@ Rules:
 - `view_commands` changes only the current map view. Use it for approved
   basemaps/layers, showing/hiding the query data, fitting results, finding a
   place, selection, or sidebar state. Use only IDs from the supplied manifest.
+- Use `toggle_layers` when the user asks to open or close the map Layers tool.
 - For a requested city/place that is not already a mapped point, use
   `focus_place` with the user's text. Never invent latitude/longitude.
 - Preserve the current map type. Never request new data, query SQL, invent

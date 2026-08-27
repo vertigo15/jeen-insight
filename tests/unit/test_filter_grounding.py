@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
+from src.agent.langgraph_agent.nodes import filtering
 from src.agent.langgraph_agent.nodes.filtering import (
     empty_filter_result_check,
     make_filter_grounder,
@@ -45,6 +48,19 @@ def test_rejects_ambiguous_date_format():
     assert "couldn't read" in error.lower()
 
 
+def test_normalizes_relative_date_period_to_a_closed_range():
+    dates, error = normalize_typed_filter(
+        {"op": "equals", "value": "last 30 days"},
+        "date",
+        today=date(2026, 8, 25),
+    )
+
+    assert error is None
+    assert dates["op"] == "between"
+    assert dates["value"] == ["2026-07-26", "2026-08-25"]
+    assert dates["resolved"] is True
+
+
 @pytest.mark.asyncio
 async def test_grounder_rewrites_a_typo_to_one_canonical_value():
     runner = _Runner(["Mountain-300"])
@@ -71,6 +87,39 @@ async def test_grounder_rewrites_a_typo_to_one_canonical_value():
     assert result["resolved_filters"][0]["value"] == "Mountain-300"
     assert result["filter_plan"]["filters"][0]["op"] == "equals"
     assert "SELECT DISTINCT" in runner.sql
+
+
+@pytest.mark.asyncio
+async def test_grounder_does_not_rewrite_from_an_incomplete_fuzzy_lookup(monkeypatch):
+    async def incomplete_lookup(*_args, **_kwargs):
+        return {
+            "values": ["Mountain-300"],
+            "complete": False,
+            "source": "db",
+        }
+
+    monkeypatch.setattr(filtering, "_lookup_values", incomplete_lookup)
+    grounder = make_filter_grounder(_Runner([]))
+    state = {
+        "catalog_source_used": "db",
+        "source_key": "sales",
+        "user_id": "user-1",
+        "filter_plan": {
+            "filters": [{
+                "table": "product",
+                "column": "name",
+                "op": "equals",
+                "value": "mountaiin 300",
+                "data_type": "varchar",
+                "resolved": False,
+            }]
+        },
+    }
+
+    result = await grounder(state)
+
+    assert result["resolved_filters"] == []
+    assert result["unresolved_filters"][0]["reason"] == "lookup incomplete"
 
 
 @pytest.mark.asyncio

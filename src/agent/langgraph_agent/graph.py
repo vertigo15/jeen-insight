@@ -218,6 +218,8 @@ def build_graph(
     filter_resolution_enabled: bool = True,
     filter_max_domain_values: int = 1000,
     filter_match_threshold: float = 78.0,
+    filter_lookup_timeout_ms: int = 5000,
+    filter_cache_ttl_seconds: int = 900,
 ) -> Any:
     """Build and compile the LangGraph text-to-SQL agent.
 
@@ -273,6 +275,8 @@ def build_graph(
             enabled=filter_resolution_enabled,
             max_domain_values=filter_max_domain_values,
             match_threshold=filter_match_threshold,
+            lookup_timeout_ms=filter_lookup_timeout_ms,
+            cache_ttl_seconds=filter_cache_ttl_seconds,
             governed_columns=dlp_governed_columns,
         ),
     )

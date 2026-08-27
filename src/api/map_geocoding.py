@@ -11,8 +11,10 @@ import asyncio
 import logging
 import math
 import re
+import threading
 import time
 import unicodedata
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Iterable
 from urllib.parse import quote
@@ -34,7 +36,8 @@ class PlaceQuery:
     label: str
 
 
-_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_cache: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+_cache_lock = threading.Lock()
 _request_lock = asyncio.Lock()
 _last_request_at = 0.0
 _MAPTILER_BATCH_SIZE = 50
@@ -187,21 +190,49 @@ def chart_capabilities() -> dict[str, Any]:
     }
 
 
+def _cache_ttl_seconds(value: dict[str, Any], ttl: int | None = None) -> int:
+    """Keep successful lookups long; expire provider failures quickly."""
+    if ttl is not None:
+        return max(0, int(ttl))
+    status = str(value.get("status") or "")
+    source = str(value.get("source") or "")
+    if source == "provider_error":
+        return max(0, int(settings.OSM_GEOCODER_ERROR_CACHE_TTL_SECONDS))
+    if status == "search" and not value.get("results"):
+        return max(0, int(settings.OSM_GEOCODER_ERROR_CACHE_TTL_SECONDS))
+    if status in {"resolved", "ambiguous", "search"}:
+        return max(0, int(settings.OSM_GEOCODER_CACHE_TTL_SECONDS))
+    if status == "unresolved":
+        return min(604800, max(0, int(settings.OSM_GEOCODER_CACHE_TTL_SECONDS)))
+    return max(0, int(settings.OSM_GEOCODER_ERROR_CACHE_TTL_SECONDS))
+
+
 def _cache_get(key: str) -> dict[str, Any] | None:
-    cached = _cache.get(key)
-    if not cached:
-        return None
-    expires_at, value = cached
-    if expires_at <= time.monotonic():
-        _cache.pop(key, None)
-        return None
-    return dict(value)
+    now = time.monotonic()
+    with _cache_lock:
+        cached = _cache.get(key)
+        if not cached:
+            return None
+        expires_at, value = cached
+        if expires_at <= now:
+            _cache.pop(key, None)
+            return None
+        _cache.move_to_end(key)
+        return dict(value)
 
 
-def _cache_set(key: str, value: dict[str, Any]) -> None:
-    ttl = max(0, int(settings.OSM_GEOCODER_CACHE_TTL_SECONDS))
-    if ttl:
-        _cache[key] = (time.monotonic() + ttl, dict(value))
+def _cache_set(key: str, value: dict[str, Any], ttl: int | None = None) -> None:
+    seconds = _cache_ttl_seconds(value, ttl)
+    if not seconds:
+        return
+    max_entries = max(0, int(settings.OSM_GEOCODER_CACHE_MAX_ENTRIES))
+    if not max_entries:
+        return
+    with _cache_lock:
+        _cache[key] = (time.monotonic() + seconds, dict(value))
+        _cache.move_to_end(key)
+        while len(_cache) > max_entries:
+            _cache.popitem(last=False)
 
 
 def _local_resolution(label: str) -> dict[str, Any] | None:
@@ -477,10 +508,17 @@ async def search_osm_places(query: str) -> list[dict[str, Any]]:
     normalized = " ".join(str(query or "").split())[:200]
     if len(normalized) < 2 or not geocoding_enabled():
         return []
+    cache_key = f"search|{normalized.casefold()}"
+    cached = _cache_get(cache_key)
+    if cached and cached.get("status") == "search":
+        return list(cached.get("results") or [])
     provider = settings.OSM_GEOCODER_PROVIDER.strip().lower()
     if provider == "maptiler":
-        return await _maptiler_place_search(normalized)
-    return await _nominatim_place_search(normalized)
+        results = await _maptiler_place_search(normalized)
+    else:
+        results = await _nominatim_place_search(normalized)
+    _cache_set(cache_key, {"status": "search", "results": results})
+    return results
 
 
 async def resolve_place_queries(queries: Iterable[PlaceQuery]) -> dict[str, dict[str, Any]]:

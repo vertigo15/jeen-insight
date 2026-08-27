@@ -794,6 +794,24 @@ class TestMcpCatalogClientLoadAll:
 
 class TestMcpColumnValueSearch:
     @pytest.mark.asyncio
+    async def test_value_search_requires_an_explicit_user_scope_declaration(self):
+        server = _make_server(health={
+            **_health_with_tools({
+                NEED_SEARCH_COLUMN_VALUES: "search_column_values",
+            }),
+            "tools": [{
+                "name": "search_column_values",
+                "need": NEED_SEARCH_COLUMN_VALUES,
+                "annotations": {"user_scoped": "false"},
+            }],
+        })
+        srv_svc = AsyncMock()
+        srv_svc.get_active = AsyncMock(return_value=server)
+        client = McpCatalogClient(srv_svc, McpCacheService(_mock_pool()))
+
+        assert await client.value_search_preserves_user_visibility() is False
+
+    @pytest.mark.asyncio
     async def test_search_uses_discovered_schema_and_normalises_response(self):
         server = _make_server(health={
             **_health_with_tools({
