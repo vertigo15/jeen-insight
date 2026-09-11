@@ -58,6 +58,7 @@
   border-radius: 9999px;
   background: var(--bg);
 }
+.jo-ring-check { display: none; width: 12px; height: 12px; color: #fff; }
 .jo-checklist-title {
   font-size: 13.5px;
   font-weight: 500;
@@ -120,10 +121,17 @@
 .jo-item-label { font-size: 13px; color: var(--text); }
 .jo-item-action {
   margin-left: auto;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 500;
   color: var(--rose);
+  cursor: pointer;
 }
+.jo-item-action:hover { text-decoration: underline; }
 .jo-item.is-active { background: var(--rosesoft); }
 .jo-item.is-active .jo-item-circle { border-color: var(--rose); }
 .jo-item.is-done .jo-item-circle {
@@ -134,9 +142,12 @@
 .jo-item.is-done .jo-item-label { color: var(--muted); text-decoration: line-through; }
 .jo-item.is-done .jo-item-action { display: none; }
 
-/* Collapsed-when-complete pill. */
+/* Complete: solid check ring, "You're all set" title, no count/chevron. */
 .jo-checklist.is-complete .jo-checklist-count,
 .jo-checklist.is-complete .jo-chevron { display: none; }
+.jo-checklist.is-complete .jo-ring { background: var(--ok); }
+.jo-checklist.is-complete .jo-ring::after { display: none; }
+.jo-checklist.is-complete .jo-ring-check { display: block; }
 
 /* --- Quick-start cards (empty state) ------------------------------------- */
 /* Neutralise the dashed "No result yet" chrome when cards are mounted. */
@@ -318,7 +329,21 @@
   border-top: 1px solid var(--border);
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
+}
+.jo-dialog-dontshow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.jo-dialog-dontshow input {
+  accent-color: var(--rose);
+  cursor: pointer;
 }
 .jo-pill-primary {
   height: 40px;
@@ -389,6 +414,8 @@
   color: var(--rose);
 }
 .jo-coach-title { margin-top: 8px; font-size: 15px; font-weight: 500; }
+/* Hint coach has no step eyebrow above the title, so drop the top gap. */
+.jo-coach--hint .jo-coach-title { margin-top: 0; }
 .jo-coach-body {
   margin-top: 6px;
   font-size: 13px;

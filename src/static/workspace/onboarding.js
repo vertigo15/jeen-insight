@@ -3,8 +3,9 @@
 
    Loaded AFTER workspaceController.js. Reads the DOM the v3 workspace already
    builds and layers on: a getting-started checklist, an actionable empty state
-   (quick-start cards), a post-first-answer nudge, a once-per-user welcome
-   dialog, and a four-step guided tour.
+   (quick-start cards), a post-first-answer nudge, a welcome dialog (re-shown
+   each session until the user opts out via "Don't show this again"), and a
+   four-step guided tour.
 
    No new dependencies, no build step. Persistence is server-side (per user) via
    GET/PATCH /api/user/onboarding; browser mutations ride csrf.js's X-CSRFToken.
@@ -112,6 +113,54 @@
   }
 
   // ---------------------------------------------------------------- checklist
+  // The active item's action word ("Start" / "Show me") points the user at the
+  // real control that completes that step.
+  function runItemAction(key) {
+    var ctrl = window.ChatController;
+    if (key === 'ask_first_question') {
+      var railNew = document.querySelector('[data-rail="new"]');
+      if (railNew) railNew.click();
+      else if (ctrl) { ctrl.setTab('conversation'); ctrl.setConversation(true); }
+      var input = document.querySelector('.v3-composer textarea, .v3-composer input');
+      if (input) input.focus();
+      var composer = document.querySelector('.v3-composer');
+      if (composer) showHint(composer, {
+        placement: 'above',
+        title: 'Ask here',
+        body: 'Type a question in plain English or Hebrew — or click a suggestion to auto-fill one.'
+      });
+    } else if (key === 'pin_question') {
+      // Reveal the Pinned / recent-questions panel, where each question has a
+      // pin control, then spotlight a real star.
+      if (ctrl) { ctrl.setConversation(true); ctrl.setTab('pinned'); }
+      else { var tab = document.getElementById('v3-tab-pinned'); if (tab) tab.click(); }
+      spotlightPin(0);
+    }
+  }
+
+  // displayHistory() renders the pinned/recent list asynchronously; poll briefly
+  // for a real "pin" star, then spotlight it. Fall back to the Pinned tab if the
+  // list is still empty (no questions asked yet).
+  function spotlightPin(attempt) {
+    var panel = document.getElementById('v3-panel-pinned');
+    var star = panel && panel.querySelector('.pin-icon[aria-label="Pin question"]');
+    if (star) {
+      showHint(star, {
+        placement: 'right',
+        title: 'Pin a question',
+        body: 'Tap the star on any question to pin it. Pinned questions stay here for this connection.'
+      });
+      return;
+    }
+    if (attempt < 8) { setTimeout(function () { spotlightPin(attempt + 1); }, 150); return; }
+    var tab = document.getElementById('v3-tab-pinned');
+    if (tab) showHint(tab, {
+      placement: 'below-left',
+      title: 'Pinned lives here',
+      body: 'Ask a question, then tap its star to pin it — it will show up in this list to reuse.'
+    });
+  }
+
   function checklist() { return (state.data && state.data.checklist) || {}; }
   function doneCount() { return CHECK_ITEMS.filter(function (i) { return checklist()[i.key]; }).length; }
   function isComplete() { return doneCount() >= CHECK_ITEMS.length; }
@@ -124,7 +173,10 @@
     header.type = 'button';
     header.setAttribute('aria-expanded', 'true');
     header.innerHTML =
-      '<span class="jo-ring" aria-hidden="true"></span>' +
+      '<span class="jo-ring" aria-hidden="true">' +
+      '<svg class="jo-ring-check" viewBox="0 0 12 12" fill="none" aria-hidden="true">' +
+      '<path d="' + CHECK + '" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+      '</span>' +
       '<span class="jo-checklist-title">Getting started</span>' +
       '<span class="jo-checklist-spacer"></span>' +
       '<span class="jo-checklist-count"></span>' +
@@ -146,8 +198,13 @@
         '<span class="jo-item-label"></span>';
       li.querySelector('.jo-item-label').textContent = item.label;
       if (item.action) {
-        var act = el('span', 'jo-item-action');
+        var act = el('button', 'jo-item-action');
+        act.type = 'button';
         act.textContent = item.action;
+        act.addEventListener('click', function (e) {
+          e.stopPropagation();
+          runItemAction(item.key);
+        });
         li.appendChild(act);
       }
       list.appendChild(li);
@@ -181,6 +238,11 @@
     var count = checklistEl.querySelector('.jo-checklist-count');
     if (count) count.textContent = done + '/' + total;
 
+    var complete = isComplete();
+    var title = checklistEl.querySelector('.jo-checklist-title');
+    if (title) title.textContent = complete ? 'You\u2019re all set' : 'Getting started';
+    checklistEl.setAttribute('aria-label', complete ? 'Getting started — complete' : 'Getting started');
+
     var firstIncomplete = CHECK_ITEMS.find(function (i) { return !checklist()[i.key]; });
     checklistEl.querySelectorAll('.jo-item').forEach(function (li) {
       var key = li.dataset.key;
@@ -189,8 +251,8 @@
       li.classList.toggle('is-done', isDone);
       li.classList.toggle('is-active', !!isActive);
     });
-    checklistEl.classList.toggle('is-complete', isComplete());
-    if (isComplete()) checklistEl.classList.add('is-collapsed');
+    checklistEl.classList.toggle('is-complete', complete);
+    if (complete) checklistEl.classList.add('is-collapsed');
   }
 
   function mountChecklist() {
@@ -336,6 +398,8 @@
       '<div class="jo-dialog-footer">' +
       '<button type="button" class="jo-pill-primary" data-tour>Take a 30-second tour</button>' +
       '<button type="button" class="jo-pill-ghost" data-skip>Skip for now</button>' +
+      '<label class="jo-dialog-dontshow"><input type="checkbox" data-dontshow>' +
+      '<span>Don\u2019t show this again</span></label>' +
       '<span class="jo-dialog-meta">4 steps &middot; 30s</span>' +
       '</div>';
     backdrop.appendChild(dialog);
@@ -348,18 +412,20 @@
       document.removeEventListener('keydown', onKey, true);
       if (prevFocus && prevFocus.focus) { try { prevFocus.focus(); } catch (e) {} }
     }
-    function skip() { teardown(); patch({ welcome_seen: true }); }
-    function take() {
-      teardown();
-      // Persist welcome_seen BEFORE the tour so a mid-tour refresh never reopens
-      // the welcome dialog (once-per-user must be recorded up front).
-      patch({ welcome_seen: true });
-      startTour();
+    function optedOut() {
+      var cb = dialog.querySelector('[data-dontshow]');
+      return !!(cb && cb.checked);
     }
+    // Product decision: the welcome dialog + tour re-appear every session UNTIL
+    // the user explicitly opts out. Skipping / taking the tour is temporary; only
+    // ticking "Don't show this again" persists welcome_seen and suppresses it.
+    function close() { teardown(); if (optedOut()) patch({ welcome_seen: true }); }
+    function skip() { close(); }
+    function take() { close(); startTour(); }
     function onKey(e) {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); skip(); return; }
       if (e.key === 'Tab') {
-        var f = dialog.querySelectorAll('button');
+        var f = dialog.querySelectorAll('button, input');
         if (!f.length) return;
         var first = f[0], last = f[f.length - 1];
         if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
@@ -378,6 +444,7 @@
 
   function startTour() {
     if (tour) return;
+    dismissHint();
     tour = {
       index: 0,
       scrim: el('div', 'jo-tour-scrim'),
@@ -477,14 +544,14 @@
     c.querySelector('[data-dots]').innerHTML = dots;
   }
 
-  function positionCoach(step) {
-    if (!tour || !tour.target || !tour.coach) return;
-    var r = tour.target.getBoundingClientRect();
-    var cw = tour.coach.offsetWidth;
-    var ch = tour.coach.offsetHeight;
+  function placeCoach(target, coach, placement) {
+    if (!target || !coach) return;
+    var r = target.getBoundingClientRect();
+    var cw = coach.offsetWidth;
+    var ch = coach.offsetHeight;
     var gap = 12;
     var top, left;
-    switch (step.placement) {
+    switch (placement) {
       case 'right':      left = r.right + gap;      top = r.top; break;
       case 'above':      left = r.left;             top = r.top - ch - gap; break;
       case 'below-left':
@@ -493,11 +560,65 @@
     var vw = window.innerWidth, vh = window.innerHeight;
     left = Math.max(12, Math.min(left, vw - cw - 12));
     top = Math.max(12, Math.min(top, vh - ch - 12));
-    tour.coach.style.left = left + 'px';
-    tour.coach.style.top = top + 'px';
+    coach.style.left = left + 'px';
+    coach.style.top = top + 'px';
+  }
+
+  function positionCoach(step) {
+    if (!tour) return;
+    placeCoach(tour.target, tour.coach, step.placement);
   }
 
   function reposition() { if (tour) positionCoach(TOUR_STEPS[tour.index]); }
+
+  // ---------------------------------------------------------------- coach-mark hint
+  // A single-target spotlight that reuses the tour's coach-mark styling, fired
+  // when the user clicks a checklist action word. Non-blocking, auto-clears, and
+  // yields to the full guided tour if that is running.
+  var hint = null;
+
+  function showHint(target, opts) {
+    if (tour || !target) return;
+    dismissHint();
+    opts = opts || {};
+    hint = { target: target, coach: null, placement: opts.placement || 'above', timer: null };
+    target.classList.add('jo-target-highlight');
+    if (opts.pill) target.classList.add('jo-target-highlight--pill');
+
+    var coach = el('div', 'jo-coach jo-coach--hint');
+    coach.setAttribute('role', 'dialog');
+    coach.setAttribute('aria-live', 'polite');
+    coach.innerHTML =
+      '<div class="jo-coach-title" data-title></div>' +
+      '<div class="jo-coach-body" data-body></div>' +
+      '<div class="jo-coach-actions"><button type="button" class="jo-btn-primary" data-got>Got it</button></div>';
+    coach.querySelector('[data-title]').textContent = opts.title || '';
+    coach.querySelector('[data-body]').textContent = opts.body || '';
+    coach.querySelector('[data-got]').addEventListener('click', dismissHint);
+    document.body.appendChild(coach);
+    hint.coach = coach;
+
+    requestAnimationFrame(function () { placeCoach(target, coach, hint.placement); });
+    window.addEventListener('resize', hintReposition);
+    window.addEventListener('scroll', hintReposition, true);
+    document.addEventListener('keydown', hintKey, true);
+    coach.querySelector('[data-got]').focus();
+    hint.timer = setTimeout(dismissHint, 7000);
+  }
+
+  function hintReposition() { if (hint) placeCoach(hint.target, hint.coach, hint.placement); }
+  function hintKey(e) { if (hint && e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); dismissHint(); } }
+
+  function dismissHint() {
+    if (!hint) return;
+    if (hint.target) hint.target.classList.remove('jo-target-highlight', 'jo-target-highlight--pill');
+    if (hint.coach) hint.coach.remove();
+    if (hint.timer) clearTimeout(hint.timer);
+    window.removeEventListener('resize', hintReposition);
+    window.removeEventListener('scroll', hintReposition, true);
+    document.removeEventListener('keydown', hintKey, true);
+    hint = null;
+  }
 
   function advance() {
     if (!tour) return;
