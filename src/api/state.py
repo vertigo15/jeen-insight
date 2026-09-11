@@ -16,6 +16,7 @@ from typing import Optional
 
 from src.agent import AgentRegistry, DaxAgentRegistry
 from src.agent.conversation_history import ConversationHistoryService
+from src.agent.onboarding import OnboardingService
 from src.agent.llm_service import LangChainLlmService
 from src.agent.prompt_cache import PromptCache
 from src.connections import ConnectionService
@@ -28,6 +29,8 @@ dax_agent_registry: Optional[DaxAgentRegistry] = None
 metadata_loader: Optional[MetadataLoader] = None
 connection_service: Optional[ConnectionService] = None
 history_service: Optional[ConversationHistoryService] = None
+# Per-user onboarding / first-time-user-experience state.
+onboarding_service: Optional[OnboardingService] = None
 llm_service: Optional[LangChainLlmService] = None
 # Optional cheaper model for router/memory nodes; falls back to llm_service.
 router_llm_service: Optional[LangChainLlmService] = None

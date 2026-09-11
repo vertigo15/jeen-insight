@@ -232,6 +232,22 @@ class PinQuestionRequest(BaseModel):
     question: str
 
 
+class OnboardingPatch(BaseModel):
+    """Partial update to a user's onboarding (FTUE) state.
+
+    Boolean flags stamp NOW() into their column when true; `checklist` is
+    shallow-merged into the stored jsonb map. `user_id` is stamped by the Flask
+    proxy from the signed session and re-verified server-side.
+    """
+
+    user_id: str
+    welcome_seen: Optional[bool] = None
+    tour_completed: Optional[bool] = None
+    checklist_dismissed: Optional[bool] = None
+    nudge_dismissed: Optional[bool] = None
+    checklist: Optional[Dict[str, Any]] = None
+
+
 class SaveAnalysisRequest(BaseModel):
     connection: str
     user_id: Optional[str] = None

@@ -1,0 +1,448 @@
+/* ==========================================================================
+   Jeen Insights — first-time user experience (FTUE) overlay layer.
+
+   Layered on top of the v3 workspace. Everything routes through the tokens
+   defined in workspace.css so dark mode works for free. The only literals are
+   theme-neutral overlay values (backdrop/coach-mark shadows and the fixed dark
+   coach-mark surface), which are intentional per the design handoff.
+   ========================================================================== */
+
+:root,
+[data-theme="light"],
+[data-theme="dark"] {
+  /* Coach mark stays a fixed dark surface in BOTH themes (do NOT use --text as
+     its background — it inverts to near-white in dark mode and collides with
+     the white text). */
+  --jo-coach-bg: #1f1f24;
+  --jo-coach-fg: #ffffff;
+  --jo-coach-muted: #b8b8bf;
+  --jo-dot-idle: #4b4d53;
+}
+
+/* --- Getting-started checklist ------------------------------------------- */
+.jo-checklist {
+  margin: 0 14px 12px;
+  border: 1px solid var(--border2);
+  border-radius: 16px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  font-family: var(--font-sans);
+}
+.jo-checklist-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text);
+  text-align: left;
+  font-family: inherit;
+}
+.jo-ring {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 9999px;
+  background: conic-gradient(var(--rose) 0 var(--jo-pct, 0%), var(--soft2) var(--jo-pct, 0%) 100%);
+  display: grid;
+  place-items: center;
+}
+.jo-ring::after {
+  content: "";
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: var(--bg);
+}
+.jo-ring-check { display: none; width: 12px; height: 12px; color: #fff; }
+.jo-checklist-title {
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: -.01em;
+}
+.jo-checklist-spacer { flex: 1; }
+.jo-checklist-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--faint);
+  letter-spacing: .04em;
+}
+.jo-chevron {
+  flex: none;
+  color: var(--muted);
+  transition: transform .18s ease;
+}
+.jo-checklist.is-collapsed .jo-chevron { transform: rotate(-90deg); }
+.jo-checklist-dismiss {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+.jo-checklist-dismiss:hover { background: var(--soft); color: var(--text); }
+.jo-checklist-items {
+  list-style: none;
+  margin: 0;
+  padding: 4px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.jo-checklist.is-collapsed .jo-checklist-items { display: none; }
+.jo-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+.jo-item-circle {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  border: 1.5px solid var(--border2);
+  display: grid;
+  place-items: center;
+}
+.jo-item-circle svg { display: none; width: 10px; height: 10px; color: #fff; }
+.jo-item-label { font-size: 13px; color: var(--text); }
+.jo-item-action {
+  margin-left: auto;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--rose);
+  cursor: pointer;
+}
+.jo-item-action:hover { text-decoration: underline; }
+.jo-item.is-active { background: var(--rosesoft); }
+.jo-item.is-active .jo-item-circle { border-color: var(--rose); }
+.jo-item.is-done .jo-item-circle {
+  background: var(--ok);
+  border-color: var(--ok);
+}
+.jo-item.is-done .jo-item-circle svg { display: block; }
+.jo-item.is-done .jo-item-label { color: var(--muted); text-decoration: line-through; }
+.jo-item.is-done .jo-item-action { display: none; }
+
+/* Complete: solid check ring, "You're all set" title, no count/chevron. */
+.jo-checklist.is-complete .jo-checklist-count,
+.jo-checklist.is-complete .jo-chevron { display: none; }
+.jo-checklist.is-complete .jo-ring { background: var(--ok); }
+.jo-checklist.is-complete .jo-ring::after { display: none; }
+.jo-checklist.is-complete .jo-ring-check { display: block; }
+
+/* --- Quick-start cards (empty state) ------------------------------------- */
+/* Neutralise the dashed "No result yet" chrome when cards are mounted. */
+.v3-placeholder.v3-placeholder--cards {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+}
+.jo-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+.jo-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 168px;
+  padding: 20px;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  background: var(--bg);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-sans);
+  transition: border-color .16s ease, background-color .16s ease;
+}
+.jo-card--primary { border-color: var(--border2); box-shadow: var(--shadow); }
+.jo-card:hover { border-color: var(--rose); background: var(--rosesoft); }
+.jo-card-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--rose);
+}
+.jo-card-title {
+  margin-top: 10px;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: -.01em;
+  color: var(--text);
+}
+.jo-card-body {
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 300;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.jo-card-cta {
+  margin-top: auto;
+  padding-top: 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--rose);
+}
+.jo-cards-note {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--soft);
+  font-size: 12.5px;
+  font-weight: 300;
+  color: var(--muted);
+}
+
+/* --- Post-first-answer nudge (State 06) ---------------------------------- */
+.jo-nudge {
+  margin: 12px 0 0;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: var(--jo-coach-bg);
+  color: var(--jo-coach-fg);
+  box-shadow: 0 16px 40px rgba(24, 24, 27, .24);
+  font-family: var(--font-sans);
+}
+.jo-nudge-title { font-size: 14px; font-weight: 500; }
+.jo-nudge-body {
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 300;
+  line-height: 1.45;
+  color: var(--jo-coach-muted);
+}
+.jo-nudge-actions { margin-top: 14px; display: flex; gap: 8px; }
+
+/* Shared overlay buttons (also used by welcome + coach). */
+.jo-btn-primary {
+  height: 32px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 9999px;
+  background: #ffffff;
+  color: #1f1f24;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.jo-btn-primary:hover { opacity: .88; }
+.jo-btn-ghost {
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--jo-coach-muted);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  cursor: pointer;
+}
+.jo-btn-ghost:hover { color: var(--jo-coach-fg); }
+
+/* --- Welcome dialog (State 01) ------------------------------------------- */
+.v3-shell.jo-blurred { filter: blur(1px); opacity: .6; }
+.jo-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(31, 31, 36, .42);
+}
+.jo-dialog {
+  width: 100%;
+  max-width: 620px;
+  border-radius: 20px;
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: 0 24px 70px rgba(24, 24, 27, .28);
+  padding: 28px 28px 0;
+  font-family: var(--font-sans);
+}
+.jo-dialog-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.jo-dialog-mark { width: 20px; height: 20px; border-radius: 6px; }
+.jo-dialog-title {
+  margin: 16px 0 0;
+  font-size: 28px;
+  font-weight: 300;
+  letter-spacing: -.025em;
+}
+.jo-dialog-body {
+  margin: 10px 0 0;
+  font-size: 15px;
+  font-weight: 300;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.jo-steps {
+  margin: 22px 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+.jo-step {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--soft);
+}
+.jo-step-num {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--rose);
+}
+.jo-step-title { margin-top: 8px; font-size: 14px; font-weight: 500; color: var(--text); }
+.jo-step-body { margin-top: 4px; font-size: 12.5px; font-weight: 300; line-height: 1.4; color: var(--muted); }
+.jo-dialog-footer {
+  margin: 24px -28px 0;
+  padding: 18px 28px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.jo-dialog-dontshow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.jo-dialog-dontshow input {
+  accent-color: var(--rose);
+  cursor: pointer;
+}
+.jo-pill-primary {
+  height: 40px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: 9999px;
+  background: var(--text);
+  color: var(--bg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.jo-pill-primary:hover { opacity: .85; }
+.jo-pill-ghost {
+  height: 40px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  cursor: pointer;
+}
+.jo-pill-ghost:hover { color: var(--text); }
+.jo-dialog-meta {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: .04em;
+  color: var(--faint);
+}
+
+/* --- Guided tour (States 02, 03, 05) ------------------------------------- */
+.jo-tour-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
+  pointer-events: none; /* tour never blocks input */
+  background: rgba(31, 31, 36, .28);
+}
+.jo-target-highlight {
+  position: relative;
+  z-index: 9600;
+  border-radius: 12px;
+  box-shadow: 0 0 0 2px var(--rose), 0 0 0 8px rgba(136, 120, 196, .18);
+}
+.jo-target-highlight--pill {
+  box-shadow: 0 0 0 4px rgba(136, 120, 196, .22), 0 0 0 12px rgba(255, 255, 255, .65);
+}
+.jo-coach {
+  position: fixed;
+  z-index: 9700;
+  width: min(320px, calc(100vw - 32px));
+  padding: 16px 18px;
+  border-radius: 16px;
+  background: var(--jo-coach-bg);
+  color: var(--jo-coach-fg);
+  box-shadow: 0 16px 40px rgba(24, 24, 27, .24);
+  font-family: var(--font-sans);
+}
+.jo-coach-step {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--rose);
+}
+.jo-coach-title { margin-top: 8px; font-size: 15px; font-weight: 500; }
+/* Hint coach has no step eyebrow above the title, so drop the top gap. */
+.jo-coach--hint .jo-coach-title { margin-top: 0; }
+.jo-coach-body {
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 300;
+  line-height: 1.45;
+  color: var(--jo-coach-muted);
+}
+.jo-coach-actions {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.jo-dots { margin-left: auto; display: flex; gap: 6px; }
+.jo-dot { width: 6px; height: 6px; border-radius: 9999px; background: var(--jo-dot-idle); }
+.jo-dot.is-active { background: var(--rose); }
+
+/* --- Reduced motion: workspace.css only scopes to .v3-shell *, so the
+       body-appended overlays need their own guard. -------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .jo-card,
+  .jo-chevron,
+  .jo-checklist * ,
+  .jo-coach,
+  .jo-backdrop,
+  .jo-dialog {
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+  }
+}

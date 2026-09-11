@@ -17,6 +17,7 @@ from fastapi import FastAPI
 
 from src.agent import AgentRegistry, DaxAgentRegistry
 from src.agent.conversation_history import ConversationHistoryService
+from src.agent.onboarding import OnboardingService
 from src.agent.llm_service import LangChainLlmService
 from src.agent.prompt_cache import PromptCache
 from src.agent.user_resolver import SimpleUserResolver
@@ -258,6 +259,7 @@ async def lifespan(_app: FastAPI):
     state.metadata_loader    = MetadataLoader(pool)
     state.connection_service  = ConnectionService(pool)
     state.history_service     = ConversationHistoryService(pool)
+    state.onboarding_service  = OnboardingService(pool)
     state.mcp_server_service  = McpServerService(pool)
     state.mcp_cache_service   = McpCacheService(pool)
     state.mcp_catalog_client  = McpCatalogClient(
@@ -454,6 +456,7 @@ async def lifespan(_app: FastAPI):
         state.metadata_loader       = None
         state.connection_service    = None
         state.history_service       = None
+        state.onboarding_service    = None
         state.llm_service           = None
         state.router_llm_service    = None
         state.prompt_cache          = None
