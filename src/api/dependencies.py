@@ -18,6 +18,7 @@ from src.agent import (
 )
 from src.security.internal_auth import Principal
 from src.agent.conversation_history import ConversationHistoryService
+from src.agent.onboarding import OnboardingService
 from src.api import state
 from src.connections import (
     ConnectionNotFound,
@@ -74,6 +75,10 @@ def get_connection_service() -> ConnectionService:
 
 def get_history_service() -> ConversationHistoryService:
     return _require(state.history_service, "History service")  # type: ignore[return-value]
+
+
+def get_onboarding_service() -> OnboardingService:
+    return _require(state.onboarding_service, "Onboarding service")  # type: ignore[return-value]
 
 
 def get_prompt_cache() -> PromptCache:

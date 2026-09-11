@@ -25,6 +25,7 @@ from src.api.routes import (
     insights,
     mcp as mcp_routes,
     me_connections,
+    onboarding,
     query,
     runtime_settings as runtime_settings_routes,
     saved_analyses,
@@ -67,6 +68,7 @@ def create_app() -> FastAPI:
     app.include_router(connections.router)
     app.include_router(query.router)
     app.include_router(history.router)
+    app.include_router(onboarding.router)
     app.include_router(autocomplete.router)
     app.include_router(insights.router)
     app.include_router(charts.router)

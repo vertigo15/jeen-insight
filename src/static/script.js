@@ -151,6 +151,8 @@ async function loadConnections() {
     const activeRow = availableConnections.find(c => c.source_key === active);
         setConnectionPillName(activeRow ? activeRow.display_name : active);
         _updateMcpBadge(active);
+        // Onboarding signal: a connection resolved on load.
+        document.dispatchEvent(new CustomEvent('jeen:onboarding:pick_connection'));
         // Pill stays in 'connecting' until tables come back — set in loadTables.
     } catch (e) {
         console.error('Failed to load connections', e);
@@ -169,6 +171,8 @@ function onConnectionChange(sourceKey) {
         return;
     }
     setActiveConnection(newConnection);
+    // Onboarding signal: the user picked a (different) connection.
+    document.dispatchEvent(new CustomEvent('jeen:onboarding:pick_connection'));
     // Reset session and clear caches that are connection-specific.
     currentSessionId = null;
     // Chat thread is tied to the (now-reset) session — clear it and cancel any
@@ -2397,6 +2401,8 @@ async function pinQuestion(event, question) {
 
         if (response.ok) {
             displayHistory();  // Refresh the list
+            // Onboarding signal: the user pinned a question.
+            document.dispatchEvent(new CustomEvent('jeen:onboarding:pin_question'));
         } else {
             console.error('Failed to pin question');
         }

@@ -175,6 +175,7 @@ _PUBLIC_EXACT    = {
     "/logout",
     "/health",
     "/setup",
+    "/landing",
     "/auth/microsoft",
     "/auth/microsoft/callback",
 }
@@ -742,6 +743,13 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/landing")
+def landing():
+    """Public marketing landing page. No auth (see _PUBLIC_EXACT); GET-only, so
+    no CSRF wiring is required."""
+    return render_template("landing.html")
+
+
 @app.route("/health")
 def health():
     """Public liveness probe. Reports only coarse status booleans — never
@@ -954,6 +962,23 @@ def unpin_question():
         return jsonify({"error": "No connection selected"}), 400
     data["user_id"] = _session_user_id()
     return _proxy_post("/api/user/unpin-question", data)
+
+
+@app.route("/api/user/onboarding", methods=["GET"])
+def get_onboarding():
+    return _proxy_get(
+        "/api/user/onboarding",
+        params={"user_id": _session_user_id()},
+    )
+
+
+@app.route("/api/user/onboarding", methods=["PATCH"])
+def patch_onboarding():
+    data = request.get_json(silent=True) or {}
+    # Identity is authoritative from the signed session; the FastAPI route
+    # re-verifies it from the internal-token Principal (body value is advisory).
+    data["user_id"] = _session_user_id()
+    return _proxy_patch("/api/user/onboarding", data)
 
 
 @app.route("/api/user/history-log", methods=["GET"])

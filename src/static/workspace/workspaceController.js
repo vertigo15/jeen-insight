@@ -192,6 +192,7 @@
         activeTab: 'conversation',
         dockTab: 'sql',
         dockOpen: false,
+        _sqlDockWasOpen: false,
         chartCollapsed: true,
         filter: '',
         mapSelectedRows: new Set(),
@@ -668,6 +669,8 @@
                 turn.phaseState[NODE_PHASE[raw.node] || 'execution'] = 'done';
             });
             turn.status = 'success';
+            // Onboarding signal: a question was answered successfully.
+            document.dispatchEvent(new CustomEvent('jeen:onboarding:ask_first_question'));
             turn.result = data;
             turn.durationMs = Math.round(performance.now() - turn.startedAt);
             turn.phaseState.format = 'done';
@@ -1066,6 +1069,14 @@
         },
 
         renderDock() {
+            // Onboarding signal: fire once on the rising edge of opening the SQL
+            // dock for an answered turn (covers both the button and keyboard paths).
+            const sqlOpen = this.dockOpen && this.dockTab === 'sql';
+            if (sqlOpen && !this._sqlDockWasOpen
+                && this.turns.some((item) => item.id === this.selectedResultId && item.status === 'success')) {
+                document.dispatchEvent(new CustomEvent('jeen:onboarding:open_sql'));
+            }
+            this._sqlDockWasOpen = sqlOpen;
             document.querySelectorAll('[data-dock]').forEach((button) => {
                 button.classList.toggle('is-active', this.dockOpen && button.dataset.dock === this.dockTab);
                 button.setAttribute('aria-selected', String(this.dockOpen && button.dataset.dock === this.dockTab));
