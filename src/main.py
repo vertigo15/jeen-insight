@@ -16,10 +16,12 @@ __all__ = ["app"]
 if __name__ == "__main__":
     import uvicorn
 
+    # log_config=None: keep uvicorn from reinstalling its own logging config on
+    # top of ours (configure_logging runs when the app module is imported).
     uvicorn.run(
         "src.main:app",
         host=settings.APP_HOST,
         port=settings.APP_PORT,
         reload=True,
-        log_level=settings.LOG_LEVEL.lower(),
+        log_config=None,
     )
