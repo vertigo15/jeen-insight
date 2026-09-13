@@ -27,6 +27,7 @@ const KEYS = {
     temperature: 'temperature',
     aiAnalytics: 'aiAnalytics',   // 'on' | 'off'  — run insights in background
     llmTimeout: 'llmTimeout',     // seconds as string, or 'server' for server default
+    chartPalette: 'chartPalette', // palette id from chart-feature/utils/chartPalettes.js
 };
 
 const DEFAULTS = Object.freeze({
@@ -37,6 +38,7 @@ const DEFAULTS = Object.freeze({
     temperature: null,   // null means "use server default"
     aiAnalytics: 'on',   // show insights in background by default
     llmTimeout: 'server', // 'server' = use server default; else seconds as string
+    chartPalette: 'jeen', // 'jeen' = theme/server colours, no override
 });
 
 const ALLOWED_THEMES = new Set(['light', 'dark', 'system']);
@@ -48,6 +50,8 @@ const ALLOWED_CHART_TYPES = new Set([
 const ALLOWED_AUTO_INSIGHTS = new Set(['on', 'off']);
 const ALLOWED_AI_ANALYTICS  = new Set(['on', 'off']);
 const ALLOWED_LLM_TIMEOUTS  = new Set(['server', '10', '15', '20', '30', '60', '120']);
+// Keep in sync with CHART_PALETTES in chart-feature/utils/chartPalettes.js.
+const ALLOWED_CHART_PALETTES = new Set(['jeen', 'purple', 'blue', 'green', 'teal', 'warm', 'classic']);
 
 function _readString(key, allowed, fallback) {
     try {
@@ -91,7 +95,15 @@ export const Preferences = {
             temperature: _readTemperature(),
             aiAnalytics: _readString(KEYS.aiAnalytics, ALLOWED_AI_ANALYTICS, DEFAULTS.aiAnalytics),
             llmTimeout: _readString(KEYS.llmTimeout, ALLOWED_LLM_TIMEOUTS, DEFAULTS.llmTimeout),
+            chartPalette: _readString(KEYS.chartPalette, ALLOWED_CHART_PALETTES, DEFAULTS.chartPalette),
         };
+    },
+
+    setChartPalette(value) {
+        if (!ALLOWED_CHART_PALETTES.has(value)) return false;
+        if (value === DEFAULTS.chartPalette) localStorage.removeItem(KEYS.chartPalette);
+        else localStorage.setItem(KEYS.chartPalette, value);
+        return true;
     },
 
     setTheme(value) {

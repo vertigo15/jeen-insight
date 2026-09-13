@@ -269,6 +269,85 @@ class UpdateSavedAnalysisRequest(BaseModel):
 
 
 # ----------------------------------------------------------------------
+# Conversations (restore last conversation / browse previous ones)
+# ----------------------------------------------------------------------
+class ConversationSummary(BaseModel):
+    id: str
+    title: str
+    source_key: str
+    source_label: str
+    # False when the connection no longer exists / is inactive; such
+    # conversations open read-only (no re-run, no new turns).
+    connection_available: bool = True
+    turn_count: int = 0
+    last_question: Optional[str] = None
+    last_activity_at: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class ConversationTurn(BaseModel):
+    """One turn without its blobs. Shaped so the browser can build a
+    ``QueryResponse``-compatible ``turn.result`` once the artifact is loaded."""
+
+    turn_id: str
+    sequence_number: int
+    question: str
+    sql: Optional[str] = None
+    # Stored value: success | error | timeout | syntax_error | pending. The UI
+    # treats everything but success as a failed turn.
+    execution_status: str
+    result_kind: str  # table | text | error
+    answer: Any = None
+    error: Optional[str] = None
+    metrics: Optional[Dict[str, Any]] = None
+    findings: Optional[List[str]] = None
+    suggestions: Optional[List[str]] = None
+    followups: Optional[List[str]] = None
+    snapshot_status: str  # stored | too_large | pruned | not_applicable
+    row_count: Optional[int] = None
+    has_chart: bool = False
+    has_rerunnable_query: bool = False
+    created_at: Optional[str] = None
+    snapshot_at: Optional[str] = None
+
+
+class ConversationDetail(BaseModel):
+    conversation: ConversationSummary
+    # Newest page first from the server; the client reverses for display.
+    turns: List[ConversationTurn] = Field(default_factory=list)
+    # Smallest sequence_number on this page; pass as ``before=`` for older turns.
+    next_cursor: Optional[int] = None
+
+
+class ConversationList(BaseModel):
+    items: List[ConversationSummary] = Field(default_factory=list)
+    # Opaque "<last_activity_at>|<id>" cursor for the next page.
+    next_cursor: Optional[str] = None
+
+
+class TurnArtifact(BaseModel):
+    turn_id: str
+    # Full result envelope {columns, rows, row_count, truncated?, cap?} or null.
+    results: Optional[Dict[str, Any]] = None
+    # Only ever non-null together with ``results``.
+    chart_spec: Optional[Dict[str, Any]] = None
+    chart_config: Optional[Dict[str, Any]] = None
+    snapshot_status: str
+    snapshot_at: Optional[str] = None
+
+
+class RerunTurnResponse(TurnArtifact):
+    """Fresh results for a turn. Rows are always returned even when they exceed
+    the persistence caps (then ``snapshot_status`` is ``too_large``)."""
+
+    execution_time_ms: Optional[int] = None
+
+
+class RenameConversationRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
+# ----------------------------------------------------------------------
 # Autocomplete
 # ----------------------------------------------------------------------
 class SuggestQuestionsRequest(BaseModel):

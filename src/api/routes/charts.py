@@ -10,10 +10,12 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
+from src.agent.conversation_artifacts import measure_chart_payload
 from src.api.chart_builder import build_chart_option, profile_dataset
-from src.api.dependencies import get_history_service, require_user_id, resolve_agent
+from src.api.dependencies import get_history_service, get_principal, resolve_agent
+from src.security.internal_auth import Principal
 from src.api.llm_json import (
     extract_chart_type,
     extract_json_object,
@@ -211,6 +213,54 @@ async def _verify_query_owner(*, query_id: Optional[str], user_id: str, connecti
         query_id=query_id, user_id=user_id, source_key=connection
     ):
         raise HTTPException(status_code=404, detail="Query not found for this user")
+
+
+async def _persist_chart_baseline(
+    *,
+    query_id: Optional[str],
+    user_id: str,
+    chart_spec: Optional[dict],
+    chart_config: Optional[dict],
+) -> None:
+    """Best-effort: store the server-built chart for conversation restore.
+
+    Skipped when persistence is off, when the request has no query_id (nothing
+    to attach to), or when the payload exceeds CONVERSATION_CHART_MAX_BYTES.
+    Never fails the chart response.
+    """
+    if not query_id or not chart_config:
+        return
+    try:
+        history = get_history_service()
+    except HTTPException:
+        return
+    if getattr(history, "persistence_enabled", False) is not True:
+        return
+    try:
+        from uuid import UUID as _UUID
+
+        turn_id = _UUID(str(query_id))
+        size = measure_chart_payload(chart_spec, chart_config)
+        if size > settings.CONVERSATION_CHART_MAX_BYTES:
+            logger.info(
+                "conversation_chart_skipped query_id=%s bytes=%d cap=%d",
+                query_id, size, settings.CONVERSATION_CHART_MAX_BYTES,
+                extra={"event": "conversation_chart_skipped", "bytes": size},
+            )
+            # The user now sees this (unpersisted) chart; an older stored
+            # baseline would be restored in its place, so drop it.
+            await history.clear_turn_chart(turn_id=turn_id, user_id=user_id)
+            return
+
+        await history.upsert_turn_chart(
+            turn_id=turn_id,
+            user_id=user_id,
+            chart_spec=chart_spec,
+            chart_config=chart_config,
+            chart_bytes=size,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("chart baseline persistence failed", exc_info=True)
 
 
 # ----------------------------------------------------------------------
@@ -953,8 +1003,12 @@ def _dataset_from_request(request: GenerateChartRequest) -> Optional[dict]:
 # row, and the LLM never transcribes values.
 # ----------------------------------------------------------------------
 @router.post("/generate-chart", response_model=GenerateChartResponse)
-async def generate_chart(request: GenerateChartRequest):
-    user_id = require_user_id(request.user_id)
+async def generate_chart(
+    request: GenerateChartRequest,
+    principal: Principal = Depends(get_principal),
+):
+    # Identity comes from the verified Principal; request.user_id is legacy input.
+    user_id = principal.user_id
     await _verify_query_owner(
         query_id=request.query_id, user_id=user_id, connection=request.connection
     )
@@ -1096,6 +1150,12 @@ async def generate_chart(request: GenerateChartRequest):
                 status_code=500, detail=f"Chart build failed: {build_err}"
             ) from build_err
 
+        await _persist_chart_baseline(
+            query_id=request.query_id,
+            user_id=user_id,
+            chart_spec=spec,
+            chart_config=chart_config,
+        )
         return GenerateChartResponse(
             chart_config=chart_config,
             chart_type=spec["chart_type"],
@@ -1184,6 +1244,8 @@ async def _edit_osm_map_chart(
     request: EditChartRequest,
     instruction: str,
     agent: Any,
+    *,
+    user_id: str,
 ) -> EditChartResponse:
     """Turn an LLM map edit into a validated spec rebuild plus safe view commands."""
     base_spec = request.chart_spec if isinstance(request.chart_spec, dict) else {}
@@ -1278,10 +1340,6 @@ async def _edit_osm_map_chart(
             prompt=system_prompt,
         )
 
-    user_id = require_user_id(request.user_id)
-    await _verify_query_owner(
-        query_id=request.query_id, user_id=user_id, connection=request.connection
-    )
     dataset = result_cache.get(
         user_id=user_id, connection=request.connection, query_id=request.query_id,
     ) or _dataset_from_edit_request(request)
@@ -1334,7 +1392,10 @@ async def _edit_osm_map_chart(
 
 
 @router.post("/edit-chart", response_model=EditChartResponse)
-async def edit_chart(request: EditChartRequest):
+async def edit_chart(
+    request: EditChartRequest,
+    principal: Principal = Depends(get_principal),
+):
     """Apply a natural-language edit to the current ECharts config.
 
     The endpoint never touches the SQL result set. It returns a new chart
@@ -1348,10 +1409,32 @@ async def edit_chart(request: EditChartRequest):
     if not request.current_config:
         raise HTTPException(status_code=400, detail="`current_config` is required")
 
+    user_id = principal.user_id
+    await _verify_query_owner(
+        query_id=request.query_id, user_id=user_id, connection=request.connection
+    )
     agent = await resolve_agent(request.connection)
     instruction = instruction[:_CHART_EDITOR_MAX_INSTRUCTION_CHARS]
+    response_model = await _edit_chart_impl(request, instruction, agent, user_id=user_id)
+    if not response_model.out_of_scope:
+        await _persist_chart_baseline(
+            query_id=request.query_id,
+            user_id=user_id,
+            chart_spec=response_model.chart_spec,
+            chart_config=response_model.chart_config,
+        )
+    return response_model
+
+
+async def _edit_chart_impl(
+    request: EditChartRequest,
+    instruction: str,
+    agent: Any,
+    *,
+    user_id: str,
+) -> EditChartResponse:
     if _is_osm_map_edit(request):
-        return await _edit_osm_map_chart(request, instruction, agent)
+        return await _edit_osm_map_chart(request, instruction, agent, user_id=user_id)
 
     column_types_blob = (
         "\n".join(f"- {c.name} ({c.type})" for c in request.columns) or "(unknown)"
@@ -1468,7 +1551,12 @@ async def edit_chart(request: EditChartRequest):
 # One-shot enhancement of an existing chart config
 # ----------------------------------------------------------------------
 @router.post("/enhance-chart")
-async def enhance_chart_endpoint(request: EnhanceChartRequest):
+async def enhance_chart_endpoint(
+    request: EnhanceChartRequest,
+    _principal: Principal = Depends(get_principal),
+):
+    # The middleware already enforces the internal token; the explicit
+    # dependency keeps the identity requirement visible like the other routes.
     agent = await resolve_agent(request.connection)
     system_prompt = (
         "You are a data visualization expert specializing in Apache ECharts. "

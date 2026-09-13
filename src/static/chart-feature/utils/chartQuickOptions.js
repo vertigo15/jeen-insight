@@ -147,6 +147,32 @@ function _seriesValue(point) {
     return Number(point) || -Infinity;
 }
 
+const MULTI_COLOUR_SERIES = new Set(['pie', 'funnel', 'treemap', 'sunburst']);
+
+/**
+ * How many entries a legend would list for this config: the explicit
+ * `legend.data`, the slices of a lone pie-like series, otherwise the number of
+ * series. A single entry only repeats the measure already named on the value
+ * axis, so the default is to hide the legend in that case.
+ * @param {object} config
+ * @returns {number}
+ */
+export function countLegendEntries(config) {
+    if (!config || typeof config !== 'object') return 0;
+    if (config.legend && Array.isArray(config.legend.data)) return config.legend.data.length;
+    const series = Array.isArray(config.series) ? config.series : config.series ? [config.series] : [];
+    const real = series.filter((s) => s && typeof s === 'object');
+    if (real.length === 1 && MULTI_COLOUR_SERIES.has(real[0].type)) {
+        return Array.isArray(real[0].data) ? real[0].data.length : 0;
+    }
+    return real.length;
+}
+
+/** Default legend visibility for a freshly built config. */
+export function defaultLegendVisible(config) {
+    return countLegendEntries(config) > 1;
+}
+
 /**
  * Read the visual-toggle state that a (possibly chat-edited) config already
  * encodes, so the quick-toggle layer can mirror it instead of overwriting it.

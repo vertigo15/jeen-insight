@@ -172,11 +172,12 @@
     }
 
     const ICON = {
-        plus: '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
         table: '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>',
         history: '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>',
         settings: '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21h-4v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1-2.8-2.8.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3v-4h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1 2.8-2.8.1.1a1.7 1.7 0 0 0 1.8.3 1.7 1.7 0 0 0 1-1.5V3h4v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1 2.8 2.8-.1.1a1.7 1.7 0 0 0-.3 1.8 1.7 1.7 0 0 0 1.5 1h.2v4h-.2a1.7 1.7 0 0 0-1.4 1Z"/></svg>',
         conversation: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></svg>',
+        railConversation: '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/><path d="M8 10h8M8 14h5"/></svg>',
+        pin: '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 3h6l-1 6 3 3H7l3-3-1-6Z"/></svg>',
         bell: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>',
         export: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3v12M7 8l5-5 5 5M5 14v6h14v-6"/></svg>',
         copy: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
@@ -199,12 +200,28 @@
         desktopPreference: true,
         autoCollapsed: false,
         lastAppliedResultId: null,
+        // Conversation persistence: the restored conversation header, the
+        // hydration state and the generation guard that lets a connection
+        // switch / reset / new hydration invalidate anything still in flight
+        // (a live query stream, a /last fetch, an artifact fetch).
+        conversation: null,
+        hydrating: false,
+        readOnly: false,
+        _pendingOpen: null,
+        _generation: 0,
+        _streamAbort: null,
+        _hydrateAbort: null,
+        _hydration: null,
 
         init() {
             if (document.getElementById('v3-shell')) return;
             this._buildShell();
             this._moveProductionNodes();
             this._bind();
+            document.addEventListener('jeen:connection-resolved', (event) => {
+                const sourceKey = event.detail?.source_key;
+                if (sourceKey) this.hydrate(sourceKey);
+            });
             document.addEventListener('jeen:osm-map-select', (event) => {
                 const indexes = Array.isArray(event.detail?.rowIndexes) ? event.detail.rowIndexes : [];
                 this.mapSelectedRows = new Set(indexes.map(Number));
@@ -234,11 +251,12 @@
               <nav class="v3-rail" aria-label="Primary navigation">
                 <img class="v3-logo" src="/static/images/jeen-mark.png" alt="Jeen">
                 <div class="v3-rail-divider"></div>
-                <button class="v3-rail-btn is-active" data-rail="new" aria-label="New question" title="New question">${ICON.plus}</button>
-                <button class="v3-rail-btn" data-rail="tables" aria-label="Tables" title="Tables">${ICON.table}</button>
-                <button class="v3-rail-btn" data-rail="history" aria-label="History" title="History">${ICON.history}</button>
+                <button class="v3-rail-btn is-active" data-rail="conversation" aria-label="Conversation" data-tooltip="Conversation">${ICON.railConversation}</button>
+                <button class="v3-rail-btn" data-rail="tables" aria-label="Tables" data-tooltip="Tables">${ICON.table}</button>
+                <button class="v3-rail-btn" data-rail="pinned" aria-label="Pinned questions" data-tooltip="Pinned">${ICON.pin}</button>
+                <button class="v3-rail-btn" data-rail="history" aria-label="Conversation history" data-tooltip="History">${ICON.history}</button>
                 <div class="v3-rail-spacer"></div>
-                <button id="v3-settings-button" class="v3-rail-btn v3-rail-btn--settings" data-rail="settings" aria-label="Settings" title="Settings">${ICON.settings}</button>
+                <button id="v3-settings-button" class="v3-rail-btn v3-rail-btn--settings" data-rail="settings" aria-label="Settings" data-tooltip="Settings">${ICON.settings}</button>
               </nav>
               <div class="v3-app">
                 <header class="v3-topbar">
@@ -259,10 +277,18 @@
                         <button id="v3-tab-conversation" class="v3-tab" data-tab="conversation" role="tab" aria-selected="true" aria-controls="v3-panel-conversation">Conversation</button>
                         <button id="v3-tab-tables" class="v3-tab" data-tab="tables" role="tab" aria-selected="false" aria-controls="v3-panel-tables">Tables</button>
                         <button id="v3-tab-pinned" class="v3-tab" data-tab="pinned" role="tab" aria-selected="false" aria-controls="v3-panel-pinned">Pinned</button>
+                        <button id="v3-tab-conversations" class="v3-tab" data-tab="conversations" role="tab" aria-selected="false" aria-controls="v3-panel-conversations">History</button>
                       </div>
                     </div>
                     <section id="v3-panel-conversation" class="v3-panel" data-panel="conversation" role="tabpanel" aria-labelledby="v3-tab-conversation">
                       <div id="v3-thread" class="v3-thread" role="log" aria-live="polite"></div>
+                    </section>
+                    <section id="v3-panel-conversations" class="v3-panel v3-panel-list" data-panel="conversations" role="tabpanel" aria-labelledby="v3-tab-conversations" hidden>
+                      <div class="v3-conversations-head">
+                        <span class="v3-thread-empty-label">Previous conversations</span>
+                        <button class="v3-text-btn" data-question-log title="Flat log of every question asked">Question log</button>
+                      </div>
+                      <div id="v3-conversations-list" class="v3-conversations-list"></div>
                     </section>
                     <section id="v3-panel-tables" class="v3-panel v3-panel-list" data-panel="tables" role="tabpanel" aria-labelledby="v3-tab-tables" hidden>
                       <div id="v3-table-search-slot" class="v3-panel-search"></div>
@@ -416,6 +442,7 @@
             document.getElementById('v3-conversation-toggle').addEventListener('click', () => this.toggleConversation());
             document.getElementById('v3-drawer-overlay').addEventListener('click', () => this.setConversation(false, true));
             document.getElementById('v3-dock-toggle').addEventListener('click', () => this.toggleDock(this.dockTab));
+            document.querySelector('[data-question-log]')?.addEventListener('click', () => document.getElementById('history-btn')?.click());
             document.getElementById('v3-chart-toggle').addEventListener('click', () => {
                 this.chartCollapsed = !this.chartCollapsed;
                 this._renderChartCollapse();
@@ -461,7 +488,8 @@
         },
 
         _rail(action) {
-            if (action === 'new') {
+            // 'new' is kept as an alias so older callers (onboarding) still work.
+            if (action === 'conversation' || action === 'new') {
                 this.setTab('conversation');
                 this.setConversation(true);
                 if (this.input) this.input.focus();
@@ -469,8 +497,12 @@
                 this.setTab('tables');
                 this.setConversation(true);
                 if (typeof window.loadTables === 'function') window.loadTables();
+            } else if (action === 'pinned') {
+                this.setTab('pinned');
+                this.setConversation(true);
             } else if (action === 'history') {
-                document.getElementById('history-btn')?.click();
+                this.setTab('conversations');
+                this.setConversation(true);
             } else if (action === 'settings') {
                 if (window._settingsPage?.toggle) window._settingsPage.toggle();
                 else document.getElementById('settings-btn')?.click();
@@ -485,9 +517,14 @@
                 button.tabIndex = active ? 0 : -1;
             });
             document.querySelectorAll('[data-panel]').forEach((panel) => { panel.hidden = panel.dataset.panel !== tab; });
-            document.querySelectorAll('[data-rail]').forEach((button) => button.classList.toggle('is-active', (tab === 'tables' && button.dataset.rail === 'tables') || (tab === 'conversation' && button.dataset.rail === 'new')));
+            // Rail icon <-> panel tab mapping (the History icon opens the
+            // 'conversations' panel; 'new' is the legacy id of the first icon).
+            const railForTab = { conversation: ['conversation', 'new'], tables: ['tables'], pinned: ['pinned'], conversations: ['history'] };
+            const activeRails = railForTab[tab] || [];
+            document.querySelectorAll('[data-rail]').forEach((button) => button.classList.toggle('is-active', activeRails.includes(button.dataset.rail)));
             if (tab === 'tables' && typeof window.loadTables === 'function') window.loadTables();
             if (tab === 'pinned' && typeof window.displayHistory === 'function') window.displayHistory();
+            if (tab === 'conversations') this.loadConversationList();
         },
 
         toggleConversation() {
@@ -540,6 +577,12 @@
         async send(question) {
             const q = String(question || '').trim();
             if (!q || this.sending) return;
+            if (this.readOnly) {
+                if (typeof window.showToast === 'function') {
+                    window.showToast('This conversation belongs to a connection that is no longer available. Start a new conversation to ask questions.', 'error');
+                }
+                return;
+            }
             const connection = typeof window.getActiveConnection === 'function' ? window.getActiveConnection() : '';
             if (!connection) {
                 if (typeof window.showToast === 'function') window.showToast('Select a connection first', 'error');
@@ -549,6 +592,12 @@
             this.sending = true;
             this.setTab('conversation');
             this.setConversation(true);
+            // A live send does not bump the generation (it belongs to the current
+            // conversation) but records it, so a switch/reset that happens while
+            // the stream is open can abort the fetch and drop late events.
+            const generation = this._generation;
+            const abort = new AbortController();
+            this._streamAbort = abort;
             const turn = {
                 id: `turn-${Date.now()}-${++this.seq}`,
                 question: q,
@@ -578,28 +627,36 @@
             const llmTimeout = window.JeenPreferences && window.JeenPreferences.getLlmTimeoutSeconds();
             if (llmTimeout !== null && llmTimeout !== undefined) payload.llm_timeout = llmTimeout;
 
+            const stale = () => generation !== this._generation;
             try {
                 await this._stream(payload, (event, data) => {
+                    if (stale()) return;
                     if (event === 'node') this._onNode(turn, data);
                     if (event === 'result') this._onResult(turn, data);
                     if (event === 'enrichment') this._onEnrichment(turn, data);
                     if (event === 'error') throw new Error(data.detail || data.error || 'Query failed');
-                });
+                }, abort.signal);
+                if (stale()) return;
                 if (turn.status === 'running') throw new Error('Query stream ended before a result arrived');
             } catch (error) {
+                if (stale() || abort.signal.aborted) return;
                 this._onError(turn, error);
             } finally {
-                this.sending = false;
-                this._setComposerBusy(false);
-                this.render();
+                if (this._streamAbort === abort) this._streamAbort = null;
+                if (!stale()) {
+                    this.sending = false;
+                    this._setComposerBusy(false);
+                    this.render();
+                }
             }
         },
 
-        async _stream(payload, onEvent) {
+        async _stream(payload, onEvent, signal) {
             const response = await fetch('/api/ask/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
                 body: JSON.stringify(payload),
+                signal,
             });
             if (!response.ok) {
                 const body = await response.text();
@@ -680,6 +737,11 @@
             this.selectedResultId = turn.id;
             this.filter = '';
             if (data.session_id && typeof window._jeenSetSessionId === 'function') window._jeenSetSessionId(data.session_id);
+            if (!this.conversation && data.session_id) {
+                // First answer of a fresh conversation: mirror the header the
+                // server derives (title = first question) until the next hydration.
+                this.conversation = { id: String(data.session_id), title: turn.question, source_key: null };
+            }
             this.render();
         },
 
@@ -714,23 +776,375 @@
                 document.getElementById('v3-result-filter').value = '';
             }
             this.render();
+            // Restored turns fetch their rows lazily on selection. The
+            // generation + selection guard inside _loadArtifact drops a slow
+            // response for a turn the user has already left.
+            if (turn.restored && turn.artifactState === 'missing' && turn.snapshotStatus === 'stored') {
+                this._loadArtifact(turn);
+            }
         },
 
         _captureSelectedChart() {
             const current = this.turns.find((item) => item.id === this.selectedResultId);
-            if (current && window.JeenLegacyBridge?.getChartState) {
-                current.chartState = window.JeenLegacyBridge.getChartState();
+            if (current && current.result?.results && window.JeenLegacyBridge?.getChartState) {
+                const state = window.JeenLegacyBridge.getChartState();
+                if (state && state.chart_config) current.chartState = state;
+            }
+        },
+
+        _abortInFlight() {
+            if (this._streamAbort) {
+                try { this._streamAbort.abort(); } catch (_) { /* already settled */ }
+                this._streamAbort = null;
+            }
+            if (this._hydrateAbort) {
+                try { this._hydrateAbort.abort(); } catch (_) { /* already settled */ }
+                this._hydrateAbort = null;
             }
         },
 
         reset() {
+            this._generation += 1;
+            this._abortInFlight();
             this.turns = [];
+            this.conversation = null;
+            this.hydrating = false;
+            this.readOnly = false;
             this.selectedTurnId = null;
             this.selectedResultId = null;
             this.lastAppliedResultId = null;
             this.filter = '';
             this.sending = false;
+            this._setComposerBusy(false);
+            if (typeof window._jeenSetSessionId === 'function') window._jeenSetSessionId(null);
             this.render();
+        },
+
+        /** Explicit "New conversation": clear the thread; the server creates the
+         *  conversation row lazily on the first question. */
+        newConversation() {
+            this.reset();
+            this.setTab('conversation');
+            this.setConversation(true);
+            if (this.input) this.input.focus();
+        },
+
+        async _hydrationModule() {
+            if (this._hydration) return this._hydration;
+            if (window.ConversationHydration) {
+                this._hydration = window.ConversationHydration;
+                return this._hydration;
+            }
+            const module = await import('./conversationHydration.js?v=1');
+            this._hydration = module;
+            return module;
+        },
+
+        /**
+         * Restore the user's last conversation on `sourceKey`. Called once the
+         * active connection is resolved on load and again on every switch.
+         * Any earlier hydration or live stream is invalidated first.
+         */
+        async hydrate(sourceKey, options = {}) {
+            // A conversation opened from the History tab on another connection
+            // is remembered across the connection switch that precedes it.
+            const pendingOpen = this._pendingOpen;
+            this._pendingOpen = null;
+            const conversationId = options.conversationId
+                || (pendingOpen && pendingOpen.sourceKey === sourceKey ? pendingOpen.conversationId : null);
+            const readOnly = Boolean(options.readOnly);
+            if (!sourceKey && !conversationId) return;
+            this._generation += 1;
+            const generation = this._generation;
+            this._abortInFlight();
+            const abort = new AbortController();
+            this._hydrateAbort = abort;
+            this.turns = [];
+            this.conversation = null;
+            this.readOnly = readOnly;
+            this.selectedTurnId = null;
+            this.selectedResultId = null;
+            this.lastAppliedResultId = null;
+            this.hydrating = true;
+            this.render();
+
+            const url = conversationId
+                ? `/api/conversations/${encodeURIComponent(conversationId)}`
+                : `/api/conversations/last?connection=${encodeURIComponent(sourceKey)}`;
+            const stale = () => generation !== this._generation;
+            try {
+                const [mod, response] = await Promise.all([
+                    this._hydrationModule(),
+                    fetch(url, { signal: abort.signal }),
+                ]);
+                if (stale()) return;
+                if (response.status === 401) return;
+                if (response.status === 404 && conversationId) {
+                    if (typeof window.showToast === 'function') window.showToast('That conversation no longer exists', 'error');
+                    this.hydrating = false;
+                    this.render();
+                    return;
+                }
+                if (!response.ok) throw new Error(`restore failed (${response.status})`);
+                const detail = await response.json();
+                if (stale()) return;
+                this.hydrating = false;
+                if (!detail || !detail.conversation) {
+                    this.render();
+                    return;
+                }
+                this.conversation = detail.conversation;
+                if (detail.conversation.connection_available === false) this.readOnly = true;
+                this.turns = mod.turnsFromDetail(detail);
+                // Read-only conversations (connection gone) must never receive new
+                // turns, so the session id stays cleared.
+                if (typeof window._jeenSetSessionId === 'function') {
+                    window._jeenSetSessionId(this.readOnly ? null : detail.conversation.id);
+                }
+                const newest = this.turns[this.turns.length - 1];
+                if (newest) {
+                    this.selectedTurnId = newest.id;
+                    this.selectedResultId = newest.status === 'success' ? newest.id : null;
+                    if (!this.selectedResultId) {
+                        const lastOk = [...this.turns].reverse().find((item) => item.status === 'success');
+                        this.selectedResultId = lastOk ? lastOk.id : null;
+                    }
+                }
+                this.render();
+                this._scrollThread();
+                const target = this.turns.find((item) => item.id === this.selectedResultId);
+                if (target && target.artifactState === 'missing' && target.snapshotStatus === 'stored') {
+                    await this._loadArtifact(target);
+                }
+            } catch (error) {
+                if (stale() || abort.signal.aborted) return;
+                console.warn('[Workspace] conversation restore failed', error);
+                this.hydrating = false;
+                this.render();
+            } finally {
+                if (this._hydrateAbort === abort) this._hydrateAbort = null;
+            }
+        },
+
+        /** Fetch the rows (+ chart baseline) for one restored turn. */
+        async _loadArtifact(turn) {
+            if (!turn || !turn.restored || !turn.conversationId || !turn.turnId) return;
+            if (turn.artifactState === 'loading' || turn.artifactState === 'loaded') return;
+            const generation = this._generation;
+            turn.artifactState = 'loading';
+            this.renderWorkspace();
+            try {
+                const mod = await this._hydrationModule();
+                const response = await fetch(
+                    `/api/conversations/${encodeURIComponent(turn.conversationId)}/turns/${encodeURIComponent(turn.turnId)}/artifact`
+                );
+                if (generation !== this._generation) return;
+                if (!response.ok) throw new Error(`artifact ${response.status}`);
+                const artifact = await response.json();
+                if (generation !== this._generation) return;
+                mod.applyArtifact(turn, artifact);
+                if (!turn.result.results) {
+                    // Snapshot vanished between listing and fetch (pruned); offer Load data.
+                    turn.artifactState = 'missing';
+                }
+            } catch (error) {
+                if (generation !== this._generation) return;
+                console.warn('[Workspace] artifact load failed', error);
+                turn.artifactState = 'failed';
+            }
+            // Per-selection guard: the rows are kept on the turn either way, but
+            // the result pane is only re-rendered if this turn is still selected.
+            if (this.selectedResultId === turn.id) {
+                this.lastAppliedResultId = null;
+                this.render();
+            } else {
+                this.renderConversation();
+            }
+        },
+
+        /** "Load data" / "Refresh": re-execute the stored query for a restored turn. */
+        async rerunTurn(turnId) {
+            const turn = this.turns.find((item) => item.id === turnId);
+            if (!turn || !turn.restored || turn.rerunning) return;
+            if (this.readOnly) {
+                if (typeof window.showToast === 'function') window.showToast('This connection is no longer available.', 'error');
+                return;
+            }
+            const generation = this._generation;
+            turn.rerunning = true;
+            turn.rerunError = null;
+            this.render();
+            try {
+                const mod = await this._hydrationModule();
+                const response = await fetch(
+                    `/api/conversations/${encodeURIComponent(turn.conversationId)}/turns/${encodeURIComponent(turn.turnId)}/rerun`,
+                    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+                );
+                if (generation !== this._generation) return;
+                if (!response.ok) {
+                    let detail = '';
+                    try { detail = (await response.json()).error || ''; } catch (_) { /* plain text */ }
+                    throw new Error(this._rerunMessage(response.status, detail));
+                }
+                const artifact = await response.json();
+                if (generation !== this._generation) return;
+                mod.applyArtifact(turn, artifact);
+                turn.chartState = null;
+                turn.hasChart = false;
+                // snapshot_at is only set when the fresh rows were persisted; a
+                // too_large result is shown but has no durable snapshot time.
+                turn.snapshotAt = artifact.snapshot_at || null;
+                if (turn.result?.results) turn.artifactState = 'loaded';
+                this.selectedTurnId = turn.id;
+                this.selectedResultId = turn.id;
+                this.lastAppliedResultId = null;
+                if (typeof window.showToast === 'function') window.showToast('Data refreshed', 'success');
+            } catch (error) {
+                if (generation !== this._generation) return;
+                turn.rerunError = error && error.message ? error.message : String(error);
+                if (typeof window.showToast === 'function') window.showToast(turn.rerunError, 'error');
+            } finally {
+                turn.rerunning = false;
+                if (generation === this._generation) this.render();
+            }
+        },
+
+        _rerunMessage(status, detail) {
+            const text = String(detail || '');
+            if (status === 403 || /grant_required/.test(text)) return 'Reconnect your Power BI account to reload this data.';
+            if (status === 409 && /connection_unavailable/.test(text)) return 'This connection is no longer available.';
+            if (status === 409 && /turn_has_no_query/.test(text)) return 'This answer has no query to re-run.';
+            if (status === 504) return 'The query timed out. Try again or narrow the question.';
+            if (status === 502) return text.replace(/^\{.*?"detail":\s*"?/, '').slice(0, 200) || 'The data source returned an error.';
+            return `Could not reload the data (${status}).`;
+        },
+
+        // ── History tab: browse / open / rename / delete conversations ──────
+        _conversationList: null,
+
+        async loadConversationList() {
+            const host = document.getElementById('v3-conversations-list');
+            if (!host) return;
+            host.innerHTML = '<div class="v3-thread-empty-label">Loading conversations…</div>';
+            try {
+                const response = await fetch('/api/conversations?all=true&limit=100');
+                if (!response.ok) throw new Error(`list ${response.status}`);
+                const data = await response.json();
+                this._conversationList = Array.isArray(data.items) ? data.items : [];
+            } catch (error) {
+                console.warn('[Workspace] conversation list failed', error);
+                host.innerHTML = '<div class="v3-thread-empty-label">Could not load conversations.</div>';
+                return;
+            }
+            this.renderConversationList();
+        },
+
+        renderConversationList() {
+            const host = document.getElementById('v3-conversations-list');
+            if (!host) return;
+            const items = this._conversationList || [];
+            if (!items.length) {
+                host.innerHTML = '<div class="v3-thread-empty-label">No previous conversations yet.</div>';
+                return;
+            }
+            const active = typeof window.getActiveConnection === 'function' ? window.getActiveConnection() : '';
+            const groups = [
+                { label: 'This connection', items: items.filter((c) => c.connection_available !== false && c.source_key === active) },
+                { label: 'Other connections', items: items.filter((c) => c.connection_available !== false && c.source_key !== active) },
+                { label: 'Unavailable connections', items: items.filter((c) => c.connection_available === false), readOnly: true },
+            ].filter((group) => group.items.length);
+            host.innerHTML = groups.map((group) => `
+              <div class="v3-conv-group">
+                <div class="v3-thread-empty-label">${esc(group.label)}</div>
+                ${group.items.map((c) => this._conversationItemHtml(c, group.readOnly)).join('')}
+              </div>`).join('');
+            host.querySelectorAll('[data-open-conversation]').forEach((node) => node.addEventListener('click', (event) => {
+                if (event.target.closest('[data-conv-action]')) return;
+                const item = items.find((c) => c.id === node.dataset.openConversation);
+                if (item) this.openConversation(item);
+            }));
+            host.querySelectorAll('[data-conv-action]').forEach((button) => button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                const item = items.find((c) => c.id === button.dataset.convId);
+                if (!item) return;
+                if (button.dataset.convAction === 'rename') this.renameConversation(item);
+                if (button.dataset.convAction === 'delete') this.deleteConversation(item);
+            }));
+        },
+
+        _conversationItemHtml(c, readOnly) {
+            const current = this.conversation && this.conversation.id === c.id;
+            const when = c.last_activity_at ? this._formatWhen(c.last_activity_at) : '';
+            return `<div class="v3-conv-item${current ? ' is-current' : ''}" data-open-conversation="${esc(c.id)}" role="button" tabindex="0">
+              <div class="v3-conv-title" dir="${directionOf(c.title)}" title="${esc(c.title)}">${esc(c.title)}</div>
+              <div class="v3-conv-meta">
+                <span>${esc(c.source_label || c.source_key)}${readOnly ? ' · read-only' : ''}</span>
+                <span>${c.turn_count} ${c.turn_count === 1 ? 'question' : 'questions'}${when ? ` · ${esc(when)}` : ''}</span>
+              </div>
+              ${c.last_question && c.last_question !== c.title ? `<div class="v3-conv-last" dir="${directionOf(c.last_question)}">${esc(c.last_question)}</div>` : ''}
+              <div class="v3-conv-actions">
+                <button class="v3-text-btn" data-conv-action="rename" data-conv-id="${esc(c.id)}">Rename</button>
+                <button class="v3-text-btn" data-conv-action="delete" data-conv-id="${esc(c.id)}">Delete</button>
+              </div>
+            </div>`;
+        },
+
+        openConversation(item) {
+            if (!item) return;
+            const active = typeof window.getActiveConnection === 'function' ? window.getActiveConnection() : '';
+            this.setTab('conversation');
+            if (item.connection_available === false) {
+                // Connection is gone: open read-only without switching connections.
+                this.hydrate(item.source_key, { conversationId: item.id, readOnly: true });
+                return;
+            }
+            if (item.source_key && item.source_key !== active && typeof window.onConnectionChange === 'function') {
+                // Switching connections triggers hydrate() via 'jeen:connection-resolved';
+                // remember which conversation to open instead of the newest one.
+                this._pendingOpen = { sourceKey: item.source_key, conversationId: item.id };
+                window.onConnectionChange(item.source_key);
+                return;
+            }
+            this.hydrate(item.source_key || active, { conversationId: item.id });
+        },
+
+        async renameConversation(item) {
+            const title = window.prompt('Rename conversation', item.title || '');
+            if (title === null) return;
+            const clean = title.trim();
+            if (!clean) return;
+            try {
+                const response = await fetch(`/api/conversations/${encodeURIComponent(item.id)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: clean.slice(0, 200) }),
+                });
+                if (!response.ok) throw new Error(`rename ${response.status}`);
+                item.title = clean.slice(0, 200);
+                if (this.conversation && this.conversation.id === item.id) {
+                    this.conversation.title = item.title;
+                    this.renderConversation();
+                }
+                this.renderConversationList();
+            } catch (error) {
+                console.warn('[Workspace] rename failed', error);
+                if (typeof window.showToast === 'function') window.showToast('Rename failed', 'error');
+            }
+        },
+
+        async deleteConversation(item) {
+            if (!window.confirm(`Delete "${item.title}"? This removes its questions and results.`)) return;
+            try {
+                const response = await fetch(`/api/conversations/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+                if (!response.ok && response.status !== 404) throw new Error(`delete ${response.status}`);
+                this._conversationList = (this._conversationList || []).filter((c) => c.id !== item.id);
+                if (this.conversation && this.conversation.id === item.id) this.reset();
+                this.renderConversationList();
+                if (typeof window.showToast === 'function') window.showToast('Conversation deleted', 'success');
+            } catch (error) {
+                console.warn('[Workspace] delete failed', error);
+                if (typeof window.showToast === 'function') window.showToast('Delete failed', 'error');
+            }
         },
         activate() { this.setConversation(true); },
         deactivate() {},
@@ -756,6 +1170,12 @@
         renderConversation() {
             const thread = document.getElementById('v3-thread');
             if (!thread) return;
+            if (!this.turns.length && this.hydrating) {
+                thread.innerHTML = `<div class="v3-thread-empty v3-thread-restoring" aria-busy="true">
+                  <div class="v3-thread-empty-label">Restoring your last conversation…</div>
+                </div>`;
+                return;
+            }
             if (!this.turns.length) {
                 const connectionName = document.getElementById('connection-pill-name')?.textContent?.trim() || 'this dataset';
                 const suggestions = typeof window.getStarterSuggestions === 'function' ? window.getStarterSuggestions(4) : [];
@@ -769,8 +1189,34 @@
                 return;
             }
 
-            thread.innerHTML = this.turns.map((turn) => this._turnHtml(turn)).join('');
-            thread.querySelectorAll('[data-turn]').forEach((card) => card.addEventListener('click', () => this.selectTurn(card.dataset.turn)));
+            const title = this.conversation ? this.conversation.title : '';
+            const readOnlyNote = this.readOnly
+                ? `<div class="v3-readonly-note">Read-only: the connection "${esc(this.conversation?.source_label || this.conversation?.source_key || '')}" is no longer available.</div>`
+                : '';
+            const head = `<div class="v3-thread-head">
+                <span class="v3-thread-title" title="${esc(title)}">${esc(title)}</span>
+                <button class="v3-text-btn" data-new-conversation>New conversation</button>
+              </div>${readOnlyNote}`;
+            thread.innerHTML = head + this.turns.map((turn) => this._turnHtml(turn)).join('');
+            thread.querySelector('[data-new-conversation]')?.addEventListener('click', (event) => {
+                event.stopPropagation();
+                this.newConversation();
+            });
+            thread.querySelectorAll('[data-load-data]').forEach((button) => button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                this.rerunTurn(button.dataset.loadData);
+            }));
+            thread.querySelectorAll('[data-turn]').forEach((card) => {
+                card.addEventListener('click', () => this.selectTurn(card.dataset.turn));
+                // Cards are focusable so keyboard users can bring an answer back too.
+                card.addEventListener('keydown', (event) => {
+                    if (event.target !== card) return;
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        this.selectTurn(card.dataset.turn);
+                    }
+                });
+            });
             thread.querySelectorAll('[data-trace-toggle]').forEach((button) => button.addEventListener('click', (event) => {
                 event.stopPropagation();
                 const turn = this.turns.find((item) => item.id === button.dataset.traceToggle);
@@ -816,15 +1262,19 @@
             }
             if (turn.status === 'error') {
                 const failed = [...turn.trace].reverse().find((item) => item.status === 'node_failed');
-                return `<article class="v3-turn is-selected" data-turn="${turn.id}">
+                const isNewest = this.turns[this.turns.length - 1]?.id === turn.id;
+                const meta = turn.restored
+                    ? `${esc(turn.executionStatus || 'error')} · restored from history`
+                    : `query_failed · failed at ${esc(failed?.node || 'query')} · ${formatMs(turn.durationMs)}`;
+                return `<article class="v3-turn${selected || (!turn.restored && isNewest) ? ' is-selected' : ''}" data-turn="${turn.id}" tabindex="0" aria-label="Show answer: ${esc(turn.question)}">
                   <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
                   <div class="v3-error-block">${esc(turn.error)}
-                    <div class="v3-error-meta">query_failed · failed at ${esc(failed?.node || 'query')} · ${formatMs(turn.durationMs)}</div>
+                    <div class="v3-error-meta">${meta}</div>
                   </div>
-                  <div class="v3-summary" style="margin-top:12px;color:var(--muted)">The newest question failed. Your last successful result remains in the workspace.</div>
+                  ${isNewest ? '<div class="v3-summary" style="margin-top:12px;color:var(--muted)">The newest question failed. Your last successful result remains in the workspace.</div>' : ''}
                   <div class="v3-error-actions">
                     <button data-retry="${turn.id}">Retry</button>
-                    <button title="SQL editing requires a validated execution contract">Edit SQL</button>
+                    ${turn.restored ? '' : '<button title="SQL editing requires a validated execution contract">Edit SQL</button>'}
                     <button data-report-gap="${turn.id}">Report catalog gap</button>
                   </div>
                 </article>`;
@@ -843,12 +1293,13 @@
                 return `<span class="v3-dot${ran ? ' is-done' : ''}" title="${esc(phase.label)}${ran ? ` · ${formatMs(elapsed)}` : ' · not run'}"></span>`;
             }).join('');
             const trace = turn.trace.filter((item) => item.status !== 'node_started');
-            return `<article class="v3-turn${selected ? ' is-selected' : ''}" data-turn="${turn.id}">
-              <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
-              <div class="v3-run-strip">${dots}<span class="v3-run-meta">${formatMs(turn.durationMs)} · ${trace.length} nodes</span>
+            const strip = turn.restored ? this._restoredStripHtml(turn) : `<div class="v3-run-strip">${dots}<span class="v3-run-meta">${formatMs(turn.durationMs)} · ${trace.length} nodes</span>
                 <button class="v3-text-btn" data-trace-toggle="${turn.id}">${turn.traceOpen ? 'hide run' : 'run details'}</button>
-              </div>
-              ${turn.traceOpen ? `<div class="v3-trace">${trace.map((item) => `<div class="v3-trace-row">
+              </div>`;
+            return `<article class="v3-turn${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" tabindex="0" aria-label="Show answer: ${esc(turn.question)}" aria-current="${selected ? 'true' : 'false'}">
+              <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
+              ${strip}
+              ${!turn.restored && turn.traceOpen ? `<div class="v3-trace">${trace.map((item) => `<div class="v3-trace-row">
                 <span class="v3-dot ${item.status === 'node_failed' ? '' : 'is-ok'}"></span>
                 <span>${esc(item.node)}</span><span class="v3-trace-note">${esc(safeTraceNote(item))}</span>
                 <span class="v3-trace-ms">${formatMs(item.elapsed_ms)}</span></div>`).join('')}</div>` : ''}
@@ -866,13 +1317,130 @@
             </article>`;
         },
 
+        _restoredStripHtml(turn) {
+            const when = turn.snapshotAt ? this._formatWhen(turn.snapshotAt) : null;
+            if (turn.resultKind === 'text') {
+                return '<div class="v3-run-strip"><span class="v3-run-meta">restored · text answer</span></div>';
+            }
+            if (turn.rerunning) {
+                return '<div class="v3-run-strip"><span class="v3-run-meta">Reloading data…</span></div>';
+            }
+            if (turn.result?.results) {
+                const label = when
+                    ? `Snapshot from ${esc(when)}`
+                    : turn.snapshotStatus === 'too_large' ? 'Fresh result · too large to keep' : 'Restored snapshot';
+                return `<div class="v3-run-strip">
+                  <span class="v3-run-meta">${label}${turn.hasChart ? ' · chart' : ''}</span>
+                  ${turn.canLoadData || turn.result?.sql ? `<button class="v3-text-btn" data-load-data="${turn.id}">Refresh</button>` : ''}
+                </div>`;
+            }
+            if (turn.artifactState === 'loading') {
+                return '<div class="v3-run-strip"><span class="v3-run-meta">Loading rows…</span></div>';
+            }
+            const reason = turn.snapshotStatus === 'too_large'
+                ? 'result too large to keep; re-run to view'
+                : turn.artifactState === 'failed'
+                    ? 'rows could not be loaded'
+                    : 'rows not kept; re-run to view';
+            return `<div class="v3-run-strip">
+              <span class="v3-run-meta">${esc(reason)}</span>
+              ${turn.canLoadData || turn.result?.sql ? `<button class="v3-text-btn" data-load-data="${turn.id}">Load data</button>` : ''}
+              ${turn.rerunError ? `<span class="v3-run-meta v3-run-error">${esc(turn.rerunError)}</span>` : ''}
+            </div>`;
+        },
+
+        _formatWhen(iso) {
+            const date = new Date(iso);
+            if (Number.isNaN(date.getTime())) return String(iso);
+            return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+        },
+
+        _placeholderDefault: null,
+
+        /** Result pane for a restored table turn whose rows are not available. */
+        _renderPendingResult(turn) {
+            const placeholder = document.getElementById('v3-placeholder');
+            if (this._placeholderDefault === null) this._placeholderDefault = placeholder.innerHTML;
+            const loading = turn.artifactState === 'loading' || turn.rerunning;
+            let title = 'Loading rows…';
+            let copy = 'Fetching the stored result for this answer.';
+            let action = '';
+            if (!loading) {
+                if (turn.snapshotStatus === 'too_large') {
+                    title = 'Result too large to keep';
+                    copy = 'This answer returned more rows than the app stores. Re-run the query to view them.';
+                } else if (turn.artifactState === 'failed') {
+                    title = 'Rows could not be loaded';
+                    copy = turn.rerunError || 'Try again, or re-run the query to fetch fresh data.';
+                } else {
+                    title = 'Rows not kept for this answer';
+                    copy = 'Older results are trimmed to save space. Re-run the query to view them.';
+                }
+                if (turn.canLoadData || turn.result?.sql) {
+                    action = `<button class="v3-load-data" data-load-data="${turn.id}">${turn.rerunning ? 'Loading…' : 'Load data'}</button>`;
+                }
+            }
+            document.getElementById('v3-result-title').textContent = turn.question;
+            document.getElementById('v3-meta-row').innerHTML = `<span class="v3-status is-empty">${loading ? 'Loading' : 'No rows loaded'}</span>`;
+            placeholder.innerHTML = `<strong>${esc(title)}</strong><span>${esc(copy)}</span>${action}`;
+            placeholder.querySelector('[data-load-data]')?.addEventListener('click', () => this.rerunTurn(turn.id));
+            placeholder.hidden = false;
+            document.getElementById('v3-chart-block').hidden = true;
+            document.getElementById('v3-table-block').hidden = true;
+            document.getElementById('v3-dock-meta').textContent = turn.result?.sql ? 'stored query' : 'no query text';
+            this._setActionsEnabled(false);
+            this.renderDock();
+        },
+
+        _restorePlaceholder() {
+            const placeholder = document.getElementById('v3-placeholder');
+            if (placeholder && this._placeholderDefault !== null && placeholder.innerHTML !== this._placeholderDefault) {
+                placeholder.innerHTML = this._placeholderDefault;
+            }
+        },
+
+        /** Result pane for a text-only answer (live or restored): no chart, no grid. */
+        _renderTextResult(turn) {
+            const placeholder = document.getElementById('v3-placeholder');
+            if (this._placeholderDefault === null) this._placeholderDefault = placeholder.innerHTML;
+            const data = turn.result || {};
+            const answer = textOf(data.answer);
+            document.getElementById('v3-result-title').textContent = turn.question;
+            document.getElementById('v3-meta-row').innerHTML = `
+              <span class="v3-status">Answered</span>
+              <span class="v3-result-meta">text answer${turn.restored ? ' · restored' : ''}</span>`;
+            placeholder.innerHTML = `<strong>Answer</strong><span dir="${directionOf(answer)}">${esc(answer || 'No data was needed for this answer.')}</span>`;
+            placeholder.hidden = false;
+            document.getElementById('v3-chart-block').hidden = true;
+            document.getElementById('v3-table-block').hidden = true;
+            const chart = document.getElementById('chart-view-container');
+            if (chart) chart.style.display = 'none';
+            if (this.lastAppliedResultId !== turn.id && window.JeenLegacyBridge) {
+                // Keep the legacy panels (prompt/dev details, session id) in sync,
+                // with the answer flattened to text for the legacy renderer.
+                this.lastAppliedResultId = turn.id;
+                const payload = { ...data, answer, results: null };
+                if (turn.restored && typeof window.JeenLegacyBridge.applyRestoredResult === 'function') {
+                    window.JeenLegacyBridge.applyRestoredResult(payload, null);
+                } else {
+                    window.JeenLegacyBridge.applyResult(payload);
+                }
+            }
+            document.getElementById('v3-dock-meta').textContent = 'no query text';
+            this._setActionsEnabled(false);
+            this.renderDock();
+        },
+
         renderWorkspace() {
             const turn = this.turns.find((item) => item.id === this.selectedResultId && item.status === 'success');
             const placeholder = document.getElementById('v3-placeholder');
             const chartBlock = document.getElementById('v3-chart-block');
             const tableBlock = document.getElementById('v3-table-block');
             if (!turn) {
-                document.getElementById('v3-result-title').textContent = 'Ask a question to get started';
+                this._restorePlaceholder();
+                document.getElementById('v3-result-title').textContent = this.hydrating
+                    ? 'Restoring your last conversation…'
+                    : 'Ask a question to get started';
                 document.getElementById('v3-meta-row').innerHTML = '<span class="v3-status is-empty">No result yet</span>';
                 placeholder.hidden = false;
                 chartBlock.hidden = true;
@@ -884,6 +1452,21 @@
             }
 
             const data = turn.result;
+            // A restored table turn whose rows are not here yet (loading, pruned,
+            // too large, failed): show the state instead of an empty table.
+            if (turn.restored && turn.resultKind === 'table' && !data.results) {
+                this._renderPendingResult(turn);
+                return;
+            }
+            // Text-only answers (greeting, memory answer, clarification) have no
+            // dataset: never expose the chart/table blocks, which would otherwise
+            // keep showing the previous turn's chart.
+            const isText = turn.resultKind === 'text' || (!(data.results && data.results.columns) && !data.sql);
+            if (isText) {
+                this._renderTextResult(turn);
+                return;
+            }
+            this._restorePlaceholder();
             const results = data.results || {};
             const rows = normalizeRows(results);
             const metrics = data.metrics || {};
@@ -891,25 +1474,38 @@
             const newest = this.turns[this.turns.length - 1];
             const stale = newest && newest.status === 'error' && newest.id !== turn.id;
             document.getElementById('v3-result-title').textContent = turn.question;
+            const restoredNote = turn.restored && turn.snapshotAt
+                ? `<span class="v3-result-meta">Snapshot from ${esc(this._formatWhen(turn.snapshotAt))}</span>`
+                : '';
             document.getElementById('v3-meta-row').innerHTML = `
               <span class="v3-status">${cap.capped ? 'Completed · capped' : 'Completed'}</span>
               <span class="v3-result-meta">${rows.length} rows · ${formatMs(metrics.execution_time_ms)} exec · ${formatMs(metrics.llm_latency_ms)} llm</span>
+              ${restoredNote}
               ${stale ? '<span class="v3-stale-note">Last successful answer — the newest question failed</span>' : ''}`;
             placeholder.hidden = true;
-            chartBlock.hidden = false;
+            // An empty result set has nothing to chart; keep the (empty) grid only.
+            chartBlock.hidden = rows.length === 0;
             tableBlock.hidden = false;
 
             if (this.lastAppliedResultId !== turn.id && window.JeenLegacyBridge) {
                 this.lastAppliedResultId = turn.id;
-                window.JeenLegacyBridge.applyResult(data);
-                setTimeout(() => {
+                const showChart = () => {
                     const chart = document.getElementById('chart-view-container');
-                    if (chart) chart.style.display = 'block';
-                    if (turn.chartState && window.JeenLegacyBridge?.restoreChartState) {
-                        window.JeenLegacyBridge.restoreChartState(turn.chartState);
-                    }
+                    if (chart) chart.style.display = rows.length ? 'block' : 'none';
                     window.dispatchEvent(new Event('resize'));
-                }, 60);
+                };
+                if ((turn.restored || turn.chartState) && typeof window.JeenLegacyBridge.applyRestoredResult === 'function') {
+                    // Known rows (+ optional stored chart): render through the
+                    // restore path and wait for the chart machinery instead of
+                    // guessing with a timer. No LLM chart call when a baseline exists.
+                    const applied = turn.id;
+                    window.JeenLegacyBridge.applyRestoredResult(data, turn.chartState).then(() => {
+                        if (this.selectedResultId === applied) showChart();
+                    });
+                } else {
+                    window.JeenLegacyBridge.applyResult(data);
+                    requestAnimationFrame(showChart);
+                }
             }
             this._setActionsEnabled(true);
             document.getElementById('v3-chart-caption').textContent = `${results.columns?.slice(0, 2).join(' by ') || 'result'} · ${rows.length} points`;

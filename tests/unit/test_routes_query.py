@@ -41,7 +41,7 @@ def test_query_requires_authenticated_user(anon_client, fake_state):
 
 
 def test_query_rejects_foreign_session_id(client, fake_state):
-    fake_state.history_service.session_belongs_to_user = AsyncMock(return_value=False)
+    fake_state.history_service.conversation_belongs_to_user = AsyncMock(return_value=False)
     resp = client.post(
         "/api/query",
         json={
@@ -52,7 +52,12 @@ def test_query_rejects_foreign_session_id(client, fake_state):
         },
     )
     assert resp.status_code == 404
-    fake_state.history_service.session_belongs_to_user.assert_awaited_once()
+    fake_state.history_service.conversation_belongs_to_user.assert_awaited_once()
+    # The check is connection-scoped: a conversation from connection A cannot
+    # be continued against connection B even by its owner.
+    kwargs = fake_state.history_service.conversation_belongs_to_user.await_args.kwargs
+    assert kwargs["user_id"] == "user-a"
+    assert kwargs["source_key"] == "sales_db"
 
 
 def test_query_cache_uses_verified_user_id(client, fake_state, monkeypatch):

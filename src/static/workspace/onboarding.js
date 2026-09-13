@@ -118,7 +118,7 @@
   function runItemAction(key) {
     var ctrl = window.ChatController;
     if (key === 'ask_first_question') {
-      var railNew = document.querySelector('[data-rail="new"]');
+      var railNew = document.querySelector('[data-rail="conversation"], [data-rail="new"]');
       if (railNew) railNew.click();
       else if (ctrl) { ctrl.setTab('conversation'); ctrl.setConversation(true); }
       var input = document.querySelector('.v3-composer textarea, .v3-composer input');

@@ -5,7 +5,7 @@
  * backend, so provider credentials never enter browser code.
  */
 
-import { makeValueFormatter } from './valueFormat.js?v=73';
+import { makeValueFormatter } from './valueFormat.js?v=74';
 
 const TILE_SIZE = 256;
 const MAX_LATITUDE = 85.05112878;

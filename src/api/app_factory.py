@@ -18,6 +18,7 @@ from src.api.routes import (
     charts,
     connections,
     connectors as connectors_routes,
+    conversations as conversations_routes,
     health,
     history,
     insights,
@@ -72,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(connections.router)
     app.include_router(query.router)
     app.include_router(history.router)
+    app.include_router(conversations_routes.router)
     app.include_router(onboarding.router)
     app.include_router(autocomplete.router)
     app.include_router(insights.router)

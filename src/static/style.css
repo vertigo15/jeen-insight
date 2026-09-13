@@ -1479,6 +1479,28 @@ td.cell-id {
 
 .chart-opts-divider { width: 1px; height: 18px; background: var(--color-border); margin: 0 2px; }
 
+/* Colour palette picker — "Colors" disclosure with swatch dots, chips below. */
+.chart-palette-dots { display: inline-flex; gap: 3px; align-items: center; }
+.chart-palette-dots i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .08); }
+.chart-palette-expand { align-items: center; gap: var(--space-2); }
+.chart-palette-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 12px 6px 10px; line-height: 1.2; cursor: pointer;
+  border: 1px solid var(--color-border); border-radius: 14px;
+  background: var(--color-surface); color: var(--color-muted);
+  font-family: var(--font-sans); font-size: var(--text-sm); font-weight: var(--weight-semibold);
+  transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
+}
+.chart-palette-chip .chart-palette-dots i { width: 10px; height: 10px; }
+.chart-palette-chip:hover { border-color: var(--color-accent); color: var(--color-text); }
+.chart-palette-chip:focus-visible { outline: none; border-color: var(--color-accent); box-shadow: var(--shadow-focus); }
+.chart-palette-chip.is-active {
+  background: var(--color-dim-bg);
+  border-color: var(--color-accent);
+  color: var(--color-dim-text);
+  font-weight: var(--weight-bold);
+}
+
 /* Quick-option pills (Labels / Legend / Zoom / Sort). */
 .chart-opts-toggles { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .chart-opt-toggle {

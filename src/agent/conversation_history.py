@@ -5,22 +5,52 @@ feedback) in the shared metadata DB. Every row is partitioned by `source_key`
 (the active connection) so multiple connections can share the same DB.
 
 Backed by:
-  * insights_conversation_sessions
+  * insights_conversations              (one row per conversation; id == session_id)
+  * insights_conversation_sessions      (one row per turn)
+  * insights_turn_artifacts             (answer / snapshot / chart per turn)
+  * insights_conversation_prune_state   (per user+connection retention claim)
   * insights_query_insights
   * insights_pinned_questions
-  * insights_get_next_sequence_number(session_id)
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+import time
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 
 import asyncpg
 
+from src.agent.conversation_artifacts import (
+    RESULT_KIND_ERROR,
+    RESULT_KIND_TABLE,
+    RESULT_KIND_TEXT,
+    SNAPSHOT_NOT_APPLICABLE,
+    SNAPSHOT_PRUNED,
+    SNAPSHOT_STORED,
+    conversation_title_from_question,
+)
+
 logger = logging.getLogger(__name__)
+
+
+def _iso(value: Any) -> Optional[str]:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value if value is None or isinstance(value, str) else str(value)
+
+
+def _jsonb(value: Any) -> Any:
+    """asyncpg returns JSONB as str unless a codec is registered; decode it."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
 
 
 def insight_text(content: Any) -> str:
@@ -52,8 +82,22 @@ class ConversationHistoryService:
     at METADATA_DB_*). Pass it in via the constructor.
     """
 
-    def __init__(self, pool: asyncpg.Pool):
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        persistence_enabled: bool = True,
+        conversation_schema_ready: bool = True,
+    ):
         self.pool = pool
+        # Kill switch for per-turn artifact capture and retention (config, and
+        # forced off by the lifespan when migration 022 is missing).
+        self.persistence_enabled = persistence_enabled
+        # Whether migration 022 (insights_conversations + parent FK) is applied.
+        # Independent of the kill switch: once the FK exists a turn cannot be
+        # inserted without its conversation row, and before it exists the
+        # legacy (pre-conversation) SQL must be used so questions keep working.
+        self.conversation_schema_ready = conversation_schema_ready
 
     async def initialize(self) -> None:
         # Pool is already initialized by `get_metadata_pool()`. This method is
@@ -88,12 +132,135 @@ class ConversationHistoryService:
         schema_context: Optional[Dict[str, Any]] = None,
         rag_context: Optional[Dict[str, Any]] = None,
         parent_query_id: Optional[UUID] = None,
+        source_label: Optional[str] = None,
     ) -> UUID:
+        """Insert one turn, creating/bumping its conversation in the same transaction.
+
+        The conversation row is locked (``FOR UPDATE``) before the sequence
+        number is allocated, so two tabs writing to the same conversation can
+        never collide on ``(session_id, sequence_number)``. A ``session_id``
+        that already belongs to another user or another connection is refused.
+
+        Before migration 022 is applied the conversation table does not exist,
+        so the pre-conversation insert path is used instead.
+        """
+        if not self.conversation_schema_ready:
+            return await self._log_query_legacy(
+                user_id=user_id,
+                source_key=source_key,
+                session_id=session_id,
+                natural_language_query=natural_language_query,
+                dataset_id=dataset_id,
+                schema_context=schema_context,
+                rag_context=rag_context,
+                parent_query_id=parent_query_id,
+            )
+        try:
+            title = conversation_title_from_question(natural_language_query)
+            label = (source_label or "").strip() or source_key
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        """
+                        INSERT INTO insights_conversations
+                            (id, user_id, source_key, source_label, title)
+                        VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (id) DO UPDATE
+                            SET last_activity_at = NOW(),
+                                source_label = COALESCE(NULLIF($4, ''), insights_conversations.source_label)
+                        WHERE insights_conversations.user_id = $2
+                          AND insights_conversations.source_key = $3
+                        """,
+                        session_id,
+                        user_id,
+                        source_key,
+                        label,
+                        title,
+                    )
+                    owned = await conn.fetchval(
+                        """
+                        SELECT 1
+                        FROM insights_conversations
+                        WHERE id = $1 AND user_id = $2 AND source_key = $3
+                        FOR UPDATE
+                        """,
+                        session_id,
+                        user_id,
+                        source_key,
+                    )
+                    if not owned:
+                        raise PermissionError(
+                            "session_id belongs to another user or connection"
+                        )
+                    sequence_number = await conn.fetchval(
+                        """
+                        SELECT COALESCE(MAX(sequence_number), 0) + 1
+                        FROM insights_conversation_sessions
+                        WHERE session_id = $1
+                        """,
+                        session_id,
+                    )
+                    # Link each turn to the previous one in the same session so
+                    # the conversation forms a chain the router can walk.
+                    if parent_query_id is None:
+                        parent_query_id = await conn.fetchval(
+                            """
+                            SELECT id
+                            FROM insights_conversation_sessions
+                            WHERE session_id = $1 AND user_id = $2
+                            ORDER BY sequence_number DESC
+                            LIMIT 1
+                            """,
+                            session_id,
+                            user_id,
+                        )
+                    query_id = await conn.fetchval(
+                        """
+                        INSERT INTO insights_conversation_sessions (
+                            user_id, source_key, session_id, sequence_number, parent_query_id,
+                            natural_language_query, dataset_id, schema_context, rag_context,
+                            execution_status
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
+                        RETURNING id
+                        """,
+                        user_id,
+                        source_key,
+                        session_id,
+                        int(sequence_number or 1),
+                        parent_query_id,
+                        natural_language_query,
+                        dataset_id,
+                        json.dumps(schema_context) if schema_context else None,
+                        json.dumps(rag_context) if rag_context else None,
+                    )
+            logger.info(
+                "📝 Logged query %s for session %s (seq %s, source=%s)",
+                query_id,
+                session_id,
+                sequence_number,
+                source_key,
+            )
+            return query_id
+        except Exception:
+            logger.exception("Failed to log query")
+            return uuid4()
+
+    async def _log_query_legacy(
+        self,
+        *,
+        user_id: str,
+        source_key: str,
+        session_id: UUID,
+        natural_language_query: str,
+        dataset_id: Optional[str],
+        schema_context: Optional[Dict[str, Any]],
+        rag_context: Optional[Dict[str, Any]],
+        parent_query_id: Optional[UUID],
+    ) -> UUID:
+        """Pre-022 insert (no conversation row, DB-side sequence helper)."""
         try:
             sequence_number = await self.get_next_sequence_number(session_id)
             async with self.pool.acquire() as conn:
-                # Link each turn to the previous one in the same session so the
-                # conversation forms a chain the router can walk for follow-ups.
                 if parent_query_id is None:
                     parent_query_id = await conn.fetchval(
                         """
@@ -125,14 +292,14 @@ class ConversationHistoryService:
                     json.dumps(schema_context) if schema_context else None,
                     json.dumps(rag_context) if rag_context else None,
                 )
-                logger.info(
-                    "📝 Logged query %s for session %s (seq %s, source=%s)",
-                    query_id,
-                    session_id,
-                    sequence_number,
-                    source_key,
-                )
-                return query_id
+            logger.info(
+                "📝 Logged query %s for session %s (seq %s, source=%s, legacy schema)",
+                query_id,
+                session_id,
+                sequence_number,
+                source_key,
+            )
+            return query_id
         except Exception:
             logger.exception("Failed to log query")
             return uuid4()
@@ -316,24 +483,56 @@ class ConversationHistoryService:
         session_id: UUID,
         user_id: str,
         limit: int = 5,
+        source_key: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        """Recent turns of one conversation, newest first.
+
+        Joins the conversation row so context can never mix connections or
+        continue a conversation that has been deleted. Before migration 022 the
+        same scoping is applied on the turn rows themselves.
+        """
         try:
             async with self.pool.acquire() as conn:
-                rows = await conn.fetch(
-                    """
-                    SELECT id, parent_query_id, sequence_number,
-                           natural_language_query, generated_sql,
-                           execution_status, row_count, result_preview,
-                           result_artifact, created_at
-                    FROM insights_conversation_sessions
-                    WHERE session_id = $1 AND user_id = $2
-                    ORDER BY sequence_number DESC
-                    LIMIT $3
-                    """,
-                    session_id,
-                    user_id,
-                    limit,
-                )
+                if self.conversation_schema_ready:
+                    rows = await conn.fetch(
+                        """
+                        SELECT cs.id, cs.parent_query_id, cs.sequence_number,
+                               cs.natural_language_query, cs.generated_sql,
+                               cs.execution_status, cs.row_count, cs.result_preview,
+                               cs.result_artifact, cs.created_at
+                        FROM insights_conversation_sessions cs
+                        JOIN insights_conversations c ON c.id = cs.session_id
+                        WHERE cs.session_id = $1
+                          AND cs.user_id = $2
+                          AND c.user_id = $2
+                          AND ($4::text IS NULL OR c.source_key = $4)
+                        ORDER BY cs.sequence_number DESC
+                        LIMIT $3
+                        """,
+                        session_id,
+                        user_id,
+                        limit,
+                        source_key,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, parent_query_id, sequence_number,
+                               natural_language_query, generated_sql,
+                               execution_status, row_count, result_preview,
+                               result_artifact, created_at
+                        FROM insights_conversation_sessions
+                        WHERE session_id = $1
+                          AND user_id = $2
+                          AND ($4::text IS NULL OR source_key = $4)
+                        ORDER BY sequence_number DESC
+                        LIMIT $3
+                        """,
+                        session_id,
+                        user_id,
+                        limit,
+                        source_key,
+                    )
                 return [dict(r) for r in rows]
         except Exception:
             logger.exception("Failed to get conversation context")
@@ -420,19 +619,47 @@ class ConversationHistoryService:
             logger.exception("Failed to verify query ownership")
             return False
 
-    async def session_belongs_to_user(
+    async def conversation_belongs_to_user(
         self,
         *,
         session_id: UUID | str,
         user_id: str,
+        source_key: Optional[str] = None,
     ) -> bool:
-        """Return true when a session is empty or already owned by this user."""
+        """True only when a conversation with this id exists, is owned by
+        *user_id* and (when given) lives on *source_key*.
+
+        Unknown ids are rejected: a client may only continue conversations the
+        server handed out, which closes the "append to a guessed UUID" hole of
+        the previous empty-session allowance.
+
+        Before migration 022 there is no conversation table, so the check falls
+        back to the turn rows: the first turn's owner (and connection) must
+        match, and a session with no rows yet is allowed as before.
+        """
         try:
             sid = session_id if isinstance(session_id, UUID) else UUID(str(session_id))
+        except (TypeError, ValueError):
+            return False
+        try:
             async with self.pool.acquire() as conn:
-                owner = await conn.fetchval(
+                if self.conversation_schema_ready:
+                    found = await conn.fetchval(
+                        """
+                        SELECT 1
+                        FROM insights_conversations
+                        WHERE id = $1
+                          AND user_id = $2
+                          AND ($3::text IS NULL OR source_key = $3)
+                        """,
+                        sid,
+                        user_id,
+                        source_key,
+                    )
+                    return bool(found)
+                first = await conn.fetchrow(
                     """
-                    SELECT user_id
+                    SELECT user_id, source_key
                     FROM insights_conversation_sessions
                     WHERE session_id = $1
                     ORDER BY created_at ASC
@@ -440,10 +667,627 @@ class ConversationHistoryService:
                     """,
                     sid,
                 )
-                return owner is None or owner == user_id
+                if first is None:
+                    return True
+                if first["user_id"] != user_id:
+                    return False
+                return source_key is None or first["source_key"] == source_key
         except Exception:
-            logger.exception("Failed to verify session ownership")
+            logger.exception("Failed to verify conversation ownership")
             return False
+
+    async def session_belongs_to_user(
+        self,
+        *,
+        session_id: UUID | str,
+        user_id: str,
+    ) -> bool:
+        """Backward-compatible alias; delegates to the conversation check."""
+        return await self.conversation_belongs_to_user(
+            session_id=session_id, user_id=user_id
+        )
+
+    # ------------------------------------------------------------------
+    # Conversations (restore / browse)
+    # ------------------------------------------------------------------
+    _CONVERSATION_SUMMARY_SQL = """
+        SELECT c.id, c.title, c.source_key, c.source_label,
+               c.created_at, c.last_activity_at,
+               (SELECT COUNT(*) FROM insights_conversation_sessions t
+                 WHERE t.session_id = c.id) AS turn_count,
+               (SELECT t.natural_language_query
+                  FROM insights_conversation_sessions t
+                 WHERE t.session_id = c.id
+                 ORDER BY t.sequence_number DESC
+                 LIMIT 1) AS last_question
+        FROM insights_conversations c
+    """
+
+    @staticmethod
+    def _summary_row(row: Any) -> Dict[str, Any]:
+        return {
+            "id": str(row["id"]),
+            "title": row["title"],
+            "source_key": row["source_key"],
+            "source_label": row["source_label"],
+            "turn_count": int(row["turn_count"] or 0),
+            "last_question": row["last_question"],
+            "created_at": _iso(row["created_at"]),
+            "last_activity_at": _iso(row["last_activity_at"]),
+        }
+
+    async def get_last_conversation(
+        self, *, user_id: str, source_key: str
+    ) -> Optional[Dict[str, Any]]:
+        if not self.conversation_schema_ready:
+            return None
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    self._CONVERSATION_SUMMARY_SQL
+                    + """
+                    WHERE c.user_id = $1 AND c.source_key = $2
+                    ORDER BY c.last_activity_at DESC, c.id DESC
+                    LIMIT 1
+                    """,
+                    user_id,
+                    source_key,
+                )
+            return self._summary_row(row) if row else None
+        except Exception:
+            logger.exception("Failed to get last conversation")
+            return None
+
+    async def get_conversation(
+        self, *, conversation_id: UUID, user_id: str
+    ) -> Optional[Dict[str, Any]]:
+        if not self.conversation_schema_ready:
+            return None
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    self._CONVERSATION_SUMMARY_SQL
+                    + " WHERE c.id = $1 AND c.user_id = $2",
+                    conversation_id,
+                    user_id,
+                )
+            return self._summary_row(row) if row else None
+        except Exception:
+            logger.exception("Failed to get conversation")
+            return None
+
+    async def list_conversations(
+        self,
+        *,
+        user_id: str,
+        source_key: Optional[str] = None,
+        limit: int = 50,
+        before: Optional[Tuple[datetime, UUID]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Conversations newest first; ``before`` is the (last_activity_at, id)
+        cursor of the last item of the previous page."""
+        if not self.conversation_schema_ready:
+            return []
+        try:
+            before_ts = before[0] if before else None
+            before_id = before[1] if before else None
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    self._CONVERSATION_SUMMARY_SQL
+                    + """
+                    WHERE c.user_id = $1
+                      AND ($2::text IS NULL OR c.source_key = $2)
+                      AND ($3::timestamptz IS NULL
+                           OR (c.last_activity_at, c.id) < ($3::timestamptz, $4::uuid))
+                    ORDER BY c.last_activity_at DESC, c.id DESC
+                    LIMIT $5
+                    """,
+                    user_id,
+                    source_key,
+                    before_ts,
+                    before_id,
+                    limit,
+                )
+            return [self._summary_row(r) for r in rows]
+        except Exception:
+            logger.exception("Failed to list conversations")
+            return []
+
+    @staticmethod
+    def _turn_row(row: Any) -> Dict[str, Any]:
+        status = row["execution_status"] or "pending"
+        sql = row["generated_sql"]
+        result_kind = row["result_kind"]
+        snapshot_status = row["snapshot_status"]
+        if result_kind is None:
+            # Legacy turn (pre-artifact): derive what the UI needs.
+            if row["error_message"] or status not in ("success", "pending"):
+                result_kind = RESULT_KIND_ERROR
+            elif sql:
+                result_kind = RESULT_KIND_TABLE
+            else:
+                result_kind = RESULT_KIND_TEXT
+        if snapshot_status is None:
+            snapshot_status = (
+                SNAPSHOT_PRUNED if result_kind == RESULT_KIND_TABLE else SNAPSHOT_NOT_APPLICABLE
+            )
+        has_chart = bool(row["has_chart"]) and snapshot_status == SNAPSHOT_STORED
+        return {
+            "turn_id": str(row["id"]),
+            "sequence_number": int(row["sequence_number"]),
+            "question": row["natural_language_query"],
+            "sql": sql,
+            "execution_status": status,
+            "result_kind": result_kind,
+            "answer": _jsonb(row["answer"]),
+            "error": row["artifact_error"] or row["error_message"],
+            "metrics": _jsonb(row["metrics"]),
+            "findings": _jsonb(row["findings"]),
+            "suggestions": _jsonb(row["suggestions"]),
+            "followups": _jsonb(row["followups"]),
+            "snapshot_status": snapshot_status,
+            "row_count": row["row_count"],
+            "has_chart": has_chart,
+            "has_rerunnable_query": bool(sql) and result_kind == RESULT_KIND_TABLE,
+            "created_at": _iso(row["created_at"]),
+            "snapshot_at": _iso(row["snapshot_at"]),
+        }
+
+    async def get_conversation_turns(
+        self,
+        *,
+        conversation_id: UUID,
+        user_id: str,
+        limit: int = 50,
+        before_sequence: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Turn metadata (no rows, no chart config), newest first."""
+        if not self.conversation_schema_ready:
+            return []
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT cs.id, cs.sequence_number, cs.natural_language_query,
+                           cs.generated_sql, cs.execution_status, cs.row_count,
+                           cs.error_message, cs.created_at,
+                           a.result_kind, a.answer, a.error AS artifact_error,
+                           a.metrics, a.findings, a.suggestions, a.followups,
+                           a.snapshot_status, a.snapshot_at,
+                           (a.chart_config IS NOT NULL) AS has_chart
+                    FROM insights_conversation_sessions cs
+                    JOIN insights_conversations c ON c.id = cs.session_id
+                    LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id
+                    WHERE cs.session_id = $1
+                      AND c.user_id = $2
+                      AND ($3::int IS NULL OR cs.sequence_number < $3)
+                    ORDER BY cs.sequence_number DESC
+                    LIMIT $4
+                    """,
+                    conversation_id,
+                    user_id,
+                    before_sequence,
+                    limit,
+                )
+            return [self._turn_row(r) for r in rows]
+        except Exception:
+            logger.exception("Failed to get conversation turns")
+            return []
+
+    async def get_turn_artifact(
+        self, *, conversation_id: UUID, turn_id: UUID, user_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Blobs for one turn. Chart fields are only returned alongside rows."""
+        if not self.conversation_schema_ready:
+            return None
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT a.result_snapshot, a.snapshot_status, a.snapshot_at,
+                           a.chart_spec, a.chart_config
+                    FROM insights_conversation_sessions cs
+                    JOIN insights_conversations c ON c.id = cs.session_id
+                    LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id
+                    WHERE cs.id = $1 AND cs.session_id = $2 AND c.user_id = $3
+                    """,
+                    turn_id,
+                    conversation_id,
+                    user_id,
+                )
+            if row is None:
+                return None
+            results = _jsonb(row["result_snapshot"])
+            status = row["snapshot_status"] or SNAPSHOT_PRUNED
+            return {
+                "turn_id": str(turn_id),
+                "results": results,
+                "chart_spec": _jsonb(row["chart_spec"]) if results is not None else None,
+                "chart_config": _jsonb(row["chart_config"]) if results is not None else None,
+                "snapshot_status": status,
+                "snapshot_at": _iso(row["snapshot_at"]),
+            }
+        except Exception:
+            logger.exception("Failed to get turn artifact")
+            return None
+
+    async def get_turn_for_rerun(
+        self, *, conversation_id: UUID, turn_id: UUID, user_id: str
+    ) -> Optional[Dict[str, Any]]:
+        if not self.conversation_schema_ready:
+            return None
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT cs.id, cs.generated_sql, cs.natural_language_query,
+                           c.source_key, c.source_label
+                    FROM insights_conversation_sessions cs
+                    JOIN insights_conversations c ON c.id = cs.session_id
+                    WHERE cs.id = $1 AND cs.session_id = $2 AND c.user_id = $3
+                    """,
+                    turn_id,
+                    conversation_id,
+                    user_id,
+                )
+            if row is None:
+                return None
+            return {
+                "turn_id": str(row["id"]),
+                "sql": row["generated_sql"],
+                "question": row["natural_language_query"],
+                "source_key": row["source_key"],
+                "source_label": row["source_label"],
+            }
+        except Exception:
+            logger.exception("Failed to load turn for rerun")
+            return None
+
+    async def upsert_turn_artifact(
+        self,
+        *,
+        turn_id: UUID,
+        result_kind: str,
+        answer: Any = None,
+        error: Optional[str] = None,
+        metrics: Optional[Dict[str, Any]] = None,
+        findings: Optional[List[str]] = None,
+        suggestions: Optional[List[str]] = None,
+        followups: Optional[List[str]] = None,
+        result_snapshot: Optional[Dict[str, Any]] = None,
+        snapshot_status: str = SNAPSHOT_NOT_APPLICABLE,
+        snapshot_bytes: Optional[int] = None,
+    ) -> bool:
+        """Guarded write from ``save_to_memory``.
+
+        No-op when the turn row is gone (hard delete) or when the artifact was
+        already pruned: ``pruned`` is terminal for normal writes.
+        """
+        if not self.conversation_schema_ready:
+            return False
+        try:
+            async with self.pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO insights_turn_artifacts (
+                        turn_id, result_kind, answer, error, metrics,
+                        findings, suggestions, followups,
+                        result_snapshot, snapshot_status, snapshot_bytes, snapshot_at
+                    )
+                    SELECT $1::uuid, $2::text, $3::jsonb, $4::text, $5::jsonb,
+                           $6::jsonb, $7::jsonb, $8::jsonb,
+                           $9::jsonb, $10::text, $11::int,
+                           CASE WHEN $10::text = 'stored' THEN NOW() END
+                    WHERE EXISTS (
+                        SELECT 1 FROM insights_conversation_sessions WHERE id = $1::uuid
+                    )
+                    ON CONFLICT (turn_id) DO UPDATE
+                        SET result_kind     = EXCLUDED.result_kind,
+                            answer          = EXCLUDED.answer,
+                            error           = EXCLUDED.error,
+                            metrics         = EXCLUDED.metrics,
+                            findings        = EXCLUDED.findings,
+                            suggestions     = EXCLUDED.suggestions,
+                            followups       = EXCLUDED.followups,
+                            result_snapshot = EXCLUDED.result_snapshot,
+                            snapshot_status = EXCLUDED.snapshot_status,
+                            snapshot_bytes  = EXCLUDED.snapshot_bytes,
+                            snapshot_at     = EXCLUDED.snapshot_at,
+                            updated_at      = NOW()
+                    WHERE insights_turn_artifacts.snapshot_status <> 'pruned'
+                    """,
+                    turn_id,
+                    result_kind,
+                    json.dumps(answer) if answer is not None else None,
+                    error,
+                    json.dumps(metrics) if metrics else None,
+                    json.dumps(findings) if findings else None,
+                    json.dumps(suggestions) if suggestions else None,
+                    json.dumps(followups) if followups else None,
+                    json.dumps(result_snapshot) if result_snapshot is not None else None,
+                    snapshot_status,
+                    snapshot_bytes,
+                )
+                return result.endswith(" 1")
+        except Exception:
+            logger.exception("Failed to upsert turn artifact for %s", turn_id)
+            return False
+
+    async def upsert_turn_chart(
+        self,
+        *,
+        turn_id: UUID,
+        user_id: str,
+        chart_spec: Optional[Dict[str, Any]],
+        chart_config: Optional[Dict[str, Any]],
+        chart_bytes: int,
+    ) -> bool:
+        """Persist the server-built chart baseline for a turn.
+
+        Only turns whose snapshot is ``stored`` take a chart: a chart cannot be
+        restored without its rows, and ``pruned`` stays terminal.
+        """
+        if not self.conversation_schema_ready:
+            return False
+        try:
+            async with self.pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    UPDATE insights_turn_artifacts a
+                    SET chart_spec       = $3::jsonb,
+                        chart_config     = $4::jsonb,
+                        chart_bytes      = $5,
+                        chart_updated_at = NOW(),
+                        updated_at       = NOW()
+                    FROM insights_conversation_sessions cs
+                    WHERE a.turn_id = $1
+                      AND cs.id = a.turn_id
+                      AND cs.user_id = $2
+                      AND a.snapshot_status = 'stored'
+                    """,
+                    turn_id,
+                    user_id,
+                    json.dumps(chart_spec) if chart_spec is not None else None,
+                    json.dumps(chart_config) if chart_config is not None else None,
+                    chart_bytes,
+                )
+                return result.endswith(" 1")
+        except Exception:
+            logger.exception("Failed to persist chart for turn %s", turn_id)
+            return False
+
+    async def clear_turn_chart(self, *, turn_id: UUID, user_id: str) -> bool:
+        """Drop a stored chart baseline (e.g. the new chart exceeded the byte cap
+        and must not be restored from an obsolete config)."""
+        if not self.conversation_schema_ready:
+            return False
+        try:
+            async with self.pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    UPDATE insights_turn_artifacts a
+                    SET chart_spec = NULL, chart_config = NULL, chart_bytes = NULL,
+                        chart_updated_at = NULL, updated_at = NOW()
+                    FROM insights_conversation_sessions cs
+                    WHERE a.turn_id = $1 AND cs.id = a.turn_id AND cs.user_id = $2
+                      AND a.chart_config IS NOT NULL
+                    """,
+                    turn_id,
+                    user_id,
+                )
+                return result.endswith(" 1")
+        except Exception:
+            logger.exception("Failed to clear chart for turn %s", turn_id)
+            return False
+
+    async def store_rerun_snapshot(
+        self,
+        *,
+        turn_id: UUID,
+        user_id: str,
+        result_snapshot: Optional[Dict[str, Any]],
+        snapshot_status: str,
+        snapshot_bytes: Optional[int],
+    ) -> bool:
+        """Rerun write: the one path allowed to promote a pruned/too_large turn
+        back to ``stored``. Clears the chart baseline because it was built from
+        the previous rows."""
+        if not self.conversation_schema_ready:
+            return False
+        try:
+            async with self.pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO insights_turn_artifacts (
+                        turn_id, result_kind, result_snapshot, snapshot_status,
+                        snapshot_bytes, snapshot_at
+                    )
+                    SELECT $1::uuid, 'table', $3::jsonb, $4::text, $5::int,
+                           CASE WHEN $4::text = 'stored' THEN NOW() END
+                    WHERE EXISTS (
+                        SELECT 1 FROM insights_conversation_sessions
+                        WHERE id = $1::uuid AND user_id = $2::text
+                    )
+                    ON CONFLICT (turn_id) DO UPDATE
+                        SET result_snapshot  = EXCLUDED.result_snapshot,
+                            snapshot_status  = EXCLUDED.snapshot_status,
+                            snapshot_bytes   = EXCLUDED.snapshot_bytes,
+                            snapshot_at      = EXCLUDED.snapshot_at,
+                            chart_spec       = NULL,
+                            chart_config     = NULL,
+                            chart_bytes      = NULL,
+                            chart_updated_at = NULL,
+                            updated_at       = NOW()
+                    """,
+                    turn_id,
+                    user_id,
+                    json.dumps(result_snapshot) if result_snapshot is not None else None,
+                    snapshot_status,
+                    snapshot_bytes,
+                )
+                return result.endswith(" 1")
+        except Exception:
+            logger.exception("Failed to store rerun snapshot for %s", turn_id)
+            return False
+
+    async def rename_conversation(
+        self, *, conversation_id: UUID, user_id: str, title: str
+    ) -> bool:
+        if not self.conversation_schema_ready:
+            return False
+        clean = conversation_title_from_question(title)
+        try:
+            async with self.pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    UPDATE insights_conversations
+                    SET title = $3
+                    WHERE id = $1 AND user_id = $2
+                    """,
+                    conversation_id,
+                    user_id,
+                    clean,
+                )
+                return result.endswith(" 1")
+        except Exception:
+            logger.exception("Failed to rename conversation")
+            return False
+
+    async def delete_conversation(
+        self, *, conversation_id: UUID, user_id: str
+    ) -> bool:
+        """Hard delete; FK cascades remove turns, insights and artifacts."""
+        if not self.conversation_schema_ready:
+            return False
+        try:
+            async with self.pool.acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM insights_conversations WHERE id = $1 AND user_id = $2",
+                    conversation_id,
+                    user_id,
+                )
+                return result.endswith(" 1")
+        except Exception:
+            logger.exception("Failed to delete conversation")
+            return False
+
+    async def prune_user_conversations(
+        self,
+        *,
+        user_id: str,
+        source_key: str,
+        keep_last: int,
+        keep_last_turns: int,
+        min_interval_seconds: int,
+        protect_conversation_id: Optional[UUID] = None,
+    ) -> Dict[str, Any]:
+        """Count-based retention for one user + connection, in one transaction.
+
+        1. Claim the ``(user_id, source_key)`` prune-state row; if another
+           replica pruned within *min_interval_seconds* the whole run is skipped.
+        2. Delete conversations ranked beyond *keep_last* (never the protected
+           one). FK cascades remove their turns, insights and artifacts.
+        3. Drop the blobs of turns ranked beyond *keep_last_turns* across all of
+           the user's turns on this connection (no conversation is exempt; the
+           newest turn is rank 1 by construction), marking them ``pruned``.
+        """
+        if not self.conversation_schema_ready:
+            return {"skipped": "schema_missing"}
+        started = time.monotonic()
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    claimed = await conn.fetchval(
+                        """
+                        INSERT INTO insights_conversation_prune_state
+                            (user_id, source_key, last_pruned_at)
+                        VALUES ($1, $2, NOW())
+                        ON CONFLICT (user_id, source_key) DO UPDATE
+                            SET last_pruned_at = NOW()
+                        WHERE insights_conversation_prune_state.last_pruned_at
+                              < NOW() - make_interval(secs => $3)
+                        RETURNING 1
+                        """,
+                        user_id,
+                        source_key,
+                        float(max(0, min_interval_seconds)),
+                    )
+                    if not claimed:
+                        return {"skipped": "recently_pruned"}
+
+                    deleted = await conn.fetch(
+                        """
+                        WITH ranked AS (
+                            SELECT id,
+                                   ROW_NUMBER() OVER (
+                                       ORDER BY last_activity_at DESC, id DESC
+                                   ) AS rn
+                            FROM insights_conversations
+                            WHERE user_id = $1 AND source_key = $2
+                        )
+                        DELETE FROM insights_conversations c
+                        USING ranked r
+                        WHERE c.id = r.id
+                          AND r.rn > $3
+                          AND c.id IS DISTINCT FROM $4::uuid
+                        RETURNING c.id
+                        """,
+                        user_id,
+                        source_key,
+                        max(1, keep_last),
+                        protect_conversation_id,
+                    )
+                    pruned = await conn.fetch(
+                        """
+                        WITH ranked AS (
+                            SELECT a.turn_id,
+                                   ROW_NUMBER() OVER (
+                                       ORDER BY cs.created_at DESC, cs.id DESC
+                                   ) AS rn
+                            FROM insights_turn_artifacts a
+                            JOIN insights_conversation_sessions cs ON cs.id = a.turn_id
+                            WHERE cs.user_id = $1
+                              AND cs.source_key = $2
+                              AND (a.result_snapshot IS NOT NULL
+                                   OR a.chart_config IS NOT NULL)
+                        )
+                        UPDATE insights_turn_artifacts a
+                        SET result_snapshot  = NULL,
+                            snapshot_bytes   = NULL,
+                            chart_spec       = NULL,
+                            chart_config     = NULL,
+                            chart_bytes      = NULL,
+                            snapshot_status  = 'pruned',
+                            updated_at       = NOW()
+                        FROM ranked r
+                        WHERE a.turn_id = r.turn_id
+                          AND r.rn > $3
+                        RETURNING a.turn_id
+                        """,
+                        user_id,
+                        source_key,
+                        max(1, keep_last_turns),
+                    )
+            stats = {
+                "deleted_conversations": len(deleted),
+                "pruned_turns": len(pruned),
+                "duration_ms": int((time.monotonic() - started) * 1000),
+            }
+            logger.info(
+                "conversation_prune user=%s source=%s deleted=%d pruned=%d duration_ms=%d",
+                user_id,
+                source_key,
+                stats["deleted_conversations"],
+                stats["pruned_turns"],
+                stats["duration_ms"],
+                extra={"event": "conversation_prune", **stats},
+            )
+            return stats
+        except Exception:
+            logger.exception(
+                "conversation_prune failed user=%s source=%s", user_id, source_key
+            )
+            return {"skipped": "error"}
 
     # ------------------------------------------------------------------
     # Recent / pinned questions (per user + connection)

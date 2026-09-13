@@ -17,44 +17,33 @@ import time
 from decimal import ROUND_HALF_UP
 from datetime import date, datetime, time as dt_time
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
+from src.agent.conversation_artifacts import (
+    RESULT_KIND_TABLE,
+    SNAPSHOT_NOT_APPLICABLE,
+    build_result_snapshot,
+    coerce_json_safe_rows,
+    extract_artifact_fields,
+    json_safe_value,
+)
 from src.agent.conversation_history import ConversationHistoryService, insight_text
 from src.agent.langgraph_agent.state import AgentState
 
 logger = logging.getLogger(__name__)
 
 
-def _coerce_json_safe(rows: List[Dict]) -> List[Dict]:
+def _coerce_json_safe(rows: List[Any]) -> List[Any]:
     """Convert common DB driver values so rows are JSON-serialisable.
 
     Different drivers return different Python types for warehouse values
-    (Decimal, datetime/date/time, UUID, bytes, etc.). The history service stores
-    a small result preview as JSON, so normalize those values here.
+    (Decimal, datetime/date/time, UUID, bytes, etc.). Accepts dict rows and
+    positional rows. Kept as a thin alias for existing call sites/tests.
     """
-    out = []
-    for row in rows:
-        out.append({k: _json_safe_value(v) for k, v in row.items()})
-    return out
+    return coerce_json_safe_rows(rows)
 
 
 def _json_safe_value(value: Any) -> Any:
-    if isinstance(value, decimal.Decimal):
-        return float(value)
-    if isinstance(value, (datetime, date, dt_time, UUID)):
-        return str(value)
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        try:
-            return bytes(value).decode("utf-8")
-        except UnicodeDecodeError:
-            return bytes(value).hex()
-    if isinstance(value, list):
-        return [_json_safe_value(v) for v in value]
-    if isinstance(value, tuple):
-        return [_json_safe_value(v) for v in value]
-    if isinstance(value, dict):
-        return {str(k): _json_safe_value(v) for k, v in value.items()}
-    return value
+    return json_safe_value(value)
 
 
 # ── Result artifact ────────────────────────────────────────────────────────────
@@ -462,6 +451,14 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
         llm_latency_ms = state.get("llm_latency_ms") or 0
         start_time = state.get("start_time")
         graph_time_ms = int((time.monotonic() - start_time) * 1000) if start_time else None
+        formatted = state.get("formatted_response") or {}
+        # A text-only turn (greeting, memory answer, clarification, refusal)
+        # has no SQL and no execution error. It still needs a terminal status so
+        # the conversation can be restored; the CHECK constraint only allows
+        # success/error/timeout/syntax_error/pending, so it is a 'success' with
+        # result_kind='text' on the artifact.
+        formatter_error = formatted.get("error") if isinstance(formatted, dict) else None
+        text_only = not sql and not exec_error
 
         try:
             if sql:
@@ -483,6 +480,19 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
                     error_message=exec_error,
                     graph_time_ms=graph_time_ms,
                 )
+            elif sql and formatter_error and not (query_result.get("rows") or []):
+                # SQL was generated but never produced rows: validation, DLP or
+                # governance stopped it. The user saw an error, so the turn must
+                # not be recorded (or restored) as a success.
+                await history_service.update_execution(
+                    query_id=query_id,
+                    execution_status="error",
+                    execution_time_ms=exec_time_ms,
+                    row_count=0,
+                    result_preview=None,
+                    error_message=str(formatter_error)[:4000],
+                    graph_time_ms=graph_time_ms,
+                )
             elif sql:
                 rows = query_result.get("rows") or []
                 safe_preview = _coerce_json_safe(rows[:10]) if rows else None
@@ -499,15 +509,93 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
                     graph_time_ms=graph_time_ms,
                     result_artifact=result_artifact,
                 )
+            elif text_only:
+                await history_service.update_execution(
+                    query_id=query_id,
+                    execution_status="error" if formatter_error else "success",
+                    execution_time_ms=None,
+                    row_count=0,
+                    result_preview=None,
+                    error_message=formatter_error,
+                    graph_time_ms=graph_time_ms,
+                )
 
         except Exception:  # noqa: BLE001
             logger.exception(
                 "save_to_memory: failed to update history for query_id=%s", query_id
             )
 
+        await _persist_turn_artifact(
+            history_service,
+            query_id=query_id,
+            formatted=formatted if isinstance(formatted, dict) else {},
+            sql=sql,
+            exec_error=exec_error,
+            query_result=query_result,
+        )
+
         return {}
 
     return save_to_memory
+
+
+async def _persist_turn_artifact(
+    history_service: ConversationHistoryService,
+    *,
+    query_id: Any,
+    formatted: Dict[str, Any],
+    sql: Optional[str],
+    exec_error: Optional[str],
+    query_result: Dict[str, Any],
+) -> None:
+    """Store the restore payload for this turn (answer, analytics, snapshot).
+
+    Only an explicit allowlist of ``formatted_response`` is persisted; the
+    snapshot is all-or-nothing under the configured caps. Best-effort: never
+    affects the answer.
+    """
+    if getattr(history_service, "persistence_enabled", False) is not True:
+        return
+    try:
+        from src.config import settings
+
+        fields = extract_artifact_fields(formatted, has_sql=bool(sql), exec_error=exec_error)
+        snapshot = None
+        status = SNAPSHOT_NOT_APPLICABLE
+        size: Optional[int] = None
+        if fields["result_kind"] == RESULT_KIND_TABLE:
+            snapshot, status, size, row_count = build_result_snapshot(
+                query_result,
+                max_rows=settings.CONVERSATION_SNAPSHOT_MAX_ROWS,
+                max_bytes=settings.CONVERSATION_SNAPSHOT_MAX_BYTES,
+            )
+            if snapshot is None:
+                logger.info(
+                    "conversation_snapshot_skipped query_id=%s rows=%d bytes=%s",
+                    query_id, row_count, size,
+                    extra={
+                        "event": "conversation_snapshot_skipped",
+                        "rows": row_count,
+                        "bytes": size,
+                    },
+                )
+        await history_service.upsert_turn_artifact(
+            turn_id=query_id,
+            result_kind=fields["result_kind"],
+            answer=fields["answer"],
+            error=fields["error"],
+            metrics=fields["metrics"],
+            findings=fields["findings"],
+            suggestions=fields["suggestions"],
+            followups=fields["followups"],
+            result_snapshot=snapshot,
+            snapshot_status=status,
+            snapshot_bytes=size,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "save_to_memory: failed to persist turn artifact for query_id=%s", query_id
+        )
 
 
 # ── observability_log ─────────────────────────────────────────────────────────

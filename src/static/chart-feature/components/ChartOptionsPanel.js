@@ -3,7 +3,8 @@
  * @module ChartOptionsPanel
  */
 
-import { applyQuickOptions, detectToggles } from '../utils/chartQuickOptions.js?v=70';
+import { applyQuickOptions, defaultLegendVisible, detectToggles } from '../utils/chartQuickOptions.js?v=71';
+import { CHART_PALETTES, DEFAULT_PALETTE_ID, isKnownPalette, paletteSwatches } from '../utils/chartPalettes.js?v=1';
 
 const TOGGLE_DEFS = [
     { key: 'dataLabels', label: 'Labels', title: 'Show data labels on series' },
@@ -42,11 +43,16 @@ export class ChartOptionsPanel {
      * @param {{
      *   onColumnsChange: (mapping: { xColumn: string, yColumn: string, seriesColumn: string }) => void,
      *   onQuickToggle: (toggles: object, applyToConfig: (cfg: object) => object) => void,
+     *   onPaletteChange?: (paletteId: string) => void,
+     *   getThemeColors?: () => string[],
+     *   initialPalette?: string,
      * }} hooks
      */
     constructor(containerId, hooks) {
         this.containerId = containerId;
         this.hooks = hooks || {};
+        this.palette = isKnownPalette(this.hooks.initialPalette) ? this.hooks.initialPalette : DEFAULT_PALETTE_ID;
+        this._paletteOpen = false;
         this.columns = [];
         this.mapping = { xColumn: '', yColumn: '', seriesColumn: '' };
         this.mapMapping = {
@@ -62,9 +68,27 @@ export class ChartOptionsPanel {
         );
         this.chartType = 'bar';
         this.toggles = { dataLabels: false, legend: true, dataZoom: false, sortDesc: false };
+        // The legend default is derived per chart (hidden when it would list a
+        // single entry) until the user flips the pill themselves.
+        this.legendUserSet = false;
         // Column pickers are collapsed by default (mockup: "Columns ▾" disclosure).
         this._columnsOpen = false;
         this._mounted = false;
+    }
+
+    /**
+     * Apply the automatic legend default for a (re)built config: hidden when
+     * the legend would only repeat the single measure named on the axis, shown
+     * for multi-series and pie-like charts. Skipped once the user has toggled
+     * the legend pill for this dataset. Saved charts are re-evaluated too, so
+     * older configs that recorded the previous always-on default follow the
+     * same rule.
+     */
+    applyLegendDefault(config) {
+        if (this.legendUserSet || !config || typeof config !== 'object') return;
+        this.toggles.legend = defaultLegendVisible(config);
+        const btn = document.querySelector('.chart-opt-toggle[data-key="legend"]');
+        if (btn) btn.classList.toggle('is-on', this.toggles.legend);
     }
 
     /**
@@ -82,6 +106,7 @@ export class ChartOptionsPanel {
         };
         // New dataset → nothing is user-chosen yet.
         this.userSet = { xColumn: false, yColumn: false, seriesColumn: false };
+        this.legendUserSet = false;
         this.mapUserSet = Object.fromEntries(
             Object.keys(this.mapMapping).map((key) => [key, false])
         );
@@ -168,8 +193,14 @@ export class ChartOptionsPanel {
      */
     syncTogglesFromConfig(config) {
         const detected = detectToggles(config);
-        for (const k of ['dataLabels', 'legend', 'dataZoom']) {
+        for (const k of ['dataLabels', 'dataZoom']) {
             if (typeof detected[k] === 'boolean') this.toggles[k] = detected[k];
+        }
+        // Legend: an edit that carries a legend object states intent (explicit
+        // `show`, or its presence). An edit without any legend leaves the
+        // current toggle alone instead of resurrecting a single-entry legend.
+        if (config && config.legend && typeof config.legend === 'object') {
+            this.toggles.legend = typeof config.legend.show === 'boolean' ? config.legend.show : true;
         }
         document.querySelectorAll('.chart-opt-toggle').forEach((btn) => {
             const key = btn.dataset.key;
@@ -203,8 +234,15 @@ export class ChartOptionsPanel {
                     title="Choose X / Y / Series columns">
                 <span>Columns</span>${caret}
             </button>
+            <button type="button" class="chart-cols-btn chart-palette-btn${this._paletteOpen ? ' is-open' : ''}" id="chart-palette-btn"
+                    aria-expanded="${this._paletteOpen ? 'true' : 'false'}" aria-controls="chart-palette-expand"
+                    title="Choose the chart colour palette">
+                <span class="chart-palette-dots" id="chart-palette-dots" aria-hidden="true"></span><span>Colors</span>${caret}
+            </button>
             <div class="chart-opts-divider" aria-hidden="true"></div>
             <div class="chart-opts-toggles" id="chart-opt-toggles"></div>
+            <div class="chart-cols-expand chart-palette-expand" id="chart-palette-expand" role="radiogroup"
+                 aria-label="Chart colour palette"${this._paletteOpen ? '' : ' hidden'}></div>
             <div class="chart-cols-expand" id="chart-cols-expand"${this._columnsOpen ? '' : ' hidden'}>
                 <label class="chart-col-field">
                     <span>X / Category</span>
@@ -235,7 +273,10 @@ export class ChartOptionsPanel {
             ).join('');
         }
 
+        this._renderPaletteChips();
+
         document.getElementById('chart-cols-btn')?.addEventListener('click', () => this._toggleColumns());
+        document.getElementById('chart-palette-btn')?.addEventListener('click', () => this._togglePalette());
         document.getElementById('chart-opt-x')?.addEventListener('change', (e) => this._onColumnChange('xColumn', e.target.value));
         document.getElementById('chart-opt-y')?.addEventListener('change', (e) => this._onColumnChange('yColumn', e.target.value));
         document.getElementById('chart-opt-series')?.addEventListener('change', (e) => this._onColumnChange('seriesColumn', e.target.value));
@@ -249,6 +290,7 @@ export class ChartOptionsPanel {
     /** Expand/collapse the X/Y/Series column pickers. */
     _toggleColumns() {
         this._columnsOpen = !this._columnsOpen;
+        if (this._columnsOpen && this._paletteOpen) this._togglePalette();
         const btn = document.getElementById('chart-cols-btn');
         const panel = document.getElementById('chart-cols-expand');
         if (btn) {
@@ -256,6 +298,70 @@ export class ChartOptionsPanel {
             btn.setAttribute('aria-expanded', this._columnsOpen ? 'true' : 'false');
         }
         if (panel) panel.hidden = !this._columnsOpen;
+    }
+
+    // ── Colour palette ──────────────────────────────────────────────────────
+
+    getPalette() {
+        return this.palette;
+    }
+
+    /** Reflect an externally chosen palette (e.g. restored preference). */
+    setPalette(id) {
+        if (!isKnownPalette(id) || id === this.palette) return;
+        this.palette = id;
+        if (this._mounted) this._renderPaletteChips();
+    }
+
+    _togglePalette() {
+        this._paletteOpen = !this._paletteOpen;
+        if (this._paletteOpen && this._columnsOpen) this._toggleColumns();
+        const btn = document.getElementById('chart-palette-btn');
+        const panel = document.getElementById('chart-palette-expand');
+        if (btn) {
+            btn.classList.toggle('is-open', this._paletteOpen);
+            btn.setAttribute('aria-expanded', this._paletteOpen ? 'true' : 'false');
+        }
+        if (panel) panel.hidden = !this._paletteOpen;
+    }
+
+    _themeColors() {
+        try {
+            const colors = this.hooks.getThemeColors ? this.hooks.getThemeColors() : null;
+            return Array.isArray(colors) && colors.length ? colors : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    _dotsHtml(colors) {
+        return colors.map((c) => `<i style="background:${c}"></i>`).join('');
+    }
+
+    _renderPaletteChips() {
+        const theme = this._themeColors();
+        const dots = document.getElementById('chart-palette-dots');
+        if (dots) dots.innerHTML = this._dotsHtml(paletteSwatches(this.palette, theme));
+        const host = document.getElementById('chart-palette-expand');
+        if (!host) return;
+        host.innerHTML = CHART_PALETTES.map((p) => {
+            const active = p.id === this.palette;
+            return `<button type="button" class="chart-palette-chip${active ? ' is-active' : ''}" role="radio"
+                        aria-checked="${active ? 'true' : 'false'}" data-palette="${p.id}" title="${p.label} palette">
+                        <span class="chart-palette-dots" aria-hidden="true">${this._dotsHtml(paletteSwatches(p.id, theme))}</span>
+                        <span>${p.label}</span>
+                    </button>`;
+        }).join('');
+        host.querySelectorAll('.chart-palette-chip').forEach((chip) => {
+            chip.addEventListener('click', () => this._onPaletteChange(chip.dataset.palette));
+        });
+    }
+
+    _onPaletteChange(id) {
+        if (!isKnownPalette(id)) return;
+        this.palette = id;
+        this._renderPaletteChips();
+        if (this.hooks.onPaletteChange) this.hooks.onPaletteChange(id);
     }
 
     _fillSelect(id, cols, selected, filterFn, numericOnly = false, allowEmpty = false) {
@@ -375,6 +481,7 @@ export class ChartOptionsPanel {
     _onToggle(key) {
         if (!(key in this.toggles)) return;
         this.toggles[key] = !this.toggles[key];
+        if (key === 'legend') this.legendUserSet = true;
         const btn = document.querySelector(`.chart-opt-toggle[data-key="${key}"]`);
         if (btn) btn.classList.toggle('is-on', this.toggles[key]);
         if (this.hooks.onQuickToggle) {
@@ -397,6 +504,7 @@ export class ChartOptionsPanel {
 
     resetToggles() {
         this.toggles = { dataLabels: false, legend: true, dataZoom: false, sortDesc: false };
+        this.legendUserSet = false;
         document.querySelectorAll('.chart-opt-toggle').forEach((btn) => {
             const key = btn.dataset.key;
             btn.classList.toggle('is-on', !!this.toggles[key]);

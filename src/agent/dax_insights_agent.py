@@ -382,6 +382,7 @@ class DaxInsightsAgent:
             natural_language_query=question,
             dataset_id=self.source_key,
             rag_context={},
+            source_label=self.display_name,
         )
 
     async def _safe_persist_trace(
@@ -400,7 +401,10 @@ class DaxInsightsAgent:
     ) -> List[Dict[str, Any]]:
         try:
             ctx = await self.history.get_conversation_context(
-                session_id=session_id, user_id=user_id, limit=limit
+                session_id=session_id,
+                user_id=user_id,
+                limit=limit,
+                source_key=self.source_key,
             )
             ctx.reverse()
             return ctx

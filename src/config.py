@@ -117,6 +117,31 @@ class Settings(BaseSettings):
     # Number of previous Q&A turns loaded as short-term conversation memory.
     CONVERSATION_CONTEXT_TURNS: int = 5
 
+    # ── Conversation persistence (restore last conversation on reopen) ──────
+    # Kill switch for capturing per-turn answer/snapshot/chart artifacts and for
+    # the on-open retention prune. Turn logging and LLM context are unaffected.
+    # The lifespan forces this off when migration 022 has not been applied.
+    CONVERSATION_PERSISTENCE_ENABLED: bool = True
+    # All-or-nothing caps for one turn's result snapshot. Above either cap the
+    # turn is stored as `too_large` and restores through a re-run instead.
+    CONVERSATION_SNAPSHOT_MAX_ROWS: int = 2000
+    CONVERSATION_SNAPSHOT_MAX_BYTES: int = 1_048_576
+    # Cap for chart_spec + chart_config persisted from /generate-chart and
+    # /edit-chart. Enforced separately because the chart is written later.
+    CONVERSATION_CHART_MAX_BYTES: int = 524_288
+    # Count-based retention, per user + connection. No time-based expiry.
+    # Conversations beyond KEEP_LAST are deleted (turns, insights, artifacts).
+    CONVERSATION_KEEP_LAST: int = 30
+    # Most recent turns that keep their full snapshot + chart; older turns keep
+    # question/SQL/answer only and restore through a re-run.
+    CONVERSATION_SNAPSHOT_KEEP_LAST_TURNS: int = 100
+    # The prune runs as a detached background task when the user opens the app
+    # (GET /api/conversations/last), throttled per user + connection.
+    CONVERSATION_RETENTION_ON_OPEN: bool = True
+    CONVERSATION_RETENTION_MIN_INTERVAL_SECONDS: int = 600
+    # Turns returned per hydration page.
+    CONVERSATION_MAX_TURNS_HYDRATED: int = 50
+
     # ── Cost governors ──────────────────────────────────────────────────────
     # Max concurrent text-to-SQL queries a single user may run (per replica).
     # Prevents one user from pinning the LLM / exhausting the DB pool. 0 = off.

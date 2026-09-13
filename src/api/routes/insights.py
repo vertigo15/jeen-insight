@@ -6,10 +6,11 @@ import json
 import logging
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from src.api.dependencies import get_history_service, require_user_id, resolve_agent
+from src.api.dependencies import get_history_service, get_principal, resolve_agent
+from src.security.internal_auth import Principal
 from src.api.models import (
     GenerateInsightsRequest,
     GenerateInsightsResponse,
@@ -88,8 +89,11 @@ async def _verify_query_owner(*, query_id, user_id: str, connection: str) -> Non
 
 
 @router.post("/generate-insights", response_model=GenerateInsightsResponse)
-async def generate_insights_endpoint(request: GenerateInsightsRequest):
-    user_id = require_user_id(request.user_id)
+async def generate_insights_endpoint(
+    request: GenerateInsightsRequest,
+    principal: Principal = Depends(get_principal),
+):
+    user_id = principal.user_id
     await _verify_query_owner(
         query_id=request.query_id, user_id=user_id, connection=request.connection
     )
@@ -225,7 +229,10 @@ async def generate_insights_endpoint(request: GenerateInsightsRequest):
 
 
 @router.post("/generate-insights/stream")
-async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
+async def generate_insights_stream_endpoint(
+    request: GenerateInsightsRequest,
+    principal: Principal = Depends(get_principal),
+):
     """Insights over Server-Sent Events.
 
     Two delivery modes share one ``text/event-stream`` contract:
@@ -241,7 +248,7 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
     Both paths terminate with ``done`` (or ``error``); unknown events are safely
     ignored by the client.
     """
-    user_id = require_user_id(request.user_id)
+    user_id = principal.user_id
     await _verify_query_owner(
         query_id=request.query_id, user_id=user_id, connection=request.connection
     )
@@ -414,8 +421,11 @@ async def generate_insights_stream_endpoint(request: GenerateInsightsRequest):
 
 
 @router.post("/generate-profile")
-async def generate_profile_endpoint(request: GenerateProfileRequest):
-    user_id = require_user_id(request.user_id)
+async def generate_profile_endpoint(
+    request: GenerateProfileRequest,
+    principal: Principal = Depends(get_principal),
+):
+    user_id = principal.user_id
     if request.query_id:
         await _verify_query_owner(
             query_id=request.query_id, user_id=user_id, connection=request.connection or ""

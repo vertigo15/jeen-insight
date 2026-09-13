@@ -2985,6 +2985,7 @@ export class SettingsPage {
 
     async _renderAbout() {
         this._content.innerHTML = `
+            <!-- This application was developed by Eldad Hertz -->
             <div class="sp-section-header">
                 <h2 class="sp-section-title">About</h2>
                 <p class="sp-section-desc">Application information and configuration.</p>
