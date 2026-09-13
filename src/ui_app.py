@@ -35,11 +35,17 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_wtf import CSRFProtect
 from flask_wtf.csrf import CSRFError
+from werkzeug.wsgi import ClosingIterator
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+from src.logging_config import (
+    REQUEST_ID_HEADER,
+    bind_request_id,
+    configure_logging,
+    get_request_id,
+    reset_request_id,
 )
+
+configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -125,6 +131,39 @@ limiter = Limiter(
     storage_uri=os.getenv("RATELIMIT_STORAGE_URI", "memory://"),
     default_limits=[],
 )
+
+
+class _RequestIdMiddleware:
+    """Outermost WSGI layer that binds a correlation id for each request.
+
+    A WSGI wrapper (not a ``before_request`` hook) so it runs before CSRF and
+    rate-limiting — whose rejections should still be traceable — and, crucially,
+    stays bound for the whole response including a streamed body: the contextvar
+    is reset from the response iterator's ``close()``, which the WSGI server
+    calls only after the last chunk is sent. Reusing an inbound ``X-Request-ID``
+    (validated in :func:`bind_request_id`) ties the UI and API logs together.
+    """
+
+    def __init__(self, wsgi_app):
+        self._wsgi_app = wsgi_app
+
+    def __call__(self, environ, start_response):
+        token = bind_request_id(environ.get("HTTP_X_REQUEST_ID"))
+        request_id = get_request_id() or ""
+
+        def _start_response(status, headers, exc_info=None):
+            headers = list(headers) + [(REQUEST_ID_HEADER, request_id)]
+            return start_response(status, headers, exc_info)
+
+        try:
+            app_iter = self._wsgi_app(environ, _start_response)
+        except BaseException:
+            reset_request_id(token)
+            raise
+        return ClosingIterator(app_iter, lambda: reset_request_id(token))
+
+
+app.wsgi_app = _RequestIdMiddleware(app.wsgi_app)
 
 
 @app.errorhandler(CSRFError)
@@ -243,16 +282,24 @@ def _session_claims() -> Dict[str, Any]:
 
 
 def _internal_headers() -> Dict[str, str]:
-    """Mint a short-lived, audience-bound internal token for upstream API calls.
+    """Headers for upstream API calls: correlation id + internal auth token.
 
-    Flask is the SOLE issuer; FastAPI verifies this into a Principal and derives
-    all identity/role/group facts from it (never from the request body).
+    Flask is the SOLE issuer of the internal token; FastAPI verifies it into a
+    Principal and derives all identity/role/group facts from it (never from the
+    request body). The correlation id is always forwarded (even pre-login) so a
+    single ``X-Request-ID`` ties the UI and API log lines together.
     """
+    headers: Dict[str, str] = {}
+    request_id = get_request_id()
+    if request_id:
+        headers[REQUEST_ID_HEADER] = request_id
+
     if "user_id" not in session:
-        return {}
+        return headers
     from src.security.internal_auth import issue_internal_token
 
-    return {"Authorization": f"Bearer {issue_internal_token(_session_claims())}"}
+    headers["Authorization"] = f"Bearer {issue_internal_token(_session_claims())}"
+    return headers
 
 
 def _proxy_get(path: str, params: Dict[str, Any] | None = None, timeout: float = 30) -> Any:

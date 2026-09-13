@@ -7,13 +7,11 @@ without colliding on module-level state. Production callers just import
 
 from __future__ import annotations
 
-import logging
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.lifespan import lifespan
-from src.api.middleware import InternalAuthMiddleware
+from src.api.middleware import InternalAuthMiddleware, RequestContextMiddleware
 from src.api.routes import (
     actions as actions_routes,
     autocomplete,
@@ -32,13 +30,15 @@ from src.api.routes import (
     settings as settings_routes,
 )
 from src.config import settings
+from src.logging_config import configure_logging
 
 
 def create_app() -> FastAPI:
     """Build the FastAPI app with all routers and middleware attached."""
-    logging.basicConfig(
-        level=getattr(logging, settings.LOG_LEVEL),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    configure_logging(
+        level=settings.LOG_LEVEL,
+        fmt=settings.LOG_FORMAT,
+        dev_mode=settings.JEEN_DEV_MODE,
     )
 
     app = FastAPI(
@@ -60,8 +60,12 @@ def create_app() -> FastAPI:
     )
 
     # Internal auth boundary: verify the Flask-minted token into a Principal and
-    # default-deny non-exempt routes. Added last so it runs first (outermost).
+    # default-deny non-exempt routes.
     app.add_middleware(InternalAuthMiddleware)
+
+    # Correlation id: added last so it runs first (outermost), binding the
+    # request id before the auth boundary logs anything.
+    app.add_middleware(RequestContextMiddleware)
 
     # Routers — order doesn't matter, but grouping mirrors the file layout.
     app.include_router(health.router)

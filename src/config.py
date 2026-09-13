@@ -1,5 +1,6 @@
 """Configuration module for Jeen Insights."""
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -24,6 +25,9 @@ class Settings(BaseSettings):
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000
     LOG_LEVEL: str = "INFO"
+    # Log output format: "json" (structured, for log aggregators), "console"
+    # (human-readable), or "auto" (console in dev mode, json in production).
+    LOG_FORMAT: str = "auto"
 
     # OpenStreetMap point visualizations are disabled until a tile provider is
     # explicitly configured.  Tile and geocoder credentials stay server-side:
@@ -239,6 +243,33 @@ class Settings(BaseSettings):
         env_file = ".env"
         case_sensitive = True
         extra = "ignore"  # tolerate legacy DATA_SOURCE_* / PGVECTOR_* envs
+
+    @field_validator("LOG_LEVEL")
+    @classmethod
+    def _validate_log_level(cls, v: str) -> str:
+        """Normalise to upper case and fail fast on an unknown level name.
+
+        Previously ``getattr(logging, LOG_LEVEL)`` crashed at startup on a typo
+        (e.g. ``info``); this turns that into a clear configuration error.
+        """
+        allowed = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
+        up = str(v).strip().upper()
+        if up not in allowed:
+            raise ValueError(
+                f"LOG_LEVEL must be one of {sorted(allowed)}, got {v!r}"
+            )
+        return up
+
+    @field_validator("LOG_FORMAT")
+    @classmethod
+    def _validate_log_format(cls, v: str) -> str:
+        allowed = {"auto", "json", "console"}
+        low = str(v).strip().lower()
+        if low not in allowed:
+            raise ValueError(
+                f"LOG_FORMAT must be one of {sorted(allowed)}, got {v!r}"
+            )
+        return low
 
     @property
     def metadata_connection_string(self) -> str:

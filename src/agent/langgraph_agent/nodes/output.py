@@ -12,7 +12,6 @@ observability_log    Pure-Python sync node.  Emits a structured JSON event so
 from __future__ import annotations
 
 import decimal
-import json
 import logging
 import time
 from decimal import ROUND_HALF_UP
@@ -515,19 +514,27 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
 
 
 def observability_log(state: AgentState) -> Dict[str, Any]:
-    """Emit a structured JSON event at the end of every graph run.
+    """Emit a structured event at the end of every graph run.
 
-    Log line format::
+    The event is logged with its fields as first-class structured extras (folded
+    into the JSON log line by ``JsonLogFormatter``) rather than as a JSON string
+    stuffed inside ``message`` — so a log aggregator can index ``route``,
+    ``event_outcome``, ``total_tokens`` etc. without re-parsing. A compact
+    human-readable summary is kept on the message for console/dev logs, and the
+    ``QUERY_EVENT`` marker is retained so existing ``grep QUERY_EVENT`` runbooks
+    still match.
 
-        QUERY_EVENT {"event": "query_completed", "route": "needs_query", ...}
+    The ``event_category`` / ``event_type`` / ``event_outcome`` classification
+    fields use backend-agnostic string values (they map cleanly onto ECS or
+    OTel ``event.*`` if the log pipeline chooses to).
 
-    Parsing examples::
+    Parsing examples (JSON mode — each line is already a JSON object)::
 
         # Live tail in the container:
         docker logs jeen-insights-api -f | grep QUERY_EVENT
 
         # Parse with jq:
-        docker logs jeen-insights-api | grep QUERY_EVENT | sed 's/.*QUERY_EVENT //' | jq .
+        docker logs jeen-insights-api | grep query_completed | jq 'select(.event=="query_completed")'
     """
     start = state.get("start_time") or time.monotonic()
     elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -536,6 +543,10 @@ def observability_log(state: AgentState) -> Dict[str, Any]:
 
     event = {
         "event": "query_completed",
+        # Event classification (backend-agnostic; maps onto ECS/OTel event.*).
+        "event_category": "database",
+        "event_type": "error" if has_error else "access",
+        "event_outcome": "failure" if has_error else "success",
         "source_key": state.get("source_key"),
         "database_type": state.get("database_type"),
         "route": state.get("route", "?"),
@@ -556,11 +567,14 @@ def observability_log(state: AgentState) -> Dict[str, Any]:
         "nodes": slim_trace(state.get("trace") or []),
     }
 
-    # Human-readable summary + machine-parseable JSON in one line.
-    # Use default=str to handle Decimal and other non-serialisable types
-    # that Postgres occasionally returns (e.g. Decimal('1234.56')).
+    # First-class structured fields via ``extra`` + a compact summary on the
+    # message (so console/dev logs stay readable and ``grep QUERY_EVENT`` works).
     logger.info(
-        "QUERY_EVENT %s",
-        json.dumps(event, default=str),
+        "QUERY_EVENT query_completed route=%s outcome=%s elapsed_ms=%s total_tokens=%s",
+        event["route"],
+        event["event_outcome"],
+        elapsed_ms,
+        event["total_tokens"],
+        extra=event,
     )
     return {}

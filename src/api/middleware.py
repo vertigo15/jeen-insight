@@ -17,6 +17,12 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from src.logging_config import (
+    REQUEST_ID_HEADER,
+    bind_request_id,
+    get_request_id,
+    reset_request_id,
+)
 from src.security.internal_auth import (
     AUDIENCE_API,
     InternalAuthConfigError,
@@ -81,3 +87,30 @@ class InternalAuthMiddleware(BaseHTTPMiddleware):
             )
 
         return await call_next(request)
+
+
+class RequestContextMiddleware(BaseHTTPMiddleware):
+    """Bind a per-request correlation id for the lifetime of the request.
+
+    Reuses an inbound ``X-Request-ID`` (minted by the Flask UI) when present so a
+    single id ties the UI and API log lines together; otherwise it generates
+    one. The id is echoed back on the response and stamped onto every log record
+    via :class:`src.logging_config.RequestIdFilter`.
+
+    Registered as the outermost middleware so the id is already bound before the
+    auth boundary runs and its own log lines carry it too.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        incoming = request.headers.get(REQUEST_ID_HEADER)
+        token = bind_request_id(incoming)
+        request_id = get_request_id() or ""
+        # Expose on request.state so exception handlers / dependencies can read
+        # it even after the contextvar is reset below.
+        request.state.request_id = request_id
+        try:
+            response = await call_next(request)
+        finally:
+            reset_request_id(token)
+        response.headers[REQUEST_ID_HEADER] = request_id
+        return response
