@@ -1093,6 +1093,71 @@ def delete_saved_analysis(saved_id: str):
 
 
 # ----------------------------------------------------------------------
+# Conversations (restore last conversation / browse previous ones)
+# ----------------------------------------------------------------------
+# Identity travels in the signed internal token minted by _internal_headers();
+# FastAPI derives the user from it and ignores any user_id in the request.
+@app.route("/api/conversations/last", methods=["GET"])
+def get_last_conversation():
+    connection = request.args.get("connection")
+    if not connection:
+        return jsonify(None)
+    params: Dict[str, Any] = {"connection": connection}
+    if request.args.get("limit"):
+        params["limit"] = request.args.get("limit")
+    return _proxy_get("/api/conversations/last", params=params, timeout=30)
+
+
+@app.route("/api/conversations", methods=["GET"])
+def list_conversations():
+    params: Dict[str, Any] = {}
+    for key in ("connection", "all", "limit", "before"):
+        value = request.args.get(key)
+        if value:
+            params[key] = value
+    if not params.get("connection") and params.get("all") not in ("true", "1"):
+        return jsonify({"items": [], "next_cursor": None})
+    return _proxy_get("/api/conversations", params=params, timeout=30)
+
+
+@app.route("/api/conversations/<conversation_id>", methods=["GET"])
+def get_conversation_detail(conversation_id: str):
+    params: Dict[str, Any] = {}
+    for key in ("limit", "before"):
+        value = request.args.get(key)
+        if value:
+            params[key] = value
+    return _proxy_get(f"/api/conversations/{conversation_id}", params=params, timeout=30)
+
+
+@app.route("/api/conversations/<conversation_id>/turns/<turn_id>/artifact", methods=["GET"])
+def get_conversation_turn_artifact(conversation_id: str, turn_id: str):
+    return _proxy_get(
+        f"/api/conversations/{conversation_id}/turns/{turn_id}/artifact", timeout=60
+    )
+
+
+@app.route("/api/conversations/<conversation_id>/turns/<turn_id>/rerun", methods=["POST"])
+def rerun_conversation_turn(conversation_id: str, turn_id: str):
+    return _proxy_post(
+        f"/api/conversations/{conversation_id}/turns/{turn_id}/rerun", {}, timeout=180
+    )
+
+
+@app.route("/api/conversations/<conversation_id>", methods=["PATCH"])
+def rename_conversation(conversation_id: str):
+    data = request.get_json() or {}
+    return _proxy_patch(
+        f"/api/conversations/{conversation_id}", {"title": data.get("title") or ""}, timeout=30
+    )
+
+
+@app.route("/api/conversations/<conversation_id>", methods=["DELETE"])
+def delete_conversation(conversation_id: str):
+    return _proxy_delete(f"/api/conversations/{conversation_id}", timeout=30)
+
+
+# ----------------------------------------------------------------------
 # Insights / charts / profile
 # ----------------------------------------------------------------------
 @app.route("/api/generate-chart", methods=["POST"])

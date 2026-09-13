@@ -95,8 +95,16 @@ docker exec jeen-insights-api python scripts/run_insights_migrations.py
 ```
 
 This creates `insights_conversation_sessions`, `insights_query_insights`,
-`insights_pinned_questions`, plus helpers and views. All migrations are
-idempotent and only add **new** tables — they never touch existing ones.
+`insights_pinned_questions`, plus helpers and views. Later revisions also
+alter existing Insights-owned tables (e.g. `022_conversations_and_turn_artifacts`
+adds a parent foreign key to `insights_conversation_sessions` and re-keys legacy
+cross-connection session ids). The runner records each revision once and applies
+it in a transaction; it never touches the shared `metadata_*` tables.
+
+Run the migrations **before** rolling out a build that depends on them. If
+migration 022 is missing, the API starts anyway and logs
+`conversation persistence is DISABLED for this process`; questions still work,
+but conversations are not restored on reload until the migration is applied.
 
 ### 4. Open the UI
 
@@ -117,11 +125,49 @@ Pick a connection from the dropdown in the top bar and ask a question.
 | POST   | `/api/generate-insights`                          | Body must include `connection` + `dataset` + `question`.|
 | POST   | `/api/generate-chart` / `/api/enhance-chart`      | Same: `connection` is required.                        |
 | POST   | `/api/feedback`                                   | Records `thumbs_up` / `thumbs_down` / `edited`.        |
-| GET    | `/api/conversation/{session_id}`                  | Conversation history with insights.                    |
+| GET    | `/api/conversation/{session_id}`                  | Legacy raw dump of one conversation (superseded below).|
+| GET    | `/api/conversations/last?connection=`             | Hydration payload for the user's newest conversation on a connection; spawns the retention prune. |
+| GET    | `/api/conversations?connection=` or `?all=true`   | Cursor-paged list of the user's conversations (`all` includes removed connections). |
+| GET    | `/api/conversations/{id}`                         | Header + paged turn metadata (`before=<sequence_number>`), no rows. |
+| GET    | `/api/conversations/{id}/turns/{turn_id}/artifact`| Result snapshot + chart baseline for one turn.         |
+| POST   | `/api/conversations/{id}/turns/{turn_id}/rerun`   | Re-execute the stored SQL/DAX (no LLM); refreshes the snapshot. |
+| PATCH / DELETE | `/api/conversations/{id}`                 | Rename / hard-delete (cascades to turns, insights, artifacts). |
 | GET/POST | `/api/user/recent-questions` / `…/pin-question` | Per-(user, connection) history.                        |
 
 Every endpoint that operates on a dataset requires the `connection` parameter
 (the `source_key` from `metadata_sources`). Requests without it return 400.
+
+Identity for every user-scoped endpoint comes from the internal token minted by
+the Flask UI (`request.state.principal`); `user_id` fields in bodies or query
+strings are accepted for backward compatibility but never trusted.
+
+### Conversation persistence
+
+When the UI opens (or the connection is switched) it restores the user's last
+conversation on that connection: every turn's question, answer, SQL, inline
+analytics and, for table answers, the result rows and the server-built chart.
+The **History** tab lists previous conversations (open / rename / delete); a
+conversation whose connection was removed opens read-only.
+
+Storage is bounded per user + connection by count, never by age:
+
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `CONVERSATION_PERSISTENCE_ENABLED` | `true` | Kill switch for capture + prune (forced off if migration 022 is missing). |
+| `CONVERSATION_SNAPSHOT_MAX_ROWS` | `2000` | Rows kept per turn; above it the turn restores through a re-run ("Load data"). |
+| `CONVERSATION_SNAPSHOT_MAX_BYTES` | `1048576` | Byte cap for one turn's rows envelope. |
+| `CONVERSATION_CHART_MAX_BYTES` | `524288` | Byte cap for the persisted chart spec + config. |
+| `CONVERSATION_KEEP_LAST` | `30` | Conversations kept per user + connection; older ones are deleted. |
+| `CONVERSATION_SNAPSHOT_KEEP_LAST_TURNS` | `100` | Most recent turns that keep rows + chart; older turns keep text only. |
+| `CONVERSATION_RETENTION_ON_OPEN` | `true` | Run the prune as a background task when the app is opened. |
+| `CONVERSATION_RETENTION_MIN_INTERVAL_SECONDS` | `600` | Throttle per user + connection (in-memory debounce + DB claim row, so it holds across replicas). |
+| `CONVERSATION_MAX_TURNS_HYDRATED` | `50` | Turns per hydration page. |
+
+Worst case at the defaults is about 150 MiB of JSON and 200k stored rows per
+user + connection. Only an explicit allowlist of the answer payload is stored
+(never prompts or schema context). Not in this version, tracked as follow-ups:
+encryption at rest for snapshots, LLM-generated titles, persisting client-side
+chart quick-toggles and table formatting.
 
 ## What the agent does on every question
 

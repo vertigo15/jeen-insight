@@ -7,7 +7,12 @@
  * wipe it — the toggle state has to be synced FROM the edited config first.
  */
 import assert from 'node:assert/strict';
-import { applyQuickOptions, detectToggles } from '../../src/static/chart-feature/utils/chartQuickOptions.js';
+import {
+    applyQuickOptions,
+    countLegendEntries,
+    defaultLegendVisible,
+    detectToggles,
+} from '../../src/static/chart-feature/utils/chartQuickOptions.js';
 
 const DEFAULT_TOGGLES = { dataLabels: false, legend: true, dataZoom: false, sortDesc: false };
 
@@ -70,6 +75,39 @@ function labelledBarConfig() {
 {
     assert.deepEqual(detectToggles(null), {});
     assert.deepEqual(detectToggles({}), { dataLabels: false, legend: true, dataZoom: false });
+}
+
+// ── Legend default: hidden when it would only repeat the axis measure ──────
+{
+    // One bar series (the screenshot case): the measure is already the y-axis title.
+    const single = { series: [{ type: 'bar', name: 'total_units_sold', data: [1, 2] }], yAxis: { type: 'value' } };
+    assert.equal(countLegendEntries(single), 1);
+    assert.equal(defaultLegendVisible(single), false);
+
+    // Several series: the legend is what tells them apart.
+    const multi = { series: [{ type: 'bar', name: 'a', data: [1] }, { type: 'line', name: 'b', data: [2] }] };
+    assert.equal(countLegendEntries(multi), 2);
+    assert.equal(defaultLegendVisible(multi), true);
+
+    // Explicit legend.data wins over the series count.
+    const explicit = { legend: { data: ['x', 'y', 'z'] }, series: [{ type: 'bar' }] };
+    assert.equal(countLegendEntries(explicit), 3);
+
+    // A lone pie lists its slices in the legend.
+    const pie = { series: [{ type: 'pie', data: [{ name: 'a', value: 1 }, { name: 'b', value: 2 }] }] };
+    assert.equal(countLegendEntries(pie), 2);
+    assert.equal(defaultLegendVisible(pie), true);
+    const onePie = { series: [{ type: 'pie', data: [{ name: 'a', value: 1 }] }] };
+    assert.equal(defaultLegendVisible(onePie), false);
+
+    // Single (non-array) series and garbage are handled.
+    assert.equal(countLegendEntries({ series: { type: 'bar' } }), 1);
+    assert.equal(countLegendEntries(null), 0);
+    assert.equal(countLegendEntries({}), 0);
+
+    // Applying the auto default through the toggle layer hides the legend.
+    const out = applyQuickOptions(single, { legend: defaultLegendVisible(single) });
+    assert.equal(out.legend.show, false);
 }
 
 console.log('chart_quick_options JS tests passed');

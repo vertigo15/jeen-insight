@@ -153,6 +153,11 @@ async function loadConnections() {
         _updateMcpBadge(active);
         // Onboarding signal: a connection resolved on load.
         document.dispatchEvent(new CustomEvent('jeen:onboarding:pick_connection'));
+        // Workspace signal: the active connection is known, so the last
+        // conversation for it can be restored.
+        document.dispatchEvent(new CustomEvent('jeen:connection-resolved', {
+            detail: { source_key: active, reason: 'load' },
+        }));
         // Pill stays in 'connecting' until tables come back — set in loadTables.
     } catch (e) {
         console.error('Failed to load connections', e);
@@ -177,6 +182,8 @@ function onConnectionChange(sourceKey) {
     currentSessionId = null;
     // Chat thread is tied to the (now-reset) session — clear it and cancel any
     // in-flight chat/chart work so turns from different connections never mix.
+    // The workspace then restores the last conversation for the new
+    // connection on the 'jeen:connection-resolved' event below.
     if (window.ChatController && typeof window.ChatController.reset === 'function') {
         window.ChatController.reset();
     }
@@ -205,6 +212,9 @@ function onConnectionChange(sourceKey) {
     // Auto-load tables for the new connection.
     loadTables();
     if (typeof displayHistory === 'function') displayHistory();
+    document.dispatchEvent(new CustomEvent('jeen:connection-resolved', {
+        detail: { source_key: newConnection, reason: 'switch' },
+    }));
     // Fire-and-forget: pre-warm the metadata cache on the API server so the
     // first query after a connection switch doesn't pay the fetch penalty.
     fetch(`/api/connections/${encodeURIComponent(newConnection)}/warm-cache`, {
@@ -3823,10 +3833,10 @@ function _toggleTraceEvent(el) {
 window._toggleTraceEvent = _toggleTraceEvent;
 
 // Chart Feature Initialization
-async function initializeChartFeature(results) {
+async function initializeChartFeature(results, options = {}) {
     // Dynamically import ChartManager if not already loaded
     if (!ChartManager) {
-        const module = await import('./chart-feature/chartManager.js?v=106');
+        const module = await import('./chart-feature/chartManager.js?v=109');
         ChartManager = module.ChartManager;
     }
 
@@ -3839,7 +3849,7 @@ async function initializeChartFeature(results) {
     chartManager = new ChartManager({
         workspaceMode: Boolean(document.getElementById('v3-shell')),
     });
-    await chartManager.initialize(results);
+    await chartManager.initialize(results, options);
 }
 
 // Insights Feature
@@ -4753,6 +4763,30 @@ window.askQuestion = askQuestion;
 window.JeenLegacyBridge = {
     applyResult(data) {
         displayResults({ ...(data || {}), _inlineAnalytics: true });
+    },
+    /**
+     * Render a turn whose rows (and optionally chart baseline) are already
+     * known — a conversation restored from the server, or a previously seen
+     * turn re-selected in the thread. Unlike applyResult this never asks the
+     * LLM for a chart when a stored config exists, and it resolves only once
+     * the chart machinery is ready, so callers can await it instead of
+     * guessing with a timer.
+     */
+    async applyRestoredResult(data, chartState) {
+        _isRestoringSavedAnalysis = true;
+        try {
+            displayResults({ ...(data || {}), _inlineAnalytics: true });
+        } finally {
+            _isRestoringSavedAnalysis = false;
+        }
+        const results = data && data.results;
+        if (!results || !results.columns) return;
+        const restore = chartState && chartState.chart_config ? chartState : null;
+        try {
+            await initializeChartFeature(results, restore ? { restore } : {});
+        } catch (err) {
+            console.warn('[Workspace] chart restore failed', err);
+        }
     },
     getState() {
         return {

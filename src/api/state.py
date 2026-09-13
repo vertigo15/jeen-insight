@@ -43,6 +43,9 @@ mcp_cache_service: Optional[McpCacheService] = None
 mcp_catalog_client: Optional[McpCatalogClient] = None
 # Background task that warms the model-health cache on startup.
 health_warmup_task: "Optional[asyncio.Task]" = None
+# Delegated Power BI token-provider factory (built in the lifespan). Shared by
+# the DAX agent registry and the conversation rerun service.
+powerbi_token_provider_factory: Optional[object] = None
 
 # ── Connector / integration platform services ──────────────────────────────
 identity_service: Optional[object] = None

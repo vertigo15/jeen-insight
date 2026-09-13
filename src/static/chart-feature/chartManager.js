@@ -8,16 +8,17 @@
 /// <reference path="./types/chart.types.js" />
 
 import { analyzeData } from './utils/dataAnalyzer.js';
-import { makeValueFormatter } from './utils/valueFormat.js?v=73';
+import { collectNumericValues, makeLabelFormatter, makeValueFormatter } from './utils/valueFormat.js?v=74';
 import { ChartContainer } from './components/ChartContainer.js?v=78';
 import { ChartToggle } from './components/ChartToggle.js';
 import { ChartTypeSelector } from './components/ChartTypeSelector.js?v=78';
-import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=71';
+import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=73';
 import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v=1';
+import { DEFAULT_PALETTE_ID, applyPalette, getPalette, isKnownPalette } from './utils/chartPalettes.js?v=1';
 import { ChartChat } from './components/ChartChat.js?v=102';
 import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js';
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
-import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=7';
+import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=8';
 import { CHART_TYPE_VALUES } from './chartTypes.js?v=79';
 
 /**
@@ -52,6 +53,9 @@ export class ChartManager {
         this.originalConfig = null;
         // The current ECharts options object actually rendered.
         this.currentEchartsOptions = null;
+        // User-chosen colour palette (a preference, so it follows the user across
+        // charts). 'jeen' means "no override": theme tokens / server palette.
+        this.paletteId = this._readPalettePreference();
 
         // Per-instance query context + view elements. When set (Chat mode)
         // these override the Ask-mode window globals / fixed element IDs so a
@@ -104,10 +108,17 @@ export class ChartManager {
      *
      * @param {import('./types/chart.types.js').QueryResults} results - Query results
      */
-    async initialize(results) {
+    async initialize(results, options = {}) {
         console.log('[ChartManager] Initializing with results');
 
         this.state.currentData = results;
+        // A restored conversation turn arrives with its server-built chart
+        // baseline. Render that instead of asking the LLM again; the pending
+        // restore is consumed by the first chart view change.
+        const restore = options && options.restore;
+        this._pendingRestore = restore && restore.chart_config
+            ? { chart_config: restore.chart_config, chart_spec: restore.chart_spec || null }
+            : null;
         await this._loadChartCapabilities();
 
         // Analyze data (for type detection only)
@@ -172,6 +183,9 @@ export class ChartManager {
                     }
                 },
                 onQuickToggle: () => this._reapplyQuickToggles(),
+                onPaletteChange: (id) => this.setPalette(id),
+                getThemeColors: () => this._themeTokenColors(),
+                initialPalette: this.paletteId,
             });
             if (this.dataAnalysis?.columns) {
                 this.chartOptionsPanel.setColumns(
@@ -290,6 +304,13 @@ export class ChartManager {
             const selectedType = this.chartTypeSelector.getSelectedType();
             this.chartOptionsPanel?.setChartType(selectedType);
             this._syncMapControls(selectedType);
+
+            if (this._pendingRestore) {
+                const restore = this._pendingRestore;
+                this._pendingRestore = null;
+                await this.restoreSavedChart(restore.chart_config, restore.chart_spec);
+                return;
+            }
 
             // Call LLM to generate chart
             this.generateChartWithLLM(selectedType);
@@ -582,6 +603,12 @@ export class ChartManager {
             this.originalChartSpec = this.currentChartSpec;
         }
 
+        // A single-entry legend only repeats the axis title: hide it by default
+        // for this config unless the user has toggled the pill (or the saved
+        // chart already records a choice).
+        if (this.chartOptionsPanel && !this._isOsmMapOption(echartsConfig) && !isMapOption(echartsConfig)) {
+            this.chartOptionsPanel.applyLegendDefault(echartsConfig);
+        }
         let displayConfig = this._withQuickToggles(echartsConfig);
         if (this._isOsmMapOption(displayConfig)) {
             try {
@@ -648,23 +675,88 @@ export class ChartManager {
         }
     }
 
+    // ── Colour palette ────────────────────────────────────────────────────
+
+    _readPalettePreference() {
+        try {
+            const prefs = window.JeenPreferences?.getAll?.();
+            const id = prefs && prefs.chartPalette;
+            return isKnownPalette(id) ? id : DEFAULT_PALETTE_ID;
+        } catch (_) {
+            return DEFAULT_PALETTE_ID;
+        }
+    }
+
+    /** The workspace theme tokens (rose / plum / teal / err), i.e. the "jeen" palette. */
+    _themeTokenColors() {
+        const style = getComputedStyle(document.documentElement);
+        const token = (name, fallback) => style.getPropertyValue(name).trim() || fallback;
+        return [
+            token('--rose', '#8878c4'),
+            token('--plum', '#7a5ea8'),
+            token('--teal', '#4bb9c9'),
+            token('--err', '#d4574a'),
+        ];
+    }
+
+    /** Colours to draw with, or null when the server/theme default should stand. */
+    _paletteColors() {
+        const palette = getPalette(this.paletteId);
+        if (palette.colors) return palette.colors;
+        return this.workspaceMode ? this._themeTokenColors() : null;
+    }
+
+    _withPalette(option) {
+        if (!option || this._isOsmMapOption(option) || isMapOption(option)) return option;
+        const palette = getPalette(this.paletteId);
+        if (!palette.colors) return option; // default: leave theme/server colours alone
+        return applyPalette(option, palette.colors);
+    }
+
+    /**
+     * Switch the palette, remember it as a preference and recolour the current
+     * chart in place (no server round-trip, chat edits are preserved).
+     */
+    setPalette(id) {
+        if (!isKnownPalette(id) || id === this.paletteId) return;
+        this.paletteId = id;
+        try { window.JeenPreferences?.setChartPalette?.(id); } catch (_) { /* preference is best-effort */ }
+        this.chartOptionsPanel?.setPalette(id);
+        const current = this.currentEchartsOptions;
+        if (!current || !this.chartContainer || this._isOsmMapOption(current) || isMapOption(current)) return;
+        const displayConfig = this._withWorkspaceTheme(this._withPalette(current));
+        this._renderDisplayConfig(displayConfig, 'Failed to apply palette');
+    }
+
+    /** Render an already-prepared option and record it as the current state. */
+    _renderDisplayConfig(displayConfig, errorLabel) {
+        const chartConfig = {
+            type: this._optionChartType(displayConfig),
+            options: displayConfig,
+            isEnhanced: true,
+        };
+        try {
+            this.chartContainer.render(chartConfig);
+            this.currentEchartsOptions = displayConfig;
+            this.state.currentConfig = chartConfig;
+        } catch (error) {
+            console.error(`[ChartManager] ${errorLabel}:`, error);
+        }
+    }
+
     _withWorkspaceTheme(option) {
         if (!this.workspaceMode || !option || typeof option !== 'object') return option;
         let themed;
         try { themed = JSON.parse(JSON.stringify(option)); } catch (_) { themed = { ...option }; }
         const style = getComputedStyle(document.documentElement);
         const token = (name, fallback) => style.getPropertyValue(name).trim() || fallback;
-        const colors = [
-            token('--rose', '#8878c4'),
-            token('--plum', '#7a5ea8'),
-            token('--teal', '#4bb9c9'),
-            token('--err', '#d4574a'),
-        ];
+        // The chosen palette (or the theme tokens for the default) drives both
+        // the option palette and the per-series colours below.
+        const colors = this._paletteColors() || this._themeTokenColors();
         const faint = token('--faint', '#b8b8bf');
         const muted = token('--muted', '#98989f');
         const border = token('--border', '#e9e9ec');
         themed.backgroundColor = 'transparent';
-        themed.color = colors;
         themed.textStyle = {
             ...(themed.textStyle || {}),
             color: muted,
@@ -685,11 +777,9 @@ export class ChartManager {
                 axis.splitLine = { ...(axis.splitLine || {}), lineStyle: { ...(axis.splitLine?.lineStyle || {}), color: border } };
             });
         });
-        (Array.isArray(themed.series) ? themed.series : themed.series ? [themed.series] : []).forEach((series, index) => {
-            series.itemStyle = { ...(series.itemStyle || {}) };
-            if (!series.itemStyle.color) series.itemStyle.color = colors[index % colors.length];
-        });
-        return themed;
+        // Colours: pin one per single-colour series, let pie-like series take
+        // slices from option.color, leave map/heatmap/gauge alone.
+        return applyPalette(themed, colors);
     }
 
     _refreshWorkspaceTheme() {
@@ -697,13 +787,7 @@ export class ChartManager {
         const base = this.originalConfig || this.currentEchartsOptions;
         if (this._isOsmMapOption(base)) return;
         const displayConfig = this._withWorkspaceTheme(this._withQuickToggles(base));
-        this.currentEchartsOptions = displayConfig;
-        this.state.currentConfig = {
-            type: this._optionChartType(displayConfig),
-            options: displayConfig,
-            isEnhanced: true,
-        };
-        this.chartContainer.render(this.state.currentConfig);
+        this._renderDisplayConfig(displayConfig, 'Failed to refresh workspace theme');
     }
 
     getSaveState() {
@@ -718,6 +802,13 @@ export class ChartManager {
         this.currentChartSpec = chartSpec || null;
         if (this.chartOptionsPanel && chartSpec) {
             try { this.chartOptionsPanel.syncFromSpec(chartSpec); } catch (_) {}
+        }
+        if (chartSpec && chartSpec.chart_type) {
+            try {
+                this.chartTypeSelector?.setRecommendation?.(chartSpec.chart_type);
+                this.chartOptionsPanel?.setChartType?.(chartSpec.chart_type);
+                this._syncMapControls?.(chartSpec.chart_type);
+            } catch (_) { /* selector state is cosmetic */ }
         }
         await this.renderChart(echartsConfig);
         if (this.chartToggle && typeof this.chartToggle.showChartView === 'function') {
@@ -789,7 +880,7 @@ export class ChartManager {
         if (this.chartOptionsPanel) {
             this.chartOptionsPanel.syncTogglesFromConfig(withDerived);
         }
-        const displayConfig = this._withQuickToggles(withDerived);
+        const displayConfig = this._withWorkspaceTheme(this._withQuickToggles(withDerived));
 
         const chartConfig = {
             type: this._optionChartType(displayConfig),
@@ -849,18 +940,8 @@ export class ChartManager {
             }
             return;
         }
-        const chartConfig = {
-            type: this._optionChartType(baseline),
-            options: this._withQuickToggles(baseline),
-            isEnhanced: true,
-        };
-        try {
-            this.chartContainer.render(chartConfig);
-            this.currentEchartsOptions = chartConfig.options;
-            this.state.currentConfig = chartConfig;
-        } catch (error) {
-            console.error('[ChartManager] Failed to reset chart:', error);
-        }
+        const displayConfig = this._withWorkspaceTheme(this._withQuickToggles(baseline));
+        this._renderDisplayConfig(displayConfig, 'Failed to reset chart');
     }
 
 
@@ -1277,7 +1358,8 @@ export class ChartManager {
         if (!isMapOption(out)) {
             out = this._suppressCanvasTitle(out);
         }
-        return out;
+        // The user's palette rides the same pipeline so it survives every path.
+        return this._withPalette(out);
     }
 
     /**
@@ -1506,16 +1588,22 @@ export class ChartManager {
         series.forEach((s, i) => {
             if (!s || typeof s !== 'object') { seriesFmts[i] = primaryFmt; return; }
             let f = primaryFmt;
+            let meta = primaryMeta;
             if (s.jeenFormat) {
-                f = makeValueFormatter(s.jeenFormat);
+                meta = s.jeenFormat;
+                f = makeValueFormatter(meta);
                 perSeriesDiff = true;
                 delete s.jeenFormat;
             }
             seriesFmts[i] = f;
-            if ((s.type === 'bar' || s.type === 'line')
+            if ((s.type === 'bar' || s.type === 'line' || s.type === 'scatter')
                 && !(s.label && typeof s.label.formatter === 'string')) {
+                // On-chart labels use one shared unit per series (all-K or all
+                // full numbers with thousands separators), unlike the axis,
+                // which may abbreviate freely.
+                const labelFmt = makeLabelFormatter(meta, collectNumericValues(s.data));
                 s.label = (s.label && typeof s.label === 'object') ? s.label : {};
-                s.label.formatter = (p) => f(pickValue(p));
+                s.label.formatter = (p) => labelFmt(pickValue(p));
                 if (s.label.fontSize == null) s.label.fontSize = 11;
                 // Drop labels that would collide instead of overprinting them.
                 if (!s.labelLayout) s.labelLayout = { hideOverlap: true };
@@ -1573,19 +1661,10 @@ export class ChartManager {
         } catch (_) {
             baseline = this.originalConfig;
         }
-        const displayConfig = this._withQuickToggles(baseline);
-        const chartConfig = {
-            type: this._optionChartType(displayConfig),
-            options: displayConfig,
-            isEnhanced: true,
-        };
-        try {
-            this.chartContainer.render(chartConfig);
-            this.currentEchartsOptions = displayConfig;
-            this.state.currentConfig = chartConfig;
-        } catch (error) {
-            console.error('[ChartManager] Failed to apply quick toggles:', error);
-        }
+        // Same pipeline as the initial render (toggles -> palette -> workspace
+        // theme) so a toggle never drops the theme or the chosen colours.
+        const displayConfig = this._withWorkspaceTheme(this._withQuickToggles(baseline));
+        this._renderDisplayConfig(displayConfig, 'Failed to apply quick toggles');
     }
 
     simpleHash(str) {

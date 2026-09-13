@@ -88,15 +88,17 @@ def test_map_edit_rebuilds_only_from_validated_spec_and_view_commands(monkeypatc
     async def _resolved(*_args, **_kwargs):
         return {}
 
-    monkeypatch.setattr(charts, "require_user_id", lambda _user_id: "user-a")
     monkeypatch.setattr(charts, "_verify_query_owner", _no_op)
     monkeypatch.setattr(charts.result_cache, "get", lambda **_kwargs: dataset)
     monkeypatch.setattr(charts, "_load_geo_hints", _empty_hints)
     monkeypatch.setattr(charts, "resolve_osm_locations", _resolved)
     monkeypatch.setattr(charts, "osm_maps_enabled", lambda: True)
 
+    # Identity is now injected by the route from the verified Principal.
     response = asyncio.run(
-        charts._edit_osm_map_chart(request, request.instruction, SimpleNamespace(llm=_Llm()))
+        charts._edit_osm_map_chart(
+            request, request.instruction, SimpleNamespace(llm=_Llm()), user_id="user-a"
+        )
     )
 
     assert response.out_of_scope is False

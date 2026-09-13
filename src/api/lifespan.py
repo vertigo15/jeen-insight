@@ -7,7 +7,6 @@ Routes never instantiate services themselves; they read from `src.api.state`
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Optional
@@ -21,7 +20,7 @@ from src.agent.onboarding import OnboardingService
 from src.agent.llm_service import LangChainLlmService
 from src.agent.prompt_cache import PromptCache
 from src.agent.user_resolver import SimpleUserResolver
-from src.api import state
+from src.api import background, state
 from src.config import settings
 from src.connections import ConnectionService
 from src.metadata import (
@@ -154,6 +153,41 @@ async def _ensure_schema(conn) -> None:
     # NOTE: insights_catalog_config was archived in migration 007. The catalog
     # source is now a single global app_settings.catalog_source value and the
     # cache TTL lives on the active MCP server, so no table is bootstrapped here.
+
+
+async def _probe_conversation_persistence(conn, history_service: Any) -> None:
+    """Enable per-turn artifact capture only when migration 022 is applied.
+
+    The migration runner is a manual step (see README). If the conversation
+    tables are missing, the API must keep answering questions without the
+    restore feature instead of failing on every turn, so the kill switch is
+    forced off for this process and a warning is logged.
+    """
+    try:
+        present = bool(await conn.fetchval(
+            "SELECT to_regclass('insights_conversations') IS NOT NULL "
+            "AND to_regclass('insights_turn_artifacts') IS NOT NULL "
+            "AND to_regclass('insights_conversation_prune_state') IS NOT NULL"
+        ))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("startup: conversation schema probe failed: %s", exc)
+        present = False
+    if not present:
+        logger.warning(
+            "startup: migration 022_conversations_and_turn_artifacts is not applied; "
+            "conversation persistence is DISABLED for this process and turn logging "
+            "uses the pre-022 path. Run `python scripts/run_insights_migrations.py` "
+            "to enable it."
+        )
+    # The schema flag drives which SQL the history service runs (the parent FK
+    # makes the conversation row mandatory once 022 exists); the kill switch
+    # only gates artifact capture and retention on top of that.
+    history_service.conversation_schema_ready = present
+    enabled = bool(settings.CONVERSATION_PERSISTENCE_ENABLED) and present
+    history_service.persistence_enabled = enabled
+    logger.info(
+        "startup: conversation persistence %s", "enabled" if enabled else "disabled"
+    )
 
 
 async def _warm_caches(
@@ -298,6 +332,7 @@ async def lifespan(_app: FastAPI):
     async with pool.acquire() as conn:
         await _ensure_schema(conn)
         await _seed_prompts(conn)
+        await _probe_conversation_persistence(conn, state.history_service)
 
     # ── Build LLM service from DB credentials ─────────────────────────────────
     async with pool.acquire() as conn:
@@ -363,7 +398,9 @@ async def lifespan(_app: FastAPI):
         except Exception as exc:  # noqa: BLE001
             logger.warning("startup: model health warm-up failed: %s", exc)
 
-    state.health_warmup_task = asyncio.create_task(_warm_model_health())
+    state.health_warmup_task = background.spawn(
+        _warm_model_health(), name="model_health_warmup"
+    )
 
     # ── Prompt cache (starts empty; fills lazily on first use) ───────────────
     state.prompt_cache = PromptCache(pool, llm_service)
@@ -386,6 +423,13 @@ async def lifespan(_app: FastAPI):
     # reaching back into this module for them.
     from src.connectors.powerbi_token import make_provider_factory
 
+    # Shared with the conversation rerun service, which re-executes stored
+    # DAX under the caller's delegated grant without going through the graph.
+    state.powerbi_token_provider_factory = make_provider_factory(
+        identity_service=state.identity_service,
+        registry_service=state.registry_service,
+        grant_service=state.grant_service,
+    )
     state.dax_agent_registry = DaxAgentRegistry(
         llm_service=llm_service,
         router_llm_service=router_llm_service,
@@ -394,11 +438,7 @@ async def lifespan(_app: FastAPI):
         connection_service=state.connection_service,
         history_service=state.history_service,
         user_resolver=_user_resolver,
-        token_provider_factory=make_provider_factory(
-            identity_service=state.identity_service,
-            registry_service=state.registry_service,
-            grant_service=state.grant_service,
-        ),
+        token_provider_factory=state.powerbi_token_provider_factory,
     )
 
     # ── Build LangGraph insights eval subgraph ────────────────────────────
@@ -445,6 +485,10 @@ async def lifespan(_app: FastAPI):
         if tile_client is not None:
             await tile_client.aclose()
             _app.state.map_tile_client = None
+        # Drain detached work (retention prunes, health warm-up) before the
+        # pool goes away so no task is left holding a connection mid-flight.
+        await background.shutdown()
+        state.health_warmup_task = None
         if state.agent_registry:
             await state.agent_registry.close()
         if state.dax_agent_registry:
@@ -453,6 +497,7 @@ async def lifespan(_app: FastAPI):
         # Reset handles so a hot-reload cycle doesn't leave stale references.
         state.agent_registry       = None
         state.dax_agent_registry   = None
+        state.powerbi_token_provider_factory = None
         state.metadata_loader       = None
         state.connection_service    = None
         state.history_service       = None

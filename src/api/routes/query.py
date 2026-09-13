@@ -60,9 +60,15 @@ async def _prepare_query(
     # body — so a durable result snapshot can never be owned by a spoofed user.
     user_id = principal.user_id
     if request.session_id:
+        # A supplied session_id must name a conversation this user owns ON THIS
+        # connection. Unknown ids are refused (the server hands ids out; a
+        # client never invents them), and a conversation from connection A can
+        # never be continued against connection B.
         history = get_history_service()
-        if not await history.session_belongs_to_user(
-            session_id=request.session_id, user_id=user_id
+        if not await history.conversation_belongs_to_user(
+            session_id=request.session_id,
+            user_id=user_id,
+            source_key=request.connection,
         ):
             raise HTTPException(status_code=404, detail="Session not found for this user")
     agent = await resolve_agent(request.connection)
