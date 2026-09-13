@@ -128,7 +128,7 @@ def test_workspace_structure_empty_and_responsive(driver):
     )
     assert metrics == {"rail": 60, "topbar": 60, "panel": 380, "dock": 42}
     assert driver.find_element(By.ID, "v3-placeholder").is_displayed()
-    assert not driver.find_element(By.ID, "save-analysis-btn").is_enabled()
+    assert not driver.find_elements(By.ID, "save-analysis-btn")
     _shot(driver, "01_empty_light.png")
 
     driver.execute_script("document.documentElement.setAttribute('data-theme','dark')")

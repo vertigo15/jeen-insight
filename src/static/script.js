@@ -576,7 +576,6 @@ function displayResults(data) {
     const resultsDisplay = document.getElementById('results-display');
     const exportBtn = document.getElementById('export-btn');
     const copyResultsBtn = document.getElementById('copy-results-btn');
-    const saveAnalysisBtn = document.getElementById('save-analysis-btn');
     const rerunFreshBtn = document.getElementById('rerun-fresh-btn');
     const sendResultBtn = document.getElementById('send-result-btn');
 
@@ -598,7 +597,6 @@ function displayResults(data) {
         }
         exportBtn.style.display = 'none';
         copyResultsBtn.style.display = 'none';
-        if (saveAnalysisBtn) saveAnalysisBtn.style.display = 'none';
         if (rerunFreshBtn) rerunFreshBtn.style.display = 'none';
         if (sendResultBtn) sendResultBtn.style.display = 'none';
         describeBtn.style.display = 'none';
@@ -613,7 +611,6 @@ function displayResults(data) {
         showResultsToolbar(true);
         exportBtn.style.display = 'inline-block';
         copyResultsBtn.style.display = 'inline-block';
-        if (saveAnalysisBtn) saveAnalysisBtn.style.display = 'inline-block';
         if (rerunFreshBtn) rerunFreshBtn.style.display = _isRestoringSavedAnalysis ? 'inline-block' : 'none';
         if (sendResultBtn) sendResultBtn.style.display = _canSend() ? 'inline-block' : 'none';
         describeBtn.style.display = 'inline-block';
@@ -650,7 +647,6 @@ function displayResults(data) {
         showResultsToolbar(false);
         exportBtn.style.display = 'none';
         copyResultsBtn.style.display = 'none';
-        if (saveAnalysisBtn) saveAnalysisBtn.style.display = 'none';
         if (rerunFreshBtn) rerunFreshBtn.style.display = 'none';
         if (sendResultBtn) sendResultBtn.style.display = 'none';
         describeBtn.style.display = 'none';
@@ -665,7 +661,6 @@ function displayResults(data) {
         showResultsToolbar(false);
         exportBtn.style.display = 'none';
         copyResultsBtn.style.display = 'none';
-        if (saveAnalysisBtn) saveAnalysisBtn.style.display = 'none';
         if (rerunFreshBtn) rerunFreshBtn.style.display = 'none';
         if (sendResultBtn) sendResultBtn.style.display = 'none';
         describeBtn.style.display = 'none';

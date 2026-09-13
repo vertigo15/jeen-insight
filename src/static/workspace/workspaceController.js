@@ -399,7 +399,6 @@
             const actions = [
                 ['#export-btn', 'Export', 'v3-icon-action', ICON.export],
                 ['#copy-results-btn', 'Copy', 'v3-icon-action', ICON.copy],
-                ['#save-analysis-btn', 'Save', '', null],
                 ['#send-result-btn', 'Send', '', null],
             ];
             actions.forEach(([selector, label, className, icon]) => {
@@ -1751,7 +1750,7 @@
         },
 
         _setActionsEnabled(enabled) {
-            ['export-btn', 'copy-results-btn', 'save-analysis-btn', 'send-result-btn', 'describe-btn'].forEach((id) => {
+            ['export-btn', 'copy-results-btn', 'send-result-btn', 'describe-btn'].forEach((id) => {
                 const button = document.getElementById(id);
                 if (!button) return;
                 button.disabled = !enabled;

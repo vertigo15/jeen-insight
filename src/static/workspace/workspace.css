@@ -465,8 +465,6 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-actions button:hover { background: var(--soft); }
 .v3-actions .v3-icon-action { width: 34px; padding: 0; display: grid; place-items: center; color: var(--muted); }
 .v3-actions #send-result-btn { border-color: var(--text); background: var(--text); color: var(--bg); }
-.v3-actions #save-analysis-btn[data-state="success"] { border-color: var(--ok); color: var(--ok); }
-.v3-actions #save-analysis-btn[data-state="error"] { border-color: var(--err); color: var(--err); }
 .v3-actions button:disabled, .v3-actions button[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
 
 .v3-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 28px 24px; display: flex; flex-direction: column; gap: 18px; }
