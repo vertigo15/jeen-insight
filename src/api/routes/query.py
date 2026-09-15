@@ -108,6 +108,7 @@ async def _execute_query(
             eval_analytics=request.eval_analytics,
             llm_timeout=request.llm_timeout,
             progress_callback=progress_callback,
+            analysis_enabled=request.analysis,
         )
         # Cache the result so charts / describe / insights can reuse the full
         # rows (keyed by user+connection+query_id) instead of the browser

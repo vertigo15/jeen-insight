@@ -54,6 +54,13 @@ from typing import Any, List, Optional
 from langgraph.graph import END, START, StateGraph
 
 from src.agent.conversation_history import ConversationHistoryService
+from src.agent.langgraph_agent.nodes.analysis import (
+    make_analysis_sql,
+    make_analysis_guard,
+    make_analysis_planner,
+    make_analysis_run,
+    on_analysis_branch,
+)
 from src.agent.langgraph_agent.nodes.catalog import make_catalog_lookup, make_prompt_builder
 from src.agent.langgraph_agent.nodes.eval import make_fused_eval_analytics
 from src.agent.langgraph_agent.nodes.execution import make_execute_query, trivial_result_check
@@ -115,6 +122,11 @@ _NODE_META: dict[str, tuple[str, str]] = {
     "response_formatter":      ("📋", "logic"),
     "save_to_memory":          ("💾", "db"),
     "observability_log":       ("🪵", "logic"),
+    # ML skills branch
+    "analysis_planner":        ("🧪", "llm"),
+    "analysis_guard":          ("🚧", "db"),
+    "analysis_sql":            ("🔧", "logic"),
+    "analysis_run":            ("🧮", "ml"),
 }
 
 
@@ -220,6 +232,13 @@ def build_graph(
     filter_match_threshold: float = 78.0,
     filter_lookup_timeout_ms: int = 5000,
     filter_cache_ttl_seconds: int = 900,
+    ml_skills_enabled: bool = False,
+    analysis_store: Any = None,
+    analysis_runner_provider: Optional[Any] = None,
+    analysis_limiter: Optional[Any] = None,
+    analysis_audit: Optional[Any] = None,
+    analysis_max_series_rows: int = 1500,
+    analysis_max_entity_rows: int = 50_000,
 ) -> Any:
     """Build and compile the LangGraph text-to-SQL agent.
 
@@ -250,6 +269,11 @@ def build_graph(
         When True, DLP patterns are checked before executing any SQL.
     sqlglot_validation_enabled:
         When True, SQL is parsed and table names are checked before execution.
+    ml_skills_enabled:
+        Enables the ``needs_analysis`` route and the analysis branch
+        (planner → guard → sql → run). ``analysis_store`` persists proposals
+        and consent; ``analysis_runner_provider`` returns the configured
+        ``AnalysisRunner`` (None → skills disabled at run time).
 
     Returns
     -------
@@ -264,7 +288,7 @@ def build_graph(
 
     n("memory_shrink_check",     make_memory_shrink_check(max_history_tokens))
     n("memory_summarizer",       make_memory_summarizer(router_llm, prompt_loader))
-    n("fused_router",            make_fused_router(router_llm, prompt_loader))
+    n("fused_router",            make_fused_router(router_llm, prompt_loader, ml_skills_enabled=ml_skills_enabled))
     n("memory_answer_generator", make_memory_answer_generator(router_llm, prompt_loader))
     n("catalog_lookup",          make_catalog_lookup(metadata_loader, require_catalog_for_query))
     n("filter_planner",          make_filter_planner(router_llm, prompt_loader))
@@ -293,8 +317,33 @@ def build_graph(
     n("save_to_memory",          make_save_to_memory(history_service, deployment_name))
     n("observability_log",       observability_log)
 
+    # ── ML skills branch ──────────────────────────────────────────────────
+    # Registered unconditionally so a compiled graph always has the nodes; the
+    # router gate (ml_skills_enabled) decides whether any question reaches them.
+    n("analysis_planner",        make_analysis_planner(router_llm, prompt_loader, analysis_store))
+    n("analysis_guard",          make_analysis_guard(sql_runner, analysis_store, limiter=analysis_limiter,
+                                                     max_entity_rows=analysis_max_entity_rows))
+    n("analysis_sql",            make_analysis_sql(max_series_rows=analysis_max_series_rows,
+                                                   max_entity_rows=analysis_max_entity_rows))
+    n(
+        "analysis_run",
+        make_analysis_run(
+            analysis_runner_provider or (lambda: None),
+            analysis_store,
+            audit=analysis_audit,
+            max_series_rows=analysis_max_series_rows,
+            max_entity_rows=analysis_max_entity_rows,
+        ),
+    )
+
     # ── Edges ─────────────────────────────────────────────────────────────
-    builder.add_edge(START, "memory_shrink_check")
+    # A confirmed analysis (re-entered from /api/analysis/run with
+    # server-validated params) skips memory, routing and filter planning and
+    # goes straight to the catalog so the guard has the schema it needs.
+    builder.add_conditional_edges(
+        START,
+        lambda s: "catalog_lookup" if (s.get("analysis_resume") or s.get("analysis_confirmed")) else "memory_shrink_check",
+    )
 
     builder.add_conditional_edges(
         "memory_shrink_check",
@@ -309,6 +358,11 @@ def build_graph(
     builder.add_conditional_edges("filter_planner", _route_from_filter_planner)
     builder.add_conditional_edges("filter_grounder", _route_from_filter_grounder)
     builder.add_edge("prompt_builder", "sql_generator")
+
+    builder.add_conditional_edges("analysis_planner", _route_from_analysis_planner)
+    builder.add_conditional_edges("analysis_guard", _route_from_analysis_guard)
+    builder.add_conditional_edges("analysis_sql", _route_from_analysis_sql)
+    builder.add_conditional_edges("analysis_run", _route_from_analysis_run)
 
     builder.add_conditional_edges("sql_generator", _route_from_sql_gen)
     builder.add_conditional_edges("sqlglot_validate", _route_from_sqlglot)
@@ -358,6 +412,10 @@ def _route_from_catalog(state: AgentState) -> str:
     # entirely and return a clear error rather than querying blindly.
     if state.get("catalog_blocked"):
         return "response_formatter"
+    # Re-entry from /api/analysis/run: params are already validated, so the
+    # branch starts at the guard (planner and filter planning are skipped).
+    if (state.get("analysis_resume") or state.get("analysis_confirmed")) and on_analysis_branch(state):
+        return "analysis_guard"
     return "filter_planner"
 
 
@@ -366,7 +424,41 @@ def _route_from_filter_planner(state: AgentState) -> str:
 
 
 def _route_from_filter_grounder(state: AgentState) -> str:
-    return "response_formatter" if state.get("filter_clarification_required") else "prompt_builder"
+    if state.get("filter_clarification_required"):
+        return "response_formatter"
+    # Branch here (not at catalog_lookup) so grounded literal filters are
+    # available to the planner for free.
+    if state.get("route") == "needs_analysis":
+        return "analysis_planner"
+    return "prompt_builder"
+
+
+def _route_from_analysis_planner(state: AgentState) -> str:
+    if state.get("analysis_clarification"):
+        return "response_formatter"
+    if not on_analysis_branch(state):
+        return "prompt_builder"  # planner fell back to the SQL path
+    return "analysis_guard"
+
+
+def _route_from_analysis_guard(state: AgentState) -> str:
+    if (
+        state.get("analysis_guard_failure")
+        or state.get("analysis_confirm_required")
+        or state.get("analysis_error")
+    ):
+        return "response_formatter"
+    return "analysis_sql"
+
+
+def _route_from_analysis_sql(state: AgentState) -> str:
+    return "response_formatter" if state.get("analysis_error") else "sqlglot_validate"
+
+
+def _route_from_analysis_run(state: AgentState) -> str:
+    if state.get("analysis_guard_failure") or state.get("analysis_error"):
+        return "response_formatter"
+    return "trivial_result_check"
 
 
 def _route_from_sql_gen(state: AgentState) -> str:
@@ -376,7 +468,10 @@ def _route_from_sql_gen(state: AgentState) -> str:
 
 
 def _route_from_sqlglot(state: AgentState) -> str:
-    return "feedback_classifier" if state.get("sqlglot_error") else "dlp_check"
+    if state.get("sqlglot_error"):
+        # A deterministic builder cannot be "repaired" by the LLM loop.
+        return "response_formatter" if on_analysis_branch(state) else "feedback_classifier"
+    return "dlp_check"
 
 
 def _route_from_dlp(state: AgentState) -> str:
@@ -384,7 +479,11 @@ def _route_from_dlp(state: AgentState) -> str:
 
 
 def _route_from_execute(state: AgentState) -> str:
-    return "feedback_classifier" if state.get("exec_error") else "empty_filter_result_check"
+    if state.get("exec_error"):
+        return "response_formatter" if on_analysis_branch(state) else "feedback_classifier"
+    if on_analysis_branch(state):
+        return "analysis_run"
+    return "empty_filter_result_check"
 
 
 def _route_from_empty_filter(state: AgentState) -> str:
@@ -409,6 +508,10 @@ def _route_from_trivial(state: AgentState) -> str:  # kept for direct test impor
 
 def _route_from_eval(state: AgentState) -> str:
     eval_result = state.get("eval_result") or {}
+    # An ML result was produced by a validated engine; a doubtful narration
+    # must never trigger the SQL repair loop.
+    if on_analysis_branch(state):
+        return "response_formatter"
     return (
         "response_formatter"
         if eval_result.get("answers_intent", True)

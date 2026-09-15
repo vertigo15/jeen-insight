@@ -541,6 +541,10 @@ function displayResults(data) {
     // server-side cached result by query_id and pass the question as intent.
     window.currentQueryId = currentQueryId;
     window.currentQuestion = currentQuestion;
+    // ML skills: the analysis view and its low-confidence flag travel with
+    // the result into saved analyses and export filenames.
+    window._currentAnalysis = data.analysis && data.analysis.skill ? data.analysis : null;
+    window._currentLowConfidence = Boolean(data.low_confidence || (data.analysis && data.analysis.low_confidence));
 
     // Log conversation IDs
     if (currentQueryId) {
@@ -1542,7 +1546,8 @@ function exportToExcel() {
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
-    link.setAttribute('download', 'jeen_insights_results_' + new Date().getTime() + '.csv');
+    const confidenceTag = window._currentLowConfidence ? '_LOW-CONFIDENCE' : '';
+    link.setAttribute('download', 'jeen_insights_results_' + new Date().getTime() + confidenceTag + '.csv');
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
@@ -1910,9 +1915,17 @@ async function saveCurrentAnalysis() {
         const chartState = (chartManager && typeof chartManager.getSaveState === 'function')
             ? chartManager.getSaveState()
             : {};
-        const insightsState = (insightsManager && typeof insightsManager.getSaveState === 'function')
+        let insightsState = (insightsManager && typeof insightsManager.getSaveState === 'function')
             ? insightsManager.getSaveState()
             : null;
+        if (window._currentAnalysis) {
+            // Carry the ML method/validation view and the flag with the saved analysis.
+            insightsState = {
+                ...(insightsState || {}),
+                analysis: window._currentAnalysis,
+                low_confidence: Boolean(window._currentLowConfidence),
+            };
+        }
         const res = await fetch('/api/saved-analyses', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2236,6 +2249,7 @@ async function restoreSavedAnalysis(savedId) {
             columns: snapshot.columns || item.columns || [],
             rows: snapshot.rows || [],
         };
+        const savedInsights = item.insights_payload || {};
         const restored = {
             question: item.question,
             query_id: item.query_id,
@@ -2245,6 +2259,11 @@ async function restoreSavedAnalysis(savedId) {
             prompt: null,
             metrics: { restored: true },
             trace: [],
+            // ML skills: the analysis view and its flag were saved inside the
+            // insights payload; put them back so the export marker and Model
+            // details survive a restore.
+            analysis: savedInsights.analysis && savedInsights.analysis.skill ? savedInsights.analysis : null,
+            low_confidence: Boolean(savedInsights.low_confidence),
         };
         _isRestoringSavedAnalysis = true;
         _restoredSavedQuestion = item.question || '';
@@ -3831,7 +3850,7 @@ window._toggleTraceEvent = _toggleTraceEvent;
 async function initializeChartFeature(results, options = {}) {
     // Dynamically import ChartManager if not already loaded
     if (!ChartManager) {
-        const module = await import('./chart-feature/chartManager.js?v=109');
+        const module = await import('./chart-feature/chartManager.js?v=110');
         ChartManager = module.ChartManager;
     }
 
@@ -4796,6 +4815,14 @@ window.JeenLegacyBridge = {
         return chartManager && typeof chartManager.getSaveState === 'function'
             ? chartManager.getSaveState()
             : null;
+    },
+    /**
+     * ML results: the edit-in-words bar re-runs the analysis (new turn) instead
+     * of editing the chart. Applied to whichever ChartManager is live.
+     */
+    setChartAnalysisMode(on) {
+        const chat = chartManager && chartManager.chartChat;
+        if (chat && typeof chat.setAnalysisMode === 'function') chat.setAnalysisMode(Boolean(on));
     },
     async restoreChartState(state) {
         if (!state || !state.chart_config || !chartManager

@@ -47,6 +47,12 @@ health_warmup_task: "Optional[asyncio.Task]" = None
 # the DAX agent registry and the conversation rerun service.
 powerbi_token_provider_factory: Optional[object] = None
 
+# ── ML skills ──────────────────────────────────────────────────────────────
+# Proposal / consent persistence and the configured AnalysisRunner (None when
+# skills are disabled for this deployment mode).
+analysis_store: Optional[object] = None
+analysis_runner: Optional[object] = None
+
 # ── Connector / integration platform services ──────────────────────────────
 identity_service: Optional[object] = None
 registry_service: Optional[object] = None

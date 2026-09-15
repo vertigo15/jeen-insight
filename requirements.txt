@@ -48,3 +48,16 @@ ydata-profiling>=4.0.0
 sweetviz>=2.0.0
 pandas>=2.0.0
 numpy<2.0.0  # Required for sweetviz compatibility
+
+# ML skills (src/analysis). The API process only needs these for the
+# development runner (ANALYSIS_RUNNER=local|in_process); production runs the
+# engines inside the jeen-insights-analytics sandbox image, which pins exact
+# versions in requirements-analytics.txt.
+statsforecast>=2.0,<3
+statsmodels>=0.14
+scipy>=1.11
+ruptures>=1.1,<2
+scikit-learn>=1.5,<2
+# Optional gradient-boosting engines for driver_analysis (method=auto/xgboost/lightgbm).
+# The engine falls back to scikit-learn HistGradientBoosting when they are absent.
+xgboost>=2.0,<3

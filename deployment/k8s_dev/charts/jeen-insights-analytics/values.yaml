@@ -1,0 +1,65 @@
+enabled: true
+
+global:
+  commonLabels: {}
+  imagePullSecrets: []
+  env: {}
+  nodeSelector: {}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  existingSecret:
+    name: jeen-insights-secrets
+    optional: false
+
+image:
+  repository: registry.invalid/jeen-insights-analytics
+  tag: "0.0.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+podAnnotations: {}
+
+serviceAccount:
+  create: true
+  annotations: {}
+
+service:
+  port: 8100
+
+# Sandbox limits (also enforced inside the process; these are the pod's).
+resources:
+  requests:
+    cpu: 250m
+    memory: 768Mi
+  limits:
+    cpu: "1"
+    memory: 1536Mi
+
+# Per-run tmpfs for numba's JIT cache and scratch files.
+tmpSizeLimit: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# Ingress only from the API pods; egress default-deny (no DNS, no internet).
+networkPolicy:
+  enabled: true
+
+# Only the non-secret knobs; the token-verification secret comes from
+# global.existingSecret key INTERNAL_ANALYTICS_SECRET (the API must hold the
+# same value to sign sandbox tokens; it is distinct from INTERNAL_API_SECRET).
+env:
+  ANALYSIS_SANDBOX_AUDIENCE: jeen-insights-analytics
+  ANALYSIS_TIMEOUT_SECONDS: "30"
+  ANALYSIS_MEMORY_MB: "1024"
+  ANALYSIS_MAX_SERIES_ROWS: "1500"
+  ANALYSIS_MAX_CONCURRENT: "2"

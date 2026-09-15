@@ -46,6 +46,17 @@ jeen-insights-api:
   nodeSelector:
     workload: backend
 
+# ML-skills sandbox. Disabled until the analytics image is in the registry;
+# enabling it here and flipping jeen-insights-api.env.ML_SKILLS_ENABLED is the
+# P5 rollout step (the API refuses any non-sandbox runner in production).
+jeen-insights-analytics:
+  enabled: false
+  image:
+    repository: jeendevregistry.azurecr.io/jeen-insights-analytics
+    tag: ""
+  nodeSelector:
+    workload: backend
+
 jeen-insights-ui:
   image:
     repository: jeendevregistry.azurecr.io/jeen-insights-ui

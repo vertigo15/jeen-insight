@@ -1,0 +1,25 @@
+# jeen-insights-analytics — the ML-skills sandbox image.
+#
+# Exact pins on purpose: these libraries move fast enough that a floating
+# version is a future outage, and the engine version is reported in every
+# result envelope (Model details → Engine), so it must be reproducible.
+# Only what src/analysis needs; the API's SQL drivers, LLM SDKs and profiling
+# libraries are deliberately absent from this image.
+
+# Service
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pydantic==2.13.5
+itsdangerous==2.2.0
+
+# Engines
+numpy==1.26.4
+pandas==2.3.3
+scipy==1.16.3
+statsmodels==0.15.0
+statsforecast==2.1.1
+ruptures==1.1.10
+scikit-learn==1.9.1
+# Optional gradient-boosting engine for driver_analysis (method=auto/xgboost);
+# HistGradientBoosting remains the default and the fallback.
+xgboost==2.1.4

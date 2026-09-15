@@ -81,8 +81,46 @@ def _extract_json(content: str) -> str:
     return content
 
 
+def _narration_prompt_inputs(analysis: Dict[str, Any]) -> Dict[str, Any]:
+    """The immutable facts the narration may restate — never the rows."""
+    from src.analysis.contracts import get_skill  # noqa: PLC0415
+
+    skill = str(analysis.get("skill") or "")
+    try:
+        title = get_skill(skill).title
+    except KeyError:
+        title = skill or "Analysis"
+    validation = analysis.get("validation") or {}
+    v_parts = []
+    if validation.get("metric") and validation.get("value") is not None:
+        v_parts.append(f"{validation['metric']} {validation['value']:.3f} ({validation.get('band', 'n/a')})")
+    if validation.get("coverage") is not None:
+        v_parts.append(f"interval coverage {validation['coverage']:.0%} on {validation.get('coverage_n') or 0} points")
+    if validation.get("basis"):
+        v_parts.append(str(validation["basis"]))
+    facts = dict(analysis.get("facts") or {})
+    facts.pop("candidates", None)
+    return {
+        "skill_title": title,
+        "headline": analysis.get("headline") or "",
+        "facts": json.dumps(facts, ensure_ascii=False, default=str, indent=1),
+        "validation": "; ".join(v_parts) or "not available",
+        "caveats": "\n".join(f"- {c}" for c in (analysis.get("caveats") or [])) or "- none",
+    }
+
+
 def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoader):
-    """Return an async ``fused_eval_analytics`` node."""
+    """Return an async ``fused_eval_analytics`` node.
+
+    Two modes share one node and one LLM call:
+
+    * **SQL results** (default) — full-data statistics + a row sample, rendered
+      through ``fused_eval_analytics``.
+    * **ML results** (``state["analysis_result"]`` present) — the engine's
+      immutable ``facts``/``validation``/``caveats`` rendered through
+      ``analysis_narration``. The model restates numbers; it never sees the
+      rows and never computes its own.
+    """
 
     async def fused_eval_analytics(state: AgentState) -> Dict[str, Any]:
         question = state.get("question", "")
@@ -90,20 +128,30 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
         result = state.get("query_result") or {}
         rows = result.get("rows") or []
         row_count = len(rows)
+        analysis = state.get("analysis_result")
 
-        # Full-data statistics + small sample (so the model reasons over ALL rows,
-        # not just the first few).
-        statistics = _profile_statistics(rows, result.get("columns") or [])
-        results_sample = _build_results_block(statistics, rows, row_count)
-
-        prompt = await prompt_loader.arender(
-            "fused_eval_analytics",
-            question=question,
-            sql=sql,
-            results_sample=results_sample,
-            row_count=row_count,
-        )
-        model_override = await prompt_loader.model_override_for("fused_eval_analytics")
+        if analysis:
+            prompt_name = "analysis_narration"
+            prompt = await prompt_loader.arender(
+                "analysis_narration",
+                question=question,
+                row_count=row_count,
+                **_narration_prompt_inputs(analysis),
+            )
+        else:
+            prompt_name = "fused_eval_analytics"
+            # Full-data statistics + small sample (so the model reasons over ALL rows,
+            # not just the first few).
+            statistics = _profile_statistics(rows, result.get("columns") or [])
+            results_sample = _build_results_block(statistics, rows, row_count)
+            prompt = await prompt_loader.arender(
+                "fused_eval_analytics",
+                question=question,
+                sql=sql,
+                results_sample=results_sample,
+                row_count=row_count,
+            )
+        model_override = await prompt_loader.model_override_for(prompt_name)
 
         # Lazy: importing src.api at module scope would close an import cycle
         # (src.api → lifespan → src.agent → this module).
@@ -164,7 +212,14 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
                 "fused_eval_analytics: JSON parse failed (%s) — defaulting to answers_intent=True",
                 exc,
             )
-            eval_result["summary"] = content[:500] if content else ""
+            # For an ML result the engine headline is the safe fallback: it is a
+            # finding, not free text from a half-parsed model reply.
+            eval_result["summary"] = (analysis or {}).get("headline") or (content[:500] if content else "")
+
+        if analysis:
+            # Narration never overrides the engine: an unsure narrator does not
+            # get to call a validated result wrong.
+            eval_result["answers_intent"] = True
 
         logger.info(
             "fused_eval_analytics: answers_intent=%s, insights=%d, latency=%dms",

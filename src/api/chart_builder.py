@@ -1264,6 +1264,186 @@ def _build_osm_map(spec, rows, ctx):
     }
 
 
+# ── band chart (ML skills) ───────────────────────────────────────────────────
+#
+# Role-based: the analysis envelope names series by *role* (actual, expected,
+# interval, flagged, forecast); the client maps roles to design tokens at
+# render time (--text, --rose, --insight-bg, --err). The defaults below only
+# matter outside the themed workspace. Rule: lavender is model output, the
+# queried series stays ink.
+
+_BAND_DEFAULTS = {
+    "actual": "#1f1f24",
+    "expected": "#8878c4",
+    "forecast": "#8878c4",
+    "interval": "rgba(136, 120, 196, 0.18)",
+    "flagged": "#d4574a",
+}
+
+
+def _band_rows(dataset: Dict[str, Any]) -> List[Dict[str, Any]]:
+    columns: List[str] = dataset.get("columns") or []
+    out: List[Dict[str, Any]] = []
+    for row in _iter_rows(dataset):
+        if isinstance(row, dict):
+            out.append(row)
+        elif isinstance(row, (list, tuple)):
+            out.append(dict(zip(columns, row)))
+    return out
+
+
+def _num_or_none(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f  # NaN → None
+
+
+def build_band_option(spec: Dict[str, Any], dataset: Dict[str, Any]) -> Dict[str, Any]:
+    """ECharts option for an ML result: actual line, expected/forecast line,
+    interval band, flagged points, optional forecast-start marker.
+
+    ``spec`` is ``ResultEnvelope.chart_spec`` (``x_column``, role-based
+    ``series``, ``forecast_start``, ``y_label``). Pure JSON, no callables.
+    """
+    rows = _band_rows(dataset)
+    if not rows:
+        raise ValueError("No data to chart")
+    x_col = spec.get("x_column") or "ts"
+    xs = [str(r.get(x_col)) for r in rows]
+
+    series_specs = spec.get("series") or []
+    by_role: Dict[str, Dict[str, Any]] = {}
+    for s in series_specs:
+        if isinstance(s, dict) and s.get("role"):
+            by_role.setdefault(str(s["role"]), s)
+
+    built: List[Dict[str, Any]] = []
+    legend: List[str] = []
+
+    def pairs(col: str, *, where: Optional[str] = None):
+        data = []
+        for x, r in zip(xs, rows):
+            if where and not r.get(where):
+                continue
+            v = _num_or_none(r.get(col))
+            if v is not None:
+                data.append([x, v])
+        return data
+
+    interval = by_role.get("interval")
+    if interval and interval.get("lower_column") and interval.get("upper_column"):
+        lo_col, hi_col = interval["lower_column"], interval["upper_column"]
+        base, delta = [], []
+        for x, r in zip(xs, rows):
+            lo, hi = _num_or_none(r.get(lo_col)), _num_or_none(r.get(hi_col))
+            if lo is None or hi is None:
+                continue
+            base.append([x, lo])
+            delta.append([x, hi - lo])
+        label = interval.get("label") or "Interval"
+        # Stacked pair: an invisible base plus the filled width. Hidden from the
+        # tooltip; the true bounds are exposed by two invisible lines below.
+        built.append({
+            "name": f"{label} (base)", "type": "line", "stack": "jeen-band", "data": base,
+            "symbol": "none", "showSymbol": False, "lineStyle": {"opacity": 0}, "areaStyle": {"opacity": 0},
+            "tooltip": {"show": False}, "silent": True, "jeenRole": "interval_base", "z": 1,
+        })
+        built.append({
+            "name": label, "type": "line", "stack": "jeen-band", "data": delta,
+            "symbol": "none", "showSymbol": False, "lineStyle": {"opacity": 0},
+            "areaStyle": {"color": _BAND_DEFAULTS["interval"], "opacity": 1},
+            "tooltip": {"show": False}, "silent": True, "jeenRole": "interval", "z": 1,
+        })
+        legend.append(label)
+        for bound, col in (("Lower", lo_col), ("Upper", hi_col)):
+            built.append({
+                "name": bound, "type": "line", "data": pairs(col), "symbol": "none", "showSymbol": False,
+                "lineStyle": {"opacity": 0}, "jeenRole": "interval_bound", "z": 1, "silent": True,
+            })
+
+    expected = by_role.get("expected")
+    if expected and expected.get("column"):
+        built.append({
+            "name": expected.get("label") or "Expected", "type": "line", "data": pairs(expected["column"]),
+            "symbol": "none", "showSymbol": False, "smooth": False,
+            "lineStyle": {"type": "dashed", "width": 1.5, "color": _BAND_DEFAULTS["expected"]},
+            "itemStyle": {"color": _BAND_DEFAULTS["expected"]},
+            "jeenRole": "expected", "z": 2,
+        })
+        legend.append(expected.get("label") or "Expected")
+
+    actual = by_role.get("actual")
+    last_actual: Optional[List[Any]] = None
+    if actual and actual.get("column"):
+        data = pairs(actual["column"])
+        last_actual = data[-1] if data else None
+        dense = len(data) > 60
+        built.append({
+            "name": actual.get("label") or "Actual", "type": "line", "data": data,
+            "symbol": "circle", "symbolSize": 0 if dense else 4, "showSymbol": not dense, "sampling": "lttb",
+            "lineStyle": {"width": 2, "color": _BAND_DEFAULTS["actual"]},
+            "itemStyle": {"color": _BAND_DEFAULTS["actual"]},
+            "jeenRole": "actual", "z": 3, "emphasis": {"focus": "series"},
+        })
+        legend.append(actual.get("label") or "Actual")
+
+    forecast = by_role.get("forecast")
+    if forecast and forecast.get("column"):
+        data = pairs(forecast["column"])
+        if last_actual is not None and data:
+            data = [last_actual] + data  # join the forecast to the last observed point
+        item = {
+            "name": forecast.get("label") or "Forecast", "type": "line", "data": data,
+            "symbol": "circle", "symbolSize": 4,
+            "lineStyle": {"type": "dashed", "width": 2, "color": _BAND_DEFAULTS["forecast"]},
+            "itemStyle": {"color": _BAND_DEFAULTS["forecast"]},
+            "jeenRole": "forecast", "z": 3,
+        }
+        if spec.get("forecast_start"):
+            item["markLine"] = {
+                "symbol": "none", "silent": True,
+                "lineStyle": {"type": "dotted", "width": 1},
+                "label": {"formatter": "forecast", "position": "insideEndTop"},
+                "data": [{"xAxis": str(spec["forecast_start"])}],
+            }
+        built.append(item)
+        legend.append(forecast.get("label") or "Forecast")
+
+    flagged = by_role.get("flagged")
+    if flagged and flagged.get("column") and flagged.get("flag_column"):
+        built.append({
+            "name": flagged.get("label") or "Flagged", "type": "scatter",
+            "data": pairs(flagged["column"], where=flagged["flag_column"]),
+            "symbolSize": 11, "itemStyle": {"color": _BAND_DEFAULTS["flagged"]},
+            "jeenRole": "flagged", "z": 4, "emphasis": {"scale": 1.3},
+        })
+        legend.append(flagged.get("label") or "Flagged")
+
+    if not built:
+        raise ValueError("Band spec names no plottable series")
+
+    opt: Dict[str, Any] = {
+        "tooltip": {"trigger": "axis", "axisPointer": {"type": "line"}},
+        # Legend on top: long series get a bottom zoom slider, and the two must
+        # not share the same edge.
+        "legend": {"type": "scroll", "top": 0, "left": "center", "data": legend},
+        "grid": {"left": "3%", "right": "4%", "bottom": 36, "top": 44, "containLabel": True},
+        "xAxis": {"type": "time", "name": spec.get("x_label") or None, "axisLabel": {}},
+        "yAxis": {"type": "value", "name": spec.get("y_label") or None, "nameGap": 18,
+                  "axisLabel": {}, "scale": True},
+        "series": built,
+        "jeenBand": {"roles": [s.get("role") for s in series_specs if isinstance(s, dict)],
+                     "forecast_start": spec.get("forecast_start")},
+    }
+    _maybe_data_zoom(opt, len(xs), False)
+    opt["jeenFormat"] = _fmt_meta("number")
+    return opt
+
+
 # ── entry point ──────────────────────────────────────────────────────────────
 
 def build_chart_option(spec: Dict[str, Any], dataset: Dict[str, Any]) -> Dict[str, Any]:
@@ -1273,6 +1453,9 @@ def build_chart_option(spec: Dict[str, Any], dataset: Dict[str, Any]) -> Dict[st
     """
     if not isinstance(spec, dict):
         raise ValueError("Missing chart spec")
+    if str(spec.get("chart_type") or "").lower() == "band":
+        # ML-skill result: role-based spec, no measure/x validation path.
+        return build_band_option(spec, dataset)
     columns: List[str] = dataset.get("columns") or []
     rows = _iter_rows(dataset)
     if not columns or not rows:

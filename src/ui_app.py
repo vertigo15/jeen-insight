@@ -863,6 +863,8 @@ def _query_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         "temperature",
         "eval_analytics",
         "llm_timeout",
+        # ML skills: False = "Answer with SQL instead" for this question.
+        "analysis",
     ):
         if data.get(field) is not None:
             payload[field] = data[field]
@@ -1169,6 +1171,61 @@ def generate_chart():
     # to this user (never trust a client-supplied id).
     data["user_id"] = _session_user_id()
     return _proxy_post("/api/generate-chart", data)
+
+
+# ----------------------------------------------------------------------
+# ML skills — confirm / re-run / chart / consent. Thin proxies: identity comes
+# from the internal token, never the body.
+# ----------------------------------------------------------------------
+@app.route("/api/analysis/run", methods=["POST"])
+def analysis_run():
+    data = request.get_json() or {}
+    if not data.get("connection"):
+        return jsonify({"error": "No connection selected"}), 400
+    return _proxy_post("/api/analysis/run", data, timeout=180)
+
+
+@app.route("/api/analysis/rerun", methods=["POST"])
+def analysis_rerun():
+    data = request.get_json() or {}
+    if not data.get("connection"):
+        return jsonify({"error": "No connection selected"}), 400
+    return _proxy_post("/api/analysis/rerun", data, timeout=180)
+
+
+@app.route("/api/analysis/chart", methods=["POST"])
+def analysis_chart():
+    data = request.get_json() or {}
+    if not data.get("connection"):
+        return jsonify({"error": "No connection selected"}), 400
+    return _proxy_post("/api/analysis/chart", data, timeout=60)
+
+
+@app.route("/api/analysis/skills", methods=["GET"])
+def analysis_skills():
+    return _proxy_get("/api/analysis/skills", params={"connection": request.args.get("connection", "")})
+
+
+@app.route("/api/analysis/suggestions", methods=["GET"])
+def analysis_suggestions():
+    return _proxy_get("/api/analysis/suggestions", params={"connection": request.args.get("connection", "")})
+
+
+@app.route("/api/analysis/routing", methods=["GET"])
+def analysis_routing():
+    """Dry-run: would this question take the ML skill path or text-to-SQL? No LLM call."""
+    params = {"q": request.args.get("q", "")}
+    if request.args.get("analysis") is not None:
+        params["analysis"] = request.args.get("analysis")
+    return _proxy_get("/api/analysis/routing", params=params)
+
+
+@app.route("/api/analysis/skills/prefs", methods=["POST"])
+def analysis_skill_prefs():
+    data = request.get_json() or {}
+    if not data.get("connection"):
+        return jsonify({"error": "No connection selected"}), 400
+    return _proxy_post("/api/analysis/skills/prefs", data)
 
 
 @app.route("/api/generate-insights", methods=["POST"])

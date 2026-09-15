@@ -32,6 +32,9 @@ class QueryRequest(BaseModel):
     eval_analytics: Optional[bool] = None
     # llm_timeout: override LLM_TIMEOUT_SECONDS for this single request.
     llm_timeout: Optional[int] = Field(default=None, ge=0, le=300)
+    # analysis: False = answer with SQL even if the question reads like an ML
+    # request ("Answer with SQL instead" on a confirm card). None = server default.
+    analysis: Optional[bool] = None
 
 
 class QueryResponse(BaseModel):
@@ -52,6 +55,10 @@ class QueryResponse(BaseModel):
     #   - llm_latency_ms: total time spent inside llm.generate (not TTFT;
     #     real TTFT requires streaming, which we don't do today)
     metrics: Optional[Dict[str, Any]] = None
+    # Why this answer took the ML skill path or the text-to-SQL path:
+    #   {route, path (ml|sql|…), source, reason, skill}. Declared here so
+    #   Pydantic keeps it and the UI/tests can read it without the trace.
+    routing: Optional[Dict[str, Any]] = None
     # Per-node execution trace. Each entry: {node, elapsed_ms, icon, type, detail, ...}
     trace: Optional[List[Dict[str, Any]]] = None
     # Result analysis from the inline eval node, present only when the caller
@@ -76,6 +83,83 @@ class QueryResponse(BaseModel):
     # only works while these stay part of the response contract.
     needs_connect: Optional[bool] = None
     connect_provider: Optional[str] = None
+    # ── ML skills ──────────────────────────────────────────────────────────
+    # status: "confirm" | "clarify" | "blocked" when the graph stopped to ask
+    # (the proposal carries the chips / options / guard results); None or
+    # "completed" for an ordinary answer.
+    status: Optional[str] = None
+    proposal: Optional[Dict[str, Any]] = None
+    # ResultEnvelope.artifact_view(): method, params, validation, guard
+    # results, engine, provenance, facts — never the rows (those are results).
+    analysis: Optional[Dict[str, Any]] = None
+    # True when a guard was overridden; must travel into history, pins, exports.
+    low_confidence: Optional[bool] = None
+    # Set on turns created by /api/analysis/run|rerun so the UI can show the
+    # parameter diff against the parent.
+    parent_query_id: Optional[UUID] = None
+
+
+# ----------------------------------------------------------------------
+# ML skills (confirm / run / re-run)
+# ----------------------------------------------------------------------
+class AnalysisRunRequest(BaseModel):
+    """Resume a persisted proposal (confirm card, clarification pick, guard exit).
+
+    The proposal id is the only source of ``{skill, params}``; ``params_patch``
+    is an allowlisted partial override validated against the skill's model.
+    ``override_guards`` runs past a refused guard and marks the result
+    low-confidence.
+    """
+
+    connection: str
+    proposal_id: UUID
+    session_id: Optional[UUID] = None
+    params_patch: Optional[Dict[str, Any]] = None
+    override_guards: bool = False
+    idempotency_key: Optional[str] = Field(default=None, max_length=128)
+    # Persist "don't ask again" for this skill on this connection.
+    remember: bool = False
+    eval_analytics: Optional[bool] = None
+    llm_timeout: Optional[int] = Field(default=None, ge=0, le=300)
+
+
+class AnalysisRerunRequest(BaseModel):
+    """Re-run a completed ML turn with adjusted parameters, appending a child turn.
+
+    Either a structured ``params_patch`` (from the chip row) or a natural-language
+    ``instruction`` ("weekly instead of daily", "flag fewer") which the planner
+    turns into a patch server-side. Never mutates the parent turn.
+    """
+
+    connection: str
+    parent_query_id: UUID
+    session_id: UUID
+    instruction: Optional[str] = Field(default=None, max_length=500)
+    params_patch: Optional[Dict[str, Any]] = None
+    override_guards: bool = False
+    idempotency_key: Optional[str] = Field(default=None, max_length=128)
+    eval_analytics: Optional[bool] = None
+    llm_timeout: Optional[int] = Field(default=None, ge=0, le=300)
+
+
+class SkillPrefPatch(BaseModel):
+    connection: str
+    skill: str
+    remember: bool = True
+
+
+class AnalysisChartRequest(BaseModel):
+    """Deterministic band chart for an ML result — no LLM involved.
+
+    The rows come from the server-side result cache (keyed by the verified
+    user + connection + query_id); ``results`` is the cache-miss fallback the
+    client re-sends. ``chart_spec`` is the envelope's role-based spec.
+    """
+
+    connection: str
+    query_id: str
+    chart_spec: Dict[str, Any]
+    results: Optional[Dict[str, Any]] = None
 
 
 class ColumnInfo(BaseModel):
@@ -309,6 +393,11 @@ class ConversationTurn(BaseModel):
     has_rerunnable_query: bool = False
     created_at: Optional[str] = None
     snapshot_at: Optional[str] = None
+    # ML skills: method/validation/guard details and the low-confidence flag
+    # travel with the turn so a restored ML answer is indistinguishable from
+    # a live one.
+    analysis: Optional[Dict[str, Any]] = None
+    low_confidence: bool = False
 
 
 class ConversationDetail(BaseModel):
@@ -334,6 +423,8 @@ class TurnArtifact(BaseModel):
     chart_config: Optional[Dict[str, Any]] = None
     snapshot_status: str
     snapshot_at: Optional[str] = None
+    analysis: Optional[Dict[str, Any]] = None
+    low_confidence: bool = False
 
 
 class RerunTurnResponse(TurnArtifact):

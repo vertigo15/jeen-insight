@@ -20,7 +20,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Hebrew:wght@400;500;600&family=Urbanist:ital,wght@0,300;0,400;0,500;0,600;0,700;0,900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=101">
-    <link rel="stylesheet" href="{{ url_for('static', filename='workspace/workspace.css') }}?v=11">
+    <link rel="stylesheet" href="{{ url_for('static', filename='workspace/workspace.css') }}?v=12">
     <link rel="stylesheet" href="{{ url_for('static', filename='workspace/onboarding.css') }}?v=4">
     <!-- CodeMirror 6 via ESM — exposes window.CodeMirrorService -->
     <script type="module">
@@ -419,9 +419,11 @@
 <script src="{{ url_for('static', filename='auth.js') }}?v=51"></script>
 <script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=55"></script>
 <script src="{{ url_for('static', filename='profiling/profilingManager.js') }}?v=68"></script>
-<script src="{{ url_for('static', filename='script.js') }}?v=103"></script>
+<script src="{{ url_for('static', filename='script.js') }}?v=104"></script>
 <script src="{{ url_for('static', filename='chat/chatController.js') }}?v=18"></script>
-<script src="{{ url_for('static', filename='workspace/workspaceController.js') }}?v=12"></script>
+<!-- ML skills answer-pane helpers (pure rendering); loads BEFORE the workspace controller. -->
+<script src="{{ url_for('static', filename='analysis/analysisPanel.js') }}?v=2"></script>
+<script src="{{ url_for('static', filename='workspace/workspaceController.js') }}?v=13"></script>
 <!-- FTUE overlay: loads AFTER workspaceController.js so window.ChatController exists. -->
 <script src="{{ url_for('static', filename='workspace/onboarding.js') }}?v=5"></script>
 <!-- Settings page (full-screen) -->

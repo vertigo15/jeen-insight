@@ -129,6 +129,37 @@ for (const status of ['error', 'timeout', 'syntax_error', 'pending']) {
     assert.equal(gone.snapshotStatus, 'pruned');
 }
 
+// ── ML skills: analysis + low_confidence travel with the turn ──────────────
+{
+    const analysis = {
+        skill: 'forecast', method_used: 'AutoETS', params: { series: { grain: 'week' }, horizon: 8 },
+        validation: { metric: 'WAPE', value: 0.064 }, low_confidence: true,
+    };
+    const turn = turnFromServer(dto({ analysis, low_confidence: true }), CONV);
+    assert.equal(turn.result.status, 'completed');
+    assert.equal(turn.result.analysis.skill, 'forecast');
+    assert.equal(turn.result.low_confidence, true, 'the flag must survive restore');
+
+    // The artifact also carries them (rows + analysis on the same fetch).
+    const fresh = turnFromServer(dto(), CONV);
+    applyArtifact(fresh, {
+        turn_id: fresh.turnId, results: { columns: ['ts', 'actual'], rows: [['2026-01-05', 1]] },
+        chart_spec: { chart_type: 'band' }, chart_config: { series: [{ jeenRole: 'actual' }] },
+        snapshot_status: 'stored', snapshot_at: null, analysis, low_confidence: false,
+    });
+    assert.equal(fresh.result.analysis.method_used, 'AutoETS');
+    assert.equal(fresh.result.low_confidence, true, 'the envelope flag wins when the column is stale');
+    assert.equal(fresh.chartState.chart_spec.chart_type, 'band');
+
+    // A pending proposal (confirm / clarify / guard) restores as its card.
+    const proposal = { proposal_id: 'p1', kind: 'guard', skill: 'forecast', message: '62 of 104 periods.', options: [] };
+    const card = turnFromServer(dto({ result_kind: 'text', sql: null, snapshot_status: 'not_applicable',
+        analysis: { proposal, status: 'blocked' } }), CONV);
+    assert.equal(card.result.status, 'blocked');
+    assert.equal(card.result.proposal.kind, 'guard');
+    assert.equal(card.result.analysis, undefined, 'a proposal is not a completed analysis');
+}
+
 // ── generation guard: only the latest generation wins ──────────────────────
 {
     const guard = makeGenerationGuard();

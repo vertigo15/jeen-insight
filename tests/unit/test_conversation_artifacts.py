@@ -98,8 +98,11 @@ def test_extract_artifact_fields_only_keeps_allowlist():
     }
     fields = extract_artifact_fields(formatted, has_sql=True, exec_error=None)
     assert set(fields) == {
-        "result_kind", "answer", "error", "metrics", "findings", "suggestions", "followups"
+        "result_kind", "answer", "error", "metrics", "findings", "suggestions", "followups",
+        "analysis", "low_confidence",
     }
+    assert fields["analysis"] is None
+    assert fields["low_confidence"] is False
     assert fields["result_kind"] == RESULT_KIND_TABLE
     assert fields["answer"] == "Revenue rose"
     assert fields["metrics"] == {"input_tokens": 10, "output_tokens": 5, "route": "sql"}

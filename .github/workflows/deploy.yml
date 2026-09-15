@@ -8,6 +8,7 @@ on:
 env:
   API_IMAGE: jeen-insights-api
   UI_IMAGE:  jeen-insights-ui
+  ANALYTICS_IMAGE: jeen-insights-analytics
   AKS_RESOURCE_GROUP: jeen-rg-dev-k8s
   AKS_CLUSTER_NAME: aks-jeen-dev-weu-001
   AKS_NAMESPACE: jeen-data
@@ -88,6 +89,21 @@ jobs:
           cache-from: type=gha
           cache-to:   type=gha,mode=max
 
+      # -- ML-skills sandbox image -------------------------------------------
+      # Built on every run so the tag always exists; the subchart is enabled per
+      # environment (values.aks-dev.yaml → jeen-insights-analytics.enabled).
+      - name: Build & push analytics sandbox image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.analytics
+          push: true
+          tags: |
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.ANALYTICS_IMAGE }}:latest
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.ANALYTICS_IMAGE }}:${{ steps.tag.outputs.value }}
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+
   # ────────────────────────────────────────────────────────────────────
   # 3. Deploy to AKS development
   # ────────────────────────────────────────────────────────────────────
@@ -139,7 +155,8 @@ jobs:
           helm lint --with-subcharts deployment/k8s_dev \
             --values deployment/k8s_dev/values.aks-dev.yaml \
             --set-string jeen-insights-api.image.tag=${{ needs.build-and-push.outputs.image-tag }} \
-            --set-string jeen-insights-ui.image.tag=${{ needs.build-and-push.outputs.image-tag }}
+            --set-string jeen-insights-ui.image.tag=${{ needs.build-and-push.outputs.image-tag }} \
+            --set-string jeen-insights-analytics.image.tag=${{ needs.build-and-push.outputs.image-tag }}
           kubectl --namespace "${AKS_NAMESPACE}" wait \
             --for=condition=Ready \
             externalsecret/jeen-insights-secrets-external \
@@ -152,6 +169,7 @@ jobs:
             --values deployment/k8s_dev/values.aks-dev.yaml \
             --set-string jeen-insights-api.image.tag=${{ needs.build-and-push.outputs.image-tag }} \
             --set-string jeen-insights-ui.image.tag=${{ needs.build-and-push.outputs.image-tag }} \
+            --set-string jeen-insights-analytics.image.tag=${{ needs.build-and-push.outputs.image-tag }} \
             --atomic \
             --wait \
             --timeout 10m

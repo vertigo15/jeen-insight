@@ -215,6 +215,15 @@ spec:
         - protocol: TCP
           port: http
   egress:
+    # ML-skills sandbox (internal, no egress of its own).
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: jeen-insights-analytics
+              app.kubernetes.io/instance: {{ .Release.Name }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.analyticsPort }}
     {{- range .Values.networkPolicy.dnsNamespaces }}
     - to:
         - namespaceSelector:

@@ -72,7 +72,7 @@ class EvalReport:
     @property
     def dimensions(self) -> List[str]:
         # Stable, meaningful order.
-        order = ["route", "groundedness", "safety"]
+        order = ["route", "analysis_plan", "groundedness", "safety"]
         present = {r.dimension for r in self.results}
         return [d for d in order if d in present]
 
@@ -233,6 +233,20 @@ async def score_route(
             expected=expected, actual=actual, detail="local greeting regex",
         )
 
+    # Strong ML cues ("forecast", "anomalies") are upgraded locally by the
+    # router when ML skills are enabled, so they are deterministically scorable
+    # too. A case that expects needs_query but carries a strong cue is a real
+    # (offline) failure: the keyword filter is too greedy.
+    from src.agent.analysis_planner import detect_analysis_intent  # noqa: PLC0415
+
+    cue = detect_analysis_intent(question or "")
+    if cue is not None:
+        actual = "needs_analysis"
+        return CaseResult(
+            case_id=case_id, dimension="route", passed=(actual == expected),
+            expected=expected, actual=actual, detail=f"local analysis cue ({cue})",
+        )
+
     # Anything the regex didn't catch needs the LLM to classify; without a live
     # classifier we can't decide, so skip rather than guess (avoids false reds
     # for multi-word greetings like "hi there" that the LLM would still catch).
@@ -262,6 +276,47 @@ async def score_route(
     )
 
 
+def score_analysis_plan(case: Dict[str, Any], catalog: Dict[str, Any]) -> CaseResult:
+    """Deterministic planner validation: given the JSON the LLM would return,
+    does ``build_params_from_plan`` produce the expected outcome/params?
+
+    ``catalog.columns_text`` is the metadata ``columns`` block (with types);
+    ``plan`` is the model output; ``expect`` is ``params | clarify | fallback``;
+    ``expect_params`` are dotted-path assertions (``series.grain: week``).
+    """
+    from src.agent.analysis_planner import build_params_from_plan, catalog_candidates  # noqa: PLC0415
+
+    cands = catalog_candidates(catalog.get("columns_text", ""))
+    outcome = build_params_from_plan(
+        case.get("plan") or {}, cands,
+        resolved_filters=case.get("filters") or [],
+        connection_schema=catalog.get("schema"), connection_catalog=None,
+    )
+    expected = str(case.get("expect", "params"))
+    problems: List[str] = []
+    if outcome.kind != expected:
+        problems.append(f"kind {outcome.kind!r} != {expected!r} ({outcome.reason})")
+    if outcome.kind == "params":
+        params = outcome.params or {}
+        for path, want in (case.get("expect_params") or {}).items():
+            node: Any = params
+            for part in str(path).split("."):
+                node = node.get(part) if isinstance(node, dict) else None
+            if node != want:
+                problems.append(f"{path}={node!r} != {want!r}")
+        if case.get("expect_skill") and outcome.skill != case["expect_skill"]:
+            problems.append(f"skill {outcome.skill!r} != {case['expect_skill']!r}")
+    if outcome.kind == "clarify" and case.get("expect_options"):
+        labels = [o.label for o in outcome.options]
+        if sorted(labels) != sorted(case["expect_options"]):
+            problems.append(f"options {labels} != {case['expect_options']}")
+    return CaseResult(
+        case_id=case.get("id", "?"), dimension="analysis_plan", passed=not problems,
+        expected=expected, actual=outcome.kind,
+        detail="; ".join(problems) or (outcome.reason or "plan validated"),
+    )
+
+
 # ── Orchestration ──────────────────────────────────────────────────────────
 
 
@@ -285,6 +340,9 @@ async def evaluate(
                 report.add(score_groundedness(case, catalog))
             elif dim == "route":
                 report.add(await score_route(case, route_classifier))
+            elif dim == "analysis_plan":
+                catalog = catalogs.get(case.get("catalog"), {})
+                report.add(score_analysis_plan(case, catalog))
             else:
                 logger.warning("evaluate: unknown case type %r (id=%s)", dim, case.get("id"))
         except Exception as exc:  # noqa: BLE001 — one bad case shouldn't abort the run

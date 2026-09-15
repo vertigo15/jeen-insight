@@ -1,0 +1,51 @@
+# jeen-insights-analytics — ML-skills sandbox.
+#
+# Runs our pinned skill modules with validated parameters; never model-authored
+# code. The image carries only src/analysis + the service, no database drivers,
+# no LLM SDKs and no application secrets. Run it read-only with a tmpfs /tmp
+# (see docker-compose.yml / the Helm chart) and with no network egress.
+
+FROM python:3.12-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    # numba writes its JIT cache here; /tmp is the per-run tmpfs at runtime.
+    NUMBA_CACHE_DIR=/tmp/numba \
+    MPLCONFIGDIR=/tmp/mpl \
+    HOME=/tmp \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1
+
+WORKDIR /app
+
+COPY requirements-analytics.txt .
+RUN pip install --no-cache-dir -r requirements-analytics.txt
+
+# Only the code the sandbox needs: the engines, the service and the token
+# verifier. No connectors, no metadata DB, no LLM client
+# (tests/unit/analysis/test_sandbox_service.py guards the import graph).
+COPY src/__init__.py src/__init__.py
+COPY src/analysis src/analysis
+COPY src/analytics_service src/analytics_service
+# Only the token verifier from the security package: its real __init__ pulls in
+# the envelope-encryption module, which the sandbox has no business holding.
+COPY src/security/internal_auth.py src/security/internal_auth.py
+RUN printf '' > src/security/__init__.py \
+    # sql_builder / sandbox_client are API-side only; they must not be importable here.
+    && rm -f src/analysis/sql_builder.py src/analysis/sandbox_client.py
+
+# Warm the numba cache at build time so the first run is not the slow one.
+# The cache lands in /tmp (tmpfs at runtime); the build-time compilation still
+# validates that every engine imports cleanly in this image.
+RUN python -c "import src.analysis.engines.forecast, src.analysis.engines.anomaly_detection, src.analysis.engines.changepoint, src.analysis.engines.seasonality, src.analysis.engines.correlation, src.analysis.engines.contribution, src.analysis.engines.clustering, src.analysis.engines.driver_analysis, src.analysis.engines.regression, src.analysis.engines.classification, src.analysis.engines.cohort_retention, src.analysis.engines.experiment_test; from statsforecast.models import AutoARIMA, AutoETS, MSTL; import ruptures, sklearn, statsmodels, scipy; print('engines ok')"
+
+RUN addgroup --system --gid 10001 analytics && adduser --system --uid 10001 --gid 10001 --home /tmp analytics
+USER 10001:10001
+
+EXPOSE 8100
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
+  CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=2).status == 200 else 1)"]
+
+CMD ["python", "-m", "src.analytics_service"]
