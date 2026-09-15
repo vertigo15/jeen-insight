@@ -236,6 +236,30 @@ class Settings(BaseSettings):
     # allowed to see. Any environment still setting POWERBI_APP_* or
     # POWERBI_TEST_ACCESS_TOKEN is ignored (``extra = "ignore"`` below).
 
+    # ── ML skills (anomaly detection, forecasting) ──────────────────────────
+    # Master switch for the needs_analysis route, the analysis graph branch and
+    # the /api/analysis endpoints. Keep False in production until the sandbox
+    # runner is deployed.
+    ML_SKILLS_ENABLED: bool = True
+    # Where skills execute: "sandbox" (the jeen-insights-analytics container —
+    # the only production option), "local" (a resource-limited child process;
+    # development only) or "in_process" (tests only). The two non-sandbox
+    # runners are refused when JEEN_DEV_MODE=false.
+    ANALYSIS_RUNNER: str = "local"
+    ANALYSIS_TIMEOUT_SECONDS: int = 60
+    ANALYSIS_MEMORY_MB: int = 1024
+    # Internal-only URL of the sandbox service and the audience its tokens carry.
+    ANALYSIS_SANDBOX_URL: str = "http://jeen-insights-analytics:8100"
+    ANALYSIS_SANDBOX_AUDIENCE: str = "jeen-insights-analytics"
+    # Max rows sent to the model per run — tier A (aggregates) and tier B
+    # (row-level; also clamps EntityRequest.row_cap) — and the per-user budget.
+    # The sandbox enforces the same two limits independently.
+    ANALYSIS_MAX_SERIES_ROWS: int = 1500
+    ANALYSIS_MAX_ENTITY_ROWS: int = 50_000
+    ANALYSIS_RUNS_PER_HOUR_PER_USER: int = 60
+    # How long a confirm / clarify / guard proposal stays resumable.
+    ANALYSIS_PROPOSAL_TTL_SECONDS: int = 900
+
     # ── Deployment safety ───────────────────────────────────────────────────
     # Development / POC mode. Defaults to TRUE so a fresh copy of the app + shared
     # DB "just works" anywhere with zero secret provisioning (boots without strong

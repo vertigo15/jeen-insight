@@ -15,7 +15,7 @@ import { ChartTypeSelector } from './components/ChartTypeSelector.js?v=78';
 import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=73';
 import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v=1';
 import { DEFAULT_PALETTE_ID, applyPalette, getPalette, isKnownPalette } from './utils/chartPalettes.js?v=1';
-import { ChartChat } from './components/ChartChat.js?v=102';
+import { ChartChat } from './components/ChartChat.js?v=103';
 import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js';
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
 import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=8';
@@ -240,6 +240,13 @@ export class ChartManager {
                     this.applyEditedConfig(newConfig, derivedSpecs, notes, edit)
                 ),
                 onReset: () => this.resetChartEdits(),
+                // ML results: the bar re-runs the analysis as a new turn; the
+                // workspace owns that flow (proposal → /api/analysis/rerun).
+                onAnalysisRerun: (instruction) => (
+                    window.WorkspaceController && typeof window.WorkspaceController.rerunAnalysis === 'function'
+                        ? window.WorkspaceController.rerunAnalysis(instruction)
+                        : Promise.reject(new Error('Analysis re-run is unavailable here'))
+                ),
             });
             this.chartChat.mount();
             this.chartChat.disable();
@@ -779,7 +786,67 @@ export class ChartManager {
         });
         // Colours: pin one per single-colour series, let pie-like series take
         // slices from option.color, leave map/heatmap/gauge alone.
-        return applyPalette(themed, colors);
+        const painted = applyPalette(themed, colors);
+        // ML band charts carry semantic roles; those override the sequential
+        // palette so the queried series is always ink and only model output is
+        // lavender (see docs/ml_skills_handoff/README.md §2).
+        return this._withRoleColors(painted, token);
+    }
+
+    /**
+     * Map `series[i].jeenRole` to design tokens at render time. Applied after
+     * the palette so it wins, and re-applied by the theme observer on a
+     * light/dark switch.
+     */
+    _withRoleColors(option, token) {
+        const series = Array.isArray(option?.series) ? option.series : null;
+        if (!series || !series.some((s) => s && s.jeenRole)) return option;
+        // Tokens only — no literal fallbacks. If a token is missing the server's
+        // role default stays in place rather than a hardcoded colour winning.
+        const ink = token('--text', '');
+        const model = token('--rose', '');
+        const band = token('--insight-bg', '');
+        const flagged = token('--err', '');
+        const bandFill = (() => {
+            // --insight-bg is a faint background wash; the band is the same hue
+            // at a legible alpha, derived from the token, never a literal.
+            const match = /rgba?\(([^)]+)\)/.exec(band);
+            if (!match) return band;
+            const parts = match[1].split(',').map((p) => p.trim());
+            return `rgba(${parts[0]}, ${parts[1]}, ${parts[2]}, 0.16)`;
+        })();
+        const paint = (s, colour) => {
+            if (!colour) return;
+            s.itemStyle = { ...(s.itemStyle || {}), color: colour };
+            if (s.type === 'line') s.lineStyle = { ...(s.lineStyle || {}), color: colour };
+        };
+        series.forEach((s) => {
+            if (!s || !s.jeenRole) return;
+            switch (s.jeenRole) {
+                case 'actual': paint(s, ink); break;
+                case 'expected':
+                case 'forecast': paint(s, model); break;
+                case 'flagged': paint(s, flagged); break;
+                case 'interval':
+                    if (bandFill) {
+                        s.areaStyle = { ...(s.areaStyle || {}), color: bandFill, opacity: 1 };
+                        s.itemStyle = { ...(s.itemStyle || {}), color: bandFill };
+                    }
+                    s.lineStyle = { ...(s.lineStyle || {}), opacity: 0 };
+                    break;
+                case 'interval_base':
+                case 'interval_bound':
+                    s.lineStyle = { ...(s.lineStyle || {}), opacity: 0 };
+                    s.itemStyle = { ...(s.itemStyle || {}), opacity: 0 };
+                    break;
+                default: break;
+            }
+        });
+        const muted = token('--muted', '');
+        if (muted && option.legend && typeof option.legend === 'object') {
+            option.legend.textStyle = { ...(option.legend.textStyle || {}), color: muted };
+        }
+        return option;
     }
 
     _refreshWorkspaceTheme() {

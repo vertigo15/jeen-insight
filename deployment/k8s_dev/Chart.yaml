@@ -14,3 +14,7 @@ dependencies:
     version: 0.1.0
     repository: "file://charts/jeen-insights-ui"
     condition: jeen-insights-ui.enabled
+  - name: jeen-insights-analytics
+    version: 0.1.0
+    repository: "file://charts/jeen-insights-analytics"
+    condition: jeen-insights-analytics.enabled

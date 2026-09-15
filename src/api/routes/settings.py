@@ -114,6 +114,29 @@ PROMPT_REGISTRY: List[Dict[str, Any]] = [
         "path": _PROMPTS_DIR / "sql_generator.md",
     },
     {
+        "name": "analysis_planner",
+        "label": "ML Skill Planner",
+        "group": "AI Agent",
+        "description": (
+            "Binds a needs_analysis question to one registered ML skill "
+            "(anomaly detection, forecast) and fills its parameters from the "
+            "catalog: table, date column, measure, grain, window, horizon. "
+            "Never computes anything; ambiguity becomes a clarification."
+        ),
+        "path": _PROMPTS_DIR / "analysis_planner.md",
+    },
+    {
+        "name": "analysis_narration",
+        "label": "ML Result Narration",
+        "group": "AI Agent",
+        "description": (
+            "Narration mode of the eval node for ML results: restates the "
+            "engine's facts (flagged periods, forecast endpoints, validation) "
+            "as a summary, key insights and follow-ups. Never computes numbers."
+        ),
+        "path": _PROMPTS_DIR / "analysis_narration.md",
+    },
+    {
         "name": "chart_editor",
         "label": "Chart Editor",
         "group": "Other Features",

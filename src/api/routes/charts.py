@@ -324,6 +324,8 @@ def _format_recent_messages(messages: Optional[List[ChatMessage]]) -> str:
 _ALLOWED_CHART_TYPES = {
     "bar", "line", "area", "pie", "donut", "scatter", "horizontal_bar",
     "stacked_bar", "stacked_area", "combo", "heatmap", "gauge", "map", "osm_map",
+    # ML-skill result chart (role-based; built by /api/analysis/chart, never the LLM).
+    "band",
 }
 _ALLOWED_AGGREGATES = {"sum", "avg", "count", "min", "max", "none"}
 _ALLOWED_SORTS = {"asc", "desc", "none"}

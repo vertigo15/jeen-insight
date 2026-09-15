@@ -21,6 +21,7 @@ pythonpath = ["."]
 asyncio_mode = "auto"
 markers = [
     "integration: end-to-end test that requires live services (DB, browser, LLM)",
+    "slow: spawns a child process or fits a heavy model; still a unit test",
 ]
 filterwarnings = [
     # asyncpg + pydantic-v2 are noisy on import; drop the deprecation noise

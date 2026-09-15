@@ -61,9 +61,39 @@ class AgentState(TypedDict, total=False):
     is_over_budget: bool
 
     # ── Routing ───────────────────────────────────────────────────────────
-    # Values: needs_query | from_memory | out_of_scope | unsafe
+    # Values: needs_query | needs_analysis | from_memory | out_of_scope | unsafe
     route: str
     route_reason: str
+    # Where the ML-vs-SQL decision came from: router_llm | keyword_cue |
+    # ml_disabled | request_override | greeting | planner_fallback
+    route_source: Optional[str]
+
+    # ── ML skills (analysis branch) ────────────────────────────────────────
+    # Written by analysis_planner / analysis_guard / analysis_sql / analysis_run.
+    # ``analysis_confirmed`` is set by /api/analysis/run when the graph is
+    # re-entered with server-validated params, so the planner and the confirm
+    # stop are skipped. ``analysis_result`` is the full ResultEnvelope dump;
+    # response_formatter attaches its artifact_view() as ``analysis``.
+    analysis_enabled_override: Optional[bool]        # per-request: False = never route to ML
+    analysis_skill: Optional[str]
+    analysis_params: Optional[Dict[str, Any]]
+    # resume: params are server-validated → skip memory/router/planner and enter at
+    # the guard. confirmed: the user consented (or is remembered) → skip the card.
+    # A resolved clarification or guard exit resumes without being confirmed.
+    analysis_resume: bool
+    analysis_confirmed: bool
+    analysis_confirm_required: bool
+    analysis_override_guards: bool
+    analysis_proposal: Optional[Dict[str, Any]]      # AnalysisProposal dump (confirm|clarify|guard)
+    analysis_clarification: Optional[str]
+    analysis_guard_failure: Optional[Dict[str, Any]]
+    analysis_guard_results: List[Dict[str, Any]]
+    analysis_dropped_filters: List[str]              # grounded filters v1 could not express
+    analysis_span: Optional[Dict[str, Any]]          # {min_ts, max_ts, n} from the probe
+    analysis_result: Optional[Dict[str, Any]]
+    analysis_error: Optional[str]
+    low_confidence: bool
+    parent_query_id: Optional[UUID]
 
     # ── Catalog / prompt ──────────────────────────────────────────────────
     metadata_bundle: Dict[str, str]

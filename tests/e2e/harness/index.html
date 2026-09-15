@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jeen Insights — ML e2e harness</title>
+  <link rel="stylesheet" href="/src/static/design-tokens.css">
+  <link rel="stylesheet" href="/src/static/workspace/workspace.css">
+  <style>
+    /* The harness has no login/topbar; give the shell a viewport to fill. */
+    html, body { height: 100%; margin: 0; }
+    /* Production nodes the controller relocates live off-screen until moved. */
+    .harness-src { position: absolute; left: -9999px; top: -9999px; }
+  </style>
+</head>
+<body class="v3-booting">
+  <!--
+    "Production nodes": in the real app these come from index.html and are moved
+    into the v3 shell by WorkspaceController._moveProductionNodes(). We provide
+    just the ones the controller keeps a handle to (input, ask button) plus the
+    optional slots so the moves are no-ops rather than nulls.
+  -->
+  <div class="harness-src">
+    <div class="connection-switcher"></div>
+    <button id="theme-toggle" type="button">theme</button>
+    <div id="user-menu-wrap"></div>
+    <textarea id="question-input"></textarea>
+    <div id="question-suggestions"></div>
+    <button id="ask-button" type="button">Ask</button>
+    <input id="table-search">
+    <div id="tables-list"></div>
+    <input id="question-search">
+    <div id="question-history"></div>
+    <button id="export-btn" type="button">Export</button>
+    <button id="copy-results-btn" type="button">Copy</button>
+    <button id="send-result-btn" type="button">Send</button>
+    <button id="describe-btn" type="button">Describe</button>
+    <div id="describe-section"></div>
+    <div id="chart-type-selector-container"></div>
+    <div id="chart-options-panel-container"></div>
+    <div id="chart-view-container"></div>
+  </div>
+
+  <!-- 1) real routing truth  2) scenario shapes  3) fake network + env stubs -->
+  <script src="/tests/e2e/harness/routing.generated.js"></script>
+  <script src="/tests/e2e/harness/fixtures.js"></script>
+  <script src="/tests/e2e/harness/fakeBackend.js"></script>
+
+  <!-- real frontend modules under test (workspaceController auto-inits) -->
+  <script src="/src/static/analysis/analysisPanel.js"></script>
+  <script src="/src/static/workspace/workspaceController.js"></script>
+
+  <script>
+    // Tiny test helper: type + submit a question through the real controller.
+    window.__ask = (q, opts) => window.ChatController.send(q, opts || {});
+  </script>
+</body>
+</html>

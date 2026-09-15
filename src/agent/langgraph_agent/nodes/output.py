@@ -166,11 +166,23 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
     """
     route = state.get("route", "needs_query")
     eval_result = state.get("eval_result") or {}
+    proposal = state.get("analysis_proposal")
+    analysis = state.get("analysis_result")
 
     answer: Optional[str] = state.get("answer")
 
     # Override answer based on terminal state
-    if state.get("clarification"):
+    if proposal:
+        # Confirm card / clarification / guard refusal: the message is the answer
+        # and the proposal carries the chips, options and guard numbers.
+        answer = proposal.get("message") or answer
+    elif state.get("analysis_error"):
+        answer = state.get("analysis_error")
+    elif analysis and eval_result.get("summary"):
+        answer = eval_result["summary"]
+    elif analysis:
+        answer = analysis.get("headline") or answer
+    elif state.get("clarification"):
         answer = state["clarification"]
     elif state.get("dlp_blocked"):
         answer = state.get("governance_error") or (
@@ -211,14 +223,19 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
         or state.get("exec_error")
         or state.get("sqlglot_error")
         or state.get("governance_error")
+        or state.get("analysis_error")
     )
+    if proposal and not state.get("analysis_error"):
+        # A proposal is a result, not an error: it saves to history, appears in
+        # the trace and keeps the status strip.
+        error = None
 
     formatted: Dict[str, Any] = {
         "question": state.get("question", ""),
         "query_id": state.get("query_id"),
         "session_id": state.get("session_id"),
-        "sql": state.get("generated_sql"),
-        "results": state.get("query_result"),
+        "sql": state.get("generated_sql") if not proposal else None,
+        "results": state.get("query_result") if not proposal else None,
         "answer": answer,
         "prompt": state.get("structured_prompt"),
         "error": error,
@@ -232,7 +249,40 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
             "llm_call_count": state.get("llm_call_count", 0),
             "route": route,
         },
+        # Why this answer took the path it did — ML skill or text-to-SQL — so
+        # the UI can name it and tests can assert it without reading the trace.
+        "routing": {
+            "route": route,
+            "source": state.get("route_source"),
+            "reason": state.get("route_reason") or "",
+            "skill": state.get("analysis_skill"),
+            "path": "ml" if route == "needs_analysis" else "sql" if route == "needs_query" else route,
+        },
     }
+
+    # ── ML skills ─────────────────────────────────────────────────────────
+    if state.get("analysis_skill"):
+        formatted["metrics"]["skill"] = state.get("analysis_skill")
+    if state.get("parent_query_id"):
+        formatted["parent_query_id"] = state.get("parent_query_id")
+    if proposal:
+        kind = proposal.get("kind")
+        formatted["status"] = {"confirm": "confirm", "clarify": "clarify", "guard": "blocked"}.get(kind, kind)
+        formatted["proposal"] = proposal
+    elif analysis:
+        from src.analysis.contracts import ResultEnvelope  # noqa: PLC0415
+
+        try:
+            view = ResultEnvelope.model_validate(analysis).artifact_view()
+        except Exception:  # noqa: BLE001 — never lose the answer over the view
+            view = {k: v for k, v in analysis.items() if k not in ("rows", "columns")}
+        if state.get("analysis_dropped_filters"):
+            view.setdefault("caveats", []).append(
+                "Filters not applied (other tables): " + ", ".join(state["analysis_dropped_filters"])
+            )
+        formatted["status"] = "completed"
+        formatted["analysis"] = view
+        formatted["low_confidence"] = bool(state.get("low_confidence") or view.get("low_confidence"))
 
     # Eval output, named to match GenerateInsightsResponse so the two endpoints
     # that expose this analysis return one shape. These must also be declared on
@@ -416,6 +466,61 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
             if fb in ("syntax", "exec", "semantic", "missing_table"):
                 ev["status"] = "retry"
 
+        elif node == "analysis_planner":
+            skill = state.get("analysis_skill")
+            params = state.get("analysis_params") or {}
+            series = params.get("series") or {}
+            if state.get("analysis_clarification"):
+                ev["detail"] = f"clarification: {str(state['analysis_clarification'])[:80]}"
+            elif skill:
+                ev["detail"] = (
+                    f"{skill} · {str(series.get('agg', '')).upper()}({series.get('measure_column')}) "
+                    f"by {series.get('grain')} on {series.get('table')}"
+                )
+            else:
+                ev["detail"] = "no skill applies — answering with SQL"
+            ev["skill"] = skill
+
+        elif node == "analysis_guard":
+            guards = state.get("analysis_guard_results") or []
+            failed = [g for g in guards if not g.get("passed")]
+            if state.get("analysis_confirm_required"):
+                ev["detail"] = f"{len(guards)} guards passed · waiting for confirmation"
+            elif failed:
+                ev["detail"] = f"guard: {failed[0].get('name')} · {str(failed[0].get('detail'))[:70]}"
+                ev["status"] = "blocked"
+            else:
+                span = state.get("analysis_span") or {}
+                ev["detail"] = f"{len(guards)} guards passed · {span.get('n', '?')} rows in span"
+
+        elif node == "analysis_sql":
+            sql = state.get("generated_sql")
+            if sql and not state.get("analysis_error"):
+                short = sql.replace("\n", " ")[:100]
+                ev["detail"] = short + ("…" if len(sql) > 100 else "")
+                ev["sql"] = sql
+            else:
+                ev["detail"] = str(state.get("analysis_error") or "no SQL")[:100]
+                ev["status"] = "error"
+
+        elif node == "analysis_run":
+            analysis = state.get("analysis_result") or {}
+            if analysis:
+                v = analysis.get("validation") or {}
+                metric = f" · {v.get('metric')} {v.get('value'):.3f}" if v.get("value") is not None else ""
+                ev["detail"] = (
+                    f"{analysis.get('method_used')} · {analysis.get('egress', {}).get('rows_sent_to_model', '?')} "
+                    f"rows sent{metric}"
+                )
+                if state.get("low_confidence"):
+                    ev["detail"] += " · low confidence"
+            elif state.get("analysis_guard_failure"):
+                ev["detail"] = str(state["analysis_guard_failure"].get("message"))[:100]
+                ev["status"] = "blocked"
+            else:
+                ev["detail"] = str(state.get("analysis_error") or "failed")[:100]
+                ev["status"] = "error"
+
         elif node == "response_formatter":
             route = state.get("route", "?")
             ev["detail"] = f"route={route}"
@@ -458,6 +563,11 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
         # success/error/timeout/syntax_error/pending, so it is a 'success' with
         # result_kind='text' on the artifact.
         formatter_error = formatted.get("error") if isinstance(formatted, dict) else None
+        # A proposal (confirm / clarify / guard) generated SQL for its probe or
+        # even fetched the series, but it answered with a message: store it as
+        # a text turn so the conversation restores the card, not an empty table.
+        if isinstance(formatted, dict) and formatted.get("proposal"):
+            sql = None
         text_only = not sql and not exec_error
 
         try:
@@ -579,6 +689,11 @@ async def _persist_turn_artifact(
                         "bytes": size,
                     },
                 )
+        analysis = fields.get("analysis")
+        proposal = formatted.get("proposal") if isinstance(formatted, dict) else None
+        if analysis is None and isinstance(proposal, dict):
+            # A pending proposal restores as its card; the id lets the UI resume it.
+            analysis = {"proposal": proposal, "status": formatted.get("status")}
         await history_service.upsert_turn_artifact(
             turn_id=query_id,
             result_kind=fields["result_kind"],
@@ -591,6 +706,8 @@ async def _persist_turn_artifact(
             result_snapshot=snapshot,
             snapshot_status=status,
             snapshot_bytes=size,
+            analysis=analysis,
+            low_confidence=bool(fields.get("low_confidence")),
         )
     except Exception:  # noqa: BLE001
         logger.exception(

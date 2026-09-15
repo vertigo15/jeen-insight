@@ -32,6 +32,9 @@ ANALYTICS_MAX_ITEMS = 20
 ANALYTICS_ITEM_MAX_BYTES = 1024
 ERROR_MAX_CHARS = 4000
 TITLE_MAX_CHARS = 200
+# The ML analysis object (method, params, validation, guard results, engine,
+# provenance, facts) is small by construction — the rows live in the snapshot.
+ANALYSIS_MAX_BYTES = 64 * 1024
 
 _METRIC_KEYS = (
     "input_tokens",
@@ -185,6 +188,23 @@ def _numeric_metrics(metrics: Any) -> Optional[Dict[str, Any]]:
     return out or None
 
 
+def _cap_analysis(analysis: Any) -> Optional[Dict[str, Any]]:
+    """Keep the ML analysis object when it is a dict under the byte cap.
+
+    Rows never belong here (they are the result snapshot); drop them defensively
+    so a caller that forgot ``artifact_view()`` cannot blow the cap.
+    """
+    if not isinstance(analysis, dict) or not analysis:
+        return None
+    safe = json_safe_value(analysis)
+    if isinstance(safe, dict):
+        safe.pop("rows", None)
+        safe.pop("columns", None)
+    if measure_json_bytes(safe) > ANALYSIS_MAX_BYTES:
+        return None
+    return safe
+
+
 def extract_artifact_fields(
     formatted_response: Optional[Dict[str, Any]],
     *,
@@ -193,10 +213,11 @@ def extract_artifact_fields(
 ) -> Dict[str, Any]:
     """Build the persisted allowlist from the graph's ``formatted_response``.
 
-    Only ``answer``, ``error``, ``metrics``, ``findings``, ``suggestions`` and
-    ``followups`` are taken. ``prompt``, ``node_prompts``, ``results`` and
-    ``trace`` are deliberately ignored: they carry schema context and full rows.
-    Also decides the turn's ``result_kind``.
+    Only ``answer``, ``error``, ``metrics``, ``findings``, ``suggestions``,
+    ``followups``, ``analysis`` and ``low_confidence`` are taken. ``prompt``,
+    ``node_prompts``, ``results`` and ``trace`` are deliberately ignored: they
+    carry schema context and full rows. Also decides the turn's
+    ``result_kind`` — an ML answer is an ordinary ``table`` (no new kind).
     """
     fr = formatted_response or {}
     error = exec_error or fr.get("error")
@@ -218,6 +239,8 @@ def extract_artifact_fields(
         "findings": _cap_analytics(fr.get("findings")),
         "suggestions": _cap_analytics(fr.get("suggestions")),
         "followups": _cap_analytics(fr.get("followups")),
+        "analysis": _cap_analysis(fr.get("analysis")),
+        "low_confidence": bool(fr.get("low_confidence")),
     }
 
 

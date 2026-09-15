@@ -61,6 +61,10 @@ class JeenInsightsAgent:
         history_service: ConversationHistoryService,
         user_resolver: SimpleUserResolver,
         prompt_loader: PromptLoader,
+        analysis_store: Any = None,
+        analysis_runner_provider: Any = None,
+        analysis_limiter: Any = None,
+        analysis_audit: Any = None,
     ):
         self.connection = connection
         self.source_key = connection.source_key
@@ -71,6 +75,7 @@ class JeenInsightsAgent:
         self.user_resolver = user_resolver
         self.sql_runner = sql_runner
         self.llm = llm_service           # used by charts.py + insights.py routes
+        self.analysis_store = analysis_store
 
         self.graph = build_graph(
             llm=llm_service,
@@ -93,6 +98,13 @@ class JeenInsightsAgent:
             filter_match_threshold=settings.SQL_FILTER_MATCH_THRESHOLD,
             filter_lookup_timeout_ms=settings.SQL_FILTER_LOOKUP_TIMEOUT_MS,
             filter_cache_ttl_seconds=settings.SQL_FILTER_CACHE_TTL_SECONDS,
+            ml_skills_enabled=bool(settings.ML_SKILLS_ENABLED),
+            analysis_store=analysis_store,
+            analysis_runner_provider=analysis_runner_provider,
+            analysis_limiter=analysis_limiter,
+            analysis_audit=analysis_audit,
+            analysis_max_series_rows=int(settings.ANALYSIS_MAX_SERIES_ROWS),
+            analysis_max_entity_rows=int(settings.ANALYSIS_MAX_ENTITY_ROWS),
         )
         logger.info(
             "✅ LangGraph agent ready for source_key=%s", self.source_key
@@ -109,14 +121,85 @@ class JeenInsightsAgent:
         eval_analytics: Optional[bool] = None,
         llm_timeout: Optional[int] = None,
         progress_callback: Optional[ProgressCallback] = None,
+        analysis_enabled: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Run the LangGraph text-to-SQL pipeline.
 
         ``limit`` and ``temperature`` are optional per-request overrides
         sourced from the user's settings panel.  ``None`` means "use the
         server's default".  Server-side bounds are enforced by the Pydantic
-        request schema.
+        request schema. ``analysis_enabled=False`` keeps this one question on
+        the SQL path even when it reads like an ML request.
         """
+        return await self._run(
+            question=question,
+            session_id=session_id,
+            user_context=user_context,
+            limit=limit,
+            temperature=temperature,
+            eval_analytics=eval_analytics,
+            llm_timeout=llm_timeout,
+            progress_callback=progress_callback,
+            analysis={"analysis_enabled_override": analysis_enabled} if analysis_enabled is not None else None,
+        )
+
+    async def process_confirmed_analysis(
+        self,
+        *,
+        question: str,
+        skill: str,
+        params: Dict[str, Any],
+        session_id: Optional[UUID],
+        user_context: Optional[Dict[str, Any]] = None,
+        parent_query_id: Optional[UUID] = None,
+        override_guards: bool = False,
+        confirmed: bool = True,
+        eval_analytics: Optional[bool] = None,
+        llm_timeout: Optional[int] = None,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> Dict[str, Any]:
+        """Re-enter the graph with server-validated ML parameters.
+
+        Used by ``/api/analysis/run`` and ``/rerun``: the planner is skipped
+        (``analysis_resume``) and the result is a new child turn of
+        ``parent_query_id`` in the same conversation. ``confirmed=False`` (a
+        resolved clarification or guard exit) still stops at the first-run
+        confirm card unless the skill is remembered for this connection.
+        """
+        return await self._run(
+            question=question,
+            session_id=session_id,
+            user_context=user_context,
+            eval_analytics=eval_analytics,
+            llm_timeout=llm_timeout,
+            progress_callback=progress_callback,
+            parent_query_id=parent_query_id,
+            analysis={
+                "analysis_skill": skill,
+                "analysis_params": params,
+                "analysis_resume": True,
+                "analysis_confirmed": bool(confirmed),
+                "analysis_override_guards": bool(override_guards),
+                "route": "needs_analysis",
+                "route_reason": "confirmed analysis" if confirmed else "resumed analysis",
+                "route_source": "confirmed_resume",
+            },
+        )
+
+    async def _run(
+        self,
+        *,
+        question: str,
+        session_id: Optional[UUID],
+        user_context: Optional[Dict[str, Any]],
+        limit: Optional[int] = None,
+        temperature: Optional[float] = None,
+        eval_analytics: Optional[bool],
+        llm_timeout: Optional[int],
+        progress_callback: Optional[ProgressCallback],
+        parent_query_id: Optional[UUID] = None,
+        analysis: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         if not session_id:
             session_id = uuid4()
 
@@ -149,6 +232,7 @@ class JeenInsightsAgent:
                     user_id=user.id,
                     session_id=session_id,
                     question=question,
+                    parent_query_id=parent_query_id,
                 ),
                 return_exceptions=True,
             )
@@ -211,6 +295,7 @@ class JeenInsightsAgent:
                 # ── Routing ─────────────────────────────────────────────
                 "route": "needs_query",
                 "route_reason": "",
+                "route_source": None,
                 # ── Catalog ─────────────────────────────────────────────
                 # Pre-loaded above; catalog_lookup consumes it instead of
                 # loading a second time. catalog_seeded is the one-shot ticket.
@@ -269,12 +354,32 @@ class JeenInsightsAgent:
                 "trace": [],
                 # Empty dict — each LLM node adds its rendered prompt here
                 "node_prompts": {},
+                # ── ML skills ─────────────────────────────────────────────────
+                "analysis_enabled_override": None,
+                "analysis_skill": None,
+                "analysis_params": None,
+                "analysis_resume": False,
+                "analysis_confirmed": False,
+                "analysis_confirm_required": False,
+                "analysis_override_guards": False,
+                "analysis_proposal": None,
+                "analysis_clarification": None,
+                "analysis_guard_failure": None,
+                "analysis_guard_results": [],
+                "analysis_dropped_filters": [],
+                "analysis_span": None,
+                "analysis_result": None,
+                "analysis_error": None,
+                "low_confidence": False,
+                "parent_query_id": parent_query_id,
                 # ── Output ─────────────────────────────────────────────────────────────────
                 "answer": None,
                 # Surface pre-graph errors (e.g. audit log failure) in the UI
                 # response without stopping the query flow.
                 "error": pre_graph_error,
             }
+            if analysis:
+                initial_state.update(analysis)
 
             final_state = await self.graph.ainvoke(initial_state)
             formatted = final_state.get("formatted_response") or {}
@@ -316,6 +421,7 @@ class JeenInsightsAgent:
         user_id: Any,
         session_id: UUID,
         question: str,
+        parent_query_id: Optional[UUID] = None,
     ) -> Optional[UUID]:
         """Insert the query audit record.  Returns the new query_id or raises
         so the caller (``asyncio.gather``) can handle the failure gracefully."""
@@ -326,6 +432,7 @@ class JeenInsightsAgent:
             natural_language_query=question,
             dataset_id=self.source_key,
             rag_context={},  # metadata not yet available; parallel fetch
+            parent_query_id=parent_query_id,
             source_label=self.display_name,
         )
 
@@ -397,6 +504,10 @@ class AgentRegistry:
         user_resolver: SimpleUserResolver,
         prompt_loader: Optional[PromptLoader] = None,
         prompt_cache: Optional[Any] = None,   # PromptCache — avoids circular import
+        analysis_store: Any = None,
+        analysis_runner_provider: Any = None,
+        analysis_limiter: Any = None,
+        analysis_audit: Any = None,
     ):
         self.llm = llm_service
         self.router_llm = router_llm_service or llm_service
@@ -404,6 +515,11 @@ class AgentRegistry:
         self.connection_service = connection_service
         self.history = history_service
         self.user_resolver = user_resolver
+        # ML skills collaborators (shared across per-connection agents).
+        self.analysis_store = analysis_store
+        self.analysis_runner_provider = analysis_runner_provider
+        self.analysis_limiter = analysis_limiter
+        self.analysis_audit = analysis_audit
         # Prefer an explicitly supplied PromptLoader; otherwise build one from disk.
         # The graph nodes call prompt_loader.arender() so they always need this.
         self.prompt_loader = prompt_loader or PromptLoader()
@@ -433,6 +549,10 @@ class AgentRegistry:
                 history_service=self.history,
                 user_resolver=self.user_resolver,
                 prompt_loader=self.prompt_loader,
+                analysis_store=self.analysis_store,
+                analysis_runner_provider=self.analysis_runner_provider,
+                analysis_limiter=self.analysis_limiter,
+                analysis_audit=self.analysis_audit,
             )
             self._agents[source_key] = agent
             logger.info("✅ Built JeenInsightsAgent for source_key=%s", source_key)

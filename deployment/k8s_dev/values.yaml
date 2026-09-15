@@ -68,7 +68,51 @@ jeen-insights-api:
     externalEgressPorts:
       - 443
       - 5432
-  env: {}
+    analyticsPort: 8100
+  env:
+    # ML skills: the sandbox is the only production runner. Keep the feature
+    # off until the analytics image is deployed, then flip ML_SKILLS_ENABLED.
+    ML_SKILLS_ENABLED: "false"
+    ANALYSIS_RUNNER: sandbox
+    ANALYSIS_SANDBOX_URL: http://jeen-insights-jeen-insights-analytics:8100
+
+# ML-skills sandbox (see docs/ml_skills_handoff/README.md §7).
+jeen-insights-analytics:
+  enabled: false
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  podAnnotations: {}
+  serviceAccount:
+    create: true
+    annotations: {}
+  service:
+    port: 8100
+  resources:
+    requests:
+      cpu: 250m
+      memory: 768Mi
+    limits:
+      cpu: "1"
+      memory: 1536Mi
+  tmpSizeLimit: 512Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  networkPolicy:
+    enabled: true
+  env:
+    ANALYSIS_SANDBOX_AUDIENCE: jeen-insights-analytics
+    ANALYSIS_TIMEOUT_SECONDS: "30"
+    ANALYSIS_MEMORY_MB: "1024"
+    ANALYSIS_MAX_SERIES_ROWS: "1500"
+    ANALYSIS_MAX_CONCURRENT: "2"
 
 jeen-insights-ui:
   enabled: true

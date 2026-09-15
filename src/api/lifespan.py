@@ -190,6 +190,78 @@ async def _probe_conversation_persistence(conn, history_service: Any) -> None:
     )
 
 
+async def _probe_analysis_schema(conn) -> bool:
+    """True when migration 023 (ML skills) is applied."""
+    try:
+        return bool(await conn.fetchval(
+            "SELECT to_regclass('insights_analysis_proposals') IS NOT NULL "
+            "AND to_regclass('insights_user_skill_prefs') IS NOT NULL "
+            "AND EXISTS (SELECT 1 FROM information_schema.columns "
+            "            WHERE table_name = 'insights_turn_artifacts' AND column_name = 'analysis')"
+        ))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("startup: ML skills schema probe failed: %s", exc)
+        return False
+
+
+def _build_analysis_runtime(pool, history_service: Any, analysis_schema_ready: bool) -> None:
+    """Wire the ML-skills store and runner into ``state`` (or disable cleanly)."""
+    from src.agent.analysis_store import AnalysisStore
+    from src.analysis.runner import build_runner
+
+    history_service.analysis_schema_ready = analysis_schema_ready
+    if not settings.ML_SKILLS_ENABLED:
+        state.analysis_store = None
+        state.analysis_runner = None
+        logger.info("startup: ML skills disabled (ML_SKILLS_ENABLED=false)")
+        return
+    if not analysis_schema_ready:
+        logger.warning(
+            "startup: migration 023_ml_skills is not applied; ML skills run without "
+            "proposal persistence or consent memory. Run `python scripts/run_insights_migrations.py`."
+        )
+    state.analysis_store = AnalysisStore(
+        pool, schema_ready=analysis_schema_ready, ttl_seconds=int(settings.ANALYSIS_PROPOSAL_TTL_SECONDS),
+    )
+    state.analysis_runner = build_runner(settings)
+    if state.analysis_runner is None:
+        logger.error(
+            "startup: no allowed analysis runner (ANALYSIS_RUNNER=%r, JEEN_DEV_MODE=%s); "
+            "ML skills will answer with a clear 'not available' message.",
+            settings.ANALYSIS_RUNNER, settings.JEEN_DEV_MODE,
+        )
+    else:
+        logger.info("startup: ML skills enabled — runner=%s", getattr(state.analysis_runner, "name", "?"))
+
+
+async def _analysis_limiter(user_id: str) -> bool:
+    limiter = state.rate_limiter
+    limit = int(settings.ANALYSIS_RUNS_PER_HOUR_PER_USER or 0)
+    if limiter is None or limit <= 0:
+        return True
+    try:
+        return await limiter.allow(f"analysis:{user_id}", limit=limit, window_seconds=3600)
+    except Exception:  # noqa: BLE001
+        return True
+
+
+async def _analysis_audit(event: dict) -> None:
+    """One append-only audit row per analysis run — never values."""
+    audit = state.audit_service
+    if audit is None:
+        return
+    detail = {k: v for k, v in event.items() if k not in ("user_id",)}
+    try:
+        await audit.log(
+            event_type="analysis.run",
+            actor_user_id=str(event.get("user_id") or "") or None,
+            outcome=str(event.get("outcome") or ""),
+            detail=detail,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("analysis audit failed", exc_info=True)
+
+
 async def _warm_caches(
     metadata_loader: Any,
     connection_service: Any,
@@ -333,6 +405,8 @@ async def lifespan(_app: FastAPI):
         await _ensure_schema(conn)
         await _seed_prompts(conn)
         await _probe_conversation_persistence(conn, state.history_service)
+        analysis_schema_ready = await _probe_analysis_schema(conn)
+    _build_analysis_runtime(pool, state.history_service, analysis_schema_ready)
 
     # ── Build LLM service from DB credentials ─────────────────────────────────
     async with pool.acquire() as conn:
@@ -414,6 +488,11 @@ async def lifespan(_app: FastAPI):
         connection_service=state.connection_service,
         history_service=state.history_service,
         user_resolver=_user_resolver,
+        analysis_store=state.analysis_store,
+        # A provider (not the instance) so a runner swapped at runtime is picked up.
+        analysis_runner_provider=lambda: state.analysis_runner,
+        analysis_limiter=_analysis_limiter,
+        analysis_audit=_analysis_audit,
     )
 
     # Separate registry for Power BI (text-to-DAX) connections. Shares the same
@@ -517,3 +596,5 @@ async def lifespan(_app: FastAPI):
         state.tool_result_service   = None
         state.rate_limiter          = None
         state.action_gate           = None
+        state.analysis_store        = None
+        state.analysis_runner       = None

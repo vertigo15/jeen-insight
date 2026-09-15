@@ -24,8 +24,53 @@ services:
       - ./scripts:/app/scripts
       - ./db:/app/db
       - ./templates:/app/templates
+    environment:
+      # ML skills run in the sandbox container over the internal network.
+      - ANALYSIS_RUNNER=sandbox
+      - ANALYSIS_SANDBOX_URL=http://jeen-insights-analytics:8100
+      # Signs sandbox-audience tokens; distinct from INTERNAL_API_SECRET so the
+      # sandbox holds nothing that could sign an API token.
+      - INTERNAL_ANALYTICS_SECRET=${INTERNAL_ANALYTICS_SECRET:-}
+    depends_on:
+      - jeen-insights-analytics
     networks:
       - jeen-insights-network
+      - jeen-insights-analytics-network
+
+  # ML-skills sandbox: runs our pinned engines with validated parameters,
+  # never model-authored code. Attached only to the `internal: true` network,
+  # so it has no route to the host or the internet — it can still reach the
+  # API container on that network (compose has no per-container egress policy;
+  # the AKS chart's NetworkPolicy is the enforcing control). Holds only its
+  # own audience secret, read-only filesystem, per-run tmpfs.
+  jeen-insights-analytics:
+    build:
+      context: .
+      dockerfile: Dockerfile.analytics
+    container_name: jeen-insights-analytics
+    expose:
+      - "8100"
+    environment:
+      - INTERNAL_ANALYTICS_SECRET=${INTERNAL_ANALYTICS_SECRET:-}
+      - JEEN_DEV_MODE=${JEEN_DEV_MODE:-true}
+      - ANALYSIS_SANDBOX_AUDIENCE=jeen-insights-analytics
+      - ANALYSIS_TIMEOUT_SECONDS=30
+      - ANALYSIS_MEMORY_MB=1024
+      - ANALYSIS_MAX_SERIES_ROWS=1500
+      - ANALYSIS_MAX_ENTITY_ROWS=50000
+      - ANALYSIS_MAX_CONCURRENT=2
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1536m
+    pids_limit: 64
+    networks:
+      - jeen-insights-analytics-network
 
   jeen-insights-ui:
     build:
@@ -53,3 +98,8 @@ services:
 networks:
   jeen-insights-network:
     driver: bridge
+  # internal: true = no route to the host or the internet. Only the API and
+  # the sandbox are attached, so the sandbox can be reached but cannot call out.
+  jeen-insights-analytics-network:
+    driver: bridge
+    internal: true

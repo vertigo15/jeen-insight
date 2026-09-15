@@ -352,6 +352,7 @@
                         <div class="v3-dock-tabs" role="tablist" aria-label="Result details">
                           <button class="v3-dock-tab" data-dock="sql" role="tab">SQL & run details</button>
                           <button class="v3-dock-tab" data-dock="profiling" role="tab">Profiling</button>
+                          <button class="v3-dock-tab v3-dock-tab--model" data-dock="model" role="tab" hidden>Model details</button>
                         </div>
                         <span id="v3-dock-meta" class="v3-dock-meta">no run yet</span>
                         <button id="v3-dock-toggle" class="v3-text-btn" aria-expanded="false">Show</button>
@@ -399,7 +400,6 @@
             const actions = [
                 ['#export-btn', 'Export', 'v3-icon-action', ICON.export],
                 ['#copy-results-btn', 'Copy', 'v3-icon-action', ICON.copy],
-                ['#save-analysis-btn', 'Save', '', null],
                 ['#send-result-btn', 'Send', '', null],
             ];
             actions.forEach(([selector, label, className, icon]) => {
@@ -574,7 +574,7 @@
             this.send(question);
         },
 
-        async send(question) {
+        async send(question, options = {}) {
             const q = String(question || '').trim();
             if (!q || this.sending) return;
             if (this.readOnly) {
@@ -626,6 +626,8 @@
             if (prefs.temperature !== undefined && prefs.temperature !== null) payload.temperature = Number(prefs.temperature);
             const llmTimeout = window.JeenPreferences && window.JeenPreferences.getLlmTimeoutSeconds();
             if (llmTimeout !== null && llmTimeout !== undefined) payload.llm_timeout = llmTimeout;
+            // "Answer with SQL instead": skip the ML route for this one question.
+            if (options.analysis === false) payload.analysis = false;
 
             const stale = () => generation !== this._generation;
             try {
@@ -729,6 +731,9 @@
             // Onboarding signal: a question was answered successfully.
             document.dispatchEvent(new CustomEvent('jeen:onboarding:ask_first_question'));
             turn.result = data;
+            // ML skills: a confirm / clarify / guard stop is a result (a card),
+            // not a table and not an error.
+            turn.resultKind = data.proposal ? 'proposal' : turn.resultKind;
             turn.durationMs = Math.round(performance.now() - turn.startedAt);
             turn.phaseState.format = 'done';
             turn.phaseState.save = 'done';
@@ -835,7 +840,7 @@
                 this._hydration = window.ConversationHydration;
                 return this._hydration;
             }
-            const module = await import('./conversationHydration.js?v=1');
+            const module = await import('./conversationHydration.js?v=2');
             this._hydration = module;
             return module;
         },
@@ -1179,11 +1184,15 @@
             if (!this.turns.length) {
                 const connectionName = document.getElementById('connection-pill-name')?.textContent?.trim() || 'this dataset';
                 const suggestions = typeof window.getStarterSuggestions === 'function' ? window.getStarterSuggestions(4) : [];
+                // ML quick-start chips appear once the catalog has a date column
+                // and a measure on one table — this is how the feature is found.
+                const ml = this._ensureMlSuggestions(this._analysisConnection());
+                const mlChips = ml.map((item) => `<button class="v3-chip v3-chip--ml" data-suggestion="${esc(item.text)}" title="${esc(item.skill || 'analysis')}">${esc(item.text)}</button>`).join('');
                 thread.innerHTML = `<div class="v3-thread-empty">
                   <h2>What would you like to know about your data?</h2>
                   <p>Ask in plain language. Answers come back with a chart, the rows behind it, and the SQL that produced them.</p>
                   <div class="v3-thread-empty-label">Suggested for ${esc(connectionName)}</div>
-                  <div class="v3-suggestions">${suggestions.map((item) => `<button class="v3-chip" data-suggestion="${esc(item.text)}">${esc(item.text)}</button>`).join('')}</div>
+                  <div class="v3-suggestions">${suggestions.map((item) => `<button class="v3-chip" data-suggestion="${esc(item.text)}">${esc(item.text)}</button>`).join('')}${mlChips}</div>
                 </div>`;
                 thread.querySelectorAll('[data-suggestion]').forEach((button) => button.addEventListener('click', () => this.send(button.dataset.suggestion)));
                 return;
@@ -1285,6 +1294,23 @@
             const summary = textOf(result.answer);
             const findings = result.findings || [];
             const followups = result.followups || [];
+            const skillLabel = window.JeenAnalysisUI ? window.JeenAnalysisUI.SKILL_LABEL : {};
+            if (result.proposal) {
+                // A stopped ML run: the card lives in the answer pane; the thread
+                // shows the question, the message and what the run is waiting for.
+                const proposal = result.proposal;
+                const kind = proposal.kind || result.status;
+                const waiting = kind === 'guard' ? 'blocked by a guard · 0 rows sent' : kind === 'clarify' ? 'waiting for a choice' : 'waiting for confirmation';
+                return `<article class="v3-turn is-proposal${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" data-route-path="ml" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="Show card: ${esc(turn.question)}" aria-current="${selected ? 'true' : 'false'}">
+                  <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
+                  <div class="v3-run-strip">${this._routePillHtml(result)}<span class="v3-skill-chip">${esc(skillLabel[proposal.skill] || proposal.skill || 'analysis')}</span><span class="v3-run-meta">${esc(waiting)}</span></div>
+                  <div class="v3-answer"><div class="v3-summary" dir="${directionOf(summary)}">${esc(summary || proposal.message || '')}</div></div>
+                </article>`;
+            }
+            const analysis = result.analysis && result.analysis.skill ? result.analysis : null;
+            const mlPill = analysis
+                ? `<span class="v3-skill-chip">${esc(skillLabel[analysis.skill] || analysis.skill)}</span>${result.low_confidence || analysis.low_confidence ? '<span class="v3-lowconf-pill">low confidence</span>' : ''}`
+                : '';
             const insightsDirection = directionOf(findings.map(textOf).join(' '));
             const dots = PHASES.map((phase) => {
                 const events = finished.filter((item) => (NODE_PHASE[item.node] || 'execution') === phase.id);
@@ -1293,10 +1319,11 @@
                 return `<span class="v3-dot${ran ? ' is-done' : ''}" title="${esc(phase.label)}${ran ? ` · ${formatMs(elapsed)}` : ' · not run'}"></span>`;
             }).join('');
             const trace = turn.trace.filter((item) => item.status !== 'node_started');
-            const strip = turn.restored ? this._restoredStripHtml(turn) : `<div class="v3-run-strip">${dots}<span class="v3-run-meta">${formatMs(turn.durationMs)} · ${trace.length} nodes</span>
+            const routePath = (result.routing || {}).path || (analysis ? 'ml' : 'sql');
+            const strip = turn.restored ? this._restoredStripHtml(turn) : `<div class="v3-run-strip">${dots}${this._routePillHtml(result)}${mlPill}<span class="v3-run-meta">${formatMs(turn.durationMs)} · ${trace.length} nodes</span>
                 <button class="v3-text-btn" data-trace-toggle="${turn.id}">${turn.traceOpen ? 'hide run' : 'run details'}</button>
               </div>`;
-            return `<article class="v3-turn${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" tabindex="0" aria-label="Show answer: ${esc(turn.question)}" aria-current="${selected ? 'true' : 'false'}">
+            return `<article class="v3-turn${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" data-route-path="${esc(routePath)}" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="Show answer: ${esc(turn.question)}" aria-current="${selected ? 'true' : 'false'}">
               <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
               ${strip}
               ${!turn.restored && turn.traceOpen ? `<div class="v3-trace">${trace.map((item) => `<div class="v3-trace-row">
@@ -1317,6 +1344,17 @@
             </article>`;
         },
 
+        _routePillHtml(result) {
+            // A small, always-present badge naming the path this answer took —
+            // "ML skill" or "SQL" — so it is obvious (and testable) which engine ran.
+            const routing = (result && result.routing) || {};
+            const path = routing.path || (result && result.analysis && result.analysis.skill ? 'ml' : result && result.proposal ? 'ml' : 'sql');
+            if (path !== 'ml' && path !== 'sql') return '';
+            const label = path === 'ml' ? 'ML skill' : 'SQL';
+            const title = routing.reason ? `${label} · ${routing.reason}` : label;
+            return `<span class="v3-route-pill is-${path}" data-route-path="${esc(path)}" data-route-source="${esc(routing.source || '')}" title="${esc(title)}">${esc(label)}</span>`;
+        },
+
         _restoredStripHtml(turn) {
             const when = turn.snapshotAt ? this._formatWhen(turn.snapshotAt) : null;
             if (turn.resultKind === 'text') {
@@ -1329,7 +1367,11 @@
                 const label = when
                     ? `Snapshot from ${esc(when)}`
                     : turn.snapshotStatus === 'too_large' ? 'Fresh result · too large to keep' : 'Restored snapshot';
-                return `<div class="v3-run-strip">
+                const analysis = turn.result.analysis && turn.result.analysis.skill ? turn.result.analysis : null;
+                const pill = analysis && window.JeenAnalysisUI
+                    ? `<span class="v3-skill-chip">${esc(window.JeenAnalysisUI.SKILL_LABEL[analysis.skill] || analysis.skill)}</span>${turn.result.low_confidence || analysis.low_confidence ? '<span class="v3-lowconf-pill">low confidence</span>' : ''}`
+                    : '';
+                return `<div class="v3-run-strip">${pill}
                   <span class="v3-run-meta">${label}${turn.hasChart ? ' · chart' : ''}</span>
                   ${turn.canLoadData || turn.result?.sql ? `<button class="v3-text-btn" data-load-data="${turn.id}">Refresh</button>` : ''}
                 </div>`;
@@ -1399,6 +1441,260 @@
             }
         },
 
+        // ── ML skills ─────────────────────────────────────────────────────────
+
+        _setModelTabVisible(visible) {
+            const tab = document.querySelector('[data-dock="model"]');
+            if (!tab) return;
+            tab.hidden = !visible;
+            if (!visible && this.dockTab === 'model') this.dockTab = 'sql';
+        },
+
+        /** Answer pane for a stopped ML run: confirm card, clarification or guard refusal. */
+        _renderProposal(turn) {
+            const placeholder = document.getElementById('v3-placeholder');
+            if (this._placeholderDefault === null) this._placeholderDefault = placeholder.innerHTML;
+            const data = turn.result || {};
+            const proposal = data.proposal || {};
+            const kind = proposal.kind || data.status || 'confirm';
+            const statusLabel = kind === 'guard' || data.status === 'blocked' ? 'Blocked' : kind === 'clarify' ? 'Clarify' : 'Planning';
+            const skill = (window.JeenAnalysisUI && window.JeenAnalysisUI.SKILL_LABEL[proposal.skill]) || proposal.skill || '';
+            const failed = (proposal.guard_results || []).filter((g) => !g.passed);
+            const meta = kind === 'guard'
+                ? `guard: ${failed.map((g) => g.name).join(', ') || 'refused'} · 0 rows sent`
+                : kind === 'clarify' ? 'one question before running' : 'confirm before running';
+            document.getElementById('v3-result-title').textContent = turn.question;
+            document.getElementById('v3-meta-row').innerHTML = `
+              <span class="v3-status${kind === 'guard' ? ' is-blocked' : ''}">${statusLabel}</span>
+              ${skill ? `<span class="v3-skill-chip">${esc(skill)}</span>` : ''}
+              <span class="v3-result-meta">${esc(meta)}${turn.restored ? ' · restored' : ''}</span>`;
+            placeholder.innerHTML = window.JeenAnalysisUI
+                ? window.JeenAnalysisUI.proposalHtml(proposal)
+                : `<strong>${esc(statusLabel)}</strong><span>${esc(textOf(data.answer))}</span>`;
+            placeholder.hidden = false;
+            document.getElementById('v3-chart-block').hidden = true;
+            document.getElementById('v3-table-block').hidden = true;
+            const chart = document.getElementById('chart-view-container');
+            if (chart) chart.style.display = 'none';
+            this._setModelTabVisible(false);
+            document.getElementById('v3-dock-meta').textContent = kind === 'guard' ? 'blocked before SQL' : 'waiting for you';
+            this._setActionsEnabled(false);
+            this.renderDock();
+            this._bindProposalCard(turn, placeholder);
+        },
+
+        _bindProposalCard(turn, root) {
+            const card = root.querySelector('.v3-ml-card');
+            if (!card) return;
+            const proposal = (turn.result || {}).proposal || {};
+            const expired = window.JeenAnalysisUI
+                ? window.JeenAnalysisUI.proposalExpired(proposal)
+                : !proposal.proposal_id;
+            const setBusy = (busy, label) => {
+                card.classList.toggle('is-busy', busy);
+                card.querySelectorAll('button').forEach((b) => { b.disabled = busy; });
+                const run = card.querySelector('[data-run] > span, [data-run]');
+                if (run && label) run.firstChild.textContent = label;
+            };
+            const fail = (message) => {
+                setBusy(false);
+                let note = card.querySelector('.v3-ml-error');
+                if (!note) {
+                    note = document.createElement('div');
+                    note.className = 'v3-ml-error';
+                    card.appendChild(note);
+                }
+                note.textContent = message;
+            };
+            if (expired) {
+                card.querySelectorAll('[data-run], [data-exit]').forEach((b) => {
+                    b.disabled = true;
+                    b.title = 'This proposal can no longer be resumed; ask the question again.';
+                });
+                const note = document.createElement('div');
+                note.className = 'v3-ml-error';
+                note.textContent = 'This card has expired. Ask the question again to get a fresh one.';
+                card.appendChild(note);
+            }
+            card.querySelector('[data-run]')?.addEventListener('click', async () => {
+                const patch = window.JeenAnalysisUI ? window.JeenAnalysisUI.collectPatch(card) : {};
+                const remember = Boolean(card.querySelector('[data-remember]')?.checked);
+                setBusy(true, 'Running…');
+                try {
+                    await this.runProposal(turn, { patch, remember });
+                } catch (error) {
+                    fail(error && error.message ? error.message : String(error));
+                }
+            });
+            card.querySelectorAll('[data-exit]').forEach((button) => button.addEventListener('click', async () => {
+                const option = (proposal.options || [])[Number(button.dataset.exit)];
+                if (!option) return;
+                if (option.kind === 'answer_with_sql') {
+                    this.send(turn.question, { analysis: false });
+                    return;
+                }
+                if (option.kind === 'switch_skill') {
+                    this.input?.focus();
+                    return;
+                }
+                setBusy(true);
+                try {
+                    await this.runProposal(turn, {
+                        patch: option.params_patch || {},
+                        override: option.kind === 'override',
+                    });
+                } catch (error) {
+                    fail(error && error.message ? error.message : String(error));
+                }
+            }));
+            card.querySelector('[data-sql-instead]')?.addEventListener('click', () => this.send(turn.question, { analysis: false }));
+        },
+
+        _analysisConnection() {
+            return typeof window.getActiveConnection === 'function' ? window.getActiveConnection() : '';
+        },
+
+        async _postJson(url, body) {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            let payload = {};
+            try { payload = await response.json(); } catch (_) { payload = {}; }
+            if (!response.ok) {
+                // The BFF wraps upstream errors as {error: "<json>"}; surface the detail.
+                let detail = payload.detail || payload.error || `Request failed (${response.status})`;
+                if (typeof detail === 'string' && detail.trim().startsWith('{')) {
+                    try { const inner = JSON.parse(detail); detail = inner.detail || detail; } catch (_) { /* keep text */ }
+                }
+                if (detail && typeof detail === 'object') detail = detail.message || JSON.stringify(detail);
+                throw new Error(String(detail));
+            }
+            return payload;
+        },
+
+        /** Resume a persisted proposal (confirm / clarification pick / guard exit). */
+        async runProposal(turn, { patch = {}, remember = false, override = false } = {}) {
+            const proposal = (turn.result || {}).proposal || {};
+            if (!proposal.proposal_id) throw new Error('This proposal can no longer be resumed; ask the question again.');
+            const connection = this._analysisConnection();
+            if (!connection) throw new Error('Select a connection first');
+            const sessionId = turn.result?.session_id || (typeof window._jeenGetSessionId === 'function' ? window._jeenGetSessionId() : null);
+            const prefs = window.JeenPreferences ? window.JeenPreferences.getAll() : {};
+            const body = {
+                connection,
+                proposal_id: proposal.proposal_id,
+                session_id: sessionId,
+                params_patch: patch,
+                override_guards: Boolean(override),
+                remember: Boolean(remember),
+                idempotency_key: `${proposal.proposal_id}:${Date.now()}`,
+                eval_analytics: (prefs.aiAnalytics || 'on') === 'on',
+            };
+            const data = await this._postJson('/api/analysis/run', body);
+            this._appendServerTurn(data, { question: turn.question, parent: turn });
+        },
+
+        /** Re-run the selected ML result with an instruction or a structured patch. */
+        async rerunAnalysis(instruction, patch) {
+            const turn = this.turns.find((item) => item.id === this.selectedResultId);
+            const analysis = turn && turn.result && turn.result.analysis;
+            if (!turn || !analysis || !analysis.skill) throw new Error('Select an analysis result to re-run');
+            const connection = this._analysisConnection();
+            if (!connection) throw new Error('Select a connection first');
+            const sessionId = turn.result.session_id || (typeof window._jeenGetSessionId === 'function' ? window._jeenGetSessionId() : null);
+            const prefs = window.JeenPreferences ? window.JeenPreferences.getAll() : {};
+            const body = {
+                connection,
+                parent_query_id: turn.result.query_id,
+                session_id: sessionId,
+                eval_analytics: (prefs.aiAnalytics || 'on') === 'on',
+                idempotency_key: `${turn.result.query_id}:${Date.now()}`,
+            };
+            if (patch && Object.keys(patch).length) body.params_patch = patch;
+            else body.instruction = String(instruction || '').trim();
+            const data = await this._postJson('/api/analysis/rerun', body);
+            const label = body.instruction ? `${turn.question} — ${body.instruction}` : turn.question;
+            this._appendServerTurn(data, { question: label, parent: turn });
+        },
+
+        /** Append a completed turn returned by /api/analysis/run|rerun (never mutates the parent). */
+        _appendServerTurn(data, { question, parent } = {}) {
+            const turn = {
+                id: `turn-${Date.now()}-${++this.seq}`,
+                question: question || data.question || (parent && parent.question) || '',
+                status: 'success',
+                startedAt: performance.now(),
+                phaseState: Object.fromEntries(PHASES.map((phase) => [phase.id, 'done'])),
+                trace: (data.trace || []).map((raw) => ({ ...raw, status: 'node_finished' })),
+                traceOpen: false,
+                result: data,
+                error: null,
+                parentId: parent ? parent.id : null,
+                resultKind: data.proposal ? 'proposal' : undefined,
+                durationMs: Number((data.metrics || {}).execution_time_ms || 0) + Number((data.metrics || {}).llm_latency_ms || 0),
+            };
+            if (data.error && !data.results && !data.proposal) {
+                turn.status = 'error';
+                turn.error = data.error;
+            }
+            this.turns.push(turn);
+            this._captureSelectedChart();
+            this.selectedTurnId = turn.id;
+            this.selectedResultId = turn.id;
+            this.filter = '';
+            if (data.session_id && typeof window._jeenSetSessionId === 'function') window._jeenSetSessionId(data.session_id);
+            this.render();
+            this._scrollThread();
+        },
+
+        /** Build (server-side, deterministically) and attach the band chart for an ML result. */
+        async _loadAnalysisChart(turn) {
+            const data = turn.result || {};
+            const spec = data.analysis && data.analysis.chart_spec;
+            const connection = this._analysisConnection();
+            if (!spec || !data.query_id || !connection) return;
+            const body = { connection, query_id: String(data.query_id), chart_spec: spec };
+            try {
+                let payload;
+                try {
+                    payload = await this._postJson('/api/analysis/chart', body);
+                } catch (error) {
+                    if (!/cached|re-send/i.test(String(error && error.message))) throw error;
+                    payload = await this._postJson('/api/analysis/chart', { ...body, results: data.results });
+                }
+                if (payload && payload.chart_config) {
+                    turn.chartState = { chart_spec: payload.chart_spec || spec, chart_config: payload.chart_config };
+                    turn.hasChart = true;
+                }
+            } catch (error) {
+                console.warn('[Workspace] analysis chart failed', error);
+            }
+        },
+
+        _mlSuggestionsCache: { connection: null, items: null, loading: false },
+
+        /** One ML quick-start chip set per connection, fetched once. */
+        _ensureMlSuggestions(connection) {
+            const cache = this._mlSuggestionsCache;
+            if (!connection || cache.connection === connection) return cache.items || [];
+            if (cache.loading) return [];
+            cache.loading = true;
+            fetch(`/api/analysis/suggestions?connection=${encodeURIComponent(connection)}`)
+                .then((response) => (response.ok ? response.json() : { suggestions: [] }))
+                .then((payload) => {
+                    cache.connection = connection;
+                    cache.items = Array.isArray(payload.suggestions) ? payload.suggestions : [];
+                })
+                .catch(() => { cache.connection = connection; cache.items = []; })
+                .finally(() => {
+                    cache.loading = false;
+                    if (!this.turns.length) this.renderConversation();
+                });
+            return [];
+        },
+
         /** Result pane for a text-only answer (live or restored): no chart, no grid. */
         _renderTextResult(turn) {
             const placeholder = document.getElementById('v3-placeholder');
@@ -1452,6 +1748,12 @@
             }
 
             const data = turn.result;
+            // ML skills: the run stopped to ask (confirm card, clarification,
+            // guard refusal). The card owns the answer pane.
+            if (data.proposal) {
+                this._renderProposal(turn);
+                return;
+            }
             // A restored table turn whose rows are not here yet (loading, pruned,
             // too large, failed): show the state instead of an empty table.
             if (turn.restored && turn.resultKind === 'table' && !data.results) {
@@ -1463,6 +1765,7 @@
             // keep showing the previous turn's chart.
             const isText = turn.resultKind === 'text' || (!(data.results && data.results.columns) && !data.sql);
             if (isText) {
+                this._setModelTabVisible(false);
                 this._renderTextResult(turn);
                 return;
             }
@@ -1477,8 +1780,11 @@
             const restoredNote = turn.restored && turn.snapshotAt
                 ? `<span class="v3-result-meta">Snapshot from ${esc(this._formatWhen(turn.snapshotAt))}</span>`
                 : '';
+            const isAnalysis = Boolean(data.analysis && data.analysis.skill);
+            const mlStrip = isAnalysis && window.JeenAnalysisUI ? window.JeenAnalysisUI.stripSegments(data) : '';
             document.getElementById('v3-meta-row').innerHTML = `
               <span class="v3-status">${cap.capped ? 'Completed · capped' : 'Completed'}</span>
+              ${mlStrip}
               <span class="v3-result-meta">${rows.length} rows · ${formatMs(metrics.execution_time_ms)} exec · ${formatMs(metrics.llm_latency_ms)} llm</span>
               ${restoredNote}
               ${stale ? '<span class="v3-stale-note">Last successful answer — the newest question failed</span>' : ''}`;
@@ -1486,13 +1792,31 @@
             // An empty result set has nothing to chart; keep the (empty) grid only.
             chartBlock.hidden = rows.length === 0;
             tableBlock.hidden = false;
+            this._setModelTabVisible(isAnalysis);
 
-            if (this.lastAppliedResultId !== turn.id && window.JeenLegacyBridge) {
+            // ML results never ask the LLM for a chart: the envelope's role-based
+            // spec is built server-side once, stored as the turn's chart
+            // baseline, and rendered through the restore path.
+            if (isAnalysis && !turn.chartState && !turn.chartLoading && rows.length) {
+                turn.chartLoading = true;
+                this._loadAnalysisChart(turn).finally(() => {
+                    turn.chartLoading = false;
+                    if (this.selectedResultId === turn.id) {
+                        this.lastAppliedResultId = null;
+                        this.renderWorkspace();
+                    }
+                });
+            }
+
+            if (this.lastAppliedResultId !== turn.id && window.JeenLegacyBridge && !(isAnalysis && turn.chartLoading)) {
                 this.lastAppliedResultId = turn.id;
                 const showChart = () => {
                     const chart = document.getElementById('chart-view-container');
                     if (chart) chart.style.display = rows.length ? 'block' : 'none';
                     window.dispatchEvent(new Event('resize'));
+                    if (typeof window.JeenLegacyBridge.setChartAnalysisMode === 'function') {
+                        window.JeenLegacyBridge.setChartAnalysisMode(isAnalysis);
+                    }
                 };
                 if ((turn.restored || turn.chartState) && typeof window.JeenLegacyBridge.applyRestoredResult === 'function') {
                     // Known rows (+ optional stored chart): render through the
@@ -1508,7 +1832,9 @@
                 }
             }
             this._setActionsEnabled(true);
-            document.getElementById('v3-chart-caption').textContent = `${results.columns?.slice(0, 2).join(' by ') || 'result'} · ${rows.length} points`;
+            document.getElementById('v3-chart-caption').textContent = isAnalysis && window.JeenAnalysisUI
+                ? `${window.JeenAnalysisUI.chartCaption(data)} · ${rows.length} points`
+                : `${results.columns?.slice(0, 2).join(' by ') || 'result'} · ${rows.length} points`;
             const banner = document.getElementById('v3-cap-banner');
             banner.hidden = !cap.capped;
             if (cap.capped) {
@@ -1689,7 +2015,11 @@
                 body.innerHTML = '<div class="v3-dock-empty">No run yet — SQL, timings and column profiling appear here after a question is answered.</div>';
                 return;
             }
-            body.innerHTML = this.dockTab === 'profiling' ? this._profileHtml(turn) : this._sqlHtml(turn);
+            body.innerHTML = this.dockTab === 'profiling'
+                ? this._profileHtml(turn)
+                : this.dockTab === 'model' && window.JeenAnalysisUI
+                    ? window.JeenAnalysisUI.modelDetailsHtml(turn.result || {})
+                    : this._sqlHtml(turn);
             body.querySelector('[data-copy-sql]')?.addEventListener('click', () => navigator.clipboard.writeText(turn.result.sql || ''));
             body.querySelector('[data-full-profile]')?.addEventListener('click', () => this._openFullProfile());
             body.querySelector('[data-dev-details]')?.addEventListener('click', () => document.getElementById('dev-panel-btn')?.click());
@@ -1751,7 +2081,7 @@
         },
 
         _setActionsEnabled(enabled) {
-            ['export-btn', 'copy-results-btn', 'save-analysis-btn', 'send-result-btn', 'describe-btn'].forEach((id) => {
+            ['export-btn', 'copy-results-btn', 'send-result-btn', 'describe-btn'].forEach((id) => {
                 const button = document.getElementById(id);
                 if (!button) return;
                 button.disabled = !enabled;

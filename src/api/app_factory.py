@@ -14,6 +14,7 @@ from src.api.lifespan import lifespan
 from src.api.middleware import InternalAuthMiddleware, RequestContextMiddleware
 from src.api.routes import (
     actions as actions_routes,
+    analysis as analysis_routes,
     autocomplete,
     charts,
     connections,
@@ -72,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(connections.router)
     app.include_router(query.router)
+    app.include_router(analysis_routes.router)
     app.include_router(history.router)
     app.include_router(conversations_routes.router)
     app.include_router(onboarding.router)

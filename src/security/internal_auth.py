@@ -9,6 +9,11 @@ Rotation: ``INTERNAL_API_SECRET`` may list ``<kid>:<secret>`` pairs
 (comma-separated). The first entry signs; all entries verify. When unset it
 falls back to ``FLASK_SECRET_KEY`` / ``AUTH_SECRET`` so a correctly-configured
 deployment shares the secret across both containers automatically.
+
+Non-API audiences (the ``jeen-insights-analytics`` sandbox) use their own key,
+``INTERNAL_ANALYTICS_SECRET``, so the sandbox container never holds material
+that could sign an API-audience token. It falls back to the shared secret only
+when unset, which keeps zero-config dev working.
 """
 
 from __future__ import annotations
@@ -84,14 +89,21 @@ class Principal:
         }
 
 
-def _load_secrets() -> List[Tuple[str, str]]:
-    """Return ordered (kid, secret). First entry signs; all verify.
+ANALYTICS_SECRET_ENV = "INTERNAL_ANALYTICS_SECRET"
+
+
+def _load_secrets(audience: str = AUDIENCE_API) -> List[Tuple[str, str]]:
+    """Return ordered (kid, secret) for ``audience``. First entry signs; all verify.
 
     Fails closed in production: if neither INTERNAL_API_SECRET nor a strong
     FLASK_SECRET_KEY/AUTH_SECRET is configured, raise rather than silently sign
     with a predictable key (which would let an attacker forge a Principal).
     """
-    raw = (os.getenv("INTERNAL_API_SECRET") or "").strip()
+    raw = ""
+    if audience != AUDIENCE_API:
+        raw = (os.getenv(ANALYTICS_SECRET_ENV) or "").strip()
+    if not raw:
+        raw = (os.getenv("INTERNAL_API_SECRET") or "").strip()
     if not raw:
         fallback = (os.getenv("FLASK_SECRET_KEY") or os.getenv("AUTH_SECRET") or "").strip()
         if fallback and fallback not in _INSECURE_SECRETS:
@@ -143,7 +155,7 @@ def issue_internal_token(
     ``role``/``name``/``email``/``tenant_id``/``object_id``/``groups``/
     ``auth_provider``.
     """
-    kid, secret = _load_secrets()[0]
+    kid, secret = _load_secrets(audience)[0]
     payload = {
         "kid": kid,
         "aud": audience,
@@ -172,7 +184,7 @@ def verify_internal_token(
         raise PrincipalError("Missing internal token")
 
     last_err: Optional[Exception] = None
-    for _kid, secret in _load_secrets():
+    for _kid, secret in _load_secrets(audience):
         try:
             data = _serializer(secret).loads(token, max_age=max_age)
         except SignatureExpired as exc:

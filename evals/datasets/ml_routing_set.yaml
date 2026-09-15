@@ -1,0 +1,470 @@
+# ============================================================================
+# ML skills eval set — route accuracy and planner parameter extraction.
+# ============================================================================
+# Consumed by evals/harness.py (see evals/run_eval.py for the CLI).
+#
+#   route:          question + expect_route. Strong ML cues ("forecast",
+#                   "anomalies") are scored offline by the same keyword filter
+#                   the router uses; everything else needs --live.
+#   analysis_plan:  the JSON the planner LLM would return for a question,
+#                   scored offline against the catalog by build_params_from_plan:
+#                   expect params | clarify | fallback, plus dotted assertions.
+# ============================================================================
+
+catalogs:
+  adventureworks:
+    database_type: postgres
+    schema: dbo
+    columns_text: |
+      - FactInternetSales.OrderDate - Type: timestamp
+      - FactInternetSales.ShipDate - Type: timestamp
+      - FactInternetSales.SalesAmount - Type: money
+      - FactInternetSales.Profit - Type: decimal
+      - FactInternetSales.OrderQuantity - Type: integer
+      - FactInternetSales.SalesTerritoryKey - Type: integer
+      - FactInternetSales.ProductLine - Type: varchar
+      - DimProduct.ProductKey - Type: integer
+      - DimProduct.EnglishProductName - Type: varchar
+      - FactProductInventory.MovementDate - Type: date
+      - FactProductInventory.UnitsBalance - Type: integer
+      - DimCustomer.CustomerKey - Type: integer
+      - DimCustomer.YearlyIncome - Type: money
+      - DimCustomer.TotalChildren - Type: integer
+      - DimCustomer.NumberCarsOwned - Type: integer
+      - DimCustomer.Gender - Type: char
+      - DimCustomer.SignupDate - Type: date
+      - DimCustomer.LastOrderDate - Type: date
+      - FactExperiment.Variant - Type: varchar
+      - FactExperiment.Converted - Type: integer
+      - FactExperiment.Revenue - Type: money
+
+cases:
+  # ── Routing: strong cues are decided locally ────────────────────────────
+  - id: route-forecast-next-quarter
+    type: route
+    question: "Forecast revenue for the next quarter"
+    expect_route: needs_analysis
+
+  - id: route-will-profit-grow
+    type: route
+    question: "Will profit grow next month?"
+    expect_route: needs_analysis
+
+  - id: route-anything-weird
+    type: route
+    question: "Is anything weird in profit over the last six months?"
+    expect_route: needs_analysis
+
+  - id: route-outliers
+    type: route
+    question: "Show me outliers in weekly sales"
+    expect_route: needs_analysis
+
+  - id: route-run-rate
+    type: route
+    question: "At this rate, where do we land by December?"
+    expect_route: needs_analysis
+
+  - id: route-why-did-it-drop
+    type: route
+    question: "Why did profit drop in Q2 compared to Q1?"
+    expect_route: needs_analysis
+
+  - id: route-when-did-it-change
+    type: route
+    question: "When did sales start growing?"
+    expect_route: needs_analysis
+
+  - id: route-seasonal
+    type: route
+    question: "Is revenue seasonal? When does it peak?"
+    expect_route: needs_analysis
+
+  - id: route-correlate
+    type: route
+    question: "Does order quantity correlate with profit?"
+    expect_route: needs_analysis
+
+  - id: route-segment
+    type: route
+    question: "Segment our customers by income and children"
+    expect_route: needs_analysis
+
+  - id: route-drivers
+    type: route
+    question: "What drives profit per customer?"
+    expect_route: needs_analysis
+
+  - id: route-regression
+    type: route
+    question: "Run a linear regression of profit on income and children"
+    expect_route: needs_analysis
+
+  - id: route-effect-of
+    type: route
+    question: "What is the effect of yearly income on profit per customer?"
+    expect_route: needs_analysis
+
+  - id: route-churn
+    type: route
+    question: "Which customers are likely to churn?"
+    expect_route: needs_analysis
+
+  - id: route-propensity
+    type: route
+    question: "What is the probability of churn for each customer?"
+    expect_route: needs_analysis
+
+  - id: route-retention
+    type: route
+    question: "Show me the retention curve by monthly signup cohort"
+    expect_route: needs_analysis
+
+  - id: route-keep-coming-back
+    type: route
+    question: "How many customers keep coming back after signup?"
+    expect_route: needs_analysis
+
+  - id: route-ab-test
+    type: route
+    question: "Did variant B beat control in our A/B test?"
+    expect_route: needs_analysis
+
+  - id: route-significant-uplift
+    type: route
+    question: "Is the uplift between the treatment and control groups statistically significant?"
+    expect_route: needs_analysis
+
+  # ── Routing: plain aggregates must stay needs_query (needs --live) ──────
+  - id: route-plain-total
+    type: route
+    question: "What was profit last quarter?"
+    expect_route: needs_query
+
+  - id: route-top-products
+    type: route
+    question: "Top 10 products by sales amount in 2025"
+    expect_route: needs_query
+
+  - id: route-drop-is-not-an-anomaly-request
+    type: route
+    question: "How much did sales drop in March compared to February?"
+    expect_route: needs_query
+
+  # ── Planner: parameter extraction against the catalog ───────────────────
+  - id: plan-anomaly-weekly-profit
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: anomaly_detection
+      table: FactInternetSales
+      date_column: OrderDate
+      measure_column: Profit
+      agg: sum
+      grain: week
+      window_periods: 26
+      sensitivity: 0.95
+    expect: params
+    expect_skill: anomaly_detection
+    expect_params:
+      series.table: FactInternetSales
+      series.date_column: OrderDate
+      series.measure_column: Profit
+      series.grain: week
+      window: 26
+      sensitivity: 0.95
+
+  - id: plan-forecast-monthly-revenue
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: forecast
+      table: FactInternetSales
+      date_column: OrderDate
+      measure_column: SalesAmount
+      agg: sum
+      grain: month
+      horizon: 3
+      interval: 0.8
+    expect: params
+    expect_skill: forecast
+    expect_params:
+      series.grain: month
+      horizon: 3
+      interval: 0.8
+
+  - id: plan-count-star
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: forecast
+      table: FactInternetSales
+      date_column: OrderDate
+      measure_column: "*"
+      agg: count
+      grain: week
+    expect: params
+    expect_params:
+      series.measure_column: "*"
+      series.agg: count
+
+  - id: plan-ambiguous-date-column-clarifies
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: anomaly_detection
+      table: FactInternetSales
+      measure_column: Profit
+      ambiguous:
+        date_column: [OrderDate, ShipDate]
+    expect: clarify
+    expect_options: [OrderDate, ShipDate]
+
+  - id: plan-unknown-column-falls-to-single-candidate
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: forecast
+      table: FactProductInventory
+      date_column: Date
+      measure_column: Units
+      grain: day
+    expect: params
+    expect_params:
+      series.date_column: MovementDate
+      series.measure_column: UnitsBalance
+
+  - id: plan-no-skill-is-fallback
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: none
+      reason: a plain aggregate answers it
+    expect: fallback
+
+  - id: plan-table-without-dates-is-fallback
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: forecast
+      table: DimProduct
+      measure_column: ProductKey
+    expect: fallback
+
+  - id: plan-contribution-dimensions-and-periods
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: contribution
+      table: FactInternetSales
+      date_column: OrderDate
+      measure_column: Profit
+      dimensions: [ProductLine, SalesTerritoryKey]
+      before_start: "2026-01-01"
+      before_end: "2026-04-01"
+      after_start: "2026-04-01"
+      after_end: "2026-07-01"
+    expect: params
+    expect_skill: contribution
+    expect_params:
+      dimensions: [ProductLine, SalesTerritoryKey]
+      after_end: "2026-07-01"
+
+  - id: plan-correlation-second-measure
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: correlation
+      table: FactInternetSales
+      date_column: OrderDate
+      measure_column: Profit
+      other_measure_column: OrderQuantity
+      grain: week
+      max_lag: 4
+    expect: params
+    expect_params:
+      other_measure_column: OrderQuantity
+      max_lag: 4
+
+  - id: plan-changepoint-per-territory
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: changepoint
+      table: FactInternetSales
+      date_column: OrderDate
+      measure_column: SalesAmount
+      grain: month
+      group_by: SalesTerritoryKey
+    expect: params
+    expect_params:
+      series.group_by: SalesTerritoryKey
+      series.grain: month
+
+  - id: plan-clustering-drops-text-feature
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: clustering
+      table: DimCustomer
+      entity_key: CustomerKey
+      features: [YearlyIncome, TotalChildren, Gender]
+      k: 3
+    expect: params
+    expect_skill: clustering
+    expect_params:
+      entity.features: [YearlyIncome, TotalChildren]
+      k: 3
+
+  - id: plan-driver-analysis-without-target-clarifies
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: driver_analysis
+      table: DimCustomer
+      entity_key: CustomerKey
+      features: [YearlyIncome, TotalChildren, NumberCarsOwned]
+    expect: clarify
+    expect_options: [YearlyIncome, TotalChildren, NumberCarsOwned]
+
+  - id: plan-regression-with-target
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: regression
+      table: DimCustomer
+      entity_key: CustomerKey
+      features: [YearlyIncome, TotalChildren, NumberCarsOwned]
+      target: NumberCarsOwned
+    expect: params
+    expect_skill: regression
+    expect_params:
+      entity.target: NumberCarsOwned
+      entity.features: [YearlyIncome, TotalChildren]
+
+  - id: plan-regression-without-target-clarifies
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: regression
+      table: DimCustomer
+      entity_key: CustomerKey
+      features: [YearlyIncome, TotalChildren, NumberCarsOwned]
+    expect: clarify
+    expect_options: [YearlyIncome, TotalChildren, NumberCarsOwned]
+
+  - id: plan-classification-with-target
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: classification
+      table: DimCustomer
+      entity_key: CustomerKey
+      features: [YearlyIncome, TotalChildren, NumberCarsOwned]
+      target: NumberCarsOwned
+    expect: params
+    expect_skill: classification
+    expect_params:
+      entity.target: NumberCarsOwned
+      entity.features: [YearlyIncome, TotalChildren]
+
+  - id: plan-classification-without-target-clarifies
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: classification
+      table: DimCustomer
+      entity_key: CustomerKey
+      features: [YearlyIncome, TotalChildren, NumberCarsOwned]
+    expect: clarify
+    expect_options: [YearlyIncome, TotalChildren, NumberCarsOwned]
+
+  - id: plan-cohort-retention
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: cohort_retention
+      table: DimCustomer
+      entity_key: CustomerKey
+      cohort_date: SignupDate
+      activity_date: LastOrderDate
+      grain: month
+      max_periods: 12
+    expect: params
+    expect_skill: cohort_retention
+    expect_params:
+      cohort.entity_key: CustomerKey
+      cohort.cohort_date: SignupDate
+      cohort.activity_date: LastOrderDate
+      cohort.grain: month
+      cohort.max_periods: 12
+
+  - id: plan-cohort-retention-infers-dates
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: cohort_retention
+      table: DimCustomer
+      entity_key: CustomerKey
+      grain: month
+    expect: params
+    expect_skill: cohort_retention
+    expect_params:
+      cohort.cohort_date: SignupDate
+      cohort.activity_date: LastOrderDate
+
+  - id: plan-experiment-binary
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: experiment_test
+      table: FactExperiment
+      group_column: Variant
+      outcome_column: Converted
+      outcome_type: binary
+      control: A
+    expect: params
+    expect_skill: experiment_test
+    expect_params:
+      experiment.group_column: Variant
+      experiment.outcome_column: Converted
+      experiment.outcome_type: binary
+      experiment.control: A
+
+  - id: plan-experiment-continuous-infers-arm
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: experiment_test
+      table: FactExperiment
+      outcome_column: Revenue
+      outcome_type: continuous
+    expect: params
+    expect_skill: experiment_test
+    expect_params:
+      experiment.group_column: Variant
+      experiment.outcome_column: Revenue
+      experiment.outcome_type: continuous
+
+  - id: plan-grounded-date-range-becomes-window
+    type: analysis_plan
+    catalog: adventureworks
+    plan:
+      skill: anomaly_detection
+      table: FactInternetSales
+      date_column: OrderDate
+      measure_column: Profit
+      grain: week
+    filters:
+      - table: FactInternetSales
+        column: OrderDate
+        op: between
+        value: ["2026-01-01", "2026-07-01"]
+      - table: FactInternetSales
+        column: SalesTerritoryKey
+        op: equals
+        value: "5"
+    expect: params
+    expect_params:
+      series.start: "2026-01-01"
+      series.end: "2026-07-01"

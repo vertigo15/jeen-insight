@@ -31,6 +31,10 @@
 const MAX_INSTRUCTION_LEN = 500;
 const MAX_TRANSCRIPT_MESSAGES = 30;
 
+const CHART_PLACEHOLDER = 'Edit this chart in words — “stack by channel, log scale”';
+// ML results: the same bar re-runs the *analysis* (a new child turn), not the chart.
+const ANALYSIS_PLACEHOLDER = 'Adjust this analysis — “weekly instead of daily”, “flag fewer”';
+
 const SPARKLE_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3zM19 16l.9 2.1L22 19l-2.1.9L19 22l-.9-2.1L16 19l2.1-.9L19 16z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
 const ARROW_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
@@ -84,7 +88,7 @@ export class ChartChat {
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'chart-refine-input';
-        input.placeholder = 'Edit this chart in words — “stack by channel, log scale”';
+        input.placeholder = CHART_PLACEHOLDER;
         input.maxLength = MAX_INSTRUCTION_LEN;
         input.disabled = true;
         input.setAttribute('aria-label', 'Refine this chart');
@@ -237,10 +241,42 @@ export class ChartChat {
         if (label) label.textContent = busy ? 'Applying…' : 'Apply';
     }
 
+    /**
+     * Switch between chart-edit mode and analysis re-run mode. In analysis mode
+     * Apply hands the instruction to `hooks.onAnalysisRerun`, which appends a
+     * new result turn (never mutates the current one).
+     */
+    setAnalysisMode(on) {
+        this._analysisMode = Boolean(on);
+        if (!this.mounted) return;
+        this._inputEl.placeholder = this._analysisMode ? ANALYSIS_PLACEHOLDER : CHART_PLACEHOLDER;
+        this._inputEl.setAttribute('aria-label', this._analysisMode ? 'Adjust this analysis' : 'Refine this chart');
+        const label = this._applyBtnEl.querySelector('span');
+        if (label && !this._applyBtnEl.classList.contains('is-busy')) {
+            label.textContent = this._analysisMode ? 'Re-run' : 'Apply';
+        }
+    }
+
     async _handleSend() {
         if (!this.enabled || !this.mounted) return;
         const instruction = (this._inputEl.value || '').trim();
         if (!instruction) return;
+
+        if (this._analysisMode && typeof this.hooks.onAnalysisRerun === 'function') {
+            this._setStatus('Re-running the analysis…', 'progress');
+            this._setBusy(true);
+            try {
+                await this.hooks.onAnalysisRerun(instruction);
+                this._inputEl.value = '';
+                this._setStatus('', null);
+            } catch (error) {
+                this._setStatus(`Couldn't re-run: ${error && error.message ? error.message : error}`, 'error');
+            } finally {
+                this._setBusy(false);
+                this.setAnalysisMode(this._analysisMode);
+            }
+            return;
+        }
 
         const config = this.hooks.getCurrentConfig && this.hooks.getCurrentConfig();
         const results = this.hooks.getCurrentResults && this.hooks.getCurrentResults();

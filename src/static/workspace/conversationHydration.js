@@ -34,6 +34,16 @@ export function turnFromServer(dto, conversationId) {
         && dto.snapshot_status !== SNAPSHOT_STORED
         && dto.snapshot_status !== SNAPSHOT_NOT_APPLICABLE
         && Boolean(dto.has_rerunnable_query);
+    // ML skills: a completed analysis stores its method/validation/guard view;
+    // a pending confirm / clarify / guard card stores its proposal. Both travel
+    // with the turn so a restored ML answer renders like a live one.
+    const analysis = dto.analysis && typeof dto.analysis === 'object' ? dto.analysis : null;
+    const proposal = analysis && analysis.proposal ? analysis.proposal : null;
+    const ml = proposal
+        ? { status: analysis.status || proposal.kind, proposal }
+        : analysis && analysis.skill
+            ? { status: 'completed', analysis, low_confidence: Boolean(dto.low_confidence || analysis.low_confidence) }
+            : {};
     return {
         id: `turn-${dto.turn_id}`,
         turnId: dto.turn_id,
@@ -72,6 +82,7 @@ export function turnFromServer(dto, conversationId) {
             suggestions: dto.suggestions || [],
             followups: dto.followups || [],
             trace: [],
+            ...ml,
         },
     };
 }
@@ -94,6 +105,11 @@ export function applyArtifact(turn, artifact) {
     if (!turn || !artifact) return turn;
     const results = artifact.results || null;
     turn.result = { ...(turn.result || {}), results };
+    if (artifact.analysis && typeof artifact.analysis === 'object' && artifact.analysis.skill) {
+        turn.result.analysis = artifact.analysis;
+        turn.result.status = 'completed';
+        turn.result.low_confidence = Boolean(artifact.low_confidence || artifact.analysis.low_confidence);
+    }
     turn.snapshotStatus = artifact.snapshot_status || turn.snapshotStatus;
     turn.snapshotAt = artifact.snapshot_at || turn.snapshotAt;
     if (results && artifact.chart_config) {

@@ -98,6 +98,10 @@ class ConversationHistoryService:
         # inserted without its conversation row, and before it exists the
         # legacy (pre-conversation) SQL must be used so questions keep working.
         self.conversation_schema_ready = conversation_schema_ready
+        # Whether migration 023 added ``analysis`` / ``low_confidence`` to the
+        # turn artifact. Probed by the lifespan; off by default so a database
+        # without the columns keeps persisting ordinary turns.
+        self.analysis_schema_ready = False
 
     async def initialize(self) -> None:
         # Pool is already initialized by `get_metadata_pool()`. This method is
@@ -794,6 +798,14 @@ class ConversationHistoryService:
             return []
 
     @staticmethod
+    def _row_get(row: Any, key: str, default: Any = None) -> Any:
+        """asyncpg.Record raises on a missing column; older SELECTs omit the ML columns."""
+        try:
+            return row[key]
+        except (KeyError, IndexError):
+            return default
+
+    @staticmethod
     def _turn_row(row: Any) -> Dict[str, Any]:
         status = row["execution_status"] or "pending"
         sql = row["generated_sql"]
@@ -831,7 +843,15 @@ class ConversationHistoryService:
             "has_rerunnable_query": bool(sql) and result_kind == RESULT_KIND_TABLE,
             "created_at": _iso(row["created_at"]),
             "snapshot_at": _iso(row["snapshot_at"]),
+            "analysis": _jsonb(ConversationHistoryService._row_get(row, "analysis")),
+            "low_confidence": bool(ConversationHistoryService._row_get(row, "low_confidence", False)),
         }
+
+    def _analysis_select(self, alias: str = "a") -> str:
+        """Extra artifact columns, only when migration 023 is applied."""
+        if not self.analysis_schema_ready:
+            return ""
+        return f", {alias}.analysis, {alias}.low_confidence"
 
     async def get_conversation_turns(
         self,
@@ -847,14 +867,14 @@ class ConversationHistoryService:
         try:
             async with self.pool.acquire() as conn:
                 rows = await conn.fetch(
-                    """
+                    f"""
                     SELECT cs.id, cs.sequence_number, cs.natural_language_query,
                            cs.generated_sql, cs.execution_status, cs.row_count,
                            cs.error_message, cs.created_at,
                            a.result_kind, a.answer, a.error AS artifact_error,
                            a.metrics, a.findings, a.suggestions, a.followups,
                            a.snapshot_status, a.snapshot_at,
-                           (a.chart_config IS NOT NULL) AS has_chart
+                           (a.chart_config IS NOT NULL) AS has_chart{self._analysis_select()}
                     FROM insights_conversation_sessions cs
                     JOIN insights_conversations c ON c.id = cs.session_id
                     LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id
@@ -883,9 +903,9 @@ class ConversationHistoryService:
         try:
             async with self.pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    """
+                    f"""
                     SELECT a.result_snapshot, a.snapshot_status, a.snapshot_at,
-                           a.chart_spec, a.chart_config
+                           a.chart_spec, a.chart_config{self._analysis_select()}
                     FROM insights_conversation_sessions cs
                     JOIN insights_conversations c ON c.id = cs.session_id
                     LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id
@@ -906,9 +926,42 @@ class ConversationHistoryService:
                 "chart_config": _jsonb(row["chart_config"]) if results is not None else None,
                 "snapshot_status": status,
                 "snapshot_at": _iso(row["snapshot_at"]),
+                "analysis": _jsonb(self._row_get(row, "analysis")),
+                "low_confidence": bool(self._row_get(row, "low_confidence", False)),
             }
         except Exception:
             logger.exception("Failed to get turn artifact")
+            return None
+
+    async def get_turn_analysis(
+        self, *, turn_id: UUID, user_id: str, source_key: str
+    ) -> Optional[Dict[str, Any]]:
+        """The persisted ML analysis of one turn (owner + connection bound), for re-runs."""
+        if not (self.conversation_schema_ready and self.analysis_schema_ready):
+            return None
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT cs.id, cs.session_id, cs.natural_language_query, a.analysis, a.low_confidence
+                    FROM insights_conversation_sessions cs
+                    JOIN insights_conversations c ON c.id = cs.session_id
+                    LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id
+                    WHERE cs.id = $1 AND c.user_id = $2 AND c.source_key = $3
+                    """,
+                    turn_id, user_id, source_key,
+                )
+            if row is None:
+                return None
+            return {
+                "turn_id": str(row["id"]),
+                "session_id": row["session_id"],
+                "question": row["natural_language_query"],
+                "analysis": _jsonb(row["analysis"]),
+                "low_confidence": bool(row["low_confidence"]),
+            }
+        except Exception:
+            logger.exception("Failed to load turn analysis")
             return None
 
     async def get_turn_for_rerun(
@@ -957,27 +1010,52 @@ class ConversationHistoryService:
         result_snapshot: Optional[Dict[str, Any]] = None,
         snapshot_status: str = SNAPSHOT_NOT_APPLICABLE,
         snapshot_bytes: Optional[int] = None,
+        analysis: Optional[Dict[str, Any]] = None,
+        low_confidence: bool = False,
     ) -> bool:
         """Guarded write from ``save_to_memory``.
 
         No-op when the turn row is gone (hard delete) or when the artifact was
-        already pruned: ``pruned`` is terminal for normal writes.
+        already pruned: ``pruned`` is terminal for normal writes. The ML
+        columns are written only when migration 023 is applied.
         """
         if not self.conversation_schema_ready:
             return False
         try:
+            args: List[Any] = [
+                turn_id,
+                result_kind,
+                json.dumps(answer) if answer is not None else None,
+                error,
+                json.dumps(metrics) if metrics else None,
+                json.dumps(findings) if findings else None,
+                json.dumps(suggestions) if suggestions else None,
+                json.dumps(followups) if followups else None,
+                json.dumps(result_snapshot) if result_snapshot is not None else None,
+                snapshot_status,
+                snapshot_bytes,
+            ]
+            if self.analysis_schema_ready:
+                extra_cols = ", analysis, low_confidence"
+                extra_vals = ", $12::jsonb, $13::boolean"
+                extra_set = (
+                    ", analysis = EXCLUDED.analysis, low_confidence = EXCLUDED.low_confidence"
+                )
+                args.extend([json.dumps(analysis, default=str) if analysis else None, bool(low_confidence)])
+            else:
+                extra_cols = extra_vals = extra_set = ""
             async with self.pool.acquire() as conn:
                 result = await conn.execute(
-                    """
+                    f"""
                     INSERT INTO insights_turn_artifacts (
                         turn_id, result_kind, answer, error, metrics,
                         findings, suggestions, followups,
-                        result_snapshot, snapshot_status, snapshot_bytes, snapshot_at
+                        result_snapshot, snapshot_status, snapshot_bytes, snapshot_at{extra_cols}
                     )
                     SELECT $1::uuid, $2::text, $3::jsonb, $4::text, $5::jsonb,
                            $6::jsonb, $7::jsonb, $8::jsonb,
                            $9::jsonb, $10::text, $11::int,
-                           CASE WHEN $10::text = 'stored' THEN NOW() END
+                           CASE WHEN $10::text = 'stored' THEN NOW() END{extra_vals}
                     WHERE EXISTS (
                         SELECT 1 FROM insights_conversation_sessions WHERE id = $1::uuid
                     )
@@ -993,20 +1071,10 @@ class ConversationHistoryService:
                             snapshot_status = EXCLUDED.snapshot_status,
                             snapshot_bytes  = EXCLUDED.snapshot_bytes,
                             snapshot_at     = EXCLUDED.snapshot_at,
-                            updated_at      = NOW()
+                            updated_at      = NOW(){extra_set}
                     WHERE insights_turn_artifacts.snapshot_status <> 'pruned'
                     """,
-                    turn_id,
-                    result_kind,
-                    json.dumps(answer) if answer is not None else None,
-                    error,
-                    json.dumps(metrics) if metrics else None,
-                    json.dumps(findings) if findings else None,
-                    json.dumps(suggestions) if suggestions else None,
-                    json.dumps(followups) if followups else None,
-                    json.dumps(result_snapshot) if result_snapshot is not None else None,
-                    snapshot_status,
-                    snapshot_bytes,
+                    *args,
                 )
                 return result.endswith(" 1")
         except Exception:

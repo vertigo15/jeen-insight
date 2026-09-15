@@ -49,6 +49,8 @@ networkPolicy:
   externalEgressPorts:
     - 443
     - 5432
+  # Port of the jeen-insights-analytics sandbox the API may call.
+  analyticsPort: 8100
 
 autoscaling:
   enabled: false

@@ -64,6 +64,8 @@ def test_workspace_bootstrap_hides_legacy_layout():
     assert "body.v3-booting > .app-layout { visibility: hidden; }" in styles
     assert "document.body.classList.remove('v3-booting')" in controller
     assert "WorkspaceController.init();" in controller
+    assert 'id="save-analysis-btn"' not in template
+    assert "'#save-analysis-btn'" not in controller
 
 
 def test_workspace_chart_starts_collapsed_with_aligned_controls():
