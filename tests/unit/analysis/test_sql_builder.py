@@ -98,6 +98,25 @@ def test_databricks_uses_backticks_and_trino_keeps_money_uncast():
     assert "`main`.`dbo`.`FactInternetSales`" in bricks and "SUM(`SalesAmount`)" in bricks
 
 
+def test_postgres_never_qualifies_a_table_with_the_catalog():
+    # Regression: on Postgres the connection's "catalog" is just the database
+    # name (see factory: catalog := database), which cannot qualify a table.
+    # Emitting it made Postgres read the catalog as a (missing) schema —
+    # "AdventureWorksDW"."factinternetsales" → relation does not exist — which
+    # blocked every analysis (the span probe failed) on Postgres connections.
+    bare = build_span_probe_sql(_req(), "postgres", connection_schema=None,
+                                connection_catalog="AdventureWorksDW", column_types=_TYPES)
+    assert '"AdventureWorksDW"' not in bare and 'FROM "FactInternetSales"' in bare
+    schema_only = build_series_sql(_req(), "postgres", connection_schema="public",
+                                   connection_catalog="AdventureWorksDW", column_types=_TYPES)
+    assert '"public"."FactInternetSales"' in schema_only and '"AdventureWorksDW"' not in schema_only
+    # Catalog-addressed engines still carry the catalog in the table reference.
+    for db in ("databricks", "trino"):
+        sql = build_series_sql(_req(), db, connection_schema="dbo",
+                               connection_catalog="main", column_types=_TYPES)
+        assert "main" in sql, (db, sql)
+
+
 @pytest.mark.parametrize("dialect", ["tsql", "snowflake", "mysql", "bigquery", "duckdb"])
 def test_portability_evidence_for_unregistered_dialects(dialect):
     """Not a support claim: shows the same AST emits parseable SQL elsewhere."""
