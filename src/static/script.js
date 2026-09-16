@@ -634,7 +634,9 @@ function displayResults(data) {
         // and updates the Insights panel when each chunk arrives.
         const _aiAnalytics = (window.JeenPreferences && window.JeenPreferences.getAll().aiAnalytics) || 'on';
         if (_aiAnalytics === 'on' && !_isRestoringSavedAnalysis && !data._inlineAnalytics) {
-            generateInsights(data.results, currentQuestion, currentQueryId, currentSql);
+            // For an ML turn, forward the analysis envelope so insights are built
+            // from the engine facts (algorithm-aware) rather than the raw rows.
+            generateInsights(data.results, currentQuestion, currentQueryId, currentSql, window._currentAnalysis);
         } else {
             // Hide the insights container when analytics is off.
             const ic = document.getElementById('insights-container');
@@ -3867,7 +3869,7 @@ async function initializeChartFeature(results, options = {}) {
 }
 
 // Insights Feature
-function generateInsights(results, question, queryId = null, sql = null) {
+function generateInsights(results, question, queryId = null, sql = null, analysis = null) {
     // Initialize insights manager if needed
     if (!insightsManager) {
         insightsManager = new window.InsightsManager();
@@ -3880,9 +3882,10 @@ function generateInsights(results, question, queryId = null, sql = null) {
     }
 
     // Generate insights asynchronously (non-blocking) with query_id + sql for
-    // the LangGraph eval node path.
+    // the LangGraph eval node path. `analysis` (an ML ResultEnvelope) routes the
+    // request through the algorithm-aware narrator when present.
     setTimeout(() => {
-        insightsManager.generateInsights(results, question, queryId, sql);
+        insightsManager.generateInsights(results, question, queryId, sql, analysis);
     }, 0);
 }
 

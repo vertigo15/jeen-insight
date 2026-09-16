@@ -61,6 +61,7 @@ from src.agent.langgraph_agent.nodes.analysis import (
     make_analysis_run,
     on_analysis_branch,
 )
+from src.agent.langgraph_agent.nodes.capability import make_capability_answer
 from src.agent.langgraph_agent.nodes.catalog import make_catalog_lookup, make_prompt_builder
 from src.agent.langgraph_agent.nodes.eval import make_fused_eval_analytics
 from src.agent.langgraph_agent.nodes.execution import make_execute_query, trivial_result_check
@@ -106,6 +107,7 @@ _NODE_META: dict[str, tuple[str, str]] = {
     "memory_shrink_check":     ("🧠", "logic"),
     "memory_summarizer":       ("🤏", "llm"),
     "fused_router":            ("🔀", "llm"),
+    "capability_answer":       ("💡", "llm"),
     "memory_answer_generator": ("💬", "llm"),
     "catalog_lookup":          ("📦", "db"),
     "filter_planner":          ("🎯", "llm"),
@@ -289,6 +291,7 @@ def build_graph(
     n("memory_shrink_check",     make_memory_shrink_check(max_history_tokens))
     n("memory_summarizer",       make_memory_summarizer(router_llm, prompt_loader))
     n("fused_router",            make_fused_router(router_llm, prompt_loader, ml_skills_enabled=ml_skills_enabled))
+    n("capability_answer",       make_capability_answer(llm, prompt_loader))
     n("memory_answer_generator", make_memory_answer_generator(router_llm, prompt_loader))
     n("catalog_lookup",          make_catalog_lookup(metadata_loader, require_catalog_for_query))
     n("filter_planner",          make_filter_planner(router_llm, prompt_loader))
@@ -352,6 +355,7 @@ def build_graph(
     builder.add_edge("memory_summarizer", "fused_router")
 
     builder.add_conditional_edges("fused_router", _route_from_router)
+    builder.add_edge("capability_answer", "response_formatter")
     builder.add_conditional_edges("memory_answer_generator", _route_from_memory_answer)
 
     builder.add_conditional_edges("catalog_lookup", _route_from_catalog)
@@ -395,6 +399,8 @@ def _route_from_router(state: AgentState) -> str:
     route = state.get("route", "needs_query")
     if route == "from_memory":
         return "memory_answer_generator"
+    if route == "capability":
+        return "capability_answer"
     if route in ("out_of_scope", "unsafe", "greeting"):
         return "response_formatter"
     return "catalog_lookup"  # needs_query (default)

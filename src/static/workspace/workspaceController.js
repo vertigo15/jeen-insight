@@ -1464,10 +1464,14 @@
                 ? `guard: ${failed.map((g) => g.name).join(', ') || 'refused'} · 0 rows sent`
                 : kind === 'clarify' ? 'one question before running' : 'confirm before running';
             document.getElementById('v3-result-title').textContent = turn.question;
-            document.getElementById('v3-meta-row').innerHTML = `
-              <span class="v3-status${kind === 'guard' ? ' is-blocked' : ''}">${statusLabel}</span>
-              ${skill ? `<span class="v3-skill-chip">${esc(skill)}</span>` : ''}
-              <span class="v3-result-meta">${esc(meta)}${turn.restored ? ' · restored' : ''}</span>`;
+            // Guard keeps a status strip (it saves to history and reads as a result);
+            // confirm/clarify lead with the Planning line inside the card, so the strip
+            // stays out of the way — matching the skill-states mockup.
+            document.getElementById('v3-meta-row').innerHTML = kind === 'guard'
+                ? `<span class="v3-status is-blocked">${statusLabel}</span>
+                   ${skill ? `<span class="v3-skill-chip">${esc(skill)}</span>` : ''}
+                   <span class="v3-result-meta">${esc(meta)}${turn.restored ? ' · restored' : ''}</span>`
+                : (turn.restored ? '<span class="v3-result-meta">restored</span>' : '');
             placeholder.innerHTML = window.JeenAnalysisUI
                 ? window.JeenAnalysisUI.proposalHtml(proposal)
                 : `<strong>${esc(statusLabel)}</strong><span>${esc(textOf(data.answer))}</span>`;
@@ -1548,6 +1552,9 @@
                 }
             }));
             card.querySelector('[data-sql-instead]')?.addEventListener('click', () => this.send(turn.question, { analysis: false }));
+            // "Use a different skill": return the cursor to the composer so the user can
+            // rephrase toward another analysis (same intent as the clarify switch_skill exit).
+            card.querySelector('[data-switch-skill]')?.addEventListener('click', () => this.input?.focus());
         },
 
         _analysisConnection() {

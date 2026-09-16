@@ -220,6 +220,20 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
             # Narration never overrides the engine: an unsure narrator does not
             # get to call a validated result wrong.
             eval_result["answers_intent"] = True
+            # Hybrid: the LLM writes the prose summary, but findings + follow-ups
+            # come deterministically from the engine facts (exact numbers,
+            # entity-referencing questions). The LLM's own list is only a fallback
+            # for a skill without a registered narrator.
+            try:
+                from src.analysis.narration import narrate  # noqa: PLC0415
+
+                nar = narrate(analysis)
+                if nar.findings:
+                    eval_result["insights"] = nar.findings
+                if nar.followups:
+                    eval_result["follow_up_questions"] = nar.followups
+            except Exception:  # noqa: BLE001 — narration must never break the answer
+                logger.debug("fused_eval_analytics: narration override skipped", exc_info=True)
 
         logger.info(
             "fused_eval_analytics: answers_intent=%s, insights=%d, latency=%dms",

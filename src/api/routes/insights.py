@@ -88,6 +88,124 @@ async def _verify_query_owner(*, query_id, user_id: str, connection: str) -> Non
         raise HTTPException(status_code=404, detail="Query not found for this user")
 
 
+# ── ML-result narration (per-skill findings + follow-ups + grounded summary) ──
+
+def _has_skill(env) -> bool:
+    return bool(isinstance(env, dict) and (env.get("skill") or (env.get("facts") or {}).get("skill")))
+
+
+def _body_row_count(dataset) -> int:
+    if isinstance(dataset, dict):
+        return len(dataset.get("rows") or dataset.get("data") or [])
+    return 0
+
+
+async def _resolve_ml_analysis(*, request, user_id: str):
+    """The ML ``ResultEnvelope`` for this turn, or None for ordinary SQL turns.
+
+    Prefers the envelope the client sends in the request body (available for
+    both live and restored ML turns); falls back to the persisted turn artifact
+    (``query_id`` is the turn id), so it also works if the client omits it.
+    """
+    if _has_skill(request.analysis):
+        return request.analysis
+    if request.query_id:
+        try:
+            history = get_history_service()
+            row = await history.get_turn_analysis(
+                turn_id=request.query_id, user_id=user_id, source_key=request.connection,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("insights: turn analysis lookup failed", exc_info=True)
+            row = None
+        if row and _has_skill(row.get("analysis")):
+            return row["analysis"]
+    return None
+
+
+async def _log_insights_to_history(query_id, insights: dict, exec_time_ms: int) -> None:
+    if not query_id:
+        return
+    history = get_history_service()
+    if not history:
+        return
+    try:
+        await history.add_insight(
+            query_id=query_id, insight_type="summary",
+            content=insights.get("summary") or "Analysis complete",
+            llm_model=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
+            llm_execution_time_ms=exec_time_ms, tokens_input=0, tokens_output=0,
+        )
+        for finding in insights.get("findings", []) or []:
+            await history.add_insight(
+                query_id=query_id, insight_type="finding",
+                content=str(finding), llm_model=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to log ML insights to history")
+
+
+async def _ml_insights_response(*, request, analysis, agent, prompt_cache, user_id) -> "GenerateInsightsResponse":
+    from src.agent.ml_insight_service import generate_ml_insights
+
+    t0 = time.time()
+    insights = await generate_ml_insights(
+        analysis=analysis, question=request.question, row_count=_body_row_count(request.dataset),
+        llm_service=agent.llm, prompt_cache=prompt_cache,
+    )
+    exec_time_ms = int((time.time() - t0) * 1000)
+    await _log_insights_to_history(request.query_id, insights, exec_time_ms)
+    return GenerateInsightsResponse(
+        summary=insights.get("summary", "Analysis complete"),
+        findings=insights.get("findings", []),
+        suggestions=insights.get("suggestions", []),
+        followups=insights.get("followups", []),
+        prompt=insights.get("prompt"),
+    )
+
+
+def _ml_insights_stream(*, request, analysis, agent, prompt_cache, user_id) -> StreamingResponse:
+    """SSE for an ML turn: async completion (a single ``status`` then ``done``),
+    mirroring the LangGraph eval path — no token deltas."""
+
+    async def event_generator():
+        yield ": ping\n\n"
+        yield _sse("status", {"state": "narrating", "mode": "async_completion"})
+        from src.agent.ml_insight_service import generate_ml_insights
+
+        try:
+            t0 = time.time()
+            insights = await generate_ml_insights(
+                analysis=analysis, question=request.question, row_count=_body_row_count(request.dataset),
+                llm_service=agent.llm, prompt_cache=prompt_cache,
+            )
+            latency_ms = int((time.time() - t0) * 1000)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("ML insights stream failed")
+            yield _sse("error", {"error": str(exc)})
+            return
+
+        final_insights = {
+            "summary": insights.get("summary", ""),
+            "findings": insights.get("findings", []),
+            "suggestions": insights.get("suggestions", []),
+            "followups": insights.get("followups", []),
+            "prompt": insights.get("prompt", ""),
+        }
+        yield _sse("done", {"insights": final_insights, "metrics": {"llm_latency_ms": latency_ms}})
+        await _log_insights_to_history(request.query_id, final_insights, latency_ms)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @router.post("/generate-insights", response_model=GenerateInsightsResponse)
 async def generate_insights_endpoint(
     request: GenerateInsightsRequest,
@@ -99,6 +217,18 @@ async def generate_insights_endpoint(
     )
     agent = await resolve_agent(request.connection)
     logger.info("Generating insights for: %s", request.question[:50])
+
+    # ML turn: findings + follow-ups come from the engine facts (deterministic)
+    # and the summary is grounded in them. Resolved before the dataset because
+    # ML narration needs no result rows, so a cache miss must not block it.
+    from src.api import state as app_state
+    ml_analysis = await _resolve_ml_analysis(request=request, user_id=user_id)
+    if ml_analysis is not None:
+        return await _ml_insights_response(
+            request=request, analysis=ml_analysis, agent=agent,
+            prompt_cache=app_state.prompt_cache, user_id=user_id,
+        )
+
     # Resolve before the try so a 409 cache_miss propagates instead of being
     # swallowed into a generic "Unable to generate insights" response.
     # prefer_cache: insights reason over the FULL result set (the cached frame),
@@ -257,6 +387,16 @@ async def generate_insights_stream_endpoint(
 
     from src.api import state as app_state
     from src.agent.insight_service import generate_insights_stream
+
+    # ML turn: stream the deterministic findings + follow-ups and a grounded
+    # summary (async completion). Resolved before the dataset so an aggregate
+    # cache miss never blocks ML narration.
+    ml_analysis = await _resolve_ml_analysis(request=request, user_id=user_id)
+    if ml_analysis is not None:
+        return _ml_insights_stream(
+            request=request, analysis=ml_analysis, agent=agent,
+            prompt_cache=app_state.prompt_cache, user_id=user_id,
+        )
 
     # Resolve before streaming starts so a 409 cache_miss is a normal HTTP error
     # the client can retry (re-sending rows) rather than a mid-stream failure.

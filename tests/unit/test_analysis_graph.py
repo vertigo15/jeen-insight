@@ -242,8 +242,14 @@ async def test_confirmed_reentry_runs_the_skill_and_narrates(prompt_loader):
     assert fr["low_confidence"] is False
     assert fr["results"]["columns"] == ["ts", "actual", "expected", "lower", "upper", "score", "is_anomaly", "observed"]
     assert fr["results"]["row_count"] == 130
-    assert fr["answer"] == "Ten weeks fall outside the expected range."  # narration summary
-    assert fr["findings"] == ["Largest deviation 35% below expectation"]
+    assert fr["answer"] == "Ten weeks fall outside the expected range."  # narration summary (LLM)
+    # Hybrid: findings + follow-ups come deterministically from the engine facts
+    # (the LLM only writes the summary), so they mirror the narrator exactly.
+    from src.analysis.narration import narrate
+    _narr = narrate(final["analysis_result"])
+    assert _narr.findings, "narrator should produce deterministic findings"
+    assert fr["findings"] == _narr.findings
+    assert fr.get("followups") == _narr.followups
     assert fr["metrics"]["skill"] == "anomaly_detection"
     assert 'DATE_TRUNC(\'WEEK\', "OrderDate")' in fr["sql"]
     nodes = _nodes(final)

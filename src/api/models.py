@@ -275,6 +275,11 @@ class GenerateInsightsRequest(BaseModel):
     # SQL that produced the dataset — when provided the LangGraph eval node is
     # used instead of the legacy insight_service path.
     sql: Optional[str] = None
+    # Serialized ML ResultEnvelope (skill/facts/params/caveats/headline). When
+    # present the request is an ML turn: findings + follow-ups are built from the
+    # engine facts and the summary is grounded in them. Falls back to the
+    # persisted turn analysis (by query_id) when omitted.
+    analysis: Optional[Dict[str, Any]] = None
 
 
 class GenerateInsightsResponse(BaseModel):
