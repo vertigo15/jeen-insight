@@ -75,6 +75,28 @@ _DIALECT_RULES["spark"] = _DIALECT_RULES["databricks"]
 _DIALECT_RULES["spark2"] = _DIALECT_RULES["databricks"]
 
 
+# database_types whose tables are addressed as catalog.schema.table. Every other
+# engine (Postgres, MySQL, SQL Server, ...) pins the database at connection time
+# and MUST NOT qualify a table with the database/catalog name — on Postgres a
+# catalog qualifier is parsed as a (non-existent) schema, e.g. the analysis
+# builder would emit "AdventureWorksDW"."factinternetsales" and the query fails.
+_CATALOG_QUALIFIED: frozenset[str] = frozenset(
+    {"trino", "presto", "databricks", "spark", "spark2"}
+)
+
+
+def supports_catalog_qualifier(database_type: str | None) -> bool:
+    """True if the engine addresses tables as ``catalog.schema.table``.
+
+    Only Trino/Presto and Databricks/Spark carry a catalog in table references.
+    Postgres/MySQL/SQL Server fix the database through the connection, so
+    emitting the database name as a catalog yields an invalid reference.
+    """
+    if not database_type:
+        return False
+    return database_type.strip().lower() in _CATALOG_QUALIFIED
+
+
 def sqlglot_dialect_for(database_type: str | None) -> str | None:
     """Return the sqlglot dialect name for a ``database_type`` (or None).
 

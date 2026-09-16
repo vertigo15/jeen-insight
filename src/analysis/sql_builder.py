@@ -28,7 +28,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 from sqlglot import exp
 
 from src.analysis.contracts import CohortRequest, EntityRequest, ExperimentRequest, FilterSpec, SeriesRequest
-from src.connectors.dialects import sqlglot_dialect_for
+from src.connectors.dialects import sqlglot_dialect_for, supports_catalog_qualifier
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _NUMBER = re.compile(r"^[-+]?\d+(\.\d+)?$")
@@ -47,9 +47,20 @@ def _ident(name: str) -> exp.Identifier:
     return exp.to_identifier(name, quoted=True)
 
 
-def _table(req: SeriesRequest, *, connection_schema: Optional[str], connection_catalog: Optional[str]) -> exp.Table:
+def _table(
+    req: "SeriesRequest | EntityRequest | CohortRequest | ExperimentRequest",
+    *,
+    connection_schema: Optional[str],
+    connection_catalog: Optional[str],
+    database_type: Optional[str] = None,
+) -> exp.Table:
     schema = req.schema_name or connection_schema or None
     catalog = req.catalog or connection_catalog or None
+    # Only catalog.schema.table engines (Trino, Databricks) may qualify a table
+    # with the catalog. On Postgres/MySQL the database is fixed by the connection
+    # and the catalog would be read as a (missing) schema, so drop it there.
+    if not supports_catalog_qualifier(database_type):
+        catalog = None
     return exp.Table(
         this=_ident(req.table),
         db=_ident(schema) if schema else None,
@@ -193,7 +204,7 @@ def build_series_expression(
         columns.append(exp.alias_(_agg_expr(agg, column, req, database_type, column_types), alias, quoted=True))
     select = (
         exp.select(*columns)
-        .from_(_table(req, connection_schema=connection_schema, connection_catalog=connection_catalog))
+        .from_(_table(req, connection_schema=connection_schema, connection_catalog=connection_catalog, database_type=database_type))
         .group_by(*group_cols)
         .order_by(exp.Ordered(this=exp.column("ts", quoted=True)))
     )
@@ -264,7 +275,7 @@ def build_contribution_sql(
                 exp.alias_(period.copy(), "period", quoted=True),
                 exp.alias_(_measure(req, database_type, column_types), "value", quoted=True),
             )
-            .from_(_table(req, connection_schema=connection_schema, connection_catalog=connection_catalog))
+            .from_(_table(req, connection_schema=connection_schema, connection_catalog=connection_catalog, database_type=database_type))
             .group_by(slice_expr.copy(), period.copy())
         )
         window = exp.paren(exp.or_(in_before.copy(), in_after.copy()))
@@ -292,11 +303,7 @@ def build_entity_sql(
     cols += [_column(f) for f in req.features]
     if req.target:
         cols.append(exp.alias_(_column(req.target), "target", quoted=True))
-    table = exp.Table(
-        this=_ident(req.table),
-        db=_ident(req.schema_name or connection_schema) if (req.schema_name or connection_schema) else None,
-        catalog=_ident(req.catalog or connection_catalog) if (req.catalog or connection_catalog) else None,
-    )
+    table = _table(req, connection_schema=connection_schema, connection_catalog=connection_catalog, database_type=database_type)
     select = exp.select(*cols).from_(table).order_by(exp.Ordered(this=_column(req.entity_key)))
     preds: List[exp.Expression] = []
     pseudo = SeriesRequest(table=req.table, date_column=req.entity_key, measure_column="*", agg="count", filters=req.filters)
@@ -329,11 +336,7 @@ def build_cohort_sql(
     cohort_trunc = exp.TimestampTrunc(unit=exp.Var(this=req.grain.upper()), this=_column(req.cohort_date))
     period_trunc = exp.TimestampTrunc(unit=exp.Var(this=req.grain.upper()), this=_column(req.activity_date))
     active = exp.Count(this=exp.Distinct(expressions=[key]))
-    table = exp.Table(
-        this=_ident(req.table),
-        db=_ident(req.schema_name or connection_schema) if (req.schema_name or connection_schema) else None,
-        catalog=_ident(req.catalog or connection_catalog) if (req.catalog or connection_catalog) else None,
-    )
+    table = _table(req, connection_schema=connection_schema, connection_catalog=connection_catalog, database_type=database_type)
     pseudo = SeriesRequest(table=req.table, date_column=req.activity_date, measure_column="*", agg="count", filters=req.filters)
     preds = [_filter_predicate(f, pseudo, column_types) for f in req.filters]
     where = exp.and_(*preds) if preds else None
@@ -386,11 +389,7 @@ def build_experiment_sql(
     if (database_type or "").lower() in ("postgres", "postgresql") and any(t in otype for t in _MONEY_TYPES):
         col = exp.Cast(this=col, to=exp.DataType.build("DECIMAL"))
     sq = exp.Mul(this=col.copy(), expression=col.copy())
-    table = exp.Table(
-        this=_ident(req.table),
-        db=_ident(req.schema_name or connection_schema) if (req.schema_name or connection_schema) else None,
-        catalog=_ident(req.catalog or connection_catalog) if (req.catalog or connection_catalog) else None,
-    )
+    table = _table(req, connection_schema=connection_schema, connection_catalog=connection_catalog, database_type=database_type)
     pseudo = SeriesRequest(table=req.table, date_column=req.group_column, measure_column="*", agg="count",
                            filters=req.filters)
     preds = [_filter_predicate(f, pseudo, column_types) for f in req.filters]
@@ -428,7 +427,7 @@ def build_span_probe_sql(
         exp.alias_(exp.Min(this=date_col), "min_ts", quoted=True),
         exp.alias_(exp.Max(this=date_col), "max_ts", quoted=True),
         exp.alias_(exp.Count(this=exp.Star()), "n", quoted=True),
-    ).from_(_table(req, connection_schema=connection_schema, connection_catalog=connection_catalog))
+    ).from_(_table(req, connection_schema=connection_schema, connection_catalog=connection_catalog, database_type=database_type))
     where = _where(req, column_types, include_range=False)
     if where is not None:
         select = select.where(where)
