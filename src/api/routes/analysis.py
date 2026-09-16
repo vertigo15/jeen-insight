@@ -315,10 +315,12 @@ async def _patch_from_instruction(agent: Any, skill: str, base_params: Dict[str,
     entity = base_params.get("entity") or {}
     series = base_params.get("series") or {}
     if entity:
+        target = entity.get("target")
+        target_clause = f" to explain {target}" if target else ""
         current = (
             f"Current analysis: {skill} on {entity.get('table')} by {entity.get('entity_key')} "
             f"using features {', '.join(entity.get('features') or [])}"
-            f"{f' to explain {entity.get('target')}' if entity.get('target') else ''}; "
+            f"{target_clause}; "
             f"parameters {{{', '.join(f'{k}={v}' for k, v in base_params.items() if k != 'entity')}}}."
         )
     else:
