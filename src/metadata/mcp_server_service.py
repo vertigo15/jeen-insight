@@ -53,6 +53,12 @@ NEED_KNOWLEDGE_QUESTIONS = "knowledge_questions"
 # Optional, bounded lookup used by the query graphs to verify a user-provided
 # categorical filter value against the source's canonical values.
 NEED_SEARCH_COLUMN_VALUES = "search_column_values"
+# Optional profiling tools (Schema Modeler statistics). ``column_profile`` is
+# what filter grounding reads for distinct counts, semantic type, sensitivity
+# and enumerated values; the table/source profiles feed prompt statistics.
+NEED_COLUMN_PROFILE = "column_profile"
+NEED_TABLE_PROFILE = "table_profile"
+NEED_SOURCE_STATISTICS = "source_statistics"
 
 # Required needs — server cannot be activated until these are mapped.
 # NEED_LIST_SOURCES → list_connections  (connection list)
@@ -72,6 +78,9 @@ CATALOG_NEEDS = [
     {"key": NEED_LIST_COLUMNS,       "label": "Columns (# autocomplete)",         "required": False},
     {"key": NEED_KNOWLEDGE_QUESTIONS,"label": "Knowledge questions (/ templates)","required": False},
     {"key": NEED_SEARCH_COLUMN_VALUES, "label": "Search column values (filter grounding)", "required": False},
+    {"key": NEED_COLUMN_PROFILE,     "label": "Column profile (statistics, sensitivity, values)", "required": False},
+    {"key": NEED_TABLE_PROFILE,      "label": "Table profile (row counts)",         "required": False},
+    {"key": NEED_SOURCE_STATISTICS,  "label": "Source statistics (profiling summary)", "required": False},
 ]
 
 # Human-readable labels for required needs, used in error messages.

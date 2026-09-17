@@ -36,10 +36,16 @@ For PostgreSQL, query tables in the active schema when one is specified above.
 
 Filter Contract:
 The verified filter plan below is authoritative. For every filter marked
-`resolved: true`, use its table/column, operator, and canonical value exactly.
-Do not substitute a similar column or spelling, drop a resolved filter, widen a
-filter, or reinterpret a normalized date/range. Column statistics and samples
-are hints for reasoning only; they do not prove that an unverified value exists.
+`resolved: true`, use its table/column, operator, and canonical value exactly
+(same letters, same case: SQL equality is case-sensitive). Do not substitute a
+similar column or spelling, drop a resolved filter, widen a filter, or
+reinterpret a normalized date/range. A filter with `any_of_columns` may match
+the value in any one of those columns (OR). A filter with `op: contains` is a
+substring match on the canonical value. A filter marked `resolved: false` is a
+literal the metadata could not verify: apply it as the user wrote it with a
+case-insensitive comparison and do not invent an alternative spelling; the
+answer will say the value was not verified. Column statistics and samples are
+hints for reasoning only; they do not prove that an unverified value exists.
 
 Response Structure:
 Every response must be clearly structured with visual separation:

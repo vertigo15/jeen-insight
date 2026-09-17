@@ -525,11 +525,24 @@ class TestValueSearchNormalisation:
                 ]
             }
         )
-        assert result == {
-            "values": ["Mountain-300", "Mountain-500"],
-            "complete": False,
-            "source": "mcp",
-        }
+        assert result["values"] == ["Mountain-300", "Mountain-500"]
+        assert result["complete"] is False
+        assert result["source"] == "mcp"
+        # Every match keeps its own provenance for reverse lookups.
+        assert [m["value"] for m in result["matches"]] == ["Mountain-300", "Mountain-300", "Mountain-500"]
+
+    def test_reverse_lookup_matches_carry_their_column(self):
+        result = _normalise_value_search(
+            {"matches": [
+                {"value": "Moscow", "table": "dim_customer", "column": "city", "score": 0.62, "count": 12},
+                {"value": "Moscow", "table_name": "dim_dealer", "column_name": "city", "similarity": 0.62},
+            ], "complete": False, "snapshot": "2026-09-01"}
+        )
+        assert result["values"] == ["Moscow"]
+        assert result["snapshot"] == "2026-09-01"
+        assert [(m["table"], m["column"], m["score"]) for m in result["matches"]] == [
+            ("dim_customer", "city", 0.62), ("dim_dealer", "city", 0.62),
+        ]
 
     def test_honours_explicit_completeness(self):
         assert _normalise_value_search(
@@ -848,11 +861,9 @@ class TestMcpColumnValueSearch:
             limit=20,
         )
 
-        assert result == {
-            "values": ["Mountain-300"],
-            "complete": True,
-            "source": "mcp",
-        }
+        assert result["values"] == ["Mountain-300"]
+        assert result["complete"] is True
+        assert result["source"] == "mcp"
         client._call_tool.assert_awaited_once_with(
             server,
             "search_column_values",
@@ -863,6 +874,16 @@ class TestMcpColumnValueSearch:
                 "searchTerm": "mountaiin",
                 "maxResults": 20,
             },
+        )
+
+        # A reverse lookup omits the column so the provider searches every
+        # captured column of the source.
+        client._call_tool.reset_mock()
+        await client.search_column_values("AdventureWorks", table=None, column=None, query="mosco", limit=20)
+        client._call_tool.assert_awaited_once_with(
+            server,
+            "search_column_values",
+            {"connectionId": 9, "searchTerm": "mosco", "maxResults": 20},
         )
 
 

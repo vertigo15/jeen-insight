@@ -549,12 +549,26 @@ class TestSkipRules:
         p = probe(_Probe())
         out = await _node(p)(
             _state(
-                [{"target": "'Product'[Sell Start Date]", "op": "equals", "value": "January 2020"}]
+                # Day/month order is a guess the resolver refuses to make.
+                [{"target": "'Product'[Sell Start Date]", "op": "equals", "value": "03/04/2020"}]
             )
         )
         assert p.distinct_calls == []
         assert out["clarification_required"] is True
         assert "couldn't find" in out["clarification"].lower()
+
+    async def test_month_literal_is_normalised_to_its_whole_month(self, probe):
+        p = probe(_Probe())
+        out = await _node(p)(
+            _state(
+                [{"target": "'Product'[Sell Start Date]", "op": "equals", "value": "January 2020"}]
+            )
+        )
+        assert p.distinct_calls == []
+        assert not out.get("clarification_required")
+        resolved = out["query_plan"]["filters"][0]
+        assert resolved["op"] == "between" and resolved["value"] == ["2020-01-01", "2020-01-31"]
+        assert resolved["resolved"] is True
 
     async def test_iso_date_range_is_normalised_without_a_value_probe(self, probe):
         p = probe(_Probe())

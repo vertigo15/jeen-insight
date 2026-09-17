@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 from src.metadata.identifiers import (
+    split_qualified_identifier,
     table_column_from_identifier,
     table_name_from_identifier,
 )
@@ -160,6 +161,17 @@ def _build_adjacency(relationships_text: str, table_names: Set[str]) -> Dict[str
     # Split into rough entries; the formatter emits "[('a',), ('b',)]" or lines.
     chunks = re.split(r"\),\s*\(|\n", relationships_text)
     for chunk in chunks:
+        if "->" in chunk:
+            # Structured endpoint line: only its table components are edges.
+            # When one side names a table outside the catalog there is no edge
+            # to add — the token fallback must not turn a column name into one.
+            structured = _structured_edge(chunk, table_names)
+            if structured is not None:
+                a, b = structured
+                if a != b:
+                    adjacency[a].add(b)
+                    adjacency[b].add(a)
+            continue
         toks = set(re.findall(r"[A-Za-z0-9_]+", chunk.lower()))
         mentioned = [t for t in table_names if t in toks]
         for i, a in enumerate(mentioned):
@@ -167,6 +179,26 @@ def _build_adjacency(relationships_text: str, table_names: Set[str]) -> Dict[str
                 adjacency[a].add(b)
                 adjacency[b].add(a)
     return adjacency
+
+
+def _structured_edge(chunk: str, table_names: Set[str]) -> Optional[Tuple[str, str]]:
+    """Parse ``from_table.from_column -> to_table.to_column`` into its two tables.
+
+    Only the *table* component of each side is used, so a column called
+    ``store`` or ``status`` never becomes an edge to a table of that name.
+    Returns ``None`` when the chunk is not in this shape.
+    """
+    match = re.search(r"([\w\"`\[\].]+?)\s*->\s*([\w\"`\[\].]+)", chunk)
+    if not match:
+        return None
+    tables = []
+    for side in match.groups():
+        parts = [p.lower() for p in split_qualified_identifier(side.strip().strip("'\","))]
+        table = parts[-2] if len(parts) >= 2 else (parts[0] if parts else "")
+        if table not in table_names:
+            return None
+        tables.append(table)
+    return tables[0], tables[1]
 
 
 # ── Scoring & selection ─────────────────────────────────────────────────────

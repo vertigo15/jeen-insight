@@ -38,6 +38,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -79,8 +80,14 @@ except ImportError:  # pragma: no cover - fallback path
         return _plain_ratio(" ".join(sorted(ta)), " ".join(sorted(tb)))
 
 
-_NON_ALNUM_RE = re.compile(r"[^0-9a-z]+")
+# ``\w`` under re.UNICODE keeps letters and digits of every script (Hebrew,
+# Cyrillic, accented Latin) and drops punctuation, quotes and SQL wildcards, so
+# a normalised token is always safe to embed in a LIKE fragment.
+_NON_WORD_RE = re.compile(r"[^\w]+", re.UNICODE)
 _HAS_DIGIT_RE = re.compile(r"\d")
+# Bidi isolates keep a right-to-left value from re-ordering the surrounding
+# left-to-right sentence when it is rendered inside a clarification.
+_FSI, _PDI = "\u2068", "\u2069"
 
 # Score at or above which a domain value is worth showing the user at all.
 DEFAULT_MATCH_THRESHOLD = 78.0
@@ -89,13 +96,27 @@ DEFAULT_TOKEN_THRESHOLD = 82.0
 
 
 def normalize(value: object) -> str:
-    """Lower-case, strip punctuation and collapse whitespace.
+    """Case-fold, strip accents/punctuation and collapse whitespace, any script.
 
     ``"Mountain-300 Black, 38"`` -> ``"mountain 300 black 38"`` so hyphenation
-    and comma style never decide a match.
+    and comma style never decide a match; ``"Zürich"`` -> ``"zurich"`` and
+    Hebrew niqqud is dropped so vowel marks never decide one either. Letters
+    of non-Latin scripts are kept: ``"Москва"`` normalises to ``"москва"``,
+    not to an empty string.
     """
-    text = str(value or "").strip().lower()
-    return _NON_ALNUM_RE.sub(" ", text).strip()
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    decomposed = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    text = _NON_WORD_RE.sub(" ", text).replace("_", " ")
+    return " ".join(text.split())
+
+
+def bidi_isolate(value: object) -> str:
+    """Wrap *value* in Unicode bidi isolates when it contains RTL characters."""
+    text = str(value or "")
+    if any(unicodedata.bidirectional(ch) in ("R", "AL") for ch in text):
+        return f"{_FSI}{text}{_PDI}"
+    return text
 
 
 def tokenize(value: object) -> List[str]:
@@ -254,10 +275,22 @@ class ValueDomain:
 
     ``complete`` is False when the column had more distinct values than the
     fetch cap, meaning "not in ``values``" does not prove "not in the column".
+    ``source`` names where the snapshot came from (``db`` probe, ``profile``,
+    ``captured``, ``mcp``) and ``snapshot`` identifies it, so a cache entry is
+    never mistaken for a newer profile run.
     """
 
     values: Tuple[str, ...]
     complete: bool
+    source: str = "db"
+    snapshot: str = ""
+    fresh_for_absence: bool = True
+
+
+# Cache identity for domains readable by every user of a source (pooled
+# credentials, no row-level security). An explicit sentinel, not a blank
+# identity, so the "blank user is never cached" guard below still holds.
+SHARED_VISIBILITY = "shared"
 
 
 class ValueDomainCache:
@@ -292,11 +325,15 @@ class ValueDomainCache:
         table: object,
         column: object,
         scope: object = "",
+        snapshot: object = "",
     ) -> str:
         """Build a cache key, or ``""`` when it would not be safe to cache.
 
         An empty ``user_id`` yields no key: caching under a blank identity would
-        let unrelated readers share one RLS-filtered domain.
+        let unrelated readers share one RLS-filtered domain. Sources whose
+        values are visible to every user pass :data:`SHARED_VISIBILITY`
+        explicitly. ``snapshot`` (a profile run / capture identifier) keeps a
+        cached domain from outliving the metadata it was read from.
         """
         parts = [
             str(source_key or "").strip().lower(),
@@ -304,6 +341,7 @@ class ValueDomainCache:
             str(user_id or "").strip(),
             str(table or "").strip().lower(),
             str(column or "").strip().lower(),
+            str(snapshot or "").strip(),
         ]
         if not parts[2] or not parts[3] or not parts[4]:
             return ""
@@ -364,9 +402,11 @@ value_domain_cache = ValueDomainCache(
 __all__ = [
     "DEFAULT_MATCH_THRESHOLD",
     "DEFAULT_TOKEN_THRESHOLD",
+    "SHARED_VISIBILITY",
     "ValueDomain",
     "ValueDomainCache",
     "ValueMatch",
+    "bidi_isolate",
     "covers_all_tokens",
     "exact_value",
     "is_refinement_set",

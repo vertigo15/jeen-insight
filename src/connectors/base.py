@@ -196,6 +196,31 @@ def assert_read_only_query(sql: str, dialect: Optional[str] = None) -> Optional[
     return check_read_only_statements(statements)
 
 
+# ── Literal helpers ───────────────────────────────────────────────────────────
+_MAX_LITERAL_CHARS = 512
+_CONTROL_CHARS = {chr(c) for c in range(32) if chr(c) not in ("\t",)} | {"\x7f"}
+# Engines whose string literals treat a backslash as an escape character, so
+# it has to be doubled as well as the quote.
+_BACKSLASH_ESCAPING_ENGINES = {"databricks", "spark", "spark-sql", "mysql"}
+
+
+def sql_string_literal(value: object, database_type: Optional[str] = None) -> str:
+    """Render *value* as a safe single-quoted SQL string literal.
+
+    Used for value probes whose operand is a real column value (which may
+    legitimately contain quotes, e.g. ``O'Brien``): quotes are doubled, control
+    characters and NULs dropped, the length capped, and on backslash-escaping
+    engines the backslash is doubled too. This is the only way a user- or
+    database-derived string may enter probe SQL; identifiers go through
+    connector quoting, never through this function.
+    """
+    text = "".join(ch for ch in str(value if value is not None else "") if ch not in _CONTROL_CHARS)
+    text = text[:_MAX_LITERAL_CHARS]
+    if (database_type or "").lower() in _BACKSLASH_ESCAPING_ENGINES:
+        text = text.replace("\\", "\\\\")
+    return "'" + text.replace("'", "''") + "'"
+
+
 # ── Result helpers ────────────────────────────────────────────────────────────
 def empty_result() -> Dict[str, Any]:
     return {"columns": [], "rows": [], "row_count": 0}
@@ -225,6 +250,16 @@ class SqlRunner(abc.ABC):
     sqlglot_dialect: Optional[str] = None
     #: Source key used in logs; set by concrete runners/factory.
     source_key: Optional[str] = None
+    #: True when the engine stops the statement itself once
+    #: ``statement_timeout_ms`` elapses (or the runner cancels it there), so a
+    #: probe the client gave up on cannot keep scanning — and billing — on the
+    #: warehouse. Value grounding only issues source probes to runners that
+    #: can promise this.
+    supports_server_side_timeout: bool = False
+
+    def string_literal(self, value: object) -> str:
+        """Safe single-quoted literal for this engine (see :func:`sql_string_literal`)."""
+        return sql_string_literal(value, self.database_type)
 
     # -- lifecycle -------------------------------------------------------------
     @abc.abstractmethod

@@ -61,9 +61,44 @@ The heart is a **LangGraph text-to-SQL state machine** built in
    `out_of_scope`, `unsafe`, `greeting`.
 3. **catalog_lookup** — load per-connection curated metadata (deny-by-default if no
    catalog).
-4. **filter_planner / filter_grounder** — entity/value linking: verify literal
-   filter values actually exist in columns (fuzzy match via `rapidfuzz`), ask for
-   clarification if ambiguous.
+4. **filter_planner / filter_grounder** — entity/value linking, metadata first.
+   The planner (router LLM) binds each literal of the question to a catalogued
+   column while a concurrent *reverse lookup* over Schema Modeler's captured
+   values finds which columns actually contain a value like the word typed
+   ("mosco" → `dim_customer.city` = Moscow); the hits are shown to the planner,
+   shrink its catalog on large schemas, and also run the planner when the
+   question has no English predicate cue (Hebrew questions, "Moscow sales").
+   The grounder then decides the **column** deterministically — planner choice ∩
+   eligible hits (non-sensitive, visible, text, joinable from the question's
+   tables), a role word in the question or a remembered answer resolves; a single
+   candidate elsewhere retargets *and is disclosed*; competing business roles
+   (customer city vs dealer city) become a structured question with ≤ 4 options,
+   "any of these fields" and "something else" — and grounds the **value** through
+   evidence tiers: T0 cache → T1 metadata (`metadata_column_profiles` /
+   `metadata_column_value_embeddings`, or the MCP `get_column_profile` /
+   `search_column_values` tools; a complete, fresh snapshot corrects a typo
+   locally via `rapidfuzz`, a partial one yields candidates) → T2 one-row point
+   probe on the source to confirm a strong candidate → T3 `SELECT DISTINCT` of a
+   small uncaptured domain (only on connectors that stop the statement
+   server-side) → T4 bounded `LIKE` search whose results are only ever offered
+   as a question. Completeness is snapshot-proven (`CaptureContract`: profiler
+   verdict, exact counts, margin over estimates); absence is asserted only from
+   fresher metadata than existence. Sensitive columns (`sensitivity_tag`),
+   hidden columns and a denylist are never probed or shown; per-source
+   `value_visibility` decides whether captured values may be displayed at all.
+   Resolved filters carry raw → canonical value, operator (`contains`/`IN`
+   preserved), evidence tier and any disclosed assumption into the SQL prompt,
+   the validator (exact literal, case-sensitive) and the API response
+   (`filters`, `filter_clarification`), which the UI renders as "Filtered by …"
+   chips (with one-click switches to the other candidate fields) and
+   clarification buttons; the user's answer travels back as `filter_choices`
+   and is remembered per user and connection in `insights_filter_preferences`
+   (literal-level and role-level, e.g. "city means the dealer's city"), always
+   re-checked against governance before it is honoured. The `filter_grounder`
+   trace event and the `query_completed` log carry a structured
+   `filter_grounding` block (tiers, probes, asked, verification mix, zero-row
+   split) for dashboards. A zero-row result triggers one escalated pass that
+   re-confirms metadata-only values against the source.
 5. **prompt_builder** — inject curated schema (with optional schema-linking/pruning
    for large catalogs).
 6. **sql_generator** — LLM generates SQL (retries up to `max_retries`).

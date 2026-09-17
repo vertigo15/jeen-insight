@@ -1626,6 +1626,22 @@ export class SettingsPage {
         const sm = b.sql_filter_match_threshold || { min: 0, max: 100 };
         const st = b.sql_filter_lookup_timeout_ms || { min: 100, max: 60000 };
         const sc = b.sql_filter_cache_ttl_seconds || { min: 1, max: 3600 };
+        const fe = b.sql_filter_existence_max_age_hours || { min: 1, max: 8760 };
+        const fa = b.sql_filter_absence_max_age_hours || { min: 1, max: 8760 };
+        const choices = data.choices || {};
+        const visibilityChoices = choices.sql_filter_value_visibility || ['none', 'source_wide', 'user_scoped'];
+        const unverifiedChoices = choices.sql_filter_unverified_execution || ['ask', 'allow'];
+        const visibilityLabels = {
+            none: 'None — never enumerate values from metadata',
+            source_wide: 'Source-wide — every user of the source sees the same values',
+            user_scoped: 'User-scoped — values differ per user (row-level security)',
+        };
+        const unverifiedLabels = {
+            ask: 'Ask the user for the exact value',
+            allow: 'Run the query with the literal as written (disclosed)',
+        };
+        const options = (values, labels, current) => values.map((v) =>
+            `<option value="${_esc(v)}" ${v === current ? 'selected' : ''}>${_esc(labels[v] || v)}</option>`).join('');
 
         this._content.innerHTML = `
             <div class="sp-section-header">
@@ -1686,12 +1702,50 @@ export class SettingsPage {
                            min="${sc.min}" max="${sc.max}" step="30"
                            value="${data.sql_filter_cache_ttl_seconds}">`)}
             </div>
+            <div class="sp-card">
+                <div class="sp-card-title">Metadata Evidence &amp; Source Probes</div>
+                ${this._row('Use Schema Modeler profiles and captured values', 'Read column profiles and captured distinct values (metadata DB or MCP profile tools) before touching the source. Corrects typos from a complete snapshot and finds which columns hold a value.', `
+                    <label class="sp-switch"><input type="checkbox" id="sp-rt-sql-meta-on" ${data.sql_filter_metadata_evidence_enabled ? 'checked' : ''}><span class="sp-switch-slider"></span></label>`)}
+                ${this._row('Value visibility', 'Who may see captured values in clarifications and the cache. Use user-scoped on any source with row-level security.', `
+                    <select class="settings-select" id="sp-rt-sql-visibility">${options(visibilityChoices, visibilityLabels, data.sql_filter_value_visibility)}</select>`)}
+                ${this._row('Unverifiable filter values', 'What happens when no evidence can confirm a value: ask (default) or run the query with the value as written and say it was not verified.', `
+                    <select class="settings-select" id="sp-rt-sql-unverified">${options(unverifiedChoices, unverifiedLabels, data.sql_filter_unverified_execution)}</select>`)}
+                ${this._row('Confirm on the source', 'Allow one-row confirmation probes and bounded searches on the customer\u2019s database. Only connectors that stop a statement server-side are probed.', `
+                    <label class="sp-switch"><input type="checkbox" id="sp-rt-sql-probe-on" ${data.sql_filter_source_probe_enabled ? 'checked' : ''}><span class="sp-switch-slider"></span></label>`)}
+                ${this._row('Enumerate small uncaptured domains', 'Allow SELECT DISTINCT on the source for a column the profile proves small and exactly counted. Off = only confirm/search.', `
+                    <label class="sp-switch"><input type="checkbox" id="sp-rt-sql-distinct-on" ${data.sql_filter_source_distinct_enabled ? 'checked' : ''}><span class="sp-switch-slider"></span></label>`)}
+                ${this._row('Never probe or show', 'Comma-separated table.column patterns (* wildcards) that are never probed, enumerated or offered, in addition to sensitive-tagged and hidden columns.', `
+                    <input class="settings-select" type="text" id="sp-rt-sql-denylist" placeholder="hr.*, customers.email"
+                           value="${_esc(data.sql_filter_probe_denylist || '')}">`)}
+                ${this._row('Metadata age to prove a value exists (hours)', `A snapshot older than this cannot correct a typo on its own; a source probe confirms it instead. Range ${fe.min}–${fe.max}.`, `
+                    <input class="settings-select" type="number" id="sp-rt-sql-exist-age"
+                           min="${fe.min}" max="${fe.max}" step="1"
+                           value="${data.sql_filter_existence_max_age_hours}">`)}
+                ${this._row('Metadata age to say a value does not exist (hours)', `Stricter: telling the user a value is absent is shown as a fact. Range ${fa.min}–${fa.max}.`, `
+                    <input class="settings-select" type="number" id="sp-rt-sql-absent-age"
+                           min="${fa.min}" max="${fa.max}" step="1"
+                           value="${data.sql_filter_absence_max_age_hours}">`)}
+            </div>
             <div class="sp-card-footer">
                 <button class="sp-btn-primary" id="sp-rt-save">Save</button>
             </div>
         `;
 
         this._content.querySelector('#sp-rt-save')?.addEventListener('click', async () => {
+            const numeric = {
+                'sp-rt-timeout': 'db_statement_timeout_ms', 'sp-rt-maxrows': 'max_result_rows', 'sp-rt-turns': 'conversation_context_turns',
+                'sp-rt-entity-threshold': 'dax_entity_match_threshold', 'sp-rt-entity-domain': 'dax_entity_max_domain_values',
+                'sp-rt-sql-filter-threshold': 'sql_filter_match_threshold', 'sp-rt-sql-filter-domain': 'sql_filter_max_domain_values',
+                'sp-rt-sql-filter-timeout': 'sql_filter_lookup_timeout_ms', 'sp-rt-sql-filter-cache': 'sql_filter_cache_ttl_seconds',
+                'sp-rt-sql-exist-age': 'sql_filter_existence_max_age_hours', 'sp-rt-sql-absent-age': 'sql_filter_absence_max_age_hours',
+            };
+            // An emptied number box is a mistake, not a request to keep the old
+            // value silently: refuse to save until every number is a number.
+            const blank = Object.keys(numeric).filter((id) => !Number.isFinite(Number(this._content.querySelector(`#${id}`).value)) || this._content.querySelector(`#${id}`).value.trim() === '');
+            if (blank.length) {
+                _showToast(`Enter a number for: ${blank.map((id) => numeric[id].replace(/_/g, ' ')).join(', ')}`, 'error');
+                return;
+            }
             const payload = {
                 db_statement_timeout_ms: parseInt(this._content.querySelector('#sp-rt-timeout').value, 10),
                 max_result_rows: parseInt(this._content.querySelector('#sp-rt-maxrows').value, 10),
@@ -1705,6 +1759,14 @@ export class SettingsPage {
                 sql_filter_max_domain_values: parseInt(this._content.querySelector('#sp-rt-sql-filter-domain').value, 10),
                 sql_filter_lookup_timeout_ms: parseInt(this._content.querySelector('#sp-rt-sql-filter-timeout').value, 10),
                 sql_filter_cache_ttl_seconds: parseInt(this._content.querySelector('#sp-rt-sql-filter-cache').value, 10),
+                sql_filter_metadata_evidence_enabled: this._content.querySelector('#sp-rt-sql-meta-on').checked,
+                sql_filter_value_visibility: this._content.querySelector('#sp-rt-sql-visibility').value,
+                sql_filter_unverified_execution: this._content.querySelector('#sp-rt-sql-unverified').value,
+                sql_filter_source_probe_enabled: this._content.querySelector('#sp-rt-sql-probe-on').checked,
+                sql_filter_source_distinct_enabled: this._content.querySelector('#sp-rt-sql-distinct-on').checked,
+                sql_filter_probe_denylist: this._content.querySelector('#sp-rt-sql-denylist').value.trim(),
+                sql_filter_existence_max_age_hours: parseInt(this._content.querySelector('#sp-rt-sql-exist-age').value, 10),
+                sql_filter_absence_max_age_hours: parseInt(this._content.querySelector('#sp-rt-sql-absent-age').value, 10),
             };
             try {
                 const res = await fetch('/api/settings/runtime', {

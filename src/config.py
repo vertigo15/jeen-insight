@@ -229,6 +229,39 @@ class Settings(BaseSettings):
     # stale RLS-visible values across policy changes.
     SQL_FILTER_LOOKUP_TIMEOUT_MS: int = 5000
     SQL_FILTER_CACHE_TTL_SECONDS: int = 900
+    # Metadata-first grounding. Schema Modeler's column profiles and captured
+    # values (same metadata DB, or the MCP profile/value tools) are consulted
+    # before any source probe; a probe then only confirms what the metadata
+    # could not certify.
+    SQL_FILTER_METADATA_EVIDENCE_ENABLED: bool = True
+    # Under an MCP catalog, let the metadata-DB store answer profile/value
+    # reads the MCP server has not mapped (same ``source`` identity on both).
+    SQL_FILTER_METADATA_DB_FALLBACK: bool = True
+    # Who may see captured values in clarifications/cache:
+    #   none         never enumerate values from metadata
+    #   source_wide  every user of the source sees the same values (pooled
+    #                credentials, no row-level security) — captured values of
+    #                non-sensitive columns are shared evidence
+    #   user_scoped  values differ per user (RLS); metadata hits are candidates
+    #                that must be confirmed under the user's identity
+    SQL_FILTER_VALUE_VISIBILITY: str = "source_wide"
+    # A literal the evidence could not verify: "ask" the user (default) or
+    # "allow" the SQL to run with the literal as written, clearly disclosed.
+    SQL_FILTER_UNVERIFIED_EXECUTION: str = "ask"
+    # Source probes (point confirmation, bounded search) are only issued to
+    # connectors that cancel a statement server-side; this switch turns them
+    # off entirely.
+    SQL_FILTER_SOURCE_PROBE_ENABLED: bool = True
+    # ``SELECT DISTINCT`` on the source to enumerate a small, uncaptured domain.
+    # LIMIT bounds returned rows, not scanned rows, so it also requires an exact
+    # (not estimated) profile row/distinct count under the domain cap.
+    SQL_FILTER_SOURCE_DISTINCT_ENABLED: bool = True
+    # Comma-separated table.column globs that are never probed or enumerated.
+    SQL_FILTER_PROBE_DENYLIST: str = ""
+    # How old metadata may be to prove a value exists (hit) vs. to tell the user
+    # it does not (miss). Absence is stricter: it is shown as a fact.
+    SQL_FILTER_EXISTENCE_MAX_AGE_HOURS: int = 168
+    SQL_FILTER_ABSENCE_MAX_AGE_HOURS: int = 24
     # NOTE: there is deliberately no app-only (service-principal) or pre-minted
     # test-token escape hatch here. Power BI is read strictly through the
     # signed-in user's delegated grant so that the model's row-level security

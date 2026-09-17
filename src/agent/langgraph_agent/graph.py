@@ -234,6 +234,7 @@ def build_graph(
     filter_match_threshold: float = 78.0,
     filter_lookup_timeout_ms: int = 5000,
     filter_cache_ttl_seconds: int = 900,
+    value_store_provider: Optional[Any] = None,
     ml_skills_enabled: bool = False,
     analysis_store: Any = None,
     analysis_runner_provider: Optional[Any] = None,
@@ -294,7 +295,15 @@ def build_graph(
     n("capability_answer",       make_capability_answer(llm, prompt_loader))
     n("memory_answer_generator", make_memory_answer_generator(router_llm, prompt_loader))
     n("catalog_lookup",          make_catalog_lookup(metadata_loader, require_catalog_for_query))
-    n("filter_planner",          make_filter_planner(router_llm, prompt_loader))
+    # Metadata-first value evidence (Schema Modeler profiles / captured values)
+    # shared by the planner's reverse lookup and the grounder's tiers.
+    from src.agent.langgraph_agent.value_store_provider import value_store_for  # noqa: PLC0415
+
+    store_provider = value_store_provider or value_store_for
+    n("filter_planner",          make_filter_planner(
+        router_llm, prompt_loader,
+        value_store_provider=store_provider, match_threshold=filter_match_threshold,
+        governed_columns=dlp_governed_columns))
     n(
         "filter_grounder",
         make_filter_grounder(
@@ -305,6 +314,7 @@ def build_graph(
             lookup_timeout_ms=filter_lookup_timeout_ms,
             cache_ttl_seconds=filter_cache_ttl_seconds,
             governed_columns=dlp_governed_columns,
+            value_store_provider=store_provider,
         ),
     )
     n("prompt_builder",          make_prompt_builder(prompt_loader))

@@ -54,7 +54,8 @@ from .mcp_server_service import (
     NEED_LIST_SOURCES, NEED_LIST_TABLES, NEED_DESCRIBE_TABLE,
     NEED_LIST_RELATIONSHIPS, NEED_BUSINESS_GLOSSARY, NEED_KNOWLEDGE_PAIRS,
     NEED_TABLES_RICH, NEED_LIST_COLUMNS, NEED_KNOWLEDGE_QUESTIONS,
-    NEED_SEARCH_COLUMN_VALUES,
+    NEED_SEARCH_COLUMN_VALUES, NEED_COLUMN_PROFILE, NEED_TABLE_PROFILE,
+    NEED_SOURCE_STATISTICS,
 )
 from .mcp_cache_service import (
     McpCacheService,
@@ -209,12 +210,16 @@ class McpCatalogClient:
         self,
         source_key: str,
         *,
-        table: str,
-        column: str,
+        table: Optional[str],
+        column: Optional[str],
         query: str,
         limit: int = 20,
     ) -> Dict[str, Any]:
         """Return canonical values matching *query* in one catalogued column.
+
+        With ``table``/``column`` omitted the provider searches every captured
+        column of the source (a reverse "which column holds this value" lookup);
+        each match then carries its own ``table`` / ``column``.
 
         Value search is deliberately a direct MCP call, rather than an entry in
         the shared catalog cache: a server may apply source-side row-level
@@ -225,7 +230,8 @@ class McpCatalogClient:
         The health-check stores each tool's input schema, so build arguments
         from the discovered property names instead of hard-coding a provider
         contract. The return shape is stable for callers:
-        ``{"values": [str, ...], "complete": bool, "source": "mcp"}``.
+        ``{"values": [str, ...], "matches": [{value, table, column, score, count}],
+        "complete": bool, "source": "mcp"}``.
         """
         server = await self._srv_svc.get_active()
         if not server:
@@ -257,6 +263,40 @@ class McpCatalogClient:
             )
             return _empty_value_search()
         return _normalise_value_search(raw)
+
+    async def get_column_profile(
+        self, source_key: str, *, table: str, column: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return the provider's profile of one column, or None when unmapped.
+
+        The payload is passed through as-is (``value_store.profile_from_mapping``
+        reads it with tolerant key names) so a provider can add fields without a
+        client change.
+        """
+        server = await self._srv_svc.get_active()
+        if not server:
+            return None
+        tool = server.get_tool_for_need(NEED_COLUMN_PROFILE)
+        if not tool:
+            return None
+        conn_id = await self._resolve_connection_id(server, source_key)
+        if conn_id is None:
+            return None
+        descriptor = _tool_descriptor_for_need(server, NEED_COLUMN_PROFILE)
+        args = _value_search_arguments(
+            descriptor, connection_id=conn_id, table=table, column=column, query=None, limit=None,
+        )
+        try:
+            raw = await self._call_tool(server, tool, args)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("mcp: column profile failed for %s.%s (%s)", table, column, type(exc).__name__)
+            return None
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                return None
+        return raw if isinstance(raw, dict) else None
 
     async def value_search_preserves_user_visibility(self) -> bool:
         """Whether the active value-search tool explicitly declares user scope.
@@ -815,26 +855,31 @@ def _value_search_arguments(
     descriptor: Dict[str, Any],
     *,
     connection_id: int,
-    table: str,
-    column: str,
-    query: str,
-    limit: int,
+    table: Optional[str],
+    column: Optional[str],
+    query: Optional[str],
+    limit: Optional[int],
 ) -> Dict[str, Any]:
-    """Map semantic value-search inputs onto the tool's discovered schema."""
+    """Map semantic value-search / profile inputs onto the tool's discovered schema.
+
+    ``None`` inputs are omitted, which is how a reverse lookup asks the provider
+    to search every column and how a profile call carries no query.
+    """
     schema = descriptor.get("input_schema") or descriptor.get("inputSchema") or {}
     properties = schema.get("properties") if isinstance(schema, dict) else None
-    bounded_limit = max(1, min(int(limit), 100))
+    bounded_limit = max(1, min(int(limit), 100)) if limit is not None else None
+    values: Dict[str, Any] = {
+        "connection_id": connection_id,
+        "table": table,
+        "column": column,
+        "query": query,
+        "limit": bounded_limit,
+    }
     if not isinstance(properties, dict) or not properties:
         # Old health rows may not have persisted the input schema. This is the
         # documented shape of the Jeen provider and is only a compatibility
         # fallback; new calls use the discovered names below.
-        return {
-            "connection_id": connection_id,
-            "table": table,
-            "column": column,
-            "query": query,
-            "limit": bounded_limit,
-        }
+        return {key: value for key, value in values.items() if value is not None}
 
     aliases = {
         "connection_id": (
@@ -846,18 +891,13 @@ def _value_search_arguments(
         "query": ("query", "search", "search_term", "searchterm", "term", "value"),
         "limit": ("limit", "max_results", "maxresults", "page_size", "pagesize"),
     }
-    values: Dict[str, Any] = {
-        "connection_id": connection_id,
-        "table": table,
-        "column": column,
-        "query": query,
-        "limit": bounded_limit,
-    }
     normalized_properties = {
         _normalise_schema_name(name): name for name in properties
     }
     args: Dict[str, Any] = {}
     for semantic, names in aliases.items():
+        if values[semantic] is None:
+            continue
         target = next(
             (
                 normalized_properties.get(_normalise_schema_name(name))
@@ -893,6 +933,7 @@ def _normalise_value_search(raw: Any) -> Dict[str, Any]:
         )
 
     values: List[str] = []
+    matches: List[Dict[str, Any]] = []
     seen: set[str] = set()
     for item in items or []:
         if isinstance(item, dict):
@@ -909,8 +950,27 @@ def _normalise_value_search(raw: Any) -> Dict[str, Any]:
         if value is None:
             continue
         text = str(value).strip()
+        if not text:
+            continue
+        if isinstance(item, dict):
+            # Per-match provenance for reverse lookups: which column held it.
+            column = item.get("column") or item.get("column_name")
+            table = item.get("table") or item.get("table_name")
+            score = item.get("score") or item.get("similarity") or item.get("distance")
+            try:
+                score_val = float(score) if score is not None else None
+            except (TypeError, ValueError):
+                score_val = None
+            matches.append({
+                "value": text,
+                "table": str(table) if table else None,
+                "column": str(column) if column else None,
+                "score": score_val,
+                "count": item.get("count") or item.get("value_count"),
+                "semantic_type": item.get("semantic_type") or item.get("semanticType"),
+            })
         key = text.casefold()
-        if text and key not in seen:
+        if key not in seen:
             seen.add(key)
             values.append(text)
 
@@ -926,11 +986,13 @@ def _normalise_value_search(raw: Any) -> Dict[str, Any]:
             complete = not payload["truncated"]
         elif isinstance(payload.get("has_more"), bool):
             complete = not payload["has_more"]
-    return {"values": values, "complete": complete, "source": "mcp"}
+    snapshot = payload.get("snapshot") or payload.get("profiled_at") or payload.get("captured_at") if payload else None
+    return {"values": values, "matches": matches, "complete": complete, "source": "mcp",
+            "snapshot": str(snapshot) if snapshot else None}
 
 
 def _empty_value_search() -> Dict[str, Any]:
-    return {"values": [], "complete": False, "source": "mcp"}
+    return {"values": [], "matches": [], "complete": False, "source": "mcp", "snapshot": None}
 
 
 # ── Catalog markdown parser ───────────────────────────────────────────────────
@@ -1011,7 +1073,15 @@ def _extract_text(raw: Any) -> str:
 _NEED_KEYWORDS: Dict[str, List[str]] = {
     NEED_LIST_SOURCES:        ["list_connections",   "connections",    "list_sources"],
     NEED_TABLES_RICH:         ["tables_rich",        "list_tables_rich"],
-    NEED_LIST_COLUMNS:        ["list_columns"],
+    # Profiling tools first: "column_profile" contains neither "columns" nor
+    # "tables", but "table_profile"/"source_statistics" must not fall through to
+    # the generic catalog needs below.
+    NEED_COLUMN_PROFILE:      ["get_column_profile", "column_profile"],
+    NEED_TABLE_PROFILE:       ["get_table_profile", "table_profile"],
+    NEED_SOURCE_STATISTICS:   ["get_source_statistics", "source_statistics", "source_stats"],
+    # ``get_columns`` returns JSON rows per column (with inlined statistics),
+    # i.e. the structured columns dataset, not the filtered prompt.
+    NEED_LIST_COLUMNS:        ["list_columns", "get_columns"],
     NEED_KNOWLEDGE_QUESTIONS: ["knowledge_questions", "list_knowledge_questions"],
     NEED_SEARCH_COLUMN_VALUES: ["search_column_values", "search_values", "column_values"],
     NEED_LIST_TABLES:         ["get_catalog_prompt", "catalog_prompt", "list_tables",    "tables"],

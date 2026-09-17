@@ -27,6 +27,10 @@ class DatabricksSqlRunner(SqlRunner):
 
     database_type = "databricks"
     sqlglot_dialect = "databricks"
+    # The warehouse has no statement timeout of its own; the runner cancels the
+    # statement through the connector when the client deadline passes, which
+    # stops the scan (and the billing) rather than merely abandoning it.
+    supports_server_side_timeout = True
 
     def __init__(
         self,
@@ -64,12 +68,23 @@ class DatabricksSqlRunner(SqlRunner):
         self, sql: str, statement_timeout_ms: int
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
         timeout = _timeout_seconds(statement_timeout_ms, self.timeout_seconds)
+        live: Dict[str, Any] = {}
+
+        def run(cur):
+            live["cursor"] = cur
+            return _fetch_rows(cur, sql)
+
         try:
-            return await asyncio.wait_for(
-                self._run_blocking(lambda cur: _fetch_rows(cur, sql)),
-                timeout=timeout,
-            )
+            return await asyncio.wait_for(self._run_blocking(run), timeout=timeout)
         except asyncio.TimeoutError as exc:
+            cursor = live.get("cursor")
+            if cursor is not None:
+                # ``Cursor.cancel`` is documented thread-safe: it asks the
+                # warehouse to stop the statement the worker thread is waiting on.
+                try:
+                    await asyncio.get_running_loop().run_in_executor(self._executor, cursor.cancel)
+                except Exception:  # noqa: BLE001 - best effort; the timeout is raised regardless
+                    pass
             raise QueryTimeout(
                 "Databricks SQL query exceeded the configured timeout."
             ) from exc

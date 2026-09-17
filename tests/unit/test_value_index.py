@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from src.metadata.value_index import (
     DEFAULT_TOKEN_THRESHOLD,
+    SHARED_VISIBILITY,
     ValueDomain,
     ValueDomainCache,
+    bidi_isolate,
     covers_all_tokens,
     exact_value,
     is_refinement_set,
@@ -39,6 +41,35 @@ class TestNormalisation:
     def test_empty_input_is_safe(self):
         assert normalize(None) == ""
         assert tokenize("   ") == []
+
+    def test_non_latin_scripts_survive_normalisation(self):
+        """A Hebrew or Cyrillic value must not normalise to an empty string."""
+        assert normalize("Москва") == "москва"
+        assert normalize("תל אביב-יפו") == "תל אביב יפו"
+        assert tokenize("מוסקבה, רוסיה") == ["מוסקבה", "רוסיה"]
+
+    def test_accents_and_vowel_marks_do_not_decide_a_match(self):
+        assert normalize("Zürich") == "zurich"
+        assert exact_value("zurich", ["Zürich"]) == "Zürich"
+        # Hebrew niqqud (vowel points) is dropped, base letters kept.
+        assert normalize("שָׁלוֹם") == "שלום"
+
+    def test_quotes_and_sql_wildcards_never_survive(self):
+        """Search fragments are embedded in LIKE patterns, so this is a safety property."""
+        assert normalize("x' OR '1'='1") == "x or 1 1"
+        assert search_tokens("mos%co_w") == ["mos", "co", "w"]
+        assert "'" not in normalize("O'Brien") and "%" not in normalize("50%")
+
+    def test_bidi_isolate_wraps_rtl_values_only(self):
+        assert bidi_isolate("Moscow") == "Moscow"
+        assert bidi_isolate("מוסקבה") == "\u2068מוסקבה\u2069"
+
+
+class TestHebrewMatching:
+    def test_typo_in_a_hebrew_value_is_corrected(self):
+        domain = ["מוסקבה", "תל אביב", "חיפה"]
+        matches = match_values("מוסקבא", domain)
+        assert matches and matches[0].value == "מוסקבה" and matches[0].covers_needle
 
 
 class TestExactMatch:
@@ -185,3 +216,12 @@ class TestValueDomainCache:
         RLS-filtered domain."""
         assert ValueDomainCache.key("src", "", "T", "C") == ""
         assert ValueDomainCache.key("src", None, "T", "C") == ""
+
+    def test_shared_visibility_is_an_explicit_identity_not_a_blank_one(self):
+        key = ValueDomainCache.key("src", SHARED_VISIBILITY, "T", "C", "source_wide")
+        assert key and key != ValueDomainCache.key("src", "u1", "T", "C", "user_scoped")
+
+    def test_snapshot_keeps_a_cached_domain_from_outliving_its_profile(self):
+        old = ValueDomainCache.key("src", SHARED_VISIBILITY, "T", "C", "", snapshot="profile:7")
+        new = ValueDomainCache.key("src", SHARED_VISIBILITY, "T", "C", "", snapshot="profile:8")
+        assert old != new

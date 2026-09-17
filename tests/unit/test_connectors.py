@@ -41,6 +41,28 @@ class FakeRunner(SqlRunner):
         return [{"column_name": "x", "data_type": "integer"}]
 
 
+def test_sql_string_literal_is_safe_for_probe_operands():
+    from src.connectors.base import sql_string_literal
+    from src.connectors.databricks import DatabricksSqlRunner
+    from src.connectors.postgres import PostgresSqlRunner
+    from src.connectors.trino import TrinoSqlRunner
+
+    assert sql_string_literal("O'Brien", "postgres") == "'O''Brien'"
+    assert sql_string_literal("x' OR '1'='1", "postgres") == "'x'' OR ''1''=''1'"
+    # Control characters and NULs never reach the engine; length is capped.
+    assert sql_string_literal("a\x00b\x01c\n", "postgres") == "'abc\n'".replace("\n", "")
+    assert len(sql_string_literal("x" * 10_000, "postgres")) == 512 + 2
+    # Backslash is an escape character on Spark-family engines only.
+    assert sql_string_literal("a\\b", "databricks") == "'a\\\\b'"
+    assert sql_string_literal("a\\b", "postgres") == "'a\\b'"
+    assert sql_string_literal("a\\b", "trino") == "'a\\b'"
+    # Only runners that stop a statement server-side may be probed.
+    assert PostgresSqlRunner.supports_server_side_timeout is True
+    assert TrinoSqlRunner.supports_server_side_timeout is True
+    assert DatabricksSqlRunner.supports_server_side_timeout is True
+    assert SqlRunner.supports_server_side_timeout is False
+
+
 def test_factory_aliases_resolve_to_canonical_types():
     assert normalize_database_type("PostgreSQL") == "postgres"
     assert normalize_database_type("presto") == "trino"

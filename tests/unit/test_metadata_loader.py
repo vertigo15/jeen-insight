@@ -149,3 +149,32 @@ def test_invalidate_source_does_not_touch_other_cache_types():
     # kq:: key is also dropped (that was the pre-existing behaviour)
     assert "tables_rich::sales_db" not in loader._cache
     assert "kq::sales_db"          not in loader._cache
+
+
+# ---------------------------------------------------------------------------
+# _load_relationships — structured endpoints with legacy fallback
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_relationships_prefer_structured_endpoints_and_fall_back_to_relation_text():
+    import asyncpg
+
+    structured = [{"relation": "fct_sales.customer_id -> dim_customer.id"}]
+    loader = _make_loader(structured)
+    lines = await loader._load_relationships("src")
+    assert lines == ["fct_sales.customer_id -> dim_customer.id"]
+    sql = loader.pool.acquire.return_value.__aenter__.return_value.fetch.call_args.args[0]
+    assert "from_table" in sql and "is_deleted" in sql and "is_active" in sql
+
+    # An older catalog without the structured columns raises once; the loader
+    # remembers and uses the free-text relation column from then on.
+    legacy = _make_loader([{"relation": "fct_sales -> dim_customer"}])
+    conn = legacy.pool.acquire.return_value.__aenter__.return_value
+    conn.fetch = AsyncMock(side_effect=[asyncpg.UndefinedColumnError("no from_table"),
+                                         [{"relation": "fct_sales -> dim_customer"}],
+                                         [{"relation": "fct_sales -> dim_customer"}]])
+    assert await legacy._load_relationships("src") == ["fct_sales -> dim_customer"]
+    assert await legacy._load_relationships("src") == ["fct_sales -> dim_customer"]
+    assert legacy._structured_relationships is False
+    # Two successful legacy reads plus the one failed structured attempt.
+    assert conn.fetch.await_count == 3

@@ -9,7 +9,7 @@ Backed by ``src/metadata/runtime_settings.py``.
 from __future__ import annotations
 
 import logging
-from typing import Dict
+from typing import Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -35,7 +35,16 @@ class RuntimeSettingsResponse(BaseModel):
     sql_filter_match_threshold: float
     sql_filter_lookup_timeout_ms: int
     sql_filter_cache_ttl_seconds: int
+    sql_filter_metadata_evidence_enabled: bool
+    sql_filter_value_visibility: str
+    sql_filter_unverified_execution: str
+    sql_filter_source_probe_enabled: bool
+    sql_filter_source_distinct_enabled: bool
+    sql_filter_probe_denylist: str
+    sql_filter_existence_max_age_hours: int
+    sql_filter_absence_max_age_hours: int
     bounds: Dict[str, Dict[str, float]]
+    choices: Dict[str, List[str]]
 
 
 class RuntimeSettingsUpdate(BaseModel):
@@ -51,23 +60,21 @@ class RuntimeSettingsUpdate(BaseModel):
     sql_filter_match_threshold: float | None = None
     sql_filter_lookup_timeout_ms: int | None = None
     sql_filter_cache_ttl_seconds: int | None = None
+    sql_filter_metadata_evidence_enabled: bool | None = None
+    sql_filter_value_visibility: str | None = None
+    sql_filter_unverified_execution: str | None = None
+    sql_filter_source_probe_enabled: bool | None = None
+    sql_filter_source_distinct_enabled: bool | None = None
+    sql_filter_probe_denylist: str | None = None
+    sql_filter_existence_max_age_hours: int | None = None
+    sql_filter_absence_max_age_hours: int | None = None
 
 
 def _response(current: rs.RuntimeSettings) -> RuntimeSettingsResponse:
     return RuntimeSettingsResponse(
-        db_statement_timeout_ms=current.db_statement_timeout_ms,
-        max_result_rows=current.max_result_rows,
-        conversation_context_turns=current.conversation_context_turns,
-        dax_entity_resolution_enabled=current.dax_entity_resolution_enabled,
-        dax_entity_max_domain_values=current.dax_entity_max_domain_values,
-        dax_entity_match_threshold=current.dax_entity_match_threshold,
-        dax_entity_cross_column_enabled=current.dax_entity_cross_column_enabled,
-        sql_filter_resolution_enabled=current.sql_filter_resolution_enabled,
-        sql_filter_max_domain_values=current.sql_filter_max_domain_values,
-        sql_filter_match_threshold=current.sql_filter_match_threshold,
-        sql_filter_lookup_timeout_ms=current.sql_filter_lookup_timeout_ms,
-        sql_filter_cache_ttl_seconds=current.sql_filter_cache_ttl_seconds,
+        **{key: getattr(current, key) for key in rs._SPECS},
         bounds=rs.bounds(),
+        choices={key: list(values) for key, values in rs.choices().items()},
     )
 
 

@@ -22,6 +22,8 @@ class PostgresSqlRunner(SqlRunner):
 
     database_type = "postgres"
     sqlglot_dialect = "postgres"
+    # ``SET LOCAL statement_timeout`` makes the server cancel the statement.
+    supports_server_side_timeout = True
 
     def __init__(
         self,
