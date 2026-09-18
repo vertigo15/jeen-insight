@@ -116,6 +116,13 @@
         if (url.indexOf('/api/ask/stream') >= 0) {
             return sseStream(resultForAsk(body));
         }
+        // A structured 422 as the real route returns it ({message, field, loc}):
+        // a horizon of exactly 60 passes the card's own bounds (1–104) but the
+        // "server" refuses it, so the message must land on the horizon field.
+        const patch = (body && body.params_patch) || {};
+        if ((url.indexOf('/api/analysis/run') >= 0 || url.indexOf('/api/analysis/rerun') >= 0) && Number(patch.horizon) === 60) {
+            return json({ detail: { message: 'Invalid parameter: 26 weeks of history support a horizon of at most 13', field: 'horizon', loc: ['horizon'] } }, 422);
+        }
         if (url.indexOf('/api/analysis/run') >= 0) {
             return json(withExpiry(F.SCENARIOS.run_result(body)));
         }

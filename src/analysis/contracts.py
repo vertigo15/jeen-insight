@@ -18,7 +18,7 @@ a private planner hint the cards could neither show nor change).
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Dict, List, Literal, Optional, Type, get_args
+from typing import Any, Dict, List, Literal, Optional, Type, Union, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -813,6 +813,56 @@ def method_options(skill: str) -> List[str]:
     return [arg for arg in get_args(field.annotation) if isinstance(arg, str)]
 
 
+# Human names for the raw enum values the cards expose. The value stays the
+# contract; the label is what the user reads. Long explanations belong in a
+# chip's ``help``, never in the option text (it has to fit a 190px control).
+METHOD_LABELS: Dict[str, str] = {
+    "auto": "Auto", "auto_arima": "Auto ARIMA", "auto_ets": "Auto ETS", "theta": "Theta", "drift": "Drift",
+    "seasonal_naive": "Seasonal naive", "sigma3": "3-sigma", "kmeans": "K-means", "hdbscan": "HDBSCAN",
+    "hgb": "Gradient boosting", "xgboost": "XGBoost", "lightgbm": "LightGBM",
+}
+AGG_LABELS: Dict[str, str] = {"sum": "Sum", "count": "Count", "avg": "Average", "min": "Minimum", "max": "Maximum"}
+# Optional fields show their "no value" as a word the user can pick again
+# (``_UNSET_SENTINELS`` turns it back into None); this is how that word reads.
+SENTINEL_LABELS: Dict[str, str] = {"none": "— none —", "auto": "Auto"}
+
+
+def _nested_request(spec: "SkillSpec") -> "tuple[str, Type[BaseModel]]":
+    """The family's nested request object: ``series`` for most tier A skills,
+    ``entity`` for tier B, ``cohort`` for cohort retention, ``experiment`` for A/B tests."""
+    key = {"entity": "entity", "cohort": "cohort", "experiment": "experiment"}.get(spec.family, "series")
+    model = {"entity": EntityRequest, "cohort": CohortRequest, "experiment": ExperimentRequest}.get(spec.family, SeriesRequest)
+    return key, model
+
+
+def field_bounds(skill: str, key: str) -> "tuple[Optional[float], Optional[float]]":
+    """``(min, max)`` of a chip's parameter, read from the pydantic field.
+
+    Resolves ``key`` on the skill's params model first, then on the family's
+    nested request model (``row_cap`` lives on ``EntityRequest``,
+    ``max_periods`` on ``CohortRequest``). Numeric fields yield ``ge``/``le``;
+    list fields yield ``min_length``/``max_length`` (a count). The setup card
+    validates against these before a run, so the bounds a user sees are the
+    ones ``parse_params`` enforces.
+    """
+    spec = get_skill(skill)
+    field = spec.params_model.model_fields.get(key)
+    if field is None:
+        field = _nested_request(spec)[1].model_fields.get(key)
+    if field is None:
+        return None, None
+    lo: Optional[float] = None
+    hi: Optional[float] = None
+    for meta in field.metadata:
+        for attr in ("ge", "min_length"):
+            if getattr(meta, attr, None) is not None:
+                lo = getattr(meta, attr)
+        for attr in ("le", "max_length"):
+            if getattr(meta, attr, None) is not None:
+                hi = getattr(meta, attr)
+    return lo, hi
+
+
 # Where the data lives is decided by the planner from the catalog and by the
 # connection settings — never by a client patch. A case-variant table name
 # would otherwise pass a case-folded catalog check yet name a different
@@ -831,11 +881,7 @@ def merge_params_patch(skill: str, base: Dict[str, Any], patch: Dict[str, Any]) 
     spec = get_skill(skill)
     merged: Dict[str, Any] = dict(base)
     top_fields = set(spec.params_model.model_fields)
-    # Nested request object: ``series`` for most tier A skills, ``entity`` for
-    # tier B, ``cohort`` for cohort retention, ``experiment`` for A/B tests.
-    nested_key = {"entity": "entity", "cohort": "cohort", "experiment": "experiment"}.get(spec.family, "series")
-    nested_model = {"entity": EntityRequest, "cohort": CohortRequest,
-                    "experiment": ExperimentRequest}.get(spec.family, SeriesRequest)
+    nested_key, nested_model = _nested_request(spec)
     nested_fields = set(nested_model.model_fields) - PATCH_DENIED_FIELDS
     nested_patch: Dict[str, Any] = dict(patch.get(nested_key) or {})
     for key, value in (patch or {}).items():
@@ -858,11 +904,16 @@ def merge_params_patch(skill: str, base: Dict[str, Any], patch: Dict[str, Any]) 
 # The card shows an optional field's "no value" as a word the user can pick
 # again; the patch must turn it back into None rather than a column called "none".
 _UNSET_SENTINELS = {"group_by": ("none", ""), "k": ("auto", "")}
+# List-valued chips; a setup card persisted before the multiselect existed
+# still sends these as one comma-separated string.
+_LIST_FIELDS = frozenset({"features", "dimensions"})
 
 
 def _unset_sentinel(key: str, value: Any) -> Any:
     if isinstance(value, str) and value.strip().lower() in _UNSET_SENTINELS.get(key, ()):
         return None
+    if key in _LIST_FIELDS and isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
     return value
 
 
@@ -870,7 +921,15 @@ def _unset_sentinel(key: str, value: Any) -> Any:
 
 
 class ParamChip(BaseModel):
-    """One editable parameter on the confirm card."""
+    """One editable parameter on the setup card (confirm card and "Edit setup").
+
+    ``key``/``value``/``options`` are the contract the patch speaks; the rest
+    is presentation the card needs to be readable without a manual: which
+    section the field sits in, its unit, one line of help, the bounds
+    ``parse_params`` will enforce, and human names for raw enum values.
+    Everything presentational is defaulted so proposals persisted before it
+    existed still render (in one "Setup" section, without bounds).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -879,6 +938,22 @@ class ParamChip(BaseModel):
     value: Any
     options: List[Any] = Field(default_factory=list)
     editable: bool = True
+    # Section label as displayed: Data / Model / Output / Comparison / Cohort / Test.
+    group: str = "Setup"
+    # Control when there are no options (``multiselect`` uses ``options`` as the pool).
+    kind: Optional[Literal["number", "text", "date", "multiselect"]] = None
+    unit: Optional[str] = None
+    # The unit follows another chip's value: ``"grain"`` → days / weeks / months.
+    unit_from: Optional[str] = None
+    help: Optional[str] = None
+    min: Optional[Union[int, float]] = None
+    max: Optional[Union[int, float]] = None
+    step: Optional[Union[int, float]] = None  # 1 marks an integer field
+    required: bool = False
+    option_labels: Dict[str, str] = Field(default_factory=dict)  # keyed by str(option)
+    # Window chip only: the default look-back per grain, so a grain change on
+    # an untouched window moves it to the new grain's default.
+    defaults_by_grain: Optional[Dict[str, int]] = None
 
 
 class AnalysisProposal(BaseModel):

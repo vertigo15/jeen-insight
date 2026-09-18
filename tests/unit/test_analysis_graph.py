@@ -245,7 +245,13 @@ async def test_confirmed_reentry_runs_the_skill_and_narrates(prompt_loader):
     assert {"measure_column", "date_column", "grain", "window", "sensitivity", "method"} <= set(chips)
     assert chips["measure_column"]["value"] == "Profit" and chips["grain"]["value"] == "week"
     assert chips["window"]["value"] == 130 and chips["method"]["options"] == ["auto", "sigma3"]
-    assert chips["method"]["label"] == "model"
+    assert chips["method"]["label"] == "Model" and chips["method"]["option_labels"]["sigma3"] == "3-sigma"
+    # The card's sections and bounds come from the contract, not the browser.
+    assert chips["measure_column"]["group"] == "Data" and chips["method"]["group"] == "Model"
+    assert chips["window"]["group"] == "Model" and chips["window"]["unit_from"] == "grain"
+    assert (chips["window"]["min"], chips["window"]["max"], chips["window"]["step"]) == (12, 1500, 1)
+    assert chips["window"]["defaults_by_grain"] == {"day": 90, "week": 26, "month": 24}
+    assert chips["sensitivity"]["option_labels"]["0.95"] == "95%"
     assert "sent to the analysis service" in definition["egress_summary"]
     assert fr["analysis"]["facts"]["n_flagged"] >= 1
     assert fr["low_confidence"] is False
@@ -358,7 +364,8 @@ async def test_forecast_window_travels_from_the_card_to_the_engine_and_back(prom
     assert "2025-05-05" in final["generated_sql"] and "2026-06-29" in final["generated_sql"]
     chips = {c["key"]: c for c in fr["analysis"]["definition"]["chips"]}
     assert chips["window"]["value"] == 60 and isinstance(chips["window"]["value"], int)
-    assert chips["method"]["label"] == "model" and chips["horizon"]["value"] == 8
+    assert chips["method"]["label"] == "Model" and chips["horizon"]["value"] == 8
+    assert chips["horizon"]["group"] == "Output" and chips["horizon"]["unit_from"] == "grain"
 
 
 @pytest.mark.asyncio
@@ -715,6 +722,13 @@ async def test_tier_b_clustering_flow_confirms_with_row_level_egress_then_runs(p
     proposal = fr["proposal"]
     assert proposal["tier"] == "B" and "Row-level" in proposal["egress_summary"] and "audited" in proposal["egress_summary"]
     assert {c["key"] for c in proposal["chips"]} >= {"entity_key", "features", "row_cap", "k"}
+    features_chip = next(c for c in proposal["chips"] if c["key"] == "features")
+    # Features are picked from the catalog's numeric columns, not typed as a comma list.
+    assert features_chip["kind"] == "multiselect" and isinstance(features_chip["value"], list)
+    assert (features_chip["min"], features_chip["max"]) == (2, 8)
+    # Clustering has no "Output" section and its row cap is a data-volume control.
+    assert {c["group"] for c in proposal["chips"]} == {"Data", "Model"}
+    assert next(c for c in proposal["chips"] if c["key"] == "row_cap")["group"] == "Data"
     assert runner.calls == []  # nothing read before consent
     params = store.proposals[proposal["proposal_id"]]["params"]
     assert params["entity"]["features"] == ["YearlyIncome", "TotalChildren"]  # Gender dropped by the guard
@@ -904,6 +918,6 @@ async def test_forecast_period_bound_to_a_date_column_becomes_the_horizon(prompt
     assert params["window"] == 24
     window_chip = next(c for c in proposal["chips"] if c["key"] == "window")
     assert window_chip["value"] == 24
-    assert next(c for c in proposal["chips"] if c["key"] == "method")["label"] == "model"
+    assert next(c for c in proposal["chips"] if c["key"] == "method")["label"] == "Model"
     nodes = _nodes(final)
     assert "filter_grounder" in nodes and "analysis_planner" in nodes and "analysis_guard" in nodes

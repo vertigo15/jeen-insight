@@ -1611,14 +1611,22 @@
             const expired = window.JeenAnalysisUI
                 ? window.JeenAnalysisUI.proposalExpired(proposal)
                 : !proposal.proposal_id;
+            // The setup form's local behaviour (summary, changed markers, validation)
+            // lives in analysisPanel.js; the controller only runs and reports.
+            const form = window.JeenAnalysisUI && window.JeenAnalysisUI.bindSetupForm && proposal.kind === 'confirm'
+                ? window.JeenAnalysisUI.bindSetupForm(card, proposal.chips || [], { skill: proposal.skill, tier: proposal.tier })
+                : null;
             const setBusy = (busy, label) => {
                 card.classList.toggle('is-busy', busy);
-                card.querySelectorAll('button').forEach((b) => { b.disabled = busy; });
+                card.querySelectorAll('button, select, input').forEach((b) => { b.disabled = busy; });
                 const run = card.querySelector('[data-run] > span, [data-run]');
                 if (run && label) run.firstChild.textContent = label;
             };
-            const fail = (message) => {
+            const fail = (error) => {
                 setBusy(false);
+                const detail = error && typeof error === 'object' ? error.detail : null;
+                if (form && detail && form.showServerError(detail)) return;
+                const message = error && error.message ? error.message : String(error);
                 let note = card.querySelector('.v3-ml-error');
                 if (!note) {
                     note = document.createElement('div');
@@ -1638,13 +1646,19 @@
                 card.appendChild(note);
             }
             card.querySelector('[data-run]')?.addEventListener('click', async () => {
+                // Validate against the chips' declared bounds first: the first invalid
+                // field gets focus and a message, and nothing is sent.
+                if (form) {
+                    const { ok, errors } = form.validate();
+                    if (!ok) { form.reportInvalid(errors); return; }
+                }
                 const patch = window.JeenAnalysisUI ? window.JeenAnalysisUI.collectPatch(card) : {};
                 const remember = Boolean(card.querySelector('[data-remember]')?.checked);
                 setBusy(true, 'Running…');
                 try {
                     await this.runProposal(turn, { patch, remember });
                 } catch (error) {
-                    fail(error && error.message ? error.message : String(error));
+                    fail(error);
                 }
             });
             card.querySelectorAll('[data-exit]').forEach((button) => button.addEventListener('click', async () => {
@@ -1665,12 +1679,12 @@
                         override: option.kind === 'override',
                     });
                 } catch (error) {
-                    fail(error && error.message ? error.message : String(error));
+                    fail(error);
                 }
             }));
             card.querySelector('[data-sql-instead]')?.addEventListener('click', () => this.send(turn.question, { analysis: false }));
-            // "Use a different skill": return the cursor to the composer so the user can
-            // rephrase toward another analysis (same intent as the clarify switch_skill exit).
+            // "Rephrase the question": return the cursor to the composer so the user can
+            // ask toward another analysis (same intent as the clarify switch_skill exit).
             card.querySelector('[data-switch-skill]')?.addEventListener('click', () => this.input?.focus());
         },
 
@@ -1692,8 +1706,14 @@
                 if (typeof detail === 'string' && detail.trim().startsWith('{')) {
                     try { const inner = JSON.parse(detail); detail = inner.detail || detail; } catch (_) { /* keep text */ }
                 }
-                if (detail && typeof detail === 'object') detail = detail.message || JSON.stringify(detail);
-                throw new Error(String(detail));
+                // A structured 422 ({message, field, loc}) travels on the error so
+                // the setup card can put the message on the field it names.
+                const structured = detail && typeof detail === 'object' ? detail : null;
+                const message = structured ? (structured.message || JSON.stringify(structured)) : String(detail);
+                const error = new Error(message);
+                error.status = response.status;
+                error.detail = structured;
+                throw error;
             }
             return payload;
         },
@@ -1748,8 +1768,13 @@
                 const nowOpen = this._definitionOpenFor !== turn.id;
                 this._definitionOpenFor = nowOpen ? turn.id : null;
                 host.hidden = !nowOpen;
-                if (nowOpen) this._renderDefinition(host, turn, button);
-                else host.innerHTML = '';
+                if (nowOpen) {
+                    this._renderDefinition(host, turn, button);
+                    // The card opens above the chart; the pane may be scrolled past it.
+                    if (typeof host.scrollIntoView === 'function') host.scrollIntoView({ block: 'start' });
+                } else {
+                    host.innerHTML = '';
+                }
                 button.setAttribute('aria-expanded', String(nowOpen));
                 button.textContent = nowOpen ? 'Hide setup' : 'Edit setup';
             });
@@ -1760,6 +1785,19 @@
             host.innerHTML = window.JeenAnalysisUI ? window.JeenAnalysisUI.definitionHtml(analysis) : '';
             const card = host.querySelector('.v3-ml-card');
             if (!card) return;
+            const runButton = card.querySelector('[data-run]');
+            const hint = card.querySelector('[data-note]');
+            // Re-run has nothing to do until a value differs from what ran: the
+            // button waits, with a muted hint rather than an error.
+            const form = window.JeenAnalysisUI && window.JeenAnalysisUI.bindSetupForm
+                ? window.JeenAnalysisUI.bindSetupForm(card, (analysis.definition || {}).chips || [], {
+                    skill: analysis.skill, tier: (analysis.egress || {}).tier,
+                    onChange: (state) => {
+                        if (runButton) runButton.disabled = !state.dirty;
+                        if (hint) hint.hidden = Boolean(state.dirty);
+                    },
+                })
+                : null;
             const note = (message) => {
                 let el = card.querySelector('.v3-ml-error');
                 if (!el) {
@@ -1772,8 +1810,10 @@
             const setBusy = (busy) => {
                 card.classList.toggle('is-busy', busy);
                 card.querySelectorAll('button, select, input').forEach((el) => { el.disabled = busy; });
-                const run = card.querySelector('[data-run]');
-                if (run) run.textContent = busy ? 'Running…' : 'Re-run';
+                if (runButton) {
+                    runButton.textContent = busy ? 'Running…' : 'Re-run';
+                    if (!busy && form) runButton.disabled = !form.state.dirty;
+                }
             };
             card.querySelector('[data-cancel]')?.addEventListener('click', () => {
                 this._definitionOpenFor = null;
@@ -1782,10 +1822,14 @@
                 toggle.setAttribute('aria-expanded', 'false');
                 toggle.textContent = 'Edit setup';
             });
-            card.querySelector('[data-run]')?.addEventListener('click', async () => {
+            runButton?.addEventListener('click', async () => {
+                if (form) {
+                    const { ok, errors } = form.validate();
+                    if (!ok) { form.reportInvalid(errors); return; }
+                }
                 const patch = window.JeenAnalysisUI ? window.JeenAnalysisUI.collectPatch(card) : {};
                 if (!Object.keys(patch).length) {
-                    note('Nothing changed yet — adjust a value, then re-run.');
+                    if (hint) hint.hidden = false;
                     return;
                 }
                 setBusy(true);
@@ -1795,6 +1839,8 @@
                     this._definitionOpenFor = null;  // the new answer is selected; its own card is a click away
                 } catch (error) {
                     setBusy(false);
+                    const detail = error && typeof error === 'object' ? error.detail : null;
+                    if (form && detail && form.showServerError(detail)) return;
                     note(error && error.message ? error.message : String(error));
                 }
             });
