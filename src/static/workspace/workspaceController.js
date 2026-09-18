@@ -18,11 +18,13 @@
     ];
 
     const NODE_PHASE = {
-        memory_shrink_check: 'memory',
-        memory_summarizer: 'memory',
+        context_composer: 'memory',
         memory_answer_generator: 'memory',
+        history_search: 'memory',
         fused_router: 'router',
+        capability_answer: 'router',
         catalog_lookup: 'catalog',
+        prior_data_binder: 'catalog',
         prompt_builder: 'catalog',
         dax_catalog_lookup: 'catalog',
         dax_entity_resolver: 'catalog',
@@ -162,7 +164,7 @@
             return /^\d+ rows/.test(event.detail || '') ? event.detail : 'read-only query completed';
         }
         const safeNodes = new Set([
-            'memory_shrink_check', 'fused_router', 'catalog_lookup',
+            'context_composer', 'fused_router', 'catalog_lookup',
             'dax_catalog_lookup', 'sqlglot_validate', 'dlp_check',
             'dax_static_validate', 'trivial_result_check', 'feedback_classifier',
             'dax_feedback_router', 'result_integrity_check', 'response_formatter',
@@ -324,6 +326,7 @@
                         <strong>No result yet</strong>
                         <span>Ask a question on the left. The chart, rows, SQL and profiling for that answer appear here.</span>
                       </div>
+                      <div id="v3-ml-definition" class="v3-ml-definition" hidden></div>
                       <section id="v3-chart-block" class="v3-data-block" hidden>
                         <div class="v3-toolbar">
                           <span id="v3-chart-caption" class="v3-caption">Chart</span>
@@ -445,6 +448,10 @@
             document.querySelector('[data-question-log]')?.addEventListener('click', () => document.getElementById('history-btn')?.click());
             document.getElementById('v3-chart-toggle').addEventListener('click', () => {
                 this.chartCollapsed = !this.chartCollapsed;
+                // Remember the choice for this result so it survives re-renders and
+                // overrides the per-type default (ML expanded, SQL collapsed).
+                const current = this.turns.find((item) => item.id === this.selectedResultId);
+                if (current) current.chartCollapsed = this.chartCollapsed;
                 this._renderChartCollapse();
             });
             document.getElementById('v3-result-filter').addEventListener('input', (event) => {
@@ -626,8 +633,10 @@
             if (prefs.temperature !== undefined && prefs.temperature !== null) payload.temperature = Number(prefs.temperature);
             const llmTimeout = window.JeenPreferences && window.JeenPreferences.getLlmTimeoutSeconds();
             if (llmTimeout !== null && llmTimeout !== undefined) payload.llm_timeout = llmTimeout;
-            // "Answer with SQL instead": skip the ML route for this one question.
-            if (options.analysis === false) payload.analysis = false;
+            // Force the branch for this one question: "Answer with SQL instead" /
+            // "Answer directly" (false), or "Run the analysis" (true) from a route
+            // clarification. Omitted → the router decides.
+            if (options.analysis === true || options.analysis === false) payload.analysis = options.analysis;
             // Filter clarifications: the answer to "which field / which value did
             // you mean" is remembered for the conversation and sent with every
             // later question so the grounder never asks the same thing twice.
@@ -1562,6 +1571,7 @@
                 ? window.JeenAnalysisUI.proposalHtml(proposal)
                 : `<strong>${esc(statusLabel)}</strong><span>${esc(textOf(data.answer))}</span>`;
             placeholder.hidden = false;
+            this._hideDefinition();
             document.getElementById('v3-chart-block').hidden = true;
             document.getElementById('v3-table-block').hidden = true;
             const chart = document.getElementById('chart-view-container');
@@ -1689,6 +1699,86 @@
             this._appendServerTurn(data, { question: turn.question, parent: turn });
         },
 
+        /**
+         * "Edit setup" on a finished result: opens the run's parameter card
+         * (measure, date column, grain, window, model, …) above the chart.
+         * The card is per result; switching results closes it.
+         */
+        _hideDefinition() {
+            const host = document.getElementById('v3-ml-definition');
+            if (host) { host.hidden = true; host.innerHTML = ''; }
+        },
+
+        _bindDefinitionToggle(metaRow, turn) {
+            const host = document.getElementById('v3-ml-definition');
+            if (!host) return;
+            const button = metaRow && metaRow.querySelector('[data-ml-edit]');
+            const open = Boolean(button) && this._definitionOpenFor === turn.id;
+            host.hidden = !open;
+            if (!button) {
+                host.innerHTML = '';
+                this._definitionOpenFor = null;
+                return;
+            }
+            if (open) this._renderDefinition(host, turn, button);
+            button.setAttribute('aria-expanded', String(open));
+            button.textContent = open ? 'Hide setup' : 'Edit setup';
+            button.addEventListener('click', () => {
+                const nowOpen = this._definitionOpenFor !== turn.id;
+                this._definitionOpenFor = nowOpen ? turn.id : null;
+                host.hidden = !nowOpen;
+                if (nowOpen) this._renderDefinition(host, turn, button);
+                else host.innerHTML = '';
+                button.setAttribute('aria-expanded', String(nowOpen));
+                button.textContent = nowOpen ? 'Hide setup' : 'Edit setup';
+            });
+        },
+
+        _renderDefinition(host, turn, toggle) {
+            const analysis = (turn.result || {}).analysis || {};
+            host.innerHTML = window.JeenAnalysisUI ? window.JeenAnalysisUI.definitionHtml(analysis) : '';
+            const card = host.querySelector('.v3-ml-card');
+            if (!card) return;
+            const note = (message) => {
+                let el = card.querySelector('.v3-ml-error');
+                if (!el) {
+                    el = document.createElement('div');
+                    el.className = 'v3-ml-error';
+                    card.appendChild(el);
+                }
+                el.textContent = message;
+            };
+            const setBusy = (busy) => {
+                card.classList.toggle('is-busy', busy);
+                card.querySelectorAll('button, select, input').forEach((el) => { el.disabled = busy; });
+                const run = card.querySelector('[data-run]');
+                if (run) run.textContent = busy ? 'Running…' : 'Re-run';
+            };
+            card.querySelector('[data-cancel]')?.addEventListener('click', () => {
+                this._definitionOpenFor = null;
+                host.hidden = true;
+                host.innerHTML = '';
+                toggle.setAttribute('aria-expanded', 'false');
+                toggle.textContent = 'Edit setup';
+            });
+            card.querySelector('[data-run]')?.addEventListener('click', async () => {
+                const patch = window.JeenAnalysisUI ? window.JeenAnalysisUI.collectPatch(card) : {};
+                if (!Object.keys(patch).length) {
+                    note('Nothing changed yet — adjust a value, then re-run.');
+                    return;
+                }
+                setBusy(true);
+                try {
+                    if (this.selectedResultId !== turn.id) this.selectedResultId = turn.id;
+                    await this.rerunAnalysis(null, patch);
+                    this._definitionOpenFor = null;  // the new answer is selected; its own card is a click away
+                } catch (error) {
+                    setBusy(false);
+                    note(error && error.message ? error.message : String(error));
+                }
+            });
+        },
+
         /** Re-run the selected ML result with an instruction or a structured patch. */
         async rerunAnalysis(instruction, patch) {
             const turn = this.turns.find((item) => item.id === this.selectedResultId);
@@ -1794,6 +1884,7 @@
             if (this._placeholderDefault === null) this._placeholderDefault = placeholder.innerHTML;
             const data = turn.result || {};
             const answer = textOf(data.answer);
+            const clarify = data.route_clarification;
             const filterClarify = data.filter_clarification;
             document.getElementById('v3-result-title').textContent = turn.question;
             if (filterClarify && Array.isArray(filterClarify.options)) {
@@ -1804,6 +1895,21 @@
                   <span class="v3-result-meta">${filterClarify.kind === 'column' ? 'which field?' : 'which value?'}</span>`;
                 placeholder.innerHTML = this._filterClarifyHtml(filterClarify, answer);
                 this._bindFilterClarify(placeholder, turn, filterClarify);
+            } else if (clarify) {
+                // Ambiguous SQL-vs-ML: offer the two choices instead of guessing.
+                const pct = clarify.confidence != null ? ` · ${Math.round(clarify.confidence * 100)}% sure` : '';
+                document.getElementById('v3-meta-row').innerHTML = `
+                  <span class="v3-status">Needs a choice</span>
+                  <span class="v3-result-meta">direct answer or analysis?${pct}</span>`;
+                placeholder.innerHTML = `<div class="v3-route-clarify">
+                  <p class="v3-ml-message" dir="${directionOf(answer)}">${esc(answer)}</p>
+                  <div class="v3-ml-actions">
+                    <button type="button" class="v3-ml-run" data-route-analysis>Run the analysis</button>
+                    <button type="button" class="v3-ml-alt" data-route-sql>Answer directly with SQL</button>
+                  </div>
+                </div>`;
+                placeholder.querySelector('[data-route-analysis]')?.addEventListener('click', () => this.send(turn.question, { analysis: true }));
+                placeholder.querySelector('[data-route-sql]')?.addEventListener('click', () => this.send(turn.question, { analysis: false }));
             } else {
                 document.getElementById('v3-meta-row').innerHTML = `
                   <span class="v3-status">Answered</span>
@@ -1811,6 +1917,7 @@
                 placeholder.innerHTML = `<strong>Answer</strong><span dir="${directionOf(answer)}">${esc(answer || 'No data was needed for this answer.')}</span>`;
             }
             placeholder.hidden = false;
+            this._hideDefinition();
             document.getElementById('v3-chart-block').hidden = true;
             document.getElementById('v3-table-block').hidden = true;
             const chart = document.getElementById('chart-view-container');
@@ -1838,6 +1945,7 @@
             const tableBlock = document.getElementById('v3-table-block');
             if (!turn) {
                 this._restorePlaceholder();
+                this._hideDefinition();
                 document.getElementById('v3-result-title').textContent = this.hydrating
                     ? 'Restoring your last conversation…'
                     : 'Ask a question to get started';
@@ -1886,12 +1994,14 @@
                 : '';
             const isAnalysis = Boolean(data.analysis && data.analysis.skill);
             const mlStrip = isAnalysis && window.JeenAnalysisUI ? window.JeenAnalysisUI.stripSegments(data) : '';
-            document.getElementById('v3-meta-row').innerHTML = `
+            const metaRow = document.getElementById('v3-meta-row');
+            metaRow.innerHTML = `
               <span class="v3-status">${cap.capped ? 'Completed · capped' : 'Completed'}</span>
               ${mlStrip}
               <span class="v3-result-meta">${rows.length} rows · ${formatMs(metrics.execution_time_ms)} exec · ${formatMs(metrics.llm_latency_ms)} llm</span>
               ${restoredNote}
               ${stale ? '<span class="v3-stale-note">Last successful answer — the newest question failed</span>' : ''}`;
+            this._bindDefinitionToggle(metaRow, turn);
             placeholder.hidden = true;
             // An empty result set has nothing to chart; keep the (empty) grid only.
             chartBlock.hidden = rows.length === 0;
@@ -1950,6 +2060,12 @@
             const validated = turn.trace.some((event) => ['sqlglot_validate', 'dax_static_validate'].includes(event.node) && event.status === 'node_finished');
             document.getElementById('v3-dock-meta').textContent =
                 `${inputTokens} / ${outputTokens} tok · ${metrics.retry_count == null ? '—' : metrics.retry_count} retries · ${validated ? 'validated query' : data.sql ? 'generated query' : 'no query text'}`;
+            // The plot is the point of an ML/analysis result, so expand it by
+            // default; plain SQL stays collapsed. A manual toggle on this result
+            // (stored above) always wins.
+            this.chartCollapsed = typeof turn.chartCollapsed === 'boolean'
+                ? turn.chartCollapsed
+                : !isAnalysis;
             this._renderChartCollapse();
             this.renderTable();
             this.renderDock();

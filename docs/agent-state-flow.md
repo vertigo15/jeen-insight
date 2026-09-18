@@ -1,287 +1,309 @@
 # Agent State Flow
 
-LangGraph state graph for the Jeen Insights text-to-SQL agent.
-Every query passes through this graph from `START` to `END`.
+LangGraph state graph for the Jeen Insights text-to-SQL agent
+(`src/agent/langgraph_agent/graph.py`, `build_graph()`). Every question passes
+through this graph from `START` to `END`. 25 nodes, 58 arcs, 20 conditional
+routers, recursion limit 48, no checkpointer.
 
-> **Full end-to-end path** (UI → Flask → API → pre-graph → LangGraph → insights/charts):
-> see [question-to-answer-flow.md](./question-to-answer-flow.md).
+> Diagrams: [agent-state-flow.drawio](./agent-state-flow.drawio) — page 1 is the
+> grouped overview, page 2 carries a description on every node and the routing
+> condition on every arc.
+> Full end-to-end path (UI → Flask → API → pre-graph → LangGraph → insights/charts):
+> [question-to-answer-flow.md](./question-to-answer-flow.md).
+> ML skills branch: [ml-skills.md](./ml-skills.md).
 
 ## Diagram
 
 ```mermaid
-flowchart LR
-    S([START])
-    E([END])
+flowchart TD
+    S([START]) -->|resume/confirmed analysis| CL
+    S -->|default| CC
 
-    subgraph Memory["Memory"]
-        MSC["memory_shrink_check\nlogic"]
-        MS["memory_summarizer\nLLM"]
-        MAG["memory_answer_generator\nLLM"]
+    subgraph Memory_Routing
+        CC[context_composer] -->|ledger| FR[fused_router]
+        FR -->|from_memory| MAG[memory_answer_generator]
+        FR -->|history_lookup| HS[history_search]
+        FR -->|capability| CAP[capability_answer]
     end
 
-    subgraph Routing["Routing"]
-        FR["fused_router\nLLM"]
+    FR -->|greeting / out_of_scope / unsafe / clarify_route| RF
+    FR -->|needs_query / needs_analysis| CL
+    MAG -->|escape hatch: needs_query| CL
+    MAG -->|computed table| TRC
+    MAG -->|replay / answer| RF
+    HS --> RF
+    CAP --> RF
+
+    subgraph Catalog_Filters
+        CL[catalog_lookup] -->|ok| FP[filter_planner]
+        FP -->|no clarification| FG[filter_grounder]
+        FG -->|prior_refs| PDB[prior_data_binder]
     end
+    CL -->|catalog_blocked| RF
+    CL -->|resume & on branch| AG
+    FP -->|clarification| RF
+    FG -->|clarification| RF
+    FG -->|needs_analysis| AP
+    FG -->|needs_query| PB
+    PDB -->|bound values| PB
+    PDB -->|too many values| RF
 
-    subgraph CatalogPrompt["Catalog + Prompt"]
-        CL["catalog_lookup\nDB or MCP"]
-        PB["prompt_builder\nlogic"]
+    subgraph ML_branch
+        AP[analysis_planner] -->|params| AG[analysis_guard]
+        AG -->|guards pass & confirmed| ASQ[analysis_sql]
+        AR[analysis_run]
     end
+    AP -->|clarify| RF
+    AP -->|fallback → SQL| PB
+    AG -->|guard fail / confirm card / error| RF
+    ASQ -->|error| RF
+    ASQ -->|sql| SV
 
-    subgraph SqlSafety["SQL + Safety"]
-        SG["sql_generator\nLLM"]
-        SV["sqlglot_validate\nlogic"]
-        DC["dlp_check\nlogic"]
+    subgraph SQL_Exec
+        PB[prompt_builder] --> SG[sql_generator]
+        SG -->|sql| SV[sqlglot_validate]
+        SV -->|valid| DC[dlp_check]
+        DC -->|safe| EQ[execute_query]
+        EQ -->|rows, SQL path| EFC[empty_filter_result_check]
+        EFC -->|no reground| TRC[trivial_result_check]
+        TRC -->|non-trivial & eval on| FEA[fused_eval_analytics]
+        FC[feedback_classifier]
     end
-
-    subgraph ExecutionEval["Execution + Eval"]
-        EQ["execute_query\nDB"]
-        TRC["trivial_result_check\nlogic"]
-        FEA["fused_eval_analytics\nLLM"]
-        FC["feedback_classifier\nlogic"]
-    end
-
-    subgraph Output["Output"]
-        RF["response_formatter\nlogic"]
-        STM["save_to_memory\nDB"]
-        OL["observability_log\nlogic"]
-    end
-
-    S --> MSC
-    MSC -->|over budget| MS
-    MSC -->|within budget| FR
-    MS --> FR
-
-    FR -->|needs_query| CL
-    FR -->|from_memory| MAG
-    FR -->|out_of_scope / unsafe / greeting| RF
-
-    MAG -->|answer ready| RF
-    MAG -->|needs fresh data| CL
-
-    CL --> PB --> SG
-
-    SG -->|SQL generated| SV
-    SG -->|clarification / empty| RF
-
-    SV -->|valid| DC
-    SV -->|syntax error| FC
-
-    DC -->|safe| EQ
+    SG -->|clarification| RF
+    SV -->|error, SQL path| FC
+    SV -->|error, ML path| RF
     DC -->|blocked| RF
-
-    EQ -->|rows returned| TRC
-    EQ -->|exec error| FC
-
-    TRC -->|trivial or eval disabled| RF
-    TRC -->|needs evaluation| FEA
-
-    FEA -->|answers intent| RF
-    FEA -->|wrong result| FC
-
-    FC -->|exhausted retries| RF
-    FC -->|missing table| CL
+    EQ -->|error, SQL path| FC
+    EQ -->|error, ML path| RF
+    EQ -->|rows, ML path| AR
+    AR -->|ok| TRC
+    AR -->|guard fail / error| RF
+    EFC -->|reground| FC
+    TRC -->|trivial or eval off| RF
+    FEA -->|answers intent or ML / memory path| RF
+    FEA -->|wrong| FC
     FC -->|syntax / exec / semantic| SG
+    FC -->|missing_table| CL
+    FC -->|resolve_filters| FG
+    FC -->|exhausted| RF
 
-    RF --> STM --> OL --> E
+    subgraph Tail
+        RF[response_formatter] --> STM[save_to_memory] --> OL[observability_log]
+    end
+    OL --> E([END])
 ```
 
-## Parallel vs Logical Branches
-
-The columns above are logical groupings, not simultaneous LangGraph execution. At runtime the graph follows one route through alternatives such as memory answer, normal SQL generation, blocked request, retry, or terminal formatting.
-
-The true parallel work happens before `START`: `JeenInsightsAgent.process_question()` uses `asyncio.gather()` to resolve the user, load short-term memory, create the audit row, and preload catalog metadata. Once `graph.ainvoke()` starts, trace events are emitted in node execution order.
+The subgraphs are logical groupings, not simultaneous execution. At runtime the
+graph follows one route. The only real parallel work happens before `START`:
+`JeenInsightsAgent.process_question()` uses `asyncio.gather()` to resolve the
+user, load the conversation window, create the audit row and preload the
+catalog.
 
 ## Execution and State Model
 
-`AgentState` is a `TypedDict` with partial updates: each node receives the current
-state, returns only the fields it changed, and LangGraph merges that update before
-the next node runs. Most fields use last-writer-wins semantics. The exception is
-`trace`, whose `operator.add` reducer appends one timing event per wrapped node.
+`AgentState` is a `TypedDict` with partial updates: each node returns only the
+fields it changed and LangGraph merges them (last-writer-wins), except `trace`,
+whose `operator.add` reducer appends one timing event per node. Every node is
+wrapped by `_timed`, which also emits `node_started` / `node_finished` progress
+events for the SSE route.
 
-The graph is compiled once per data connection by `JeenInsightsAgent`. Per-request
-inputs such as the question, selected connection, session history, row limit,
-temperature, timeout, and optional eval override seed the initial state.
-
-The main graph has no LangGraph checkpointer: each `ainvoke()` owns state only
-for that request and cannot be resumed. Multi-turn continuity instead comes from
-conversation history and result artifacts loaded before `START`, then written by
-the application-level `ConversationHistoryService`.
+The graph is compiled once per data connection. There is no LangGraph
+checkpointer: multi-turn continuity comes from the conversation window loaded
+before `START` and written back by `save_to_memory`.
 
 | State area | Important fields | How it is used |
 |------------|------------------|----------------|
-| Request and connection | `question`, `source_key`, `session_id`, connection schema/catalog | Defines the user request and allowed data source. |
-| Memory and routing | `conversation_history`, `memory_summary`, `route` | Chooses an answer-from-memory path or a live-query path. |
-| Catalog and prompt | `metadata_bundle`, `known_tables`, `table_columns`, `system_prompt` | Separates the full validation allowlist from the metadata exposed to the SQL model. |
-| SQL retry loop | `generated_sql`, `sqlglot_error`, `exec_error`, `error_context`, `retry_count` | Carries failure detail into the next SQL-generation attempt. |
-| Result and evaluation | `query_result`, `is_trivial`, `eval_result` | Controls whether evaluation runs and supplies the final answer/insights. |
-| Output and telemetry | `formatted_response`, `token_usage`, `trace` | Provides the API payload and complete developer trace. |
+| Request and connection | `question`, `source_key`, `session_id`, connection schema/catalog | Defines the request and the allowed data source. |
+| Memory | `conversation_history`, `memory_window`, `memory_ledger`, `prior_refs`, `memory_action`, `prior_bindings`, `history_query`, `memory_telemetry` | The last N turns and the compact ledger every prompt reads; which prior turns this question depends on; what the memory node did. |
+| Routing | `route`, `route_source`, `route_reason`, `route_clarification` | Which branch answers the question. |
+| Catalog and prompt | `metadata_bundle`, `known_tables`, `table_columns`, `filter_plan`, `resolved_filters`, `system_prompt` | Validation allowlists, verified filters and the prompt the SQL model sees. |
+| SQL retry loop | `generated_sql`, `sqlglot_error`, `exec_error`, `error_context`, `retry_count` | Carries failure detail into the next generation attempt. |
+| ML skills | `analysis_skill`, `analysis_params`, `analysis_proposal`, `analysis_result` | Planner → guard → sql → run branch (see ml-skills.md). |
+| Result and evaluation | `query_result`, `is_trivial`, `eval_result` | Whether narration runs and the final answer/insights. |
+| Output and telemetry | `formatted_response`, `token_usage`, `trace` | API payload and developer trace. |
+
+## Conversation memory
+
+The customer can ask about earlier questions **and their data**: "show that
+again", "what was the max?", "what if prices were 10% higher?", "take the 4 most
+expensive products from the previous answer and show me their sales", "did I ask
+about revenue in the last 4 days?". The design is *ledger in the prompt, data by
+reference*:
+
+- **Window.** `conversation_context_turns` (runtime setting, default 5) completed
+  turns of the current conversation are loaded before `START`, each with its
+  question, SQL, stored answer, result artifact (columns, types, row count,
+  stats) and snapshot status. In-flight turns are excluded.
+- **Ledger.** `context_composer` renders them as `T1…TN` (~150–250 tokens per
+  turn). The router, the SQL generator (as replayed `run_sql` tool calls whose
+  result line says what came back and what was answered) and the memory nodes
+  all read the same ledger. Rows never enter a prompt.
+- **Data by reference.** `PriorResultStore` recovers a turn's rows cache →
+  stored snapshot → re-run of the turn's SQL, and only re-runs at the source
+  once a model has decided the rows are actually needed.
+- **Compute, don't estimate.** `memory_answer_generator` exposes the referenced
+  turn(s) to the metadata PostgreSQL as typed CTEs over JSONB bind parameters
+  (`WITH insights_mem_t3 AS (SELECT * FROM jsonb_to_recordset($1::jsonb) AS t(…))`
+  — no table is ever created; the `insights_` prefix that segregates every
+  Insights object from Schema Modeler's `metadata_*` / `admin_*` tables names
+  the CTEs too) inside a `READ ONLY` transaction with a statement timeout,
+  and runs a sqlglot-validated SELECT the small model wrote nested as a
+  subquery — only snapshot relations may be referenced, `insights_mem_*` CTE
+  names are reserved, file/network/session/catalog functions are refused and
+  validation fails closed, so the model's SQL can never reach `insights_*`
+  data. The result is an ordinary
+  `query_result` that flows through `trivial_result_check → fused_eval_analytics`
+  like a live query. Replays return the stored table with its original answer
+  and skip eval. The customer's source database is never touched by memory.
+- **Composition.** When the router sets `prior_refs` on a `needs_query`,
+  `prior_data_binder` extracts the needed values from the stored rows and emits
+  them as a resolved `IN` filter; `prompt_builder` puts it in the filter
+  contract and `sqlglot_validate` refuses SQL that drops or widens it. Above
+  `MEMORY_MAX_BOUND_VALUES` the user is asked to narrow.
+- **History lookup.** Meta-questions about past questions run one database
+  search over the application history log — the same rows and scoping as the
+  History log drawer (`get_history_log`: this user's queries on this
+  connection), excluding the turn being answered — with no LLM call, and return
+  `history_matches` (log-shaped entries plus the stored answer) for the UI.
+- **Telemetry.** `metrics.memory` reports turns loaded vs window, ledger tokens,
+  the memory action, per-turn data source (cache / snapshot / rerun) and rows
+  used; the trace shows the same per node.
 
 ## Node Reference
 
-| Icon | Node | Type | Description |
-|------|------|------|-------------|
-| 🧠 | `memory_shrink_check` | Logic | Estimates history at roughly four characters per token and marks it over budget only when it exceeds the configured limit. |
-| 🤏 | `memory_summarizer` | LLM | Condenses prior questions and SQL into `memory_summary`; increments LLM latency and token counters. |
-| 🔀 | `fused_router` | LLM | Uses a local regex for simple greetings (no LLM call); otherwise classifies `needs_query`, `from_memory`, `out_of_scope`, or `unsafe`. Invalid router JSON defaults to `needs_query`. |
-| 💬 | `memory_answer_generator` | LLM | Answers from history and cached prior results, replays a cached matching result when available, or sets `route=needs_query` when fresh data is required. |
-| 📦 | `catalog_lookup` | DB/MCP | Loads catalog metadata, extracts the full table/column allowlist, and fails closed when a catalog is required but unavailable. MCP failures fall back to the metadata DB. |
-| 🔧 | `prompt_builder` | Logic | Renders the SQL system prompt and developer-visible structured prompt. For large catalogs it can prune only the prompt context; validation still retains the full allowlist. |
-| 🧠 | `sql_generator` | LLM | Calls the primary model with the `run_sql` schema, extracts SQL from a tool call or text, or stores a clarification. Retries receive `error_context`. |
-| ✅ | `sqlglot_validate` | Logic | When enabled, checks parsing, single-statement read-only structure, schema/catalog qualifiers, catalogued tables, and conservative column references. |
-| 🛡️ | `dlp_check` | Logic | Blocks governed columns before execution. It resolves referenced columns (including `SELECT *`) when possible and otherwise falls back to a raw SQL scan. |
-| ▶ | `execute_query` | DB | Executes through the connection's read-only `SqlRunner`, applying the request limit, hard row cap, and statement timeout; execution latency accumulates across retries. |
-| ⚡ | `trivial_result_check` | Logic | Marks a result trivial when it has at most one row and five columns, skipping the evaluation LLM call. |
-| 📊 | `fused_eval_analytics` | LLM | Evaluates result-to-intent fit using full-data statistics plus a small row sample; invalid eval JSON does not block a valid result. |
-| 🔁 | `feedback_classifier` | Logic | Classifies validation, execution, and semantic failures; supplies repair context and routes retries to SQL generation or catalog reload. |
-| 📋 | `response_formatter` | Logic | Builds the response contract, selecting clarification, governance, route, evaluation, or trivial-result answer text. |
-| 💾 | `save_to_memory` | DB | Best-effort persistence of SQL, execution state, preview, and a result artifact for future follow-up questions. |
-| 🪵 | `observability_log` | Logic | Emits the final `QUERY_EVENT` JSON log with route, retries, token counts, timing, and connector error type. |
+| Node | Type | Description |
+|------|------|-------------|
+| `context_composer` | logic | Builds the turn ledger and memory telemetry from the loaded window. |
+| `fused_router` | LLM (router) | Greeting regex short-circuit; else one call over the ledger → `route`, `prior_refs`, `history_query`, confidence. ML gate, keyword-cue upgrade, low-confidence `clarify_route`. |
+| `capability_answer` | LLM (primary) | Explains the assistant and the skill catalog. |
+| `memory_answer_generator` | LLM (router) | `replay` / `compute` (a Postgres SELECT over the stored rows exposed as `jsonb_to_recordset` CTEs, no tables) / `answer` / `needs_query` for a prior turn's answer or data. |
+| `history_search` | DB | Keyword + time-window search over the application history log (`insights_conversation_sessions`, same scope as the History log drawer); deterministic answer. |
+| `catalog_lookup` | DB / MCP | Loads the catalog (pre-graph bundle reused once), builds the table/column allowlists, fails closed. |
+| `filter_planner` | LLM (router) | Binds ≤4 predicates in the question to catalogued columns. |
+| `filter_grounder` | DB | Normalises typed operands and verifies text literals against distinct values. |
+| `prior_data_binder` | LLM (router) | Extracts values from a referenced prior result and binds them as a resolved `IN` filter. |
+| `prompt_builder` | logic | Renders the SQL system prompt (schema-linked) plus the runtime filter contract. |
+| `sql_generator` | LLM (primary) | Tool-calling SQL generation; prior turns replayed from the ledger; error context on retries. |
+| `sqlglot_validate` | tool | Parse, single read-only statement, schema qualifier, allowlists, resolved-filter preservation. |
+| `dlp_check` | tool | Column-aware governed-pattern check. |
+| `execute_query` | DB | Read-only runner with limit / row cap / statement timeout. |
+| `empty_filter_result_check` | logic | One extra grounding pass on an empty result with unresolved text filters. |
+| `trivial_result_check` | logic | ≤1 row and ≤5 columns skips eval. |
+| `fused_eval_analytics` | LLM (primary) | Narration + `answers_intent`; ML results use the narration prompt and never trigger repair. |
+| `feedback_classifier` | logic | `resolve_filters` / `missing_table` / `syntax` / `exec` / `semantic` / `exhausted`. |
+| `analysis_planner` / `analysis_guard` / `analysis_sql` / `analysis_run` | LLM / DB / logic / ML | ML skills branch, see ml-skills.md. |
+| `response_formatter` | logic | Picks the answer by terminal state and builds the API contract (`metrics.memory`, `history_matches`, `routing.memory_action` included). |
+| `save_to_memory` | DB | Persists SQL, execution status, preview, result artifact and turn artifact (answer + snapshot). |
+| `observability_log` | logic | One `QUERY_EVENT` structured log per run. |
 
-## Node Types
+## Arcs
 
-The type labels are trace-panel categories, not a strict declaration of I/O:
-`prompt_builder`, for example, is categorized as logic but may load a managed
-prompt template.
+Conditions are evaluated in order; the first match wins. `on_branch` =
+`on_analysis_branch(state)`; `memory` = a table produced from stored rows.
 
-| Type | Color | Role |
-|------|-------|------|
-| **LLM** | Purple | Calls the language model — `memory_summarizer`, `fused_router`, `memory_answer_generator`, `sql_generator`, `fused_eval_analytics` |
-| **DB** | Green | Reads from or writes to a database or catalog provider — `catalog_lookup`, `execute_query`, `save_to_memory` |
-| **Logic** | Gray | Routing, transformation, validation, formatting, and observability work |
+| From | To | Condition |
+|------|----|-----------|
+| `START` | `catalog_lookup` | `analysis_resume` or `analysis_confirmed` (re-entry from `/api/analysis/run`) |
+| `START` | `context_composer` | otherwise |
+| `context_composer` | `fused_router` | always |
+| `fused_router` | `memory_answer_generator` | `route == from_memory` |
+| `fused_router` | `history_search` | `route == history_lookup` |
+| `fused_router` | `capability_answer` | `route == capability` |
+| `fused_router` | `response_formatter` | `route ∈ {out_of_scope, unsafe, greeting, clarify_route}` |
+| `fused_router` | `catalog_lookup` | `needs_query` / `needs_analysis` (default) |
+| `capability_answer` | `response_formatter` | always |
+| `history_search` | `response_formatter` | always |
+| `memory_answer_generator` | `catalog_lookup` | `route == needs_query` (escape hatch, or rows unrecoverable) |
+| `memory_answer_generator` | `trivial_result_check` | `memory_action == compute` |
+| `memory_answer_generator` | `response_formatter` | replay or prose answer |
+| `catalog_lookup` | `response_formatter` | `catalog_blocked` |
+| `catalog_lookup` | `analysis_guard` | resume/confirmed and `on_branch` |
+| `catalog_lookup` | `filter_planner` | otherwise |
+| `filter_planner` | `response_formatter` | `filter_clarification_required` |
+| `filter_planner` | `filter_grounder` | otherwise |
+| `filter_grounder` | `response_formatter` | `filter_clarification_required` |
+| `filter_grounder` | `analysis_planner` | `route == needs_analysis` |
+| `filter_grounder` | `prior_data_binder` | `prior_refs` non-empty |
+| `filter_grounder` | `prompt_builder` | otherwise |
+| `prior_data_binder` | `response_formatter` | `filter_clarification_required` (too many values) |
+| `prior_data_binder` | `prompt_builder` | otherwise |
+| `prompt_builder` | `sql_generator` | always |
+| `analysis_planner` | `response_formatter` | `analysis_clarification` |
+| `analysis_planner` | `prompt_builder` | planner fell back to SQL |
+| `analysis_planner` | `analysis_guard` | otherwise |
+| `analysis_guard` | `response_formatter` | guard failure / confirm card / `analysis_error` |
+| `analysis_guard` | `analysis_sql` | otherwise |
+| `analysis_sql` | `response_formatter` | `analysis_error` |
+| `analysis_sql` | `sqlglot_validate` | otherwise |
+| `sql_generator` | `sqlglot_validate` | `generated_sql` |
+| `sql_generator` | `response_formatter` | clarification / empty |
+| `sqlglot_validate` | `response_formatter` | `sqlglot_error` and `on_branch` |
+| `sqlglot_validate` | `feedback_classifier` | `sqlglot_error` |
+| `sqlglot_validate` | `dlp_check` | valid |
+| `dlp_check` | `response_formatter` | `dlp_blocked` |
+| `dlp_check` | `execute_query` | otherwise |
+| `execute_query` | `response_formatter` | `exec_error` and `on_branch` |
+| `execute_query` | `feedback_classifier` | `exec_error` |
+| `execute_query` | `analysis_run` | rows and `on_branch` |
+| `execute_query` | `empty_filter_result_check` | otherwise |
+| `empty_filter_result_check` | `feedback_classifier` | `needs_filter_reground` |
+| `empty_filter_result_check` | `trivial_result_check` | otherwise |
+| `analysis_run` | `response_formatter` | guard failure / `analysis_error` |
+| `analysis_run` | `trivial_result_check` | otherwise |
+| `trivial_result_check` | `response_formatter` | `is_trivial` or eval disabled |
+| `trivial_result_check` | `fused_eval_analytics` | otherwise |
+| `fused_eval_analytics` | `response_formatter` | `on_branch`, `memory`, or `answers_intent ≠ false` |
+| `fused_eval_analytics` | `feedback_classifier` | `answers_intent == false` |
+| `feedback_classifier` | `response_formatter` | `exhausted` |
+| `feedback_classifier` | `catalog_lookup` | `missing_table` |
+| `feedback_classifier` | `filter_grounder` | `resolve_filters` |
+| `feedback_classifier` | `sql_generator` | `syntax` / `exec` / `semantic` |
+| `response_formatter` | `save_to_memory` | always |
+| `save_to_memory` | `observability_log` | always |
+| `observability_log` | `END` | always |
 
-## Runtime Decision Logic
+## Bounded cycles
 
-### 1. Memory and intent routing
+- **SQL repair** — `feedback_classifier` increments `retry_count`; syntax,
+  execution and semantic failures return to `sql_generator`; the fourth failure
+  (`LANGGRAPH_MAX_RETRIES = 3`) is terminal.
+- **Catalog refresh** — `missing_table` reloads the catalog and re-plans filters
+  (same budget). `prior_data_binder` re-applies existing bindings without a
+  model call on this path.
+- **Filter reground** — one extra grounding pass (`empty_filter_diagnostics < 1`,
+  `retry_count` untouched).
 
-1. `memory_shrink_check` estimates the size of `conversation_history`.
-2. If it is over `LANGGRAPH_MAX_HISTORY_TOKENS` (default `3000`), the graph
-   calls `memory_summarizer`; otherwise it routes directly to `fused_router`.
-3. `fused_router` short-circuits greetings locally. For other questions it sees
-   a summary (or the last three turns), a manifest of prior result artifacts,
-   and the connection display name.
-4. The route determines the next node:
-
-| Route | Next node | Database access |
-|-------|-----------|-----------------|
-| `needs_query` | `catalog_lookup` | Continues toward a live query. |
-| `from_memory` | `memory_answer_generator` | No live query unless the answer node requests one. |
-| `greeting`, `out_of_scope`, `unsafe` | `response_formatter` | No catalog or user-data query is run. |
-
-The memory-answer node has two special controls: `{ "needs_query": true }`
-re-enters the live-query path, while `{ "reuse_prior": true }` attempts to
-replay a matching cached prior result. If that result has expired from the
-cache, it safely falls back to a fresh query.
-
-### 2. Catalog, prompt, and SQL generation
-
-`catalog_lookup` is a safety gate, not merely prompt enrichment. It loads the
-bundle for the current `source_key`, records provider/cache metadata, and builds
-the `known_tables` and `table_columns` validation allowlists.
-
-- When `REQUIRE_CATALOG_FOR_QUERY=true` (the default), an empty or failed catalog
-  sets `catalog_blocked` and goes directly to `response_formatter`; SQL generation
-  and execution do not occur.
-- When configured for MCP, a catalog-provider failure falls back to the metadata
-  DB. The graph records the provider actually used.
-- `prompt_builder` may schema-link a large catalog to a smaller relevant subset
-  for the model prompt. This does not narrow `known_tables` or `table_columns`,
-  so prompt pruning cannot reject an otherwise valid catalogued query.
-- `sql_generator` sends the rendered system prompt, prior SQL turns, and the
-  current question to the primary model. It accepts a `run_sql` tool call, a SQL
-  code fence, or a bare `SELECT` as SQL. A non-SQL model response becomes a
-  clarification and ends the live-query path.
-
-### 3. Validation, governance, execution, and evaluation
-
-```mermaid
-flowchart LR
-    SG[sql_generator] -->|SQL| SV{sqlglot valid?}
-    SG -->|clarification| RF[response_formatter]
-    SV -->|no| FC[feedback_classifier]
-    SV -->|yes| DLP{governance allowed?}
-    DLP -->|no| RF
-    DLP -->|yes| EX[execute_query]
-    EX -->|error| FC
-    EX -->|rows| TR{trivial or eval disabled?}
-    TR -->|yes| RF
-    TR -->|no| EV{answers intent?}
-    EV -->|yes| RF
-    EV -->|no| FC
-```
-
-SQL validation is configurable but layered:
-
-1. `sqlglot_validate` validates the SQL before it reaches the runner. With the
-   default settings it requires exactly one read-only statement, validates allowed
-   schema/catalog qualifiers, and checks catalogued table and unambiguous column
-   names.
-2. `dlp_check` applies built-in sensitive-name patterns (`password`, `ssn`,
-   `credit_card`, `pin`, `secret`, keys, and tokens) plus configured
-   `DLP_GOVERNED_COLUMNS`. A block is terminal and never reaches the data source.
-3. `execute_query` calls the runner, which retains its own read-only enforcement
-   as a second boundary. A request uses its supplied limit, subject to the
-   runtime hard row cap and statement timeout.
-4. `trivial_result_check` skips evaluation for results of at most `1 × 5`
-   (rows × columns), or evaluation is skipped when disabled globally or by the
-   per-request override.
-5. `fused_eval_analytics` receives a profile computed from the returned result
-   set (scanning up to 100,000 rows) plus up to 12 sample rows. A response with
-   `answers_intent=false` enters the repair loop; malformed eval output defaults
-   to `answers_intent=true` so it cannot discard an otherwise valid query result.
-
-## Key Loops
-
-- **Retry loop** — `feedback_classifier` increments `retry_count` for each
-  repairable failure. Syntax, execution, and semantic failures return to
-  `sql_generator`; an error containing `not found in catalog` reloads the catalog
-  first. With the default `LANGGRAPH_MAX_RETRIES=3`, the graph allows three repair
-  attempts after the initial SQL generation; the next failure is terminal.
-- **Memory escape** — `memory_answer_generator` can fall through to the full SQL path
-  when conversation history is insufficient to answer.
-- **Eval rejection** — `fused_eval_analytics` sends the result back to `feedback_classifier`
-  when the SQL result does not satisfy the original user intent.
-
-## Terminal Work and Observability
-
-Every route ends with the same tail: `response_formatter` → `save_to_memory` →
-`observability_log` → `END`.
-
-- The formatter returns the API contract: question/session/query IDs, SQL,
-  result data, answer, prompt, error, metrics, and available insights.
-- The complete trace is attached **after** the graph finishes so it includes
-  `save_to_memory` and `observability_log`; each event includes node timing and
-  is enriched with route, SQL, catalog, or error detail where applicable.
-- History writes are best effort. A persistence failure is logged but does not
-  replace a successfully formatted answer.
-- `observability_log` emits one `QUERY_EVENT` record per graph run. It includes
-  route, retry count, LLM calls/tokens/latency, SQL execution time, elapsed time,
-  error status, connector error type, and query ID.
-
-## Standalone Insights Eval Graph
-
-`build_insights_eval_graph()` defines a separate one-node graph, `START → eval →
-END`, used by the insights API after a main query has returned. It uses
-`InsightsState` rather than `AgentState`, accepts a question, SQL, rows, row
-count, and optional full-data statistics, then returns the summary, insights,
-suggestions, and follow-up questions. It does not run catalog lookup, SQL
-generation, validation, or database execution.
+The ML branch and the memory branch have no cycle: a failure on either goes
+straight to `response_formatter` (there is no system prompt to retry with).
 
 ## Operational Configuration
 
 | Setting | Default | Effect |
 |---------|---------|--------|
-| `LANGGRAPH_MAX_RETRIES` | `3` | Number of repair attempts after an initial SQL failure. |
-| `LANGGRAPH_MAX_HISTORY_TOKENS` | `3000` | Estimated conversation-history threshold that triggers summarization. |
-| `REQUIRE_CATALOG_FOR_QUERY` | `true` | Fails closed when no usable catalog exists. |
-| `SQLGLOT_VALIDATION_ENABLED` | `true` | Enables SQL structure and catalog validation before execution. |
-| `SCHEMA_QUALIFIER_VALIDATION_ENABLED` | `true` | Rejects a qualified table outside the configured schema/catalog. |
-| `DLP_ENABLED` | `true` | Enables sensitive-column governance checks. |
-| `DLP_GOVERNED_COLUMNS` | empty | Adds comma-separated organization-specific governed column names. |
-| `EVAL_ANALYTICS_ENABLED` | `true` | Runs evaluation for non-trivial results unless overridden per request. |
-| `SCHEMA_LINK_ENABLED` | `true` | Prunes large catalog context for the prompt only; validation remains full-catalog. |
+| `conversation_context_turns` (runtime) | `5` | Turns loaded per request; the memory window. Editable in Settings → Runtime (0–50). |
+| `MEMORY_SAMPLE_ROWS` | `3` | Rows of a prior result shown to the memory models as a sample. |
+| `MEMORY_COMPUTE_MAX_ROWS` | `2000` | Row ceiling for computing over a prior result (matches the snapshot cap). |
+| `MEMORY_MAX_BOUND_VALUES` | `100` | Most values a prior result may contribute to a new query's `IN` list. |
+| `HISTORY_LOOKUP_DEFAULT_DAYS` / `_MAX_RESULTS` | `30` / `10` | Default look-back and result cap for history questions. |
+| `JEEN_RESULT_CACHE_*` | 5 per user / 30 min / 256 | Hot tier of `PriorResultStore`. |
+| `CONVERSATION_SNAPSHOT_*` | 2000 rows / 1 MiB / last 100 turns | Durable tier of `PriorResultStore`. |
+| `LANGGRAPH_MAX_RETRIES` | `3` | Repair attempts after an initial SQL failure. |
+| `REQUIRE_CATALOG_FOR_QUERY` | `true` | Fail closed without a usable catalog. |
+| `SQLGLOT_VALIDATION_ENABLED` | `true` | SQL structure and catalog validation before execution. |
+| `SCHEMA_QUALIFIER_VALIDATION_ENABLED` | `true` | Reject qualified tables outside the connection's schema/catalog. |
+| `DLP_ENABLED` / `DLP_GOVERNED_COLUMNS` | `true` / empty | Governed-column checks. |
+| `EVAL_ANALYTICS_ENABLED` | `true` | Narration for non-trivial results unless overridden per request. |
+| `SCHEMA_LINK_ENABLED` | `true` | Prunes large catalog context for the prompt only. |
+
+## Standalone Insights Eval Graph
+
+`build_insights_eval_graph()` defines a separate one-node graph, `START → eval →
+END`, used by the insights API after a main query has returned. It uses
+`InsightsState` rather than `AgentState`.
 
 ## Source
 
 Graph definition: `src/agent/langgraph_agent/graph.py`
 Node implementations: `src/agent/langgraph_agent/nodes/`
+Memory: `nodes/context.py`, `nodes/memory_answer.py`, `nodes/binder.py`,
+`nodes/history.py`, `src/agent/prior_results.py`, `src/agent/snapshot_sql.py`

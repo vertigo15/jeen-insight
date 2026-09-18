@@ -301,6 +301,9 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
             "retry_count": state.get("retry_count", 0),
             "llm_call_count": state.get("llm_call_count", 0),
             "route": route,
+            # Conversation memory: turns loaded vs window, ledger size, what the
+            # memory nodes did and where prior rows came from (developer panel).
+            "memory": state.get("memory_telemetry") or None,
         },
         # Why this answer took the path it did — ML skill or text-to-SQL — so
         # the UI can name it and tests can assert it without reading the trace.
@@ -318,6 +321,9 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
         formatted["metrics"]["skill"] = state.get("analysis_skill")
     if state.get("parent_query_id"):
         formatted["parent_query_id"] = state.get("parent_query_id")
+    # Ambiguous SQL-vs-ML: the UI renders the two choices from this payload.
+    if state.get("route_clarification"):
+        formatted["route_clarification"] = state["route_clarification"]
     # Filter grounding provenance: what was matched, corrected, retargeted or
     # left unverified, so the UI can show "Filtered by …" and offer a switch,
     # and a structured column/value question when the grounder had to ask.
@@ -332,6 +338,11 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
         formatted["filter_clarification"] = state["filter_clarification"]
     if state.get("filter_metrics"):
         formatted["metrics"]["filter_grounding"] = state["filter_metrics"]
+    # history_lookup: the matching past turns, so the UI can link back to them.
+    if route == "history_lookup":
+        formatted["history_matches"] = list(state.get("history_matches") or [])
+    if state.get("memory_action"):
+        formatted["routing"]["memory_action"] = state["memory_action"]
     if proposal:
         kind = proposal.get("kind")
         formatted["status"] = {"confirm": "confirm", "clarify": "clarify", "guard": "blocked"}.get(kind, kind)
@@ -343,6 +354,11 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
             view = ResultEnvelope.model_validate(analysis).artifact_view()
         except Exception:  # noqa: BLE001 — never lose the answer over the view
             view = {k: v for k, v in analysis.items() if k not in ("rows", "columns")}
+        # The setup card (measure, grain, window, model, …) for "Edit setup":
+        # the one place a finished result's parameters — the model included —
+        # can be changed and re-run as a child turn.
+        if state.get("analysis_definition"):
+            view["definition"] = state["analysis_definition"]
         if state.get("analysis_dropped_filters"):
             view.setdefault("caveats", []).append(
                 "Filters not applied (other tables): " + ", ".join(state["analysis_dropped_filters"])
@@ -428,27 +444,55 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
     for ev in events:
         node = ev.get("node", "")
 
-        if node == "memory_shrink_check":
-            ev["detail"] = "over budget — summarising" if state.get("is_over_budget") else "within budget"
-
-        elif node == "memory_summarizer":
-            s = state.get("memory_summary") or ""
-            ev["detail"] = s[:80] + ("…" if len(s) > 80 else "")
+        if node == "context_composer":
+            mem = state.get("memory_telemetry") or {}
+            window = mem.get("window")
+            loaded = mem.get("turns_loaded", 0)
+            detail = f"{loaded}/{window} turns" if window else f"{loaded} turns"
+            detail += f" · ≈{mem.get('ledger_tokens_est', 0):,} tokens · data on {mem.get('turns_with_data', 0)}"
+            if mem.get("window_saturated"):
+                detail += " · window full"
+            ev["detail"] = detail
 
         elif node == "fused_router":
             route = state.get("route", "?")
             reason = state.get("route_reason", "")
-            ev["detail"] = f"route = {route}" + (f" — {reason[:60]}" if reason else "")
+            refs = state.get("prior_refs") or []
+            ev["detail"] = f"route = {route}" + (f" · refs {', '.join(refs)}" if refs else "") + (f" — {reason[:60]}" if reason else "")
             ev["route"] = route
 
         elif node == "memory_answer_generator":
-            ans = state.get("answer")
-            if isinstance(ans, list):
-                # Fragment array — render as plain text for the trace detail line
-                plain = "".join(f.get("t", "") for f in ans)
-                ev["detail"] = plain[:80] + "\u2026" if len(plain) > 80 else plain
+            mem = state.get("memory_telemetry") or {}
+            action = state.get("memory_action") or "?"
+            refs = ", ".join(mem.get("refs") or [])
+            sources = mem.get("data_sources") or {}
+            src = ", ".join(f"{k}:{v}" for k, v in sources.items())
+            if action in ("replay", "compute"):
+                rc = (state.get("query_result") or {}).get("row_count", 0)
+                ev["detail"] = f"{action} {refs} → {rc} rows" + (f" · data {src}" if src else "")
+                if action == "compute":
+                    ev["detail"] += f" · {mem.get('compute_ms', 0)}ms compute"
+            elif action == "needs_query":
+                ev["detail"] = "escape hatch \u2192 needs_query" + (f" ({refs})" if refs else "")
             else:
-                ev["detail"] = ans[:80] + "\u2026" if (ans and len(ans) > 80) else (ans or "escape hatch \u2192 needs_query")
+                ans = state.get("answer")
+                plain = "".join(f.get("t", "") for f in ans) if isinstance(ans, list) else (ans or "")
+                ev["detail"] = f"answer from ledger: {plain[:70]}" + ("\u2026" if len(plain) > 70 else "")
+
+        elif node == "history_search":
+            matches = state.get("history_matches") or []
+            hq = state.get("history_query") or {}
+            ev["detail"] = f"{len(matches)} match(es) for {hq.get('keywords') or 'any'}"
+
+        elif node == "prior_data_binder":
+            mem = state.get("memory_telemetry") or {}
+            if mem.get("binder_target"):
+                ev["detail"] = f"bound {mem.get('binder_values')} value(s) → {mem['binder_target']}"
+            elif state.get("filter_clarification_required"):
+                ev["detail"] = "too many values — asked to narrow"
+                ev["status"] = "warn"
+            else:
+                ev["detail"] = "nothing bound — composition left to the SQL model"
 
         elif node == "catalog_lookup":
             known = state.get("known_tables") or []

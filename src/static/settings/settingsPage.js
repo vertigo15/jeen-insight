@@ -52,7 +52,7 @@ const NAV = [
             { id: 'prompt:fused_router',         label: 'Router',         icon: ICONS.prompt, type: 'prompt' },
             { id: 'prompt:fused_eval_analytics', label: 'Eval & Analytics', icon: ICONS.prompt, type: 'prompt' },
             { id: 'prompt:memory_answer',        label: 'Memory Answer',  icon: ICONS.prompt, type: 'prompt' },
-            { id: 'prompt:memory_summarizer',    label: 'Memory Summary', icon: ICONS.prompt, type: 'prompt' },
+            { id: 'prompt:prior_data_binder',    label: 'Prior Data Binder', icon: ICONS.prompt, type: 'prompt' },
             { id: 'prompt:sql_generator',        label: 'SQL Retry',      icon: ICONS.prompt, type: 'prompt' },
         ],
     },

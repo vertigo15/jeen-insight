@@ -19,13 +19,16 @@ secret). `resolve_agent` dispatches them to the `DaxAgentRegistry`
 
 ```mermaid
 flowchart TD
-    START(("START")) --> shrink["memory_shrink_check (shared)"]
-    shrink -->|over budget| sum["memory_summarizer (shared)"]
-    shrink -->|within| router
-    sum --> router["fused_router (shared)"]
+    START(("START")) --> ctx["context_composer (shared)"]
+    ctx -->|ledger| router["fused_router (shared)"]
     router -->|greeting / out_of_scope / unsafe| fmt
+    router -->|capability| cap["capability_answer (shared, DAX prompt)"]
+    cap --> fmt
+    router -->|history_lookup| hist["history_search (shared)"]
+    hist --> fmt
     router -->|from_memory| mem["memory_answer_generator (shared)"]
-    mem -->|answered| fmt
+    mem -->|replay / answer| fmt
+    mem -->|computed table| triv
     mem -->|needs_query| cat
     router -->|needs_query| cat["dax_catalog_lookup"]
     cat -->|blocked| fmt
@@ -65,9 +68,23 @@ flowchart TD
 ## Nodes
 
 **Shared (imported read-only, unchanged from the SQL graph):**
-`memory_shrink_check`, `memory_summarizer`, `fused_router`,
-`memory_answer_generator`, `trivial_result_check`, `fused_eval_analytics`,
+`context_composer`, `fused_router`, `capability_answer`, `memory_answer_generator`,
+`history_search`, `trivial_result_check`, `fused_eval_analytics`,
 `response_formatter`, `save_to_memory`, `observability_log`.
+
+`capability_answer` ("what can you do?") is the same node as on the SQL graph, but
+`DaxPromptLoader` serves `prompts_dax/capability_answer.md` for it — a Power BI
+description with no SQL or ML-skill catalogue — and its static fallback text is
+DAX-specific too.
+
+Conversation memory works as on the SQL graph (ledger of the last
+`conversation_context_turns` turns; prior rows recovered from the result cache or
+the stored snapshot and computed over in the metadata Postgres). Two DAX
+specifics: a prior turn's DAX cannot be re-run through `run_sql`, so the
+re-run tier is not wired; and a table computed from stored rows goes to
+`trivial_result_check → fused_eval_analytics` but never into the DAX repair
+loop (`on_memory_branch`). See the memory section of
+[agent-state-flow.md](./agent-state-flow.md).
 
 **DAX-specific (new):**
 

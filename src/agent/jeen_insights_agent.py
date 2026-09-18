@@ -86,7 +86,6 @@ class JeenInsightsAgent:
             prompt_loader=prompt_loader,
             deployment_name=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
             max_retries=settings.LANGGRAPH_MAX_RETRIES,
-            max_history_tokens=settings.LANGGRAPH_MAX_HISTORY_TOKENS,
             dlp_enabled=settings.DLP_ENABLED,
             sqlglot_validation_enabled=settings.SQLGLOT_VALIDATION_ENABLED,
             eval_analytics_enabled=settings.EVAL_ANALYTICS_ENABLED,
@@ -105,6 +104,8 @@ class JeenInsightsAgent:
             analysis_audit=analysis_audit,
             analysis_max_series_rows=int(settings.ANALYSIS_MAX_SERIES_ROWS),
             analysis_max_entity_rows=int(settings.ANALYSIS_MAX_ENTITY_ROWS),
+            memory_compute_max_rows=int(settings.MEMORY_COMPUTE_MAX_ROWS),
+            memory_max_bound_values=int(settings.MEMORY_MAX_BOUND_VALUES),
         )
         logger.info(
             "✅ LangGraph agent ready for source_key=%s", self.source_key
@@ -314,8 +315,9 @@ class JeenInsightsAgent:
                 "token_usage": {},
                 # ── Memory ──────────────────────────────────────────────
                 "conversation_history": conversation_context,
-                "memory_summary": None,
-                "is_over_budget": False,
+                "memory_window": runtime.conversation_context_turns,
+                "prior_refs": [],
+                "history_query": None,
                 # ── Routing ─────────────────────────────────────────────
                 "route": "needs_query",
                 "route_reason": "",
@@ -407,6 +409,7 @@ class JeenInsightsAgent:
                 "analysis_dropped_filters": [],
                 "analysis_span": None,
                 "analysis_result": None,
+                "analysis_definition": None,
                 "analysis_error": None,
                 "low_confidence": False,
                 "parent_query_id": parent_query_id,

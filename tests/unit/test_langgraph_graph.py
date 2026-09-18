@@ -41,9 +41,9 @@ _METADATA = {
 }
 
 # LLM response templates
-def _router_resp(route: str, reason: str = "test") -> Dict[str, Any]:
+def _router_resp(route: str, reason: str = "test", **extra: Any) -> Dict[str, Any]:
     return {
-        "content": json.dumps({"route": route, "reason": reason}),
+        "content": json.dumps({"route": route, "reason": reason, **extra}),
         "finish_reason": "stop",
         "usage": {"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70},
     }
@@ -104,7 +104,7 @@ def mock_services():
     return Services()
 
 
-def _build(svc, prompt_loader, *, max_retries=3, dlp_enabled=True, sqlglot_enabled=True):
+def _build(svc, prompt_loader, *, max_retries=3, dlp_enabled=True, sqlglot_enabled=True, snapshot_engine=None):
     return build_graph(
         llm=svc.llm,
         router_llm=svc.llm,
@@ -114,9 +114,9 @@ def _build(svc, prompt_loader, *, max_retries=3, dlp_enabled=True, sqlglot_enabl
         prompt_loader=prompt_loader,
         deployment_name="test-deployment",
         max_retries=max_retries,
-        max_history_tokens=3000,
         dlp_enabled=dlp_enabled,
         sqlglot_validation_enabled=sqlglot_enabled,
+        snapshot_engine=snapshot_engine,
     )
 
 
@@ -137,8 +137,9 @@ def _initial_state(**overrides) -> AgentState:
         "llm_latency_ms": 0,
         "token_usage": {},
         "conversation_history": [],
-        "memory_summary": None,
-        "is_over_budget": False,
+        "memory_window": 5,
+        "prior_refs": [],
+        "history_query": None,
         "route": "needs_query",
         "route_reason": "",
         "metadata_bundle": _METADATA,
@@ -229,18 +230,36 @@ class TestFromMemoryRoute:
     @pytest.mark.asyncio
     async def test_answers_from_memory_without_db_call(self, mock_services, prompt_loader):
         mock_services.llm.generate.side_effect = [
-            _router_resp("from_memory", "User is asking about a previous result"),
-            _text_resp("Based on our earlier query, total sales in 2007 were $25M."),
+            _router_resp("from_memory", "User is asking about a previous result", prior_refs=["T1"]),
+            _text_resp('{"action": "answer", "answer": "Based on our earlier query, total sales in 2007 were $25M."}'),
         ]
 
         graph = _build(mock_services, prompt_loader)
-        result = await graph.ainvoke(_initial_state())
+        result = await graph.ainvoke(_initial_state(conversation_history=[_PRIOR_TURN]))
         resp = result["formatted_response"]
 
         assert "25M" in resp["answer"]
         assert resp["sql"] is None        # no SQL was generated
         mock_services.sql_runner.run_sql.assert_not_called()
         assert resp["metrics"]["route"] == "from_memory"
+        assert resp["routing"]["memory_action"] == "answer"
+
+    @pytest.mark.asyncio
+    async def test_from_memory_with_no_prior_turns_falls_through_to_query(self, mock_services, prompt_loader):
+        """Nothing to remember → the memory node steps aside without an LLM call."""
+        sql = "SELECT SalesAmount FROM FactSales LIMIT 5"
+        mock_services.llm.generate.side_effect = [
+            _router_resp("from_memory"),
+            _sql_tool_resp(sql),
+            _eval_resp(),
+        ]
+        mock_services.sql_runner.run_sql.return_value = {
+            "columns": ["SalesAmount"], "rows": [{"SalesAmount": 1}, {"SalesAmount": 2}], "row_count": 2,
+        }
+        graph = _build(mock_services, prompt_loader)
+        result = await graph.ainvoke(_initial_state())
+        resp = result["formatted_response"]
+        assert resp["sql"] == sql and resp["metrics"]["llm_call_count"] == 3
 
     @pytest.mark.asyncio
     async def test_memory_escape_hatch_falls_through_to_query(self, mock_services, prompt_loader):
@@ -256,7 +275,7 @@ class TestFromMemoryRoute:
             "columns": ["SalesAmount"], "rows": [{"SalesAmount": 100}, {"SalesAmount": 200}], "row_count": 2,
         }
         graph = _build(mock_services, prompt_loader)
-        result = await graph.ainvoke(_initial_state())
+        result = await graph.ainvoke(_initial_state(conversation_history=[_PRIOR_TURN]))
         resp = result["formatted_response"]
 
         assert resp["sql"] == sql
@@ -475,51 +494,118 @@ class TestTrivialResult:
         assert resp["metrics"]["llm_call_count"] == 2
 
 
-class TestMemorySummarizer:
-    @pytest.mark.asyncio
-    async def test_summarizer_triggered_on_large_history(self, mock_services, prompt_loader):
-        """When conversation history is over budget, memory_summarizer runs before fused_router."""
-        large_history = [
-            {
-                "natural_language_query": "A" * 300,
-                "generated_sql": "SELECT " + "col" * 200 + " FROM FactSales",
-            }
-            for _ in range(5)
-        ]
+class TestRecursionLimit:
+    def test_limit_covers_the_longest_budget_legal_path(self):
+        """A request that exhausts every retry budget must end with an 'exhausted'
+        answer, never a GraphRecursionError. Recount when a node is added to the
+        prefix or to the repair loop (see the comment next to the constant)."""
+        from src.agent.langgraph_agent.graph import _GRAPH_LONGEST_LEGAL_PATH, _GRAPH_RECURSION_LIMIT
 
+        prefix = ["context_composer", "fused_router", "memory_answer_generator", "catalog_lookup",
+                  "filter_planner", "filter_grounder", "prior_data_binder", "prompt_builder"]
+        reground = ["sql_generator", "sqlglot_validate", "dlp_check", "execute_query", "empty_filter_result_check",
+                    "feedback_classifier", "filter_grounder", "prior_data_binder", "prompt_builder"]
+        attempt = ["sql_generator", "sqlglot_validate", "dlp_check", "execute_query", "empty_filter_result_check",
+                   "trivial_result_check", "fused_eval_analytics", "feedback_classifier"]
+        tail = ["response_formatter", "save_to_memory", "observability_log"]
+        max_retries = 3
+        longest = len(prefix) + len(reground) + (1 + max_retries) * len(attempt) + len(tail)
+        assert longest == _GRAPH_LONGEST_LEGAL_PATH == 52
+        assert _GRAPH_RECURSION_LIMIT > longest
+
+
+_PRIOR_TURN = {
+    "id": "qid-prev",
+    "natural_language_query": "products and prices",
+    "generated_sql": "SELECT product, price FROM p",
+    "result_artifact": {"columns": ["product", "price"], "column_types": {"price": "int"}, "row_count": 3},
+    "snapshot_status": "stored",
+    "answer": "The Bike is the most expensive product.",
+}
+
+
+class TestConversationMemory:
+    @pytest.mark.asyncio
+    async def test_ledger_reaches_router_and_sql_generator_without_extra_llm_calls(self, mock_services, prompt_loader):
+        """No summarizer any more: history costs zero LLM calls; the router and the
+        SQL generator both receive the turn ledger."""
         sql = "SELECT SalesAmount FROM FactSales LIMIT 5"
         mock_services.llm.generate.side_effect = [
-            _text_resp("History summary: sales queries for 2007-2009."),   # memory_summarizer
-            _router_resp("needs_query"),                                    # fused_router
-            _sql_tool_resp(sql),                                           # sql_generator
-            _eval_resp(),                                                  # eval
+            _router_resp("needs_query"),
+            _sql_tool_resp(sql),
+            _eval_resp(),
         ]
         mock_services.sql_runner.run_sql.return_value = {
-            "columns": ["SalesAmount"],
-            "rows": [{"SalesAmount": 100}, {"SalesAmount": 200}],
-            "row_count": 2,
+            "columns": ["SalesAmount"], "rows": [{"SalesAmount": 100}, {"SalesAmount": 200}], "row_count": 2,
         }
-        # Set a very small token budget so the 5 large entries trigger summarization
-        graph = _build(mock_services, prompt_loader, max_retries=3)
-        graph_small_budget = build_graph(
-            llm=mock_services.llm,
-            router_llm=mock_services.llm,
-            sql_runner=mock_services.sql_runner,
-            metadata_loader=mock_services.metadata_loader,
-            history_service=mock_services.history_service,
-            prompt_loader=prompt_loader,
-            deployment_name="test",
-            max_retries=3,
-            max_history_tokens=50,   # very small: triggers summarizer
-            dlp_enabled=True,
-            sqlglot_validation_enabled=True,
-        )
-        result = await graph_small_budget.ainvoke(_initial_state(conversation_history=large_history))
+        graph = _build(mock_services, prompt_loader)
+        result = await graph.ainvoke(_initial_state(conversation_history=[_PRIOR_TURN] * 5))
         resp = result["formatted_response"]
 
-        # 4 LLM calls: summarizer + router + sql_gen + eval
-        assert resp["metrics"]["llm_call_count"] == 4
+        assert resp["metrics"]["llm_call_count"] == 3          # router + sql_gen + eval
         assert resp["sql"] == sql
+        mem = resp["metrics"]["memory"]
+        assert mem["turns_loaded"] == 5 and mem["window"] == 5 and mem["window_saturated"] is True
+        assert mem["turns_with_data"] == 5 and mem["ledger_tokens_est"] > 0
+        router_prompt = mock_services.llm.generate.await_args_list[0].kwargs["messages"][0]["content"]
+        assert 'T5 (most recent) · Q: "products and prices"' in router_prompt
+        sql_messages = mock_services.llm.generate.await_args_list[1].kwargs["messages"]
+        tool_results = [m for m in sql_messages if m["role"] == "tool"]
+        assert len(tool_results) == 5
+        assert tool_results[0]["content"] == "3 rows; columns: product, price(int); answer: The Bike is the most expensive product."
+        assert [e["node"] for e in result["trace"]][:2] == ["context_composer", "fused_router"]
+
+    @pytest.mark.asyncio
+    async def test_from_memory_compute_flows_through_eval_and_never_hits_the_source(self, mock_services, prompt_loader, snapshot_engine):
+        from src.api.result_cache import result_cache
+
+        state = _initial_state(question="which product was the most expensive?", conversation_history=[_PRIOR_TURN])
+        result_cache.put(
+            user_id=state["user_id"], connection="test_db", query_id="qid-prev",
+            dataset={"columns": ["product", "price"],
+                     "rows": [{"product": "Bike", "price": 1200}, {"product": "Helmet", "price": 80}]},
+        )
+        sql = 'SELECT "product", "price" FROM insights_mem_t1 ORDER BY "price" DESC'
+        snapshot_engine.script(sql, rows=[{"product": "Bike", "price": 1200}, {"product": "Helmet", "price": 80}])
+        mock_services.llm.generate.side_effect = [
+            _router_resp("from_memory", prior_refs=["T1"]),
+            _text_resp(json.dumps({"action": "compute", "ref": "T1", "sql": sql})),
+            _eval_resp(),
+        ]
+        graph = _build(mock_services, prompt_loader, snapshot_engine=snapshot_engine)
+        result = await graph.ainvoke(state)
+        resp = result["formatted_response"]
+
+        mock_services.sql_runner.run_sql.assert_not_awaited()          # the customer's source is never touched
+        assert snapshot_engine.calls == [sql]
+        assert resp["results"]["rows"] == [{"product": "Bike", "price": 1200}, {"product": "Helmet", "price": 80}]
+        assert resp["sql"].startswith("-- memory:")
+        assert resp["routing"]["route"] == "from_memory" and resp["routing"]["memory_action"] == "compute"
+        assert resp["metrics"]["memory"]["data_sources"] == {"T1": "cache"}
+        nodes = [e["node"] for e in result["trace"]]
+        assert "memory_answer_generator" in nodes and "fused_eval_analytics" in nodes
+        assert "sql_generator" not in nodes and "feedback_classifier" not in nodes
+
+    @pytest.mark.asyncio
+    async def test_history_lookup_answers_from_the_history_service(self, mock_services, prompt_loader):
+        from datetime import datetime, timezone
+
+        mock_services.history_service.search_turns = AsyncMock(return_value=[{
+            "id": "q-old", "session_id": "s-old", "natural_language_query": "revenue by region",
+            "created_at": datetime(2026, 9, 15, 10, 0, tzinfo=timezone.utc), "answer": "North led.",
+        }])
+        mock_services.llm.generate.side_effect = [
+            _router_resp("history_lookup", history_query={"keywords": ["revenue"], "since": "2026-09-13"}),
+        ]
+        graph = _build(mock_services, prompt_loader)
+        result = await graph.ainvoke(_initial_state(question="did I ask about revenue in the last 4 days?"))
+        resp = result["formatted_response"]
+
+        assert resp["metrics"]["llm_call_count"] == 1
+        assert "revenue by region" in resp["answer"] and "North led." in resp["answer"]
+        assert resp["history_matches"][0]["query_id"] == "q-old"
+        assert resp["results"] is None and resp["sql"] is None
+        mock_services.sql_runner.run_sql.assert_not_awaited()
 
 
 class TestTokenAndMetricsAccumulation:

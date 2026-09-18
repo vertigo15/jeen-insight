@@ -44,7 +44,7 @@ flowchart TB
     end
 
     subgraph LangGraph["LangGraph text-to-SQL graph"]
-        LG["16 nodes: router → SQL → validate → execute → eval → format"]
+        LG["25 nodes: memory ledger → router → SQL / ML / memory → validate → execute → eval → format"]
     end
 
     subgraph DataSources["Data & catalog"]
@@ -178,84 +178,85 @@ flowchart TD
 
 ## 5. LangGraph agent (core question → SQL → answer)
 
-The compiled graph has **16 nodes**. Every node appends a timed event to `state.trace` (shown in the UI developer panel). The columns below are logical branch groupings; the graph follows one route through them for a given question.
+The compiled graph has **25 nodes** and 58 arcs. Every node appends a timed event to `state.trace` (shown in the UI developer panel). The full node reference, the arc table with routing conditions, and the conversation-memory design live in [agent-state-flow.md](./agent-state-flow.md) (diagrams: [agent-state-flow.drawio](./agent-state-flow.drawio)); the overview below is the same graph grouped by phase — the graph follows one route through it for a given question.
 
 ```mermaid
-flowchart LR
-    S([START])
-    E([END])
+flowchart TD
+    S([START]) -->|resume/confirmed analysis| CL
+    S -->|default| CC
 
-    subgraph Memory["Memory"]
-        MSC["memory_shrink_check"]
-        MS["memory_summarizer · LLM"]
-        MAG["memory_answer_generator · LLM"]
+    subgraph Memory_Routing
+        CC[context_composer] -->|ledger| FR[fused_router · LLM]
+        FR -->|from_memory| MAG[memory_answer_generator · LLM]
+        FR -->|history_lookup| HS[history_search · DB]
+        FR -->|capability| CAP[capability_answer · LLM]
     end
 
-    subgraph Routing["Routing"]
-        FR["fused_router · LLM"]
+    FR -->|greeting / out_of_scope / unsafe / clarify_route| RF
+    FR -->|needs_query / needs_analysis| CL
+    MAG -->|escape hatch: needs_query| CL
+    MAG -->|computed table| TRC
+    MAG -->|replay / answer| RF
+    HS --> RF
+    CAP --> RF
+
+    subgraph Catalog_Filters
+        CL[catalog_lookup · DB/MCP] -->|ok| FP[filter_planner · LLM]
+        FP -->|no clarification| FG[filter_grounder · DB]
+        FG -->|prior_refs| PDB[prior_data_binder · LLM]
     end
+    CL -->|catalog_blocked| RF
+    CL -->|resume & on branch| AG
+    FP -->|clarification| RF
+    FG -->|clarification| RF
+    FG -->|needs_analysis| AP
+    FG -->|needs_query| PB
+    PDB -->|bound values| PB
+    PDB -->|too many values| RF
 
-    subgraph CatalogPrompt["Catalog + Prompt"]
-        CL["catalog_lookup · DB/MCP"]
-        PB["prompt_builder"]
+    subgraph ML_branch
+        AP[analysis_planner · LLM] -->|params| AG[analysis_guard · DB]
+        AG -->|guards pass & confirmed| ASQ[analysis_sql]
+        AR[analysis_run · ML]
     end
+    AP -->|clarify| RF
+    AP -->|fallback → SQL| PB
+    AG -->|guard fail / confirm card / error| RF
+    ASQ -->|error| RF
+    ASQ -->|sql| SV
 
-    subgraph SqlSafety["SQL + Safety"]
-        SG["sql_generator · LLM"]
-        SV["sqlglot_validate · sqlglot"]
-        DC["dlp_check · regex patterns"]
+    subgraph SQL_Exec
+        PB[prompt_builder] --> SG[sql_generator · LLM]
+        SG -->|sql| SV[sqlglot_validate · sqlglot]
+        SV -->|valid| DC[dlp_check]
+        DC -->|safe| EQ[execute_query · SqlRunner]
+        EQ -->|rows, SQL path| EFC[empty_filter_result_check]
+        EFC -->|no reground| TRC[trivial_result_check]
+        TRC -->|non-trivial & eval on| FEA[fused_eval_analytics · LLM]
+        FC[feedback_classifier]
     end
-
-    subgraph ExecutionEval["Execution + Eval"]
-        EQ["execute_query · PostgresSqlRunner"]
-        TRC["trivial_result_check"]
-        FEA["fused_eval_analytics · LLM"]
-        FC["feedback_classifier"]
-    end
-
-    subgraph Output["Output"]
-        RF["response_formatter"]
-        STM["save_to_memory · DB"]
-        OL["observability_log"]
-    end
-
-    S --> MSC
-    MSC -->|over token budget| MS
-    MSC -->|within budget| FR
-    MS --> FR
-
-    FR -->|needs_query| CL
-    FR -->|from_memory| MAG
-    FR -->|out_of_scope / unsafe / greeting| RF
-
-    MAG -->|answer from history| RF
-    MAG -->|needs fresh data| CL
-
-    CL --> PB --> SG
-
-    SG -->|SQL| SV
     SG -->|clarification| RF
-
-    SV -->|valid| DC
-    SV -->|syntax / unknown table| FC
-
-    DC -->|safe| EQ
-    DC -->|blocked column/pattern| RF
-
-    EQ -->|rows| TRC
-    EQ -->|exec error| FC
-
+    SV -->|error, SQL path| FC
+    SV -->|error, ML path| RF
+    DC -->|blocked| RF
+    EQ -->|error, SQL path| FC
+    EQ -->|error, ML path| RF
+    EQ -->|rows, ML path| AR
+    AR -->|ok| TRC
+    AR -->|guard fail / error| RF
+    EFC -->|reground| FC
     TRC -->|trivial or eval off| RF
-    TRC -->|needs eval| FEA
-
-    FEA -->|answers intent| RF
-    FEA -->|wrong result| FC
-
-    FC -->|retries left| SG
-    FC -->|missing table| CL
+    FEA -->|answers intent or ML / memory path| RF
+    FEA -->|wrong| FC
+    FC -->|syntax / exec / semantic| SG
+    FC -->|missing_table| CL
+    FC -->|resolve_filters| FG
     FC -->|exhausted| RF
 
-    RF --> STM --> OL --> E
+    subgraph Tail
+        RF[response_formatter] --> STM[save_to_memory · DB] --> OL[observability_log]
+    end
+    OL --> E([END])
 ```
 
 Only the pre-graph bootstrap in §3 runs concurrent work with `asyncio.gather()`. The LangGraph trace itself is sequential per route, even though the UI and docs lay out alternative branches side-by-side.
@@ -264,9 +265,13 @@ Only the pre-graph bootstrap in §3 runs concurrent work with `asyncio.gather()`
 
 | Route | Next path | Meaning |
 |-------|-----------|---------|
-| `needs_query` | `catalog_lookup` → SQL pipeline | Normal analytics question |
-| `from_memory` | `memory_answer_generator` | Answerable from session history |
-| `greeting` | `response_formatter` | Short-circuit hello |
+| `needs_query` | `catalog_lookup` → filters → SQL pipeline (via `prior_data_binder` when `prior_refs` is set) | Normal analytics question, possibly building on a prior result |
+| `needs_analysis` | `catalog_lookup` → filters → ML branch | Prediction / anomaly / driver question (see [ml-skills.md](./ml-skills.md)) |
+| `from_memory` | `memory_answer_generator` | About a prior turn's answer or data: replay, compute over the stored rows, or answer from the ledger |
+| `history_lookup` | `history_search` | "Did I ask about X last week?" — searched in the History log |
+| `capability` | `capability_answer` | A question about the assistant itself |
+| `clarify_route` | `response_formatter` | SQL-vs-ML genuinely ambiguous; the user picks |
+| `greeting` | `response_formatter` | Short-circuit hello (regex, no LLM) |
 | `out_of_scope` | `response_formatter` | Not a data question |
 | `unsafe` | `response_formatter` | Blocked intent |
 
@@ -274,22 +279,28 @@ Only the pre-graph bootstrap in §3 runs concurrent work with `asyncio.gather()`
 
 | Node | Tool / library | Role |
 |------|----------------|------|
-| `sqlglot_validate` | **sqlglot** | Parse SQL, verify tables exist in `known_tables` |
+| `sqlglot_validate` | **sqlglot** | Parse SQL, single read-only statement, allowlists, verified filters preserved |
 | `dlp_check` | **DLP regex rules** | Block sensitive columns / dangerous patterns |
-| `execute_query` | **PostgresSqlRunner** | Read-only `SELECT`/`WITH` on user data source |
+| `execute_query` | **SqlRunner** (Postgres / Trino / Databricks) | Read-only `SELECT`/`WITH` on the user's data source |
 | `catalog_lookup` | **MetadataLoader** or **McpCatalogClient** | Schema + business context for prompts |
-| `save_to_memory` | **ConversationHistoryService** | Update row: SQL, latency, tokens, status, preview |
+| `filter_grounder` | **value probes** (metadata / MCP / bounded SQL) | Verify literal values before SQL is written |
+| `memory_answer_generator`, `prior_data_binder` | **PriorResultStore** + **SnapshotSqlEngine** | Recover a prior result's rows (cache → snapshot → re-run) and compute over them in the metadata Postgres, exposed as `insights_mem_*` CTEs over `jsonb_to_recordset` bind parameters (no tables created) |
+| `history_search` | **ConversationHistoryService.search_turns** | Keyword + time-window search of the History log |
+| `save_to_memory` | **ConversationHistoryService** | Update row: SQL, latency, tokens, status, preview, artifact, snapshot |
 
 ### LLM prompts (file → node)
 
 | Prompt file | Used by |
 |-------------|---------|
-| `memory_summarizer.md` | `memory_summarizer` |
 | `fused_router.md` | `fused_router` |
+| `capability_answer.md` | `capability_answer` |
 | `memory_answer.md` | `memory_answer_generator` |
+| `sql_filter_planner.md` | `filter_planner` |
+| `prior_data_binder.md` | `prior_data_binder` |
 | `jeen_insights_system.md` | `prompt_builder` (injected catalog) |
-| `sql_generator.md` | `sql_generator` |
-| `fused_eval_analytics.md` | `fused_eval_analytics` |
+| `sql_generator.md` | `sql_generator` (retry message) |
+| `analysis_planner.md` | `analysis_planner` |
+| `fused_eval_analytics.md` / `analysis_narration.md` | `fused_eval_analytics` (SQL results / ML results) |
 
 Prompts are loaded via `PromptLoader` / `PromptCache` (DB-backed with file fallback).
 

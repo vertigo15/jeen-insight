@@ -52,13 +52,19 @@ the deliberate `expose` (not `ports`) in `docker-compose.yml` and the
 ## The agent (the core value)
 
 The heart is a **LangGraph text-to-SQL state machine** built in
-`src/agent/langgraph_agent/graph.py`. `build_graph()` wires ~18 nodes into a
-`StateGraph`. The flow on every question:
+`src/agent/langgraph_agent/graph.py`. `build_graph()` wires 25 nodes into a
+`StateGraph` (full node/arc reference: [agent-state-flow.md](./agent-state-flow.md)).
+The flow on every question:
 
-1. **memory_shrink_check / memory_summarizer** — summarize conversation history if
-   over token budget.
-2. **fused_router** — classify intent: `needs_query`, `from_memory`,
-   `out_of_scope`, `unsafe`, `greeting`.
+1. **context_composer** — build the conversation-memory ledger from the last
+   `conversation_context_turns` turns (question, SQL, answer, result shape, data
+   availability; handles `T1…TN`). No LLM call; rows never enter a prompt.
+2. **fused_router** — classify intent: `needs_query`, `needs_analysis` (an ML
+   skill), `from_memory` (about a prior answer or its data → replay / compute
+   over the stored rows / answer from the ledger), `history_lookup` ("did I ask
+   about X last week?" → search of the History log), `capability` (a question
+   about the assistant itself), `out_of_scope`, `unsafe`, `greeting`; names the
+   prior turns a follow-up depends on (`prior_refs`).
 3. **catalog_lookup** — load per-connection curated metadata (deny-by-default if no
    catalog).
 4. **filter_planner / filter_grounder** — entity/value linking, metadata first.
@@ -99,22 +105,43 @@ The heart is a **LangGraph text-to-SQL state machine** built in
    `filter_grounding` block (tiers, probes, asked, verification mix, zero-row
    split) for dashboards. A zero-row result triggers one escalated pass that
    re-confirms metadata-only values against the source.
-5. **prompt_builder** — inject curated schema (with optional schema-linking/pruning
-   for large catalogs).
-6. **sql_generator** — LLM generates SQL (retries up to `max_retries`).
-7. **sqlglot_validate** — parse + table-name allowlist + schema-qualifier check.
-8. **dlp_check** — governance scan for sensitive columns.
-9. **execute_query** — run via a `SqlRunner` (SELECT-only enforced).
-10. **fused_eval_analytics** — summary, key findings, and 3–5 clickable follow-up
+5. **prior_data_binder** — only when the question builds on a prior result
+   ("the 4 most expensive products from the previous answer"): extract the values
+   from the stored rows and bind them as a verified `IN` filter.
+6. **prompt_builder** — inject curated schema (with optional schema-linking/pruning
+   for large catalogs) plus the runtime filter contract.
+7. **sql_generator** — LLM generates SQL (retries up to `max_retries`); prior turns
+   are replayed from the ledger as tool calls with their real results.
+8. **sqlglot_validate** — parse + table-name allowlist + schema-qualifier check +
+   verified filters preserved.
+9. **dlp_check** — governance scan for sensitive columns.
+10. **execute_query** — run via a `SqlRunner` (SELECT-only enforced).
+11. **fused_eval_analytics** — summary, key findings, and 3–5 clickable follow-up
     questions.
-11. **response_formatter → save_to_memory → observability_log**.
+12. **response_formatter → save_to_memory → observability_log**.
 
-There's a `feedback_classifier` node that creates repair loops (bounded by a
-recursion limit of 48). Each node is wrapped by `_timed()` to emit a live execution
-trace for the UI's trace panel.
+There's a `feedback_classifier` node that creates repair loops (bounded by the
+retry budgets; the recursion limit of 64 sits above the longest budget-legal path).
+Each node is wrapped by `_timed()` to emit a live execution trace for the UI's
+trace panel.
 
 Notable extras:
 
+- **Conversation memory** — the customer can ask about earlier answers *and their
+  data*. Prior rows are recovered by reference (`PriorResultStore`: result cache →
+  stored snapshot → re-run of the turn's SQL) and computed over in the metadata
+  Postgres as `insights_mem_*` CTEs over `jsonb_to_recordset` bind parameters
+  (`SnapshotSqlEngine`: no tables created, READ ONLY transaction, sqlglot-validated
+  SELECT restricted to those relations); the memory
+  node's table results are narrated like live results. `history_search` answers
+  "did I ask about…?" from the History log. See the memory section of
+  [agent-state-flow.md](./agent-state-flow.md).
+- **ML analysis skills** — a parallel analysis branch (`analysis_planner` →
+  `analysis_guard` → `analysis_sql` → `analysis_run`) that runs validated
+  statistical/ML models (anomaly detection, forecast, drivers, segments, A/B
+  tests, …) in a sandboxed service, with per-skill confirm cards and
+  algorithm-aware insights. See [ML analysis skills](ml-skills.md) for the full
+  catalog, the algorithms, and how to activate each.
 - A **standalone insights eval subgraph** (`build_insights_eval_graph`) called
   directly by `/api/generate-insights`.
 - A parallel **text-to-DAX agent** for Power BI (`src/agent/langgraph_agent_dax/`,

@@ -1,0 +1,934 @@
+<?xml version="1.0" ?>
+<mxfile host="app.diagrams.net" agent="jeen-insight-generator" version="22.1.0" type="device">
+  <diagram id="7c2e9b41-5d3a-4f08-9a6e-0b1c2d3e4f50" name="1 - Overview (grouped)">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1320" pageHeight="1620" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="o-title" value="&lt;b&gt;Jeen Insights — main LangGraph (overview)&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;25 nodes · 58 arcs · src/agent/langgraph_agent/graph.py&lt;br&gt;Purple = LLM · Green = DB / MCP · Gray = logic · Orange = validation · Blue = ML&lt;br&gt;Dashed gray = short-circuit to response_formatter · Red = repair loop · Blue = ML branch&lt;br&gt;Node and arc descriptions: see page 2.&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="30" y="10" width="290" height="90" as="geometry"/>
+        </mxCell>
+
+        <!-- ── Subgraph containers ──────────────────────────────────────── -->
+        <mxCell id="o-g1" value="Memory_Routing" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#fafafa;strokeColor=#9e9e9e;fontColor=#555555;verticalAlign=top;align=left;spacingLeft=8;spacingTop=2;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="330" y="80" width="740" height="260" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-g2" value="Catalog_Filters" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#fafafa;strokeColor=#9e9e9e;fontColor=#555555;verticalAlign=top;align=left;spacingLeft=8;spacingTop=2;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="330" y="380" width="530" height="230" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-g3" value="SQL_Exec" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#fafafa;strokeColor=#9e9e9e;fontColor=#555555;verticalAlign=top;align=left;spacingLeft=8;spacingTop=2;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="330" y="650" width="530" height="580" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-g4" value="ML_branch" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#f3f7fc;strokeColor=#6c8ebf;fontColor=#3b6ea5;verticalAlign=top;align=left;spacingLeft=8;spacingTop=2;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="930" y="650" width="280" height="380" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-g5" value="Tail" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#fafafa;strokeColor=#9e9e9e;fontColor=#555555;verticalAlign=top;align=left;spacingLeft=8;spacingTop=2;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="520" y="1280" width="360" height="230" as="geometry"/>
+        </mxCell>
+
+        <!-- ── Terminals ────────────────────────────────────────────────── -->
+        <mxCell id="o-s" value="START" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1e293b;strokeColor=#0f172a;fontColor=#ffffff;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="660" y="10" width="80" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-e" value="END" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1e293b;strokeColor=#0f172a;fontColor=#ffffff;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="660" y="1540" width="80" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ── Memory_Routing ───────────────────────────────────────────── -->
+        <mxCell id="o-cc" value="context_composer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="110" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-hs" value="history_search" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="370" y="180" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-fr" value="fused_router" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="200" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-mag" value="memory_answer_generator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="370" y="280" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-cap" value="capability_answer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="850" y="280" width="180" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ── Catalog_Filters ──────────────────────────────────────────── -->
+        <mxCell id="o-cl" value="catalog_lookup" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="410" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-fp" value="filter_planner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="480" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-fg" value="filter_grounder" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="550" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-pdb" value="prior_data_binder" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="370" y="550" width="180" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ── SQL_Exec ─────────────────────────────────────────────────── -->
+        <mxCell id="o-pb" value="prompt_builder" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="680" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-sg" value="sql_generator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="750" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-sv" value="sqlglot_validate" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="820" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-dc" value="dlp_check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="890" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-eq" value="execute_query" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="960" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-efc" value="empty_filter_result_check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="1030" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-trc" value="trivial_result_check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="1100" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-fea" value="fused_eval_analytics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="1170" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-fc" value="feedback_classifier" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#b85450;strokeWidth=1.5;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="360" y="900" width="180" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ── ML_branch ────────────────────────────────────────────────── -->
+        <mxCell id="o-ap" value="analysis_planner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="980" y="680" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-ag" value="analysis_guard" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="980" y="750" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-asq" value="analysis_sql" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="980" y="820" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-ar" value="analysis_run" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="980" y="960" width="180" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ── Tail ─────────────────────────────────────────────────────── -->
+        <mxCell id="o-rf" value="response_formatter" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1310" width="280" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-stm" value="save_to_memory" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="1390" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-ol" value="observability_log" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="1460" width="180" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ── Arcs ─────────────────────────────────────────────────────── -->
+        <mxCell id="o01" value="default" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-s" target="o-cc">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o02" value="resume/confirmed analysis" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;dashed=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.2;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-s" target="o-cl">
+          <mxGeometry x="-0.66" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1100" y="30"/>
+              <mxPoint x="1100" y="418"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o03" value="ledger" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-cc" target="o-fr">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o04" value="history_lookup" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=0;exitY=0.25;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fr" target="o-hs">
+          <mxGeometry y="-9" relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o05" value="matches" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-hs" target="o-rf">
+          <mxGeometry x="-0.9" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="300" y="200"/>
+              <mxPoint x="300" y="1322"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o55" value="computed table" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-mag" target="o-trc">
+          <mxGeometry x="0.8" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="460" y="330"/>
+              <mxPoint x="340" y="330"/>
+              <mxPoint x="340" y="1120"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o56" value="uses prior result" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fg" target="o-pdb">
+          <mxGeometry y="9" relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o57" value="bound values" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-pdb" target="o-pb">
+          <mxGeometry x="0.3" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="460" y="700"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o58" value="too many values" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-pdb" target="o-rf">
+          <mxGeometry x="-0.85" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="300" y="570"/>
+              <mxPoint x="300" y="1330"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o06" value="from_memory" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fr" target="o-mag">
+          <mxGeometry x="-0.25" y="9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="460" y="230"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o07" value="capability" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fr" target="o-cap">
+          <mxGeometry x="-0.318" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="940" y="210"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o08" value="greeting / out_of_scope / unsafe / clarify_route" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;align=left;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.35;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fr" target="o-rf">
+          <mxGeometry x="-0.984" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="230"/>
+              <mxPoint x="900" y="1324"/>
+            </Array>
+            <mxPoint x="105" y="-9" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o09" value="needs_query / needs_analysis" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-fr" target="o-cl">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o10" value="escape hatch: needs_query" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-mag" target="o-cl">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="580" y="300"/>
+              <mxPoint x="580" y="422"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o11" value="answer / replay" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-mag" target="o-rf">
+          <mxGeometry x="0.8" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="300" y="300"/>
+              <mxPoint x="300" y="1322"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o12" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.65;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-cap" target="o-rf">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1240" y="300"/>
+              <mxPoint x="1240" y="1336"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o13" value="ok" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-cl" target="o-fp">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o14" value="no clarification" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-fp" target="o-fg">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o15" value="catalog_blocked" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.35;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-cl" target="o-rf">
+          <mxGeometry x="-0.897" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="430"/>
+              <mxPoint x="900" y="1324"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o16" value="resume &amp; on branch" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;dashed=1;exitX=1;exitY=0.8;exitDx=0;exitDy=0;entryX=1;entryY=0.3;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-cl" target="o-ag">
+          <mxGeometry x="-0.469" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1220" y="442"/>
+              <mxPoint x="1220" y="762"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o17" value="clarification" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.35;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fp" target="o-rf">
+          <mxGeometry x="-0.889" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="500"/>
+              <mxPoint x="900" y="1324"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o18" value="clarification" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=1;entryY=0.35;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fg" target="o-rf">
+          <mxGeometry x="-0.882" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="560"/>
+              <mxPoint x="900" y="1324"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o19" value="needs_analysis" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fg" target="o-ap">
+          <mxGeometry x="-0.263" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1070" y="580"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o20" value="needs_query" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-fg" target="o-pb">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o21" value="params" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;" edge="1" parent="1" source="o-ap" target="o-ag">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o22" value="guards pass &amp; confirmed" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;" edge="1" parent="1" source="o-ag" target="o-asq">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o23" value="clarify" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;dashed=1;align=left;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.65;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-ap" target="o-rf">
+          <mxGeometry x="-0.857" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1240" y="700"/>
+              <mxPoint x="1240" y="1336"/>
+            </Array>
+            <mxPoint x="8" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o24" value="fallback → SQL" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-ap" target="o-pb">
+          <mxGeometry y="-9" relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o25" value="guard fail / confirm card / error" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;dashed=1;align=left;exitX=1;exitY=0.7;exitDx=0;exitDy=0;entryX=1;entryY=0.65;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-ag" target="o-rf">
+          <mxGeometry x="-0.846" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1240" y="778"/>
+              <mxPoint x="1240" y="1336"/>
+            </Array>
+            <mxPoint x="8" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o26" value="error" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;dashed=1;align=left;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.65;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-asq" target="o-rf">
+          <mxGeometry x="-0.836" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1240" y="840"/>
+              <mxPoint x="1240" y="1336"/>
+            </Array>
+            <mxPoint x="8" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o27" value="sql" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-asq" target="o-sv">
+          <mxGeometry y="9" relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o28" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-pb" target="o-sg">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o29" value="sql" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-sg" target="o-sv">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o30" value="valid" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-sv" target="o-dc">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o31" value="safe" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-dc" target="o-eq">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o32" value="rows, SQL path" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-eq" target="o-efc">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o33" value="no reground" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-efc" target="o-trc">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o34" value="non-trivial &amp; eval on" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-trc" target="o-fea">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o35" value="clarification" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.35;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-sg" target="o-rf">
+          <mxGeometry x="-0.848" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="770"/>
+              <mxPoint x="900" y="1324"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o36" value="error, SQL path" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-sv" target="o-fc">
+          <mxGeometry x="-0.273" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="450" y="840"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o37" value="error, ML path" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=1;entryY=0.35;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-sv" target="o-rf">
+          <mxGeometry x="-0.834" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="830"/>
+              <mxPoint x="900" y="1324"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o38" value="blocked" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.35;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-dc" target="o-rf">
+          <mxGeometry x="-0.812" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="910"/>
+              <mxPoint x="900" y="1324"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o39" value="error, SQL path" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-eq" target="o-fc">
+          <mxGeometry x="-0.2" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="450" y="980"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o40" value="error, ML path" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=1;entryY=0.35;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-eq" target="o-rf">
+          <mxGeometry x="-0.79" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="970"/>
+              <mxPoint x="900" y="1324"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o41" value="rows, ML path" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-eq" target="o-ar">
+          <mxGeometry x="0.45" y="10" relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o42" value="ok" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-ar" target="o-trc">
+          <mxGeometry x="0.317" y="9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1070" y="1130"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o43" value="guard fail / error" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;dashed=1;align=left;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.65;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-ar" target="o-rf">
+          <mxGeometry x="-0.809" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1240" y="980"/>
+              <mxPoint x="1240" y="1336"/>
+            </Array>
+            <mxPoint x="8" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o44" value="reground" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.33;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-efc" target="o-fc">
+          <mxGeometry x="-0.367" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="420" y="1050"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o45" value="trivial or eval off" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=1;entryY=0.35;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-trc" target="o-rf">
+          <mxGeometry x="-0.714" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="1110"/>
+              <mxPoint x="900" y="1324"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o46" value="answers intent or ML path" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-fea" target="o-rf">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o47" value="wrong" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.17;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fea" target="o-fc">
+          <mxGeometry x="-0.532" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="390" y="1190"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o48" value="syntax / exec / semantic" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0.25;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fc" target="o-sg">
+          <mxGeometry x="0.403" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="405" y="770"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o49" value="missing_table" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0;exitY=0.3;exitDx=0;exitDy=0;entryX=0;entryY=0.7;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fc" target="o-cl">
+          <mxGeometry x="0.639" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="320" y="912"/>
+              <mxPoint x="320" y="438"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o50" value="resolve_filters" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=1;exitY=0.2;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fc" target="o-fg">
+          <mxGeometry x="0.4" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="580" y="908"/>
+              <mxPoint x="580" y="560"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o51" value="exhausted" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0;exitY=0.7;exitDx=0;exitDy=0;entryX=0;entryY=0.7;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fc" target="o-rf">
+          <mxGeometry x="0.8" y="9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="300" y="928"/>
+              <mxPoint x="300" y="1338"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o52" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-rf" target="o-stm">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o53" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-stm" target="o-ol">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o54" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-ol" target="o-e">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="1a3f0d2c-9b7e-4c61-8d55-2f4e6a7b8c90" name="2 - Nodes and arcs (detailed)">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1620" pageHeight="1780" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- ── Title, legend, notes ─────────────────────────────────────── -->
+        <mxCell id="t-title" value="&lt;b&gt;&lt;font style=&quot;font-size:14px&quot;&gt;Jeen Insights — main LangGraph&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px&quot;&gt;src/agent/langgraph_agent/graph.py · build_graph() · 25 nodes · 58 arcs · 20 conditional routers&lt;br&gt;Box = node name + what it does. Arc label = the routing condition (first match wins). Recursion limit 48, no checkpointer.&lt;br&gt;Memory: context_composer builds the turn ledger (question · SQL · answer · result shape · data availability); prior rows are recovered by reference (cache → snapshot → re-run) and computed over in the metadata Postgres as jsonb_to_recordset CTEs (no tables created), never pasted into prompts.&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="500" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="t-legend" value="&lt;b&gt;Legend&lt;/b&gt;&lt;br&gt;Purple = LLM node (router = small model, primary = large) · Green = DB / MCP · Gray = logic · Orange = validation / governance tools · Blue = ML runner&lt;br&gt;Black arc = main path · Dashed gray = short-circuit to response_formatter · Red = repair / feedback loop · Blue = ML skills branch · Blue dashed = re-entry from /api/analysis/run" style="text;html=1;strokeColor=#bbbbbb;fillColor=#fafafa;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=9;spacing=6;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="20" width="420" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="t-notes" value="&lt;b&gt;Bounded cycles&lt;/b&gt;&lt;br&gt;• SQL repair: sql_generator → … → feedback_classifier → sql_generator; ends when retry_count &amp;gt; LANGGRAPH_MAX_RETRIES (3) → exhausted&lt;br&gt;• Catalog refresh: missing_table → catalog_lookup → filter_planner → filter_grounder → prompt_builder → sql_generator (same retry budget)&lt;br&gt;• Filter reground: 0 rows + (unverified literal or metadata-only resolution) → filter_grounder once, escalated: cache bypassed, metadata values re-confirmed on the source (empty_filter_diagnostics &amp;lt; 1; retry_count untouched)&lt;br&gt;The ML branch and the memory branch have no cycle: on_analysis_branch() / on_memory_branch() divert every failure straight to response_formatter (a memory table has no system prompt to retry with).&lt;br&gt;Every node is wrapped by _timed → progress events + one entry in the trace reducer (operator.add)." style="text;html=1;strokeColor=#bbbbbb;fillColor=#fafafa;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=9;spacing=6;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1490" width="360" height="190" as="geometry"/>
+        </mxCell>
+
+        <!-- ── ML branch container (behind the nodes) ───────────────────── -->
+        <mxCell id="g-ml" value="ML skills branch — only when ml_skills_enabled. Deterministic SQL, no LLM repair loop; every failure goes straight to response_formatter." style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#f3f7fc;strokeColor=#6c8ebf;fontColor=#3b6ea5;verticalAlign=top;align=left;spacingLeft=8;spacingTop=2;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="430" width="280" height="650" as="geometry"/>
+        </mxCell>
+
+        <!-- ── Terminals ────────────────────────────────────────────────── -->
+        <mxCell id="n-start" value="START" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1e293b;strokeColor=#0f172a;fontColor=#ffffff;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="640" y="20" width="80" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-end" value="END" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1e293b;strokeColor=#0f172a;fontColor=#ffffff;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="640" y="1680" width="80" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ── Spine (centre column) ────────────────────────────────────── -->
+        <mxCell id="n-cc" value="&lt;b&gt;context_composer&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · build the turn ledger (T1…TN: question, SQL, answer, result shape, data status) from the last conversation_context_turns turns → memory_ledger, memory_telemetry&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="100" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-fr" value="&lt;b&gt;fused_router&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;LLM (router) · greeting regex short-circuit; else one call over the ledger → route + prior_refs (T3) + history_query; ML gate, keyword-cue upgrade, low-confidence clarify_route&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="200" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-cl" value="&lt;b&gt;catalog_lookup&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;DB / MCP · consume the pre-graph bundle once, else load (MCP → metadata-DB fallback); build known_tables / table_columns allowlists; fail closed&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="300" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-fp" value="&lt;b&gt;filter_planner&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;LLM (router) ∥ reverse lookup of the question's words over captured values (metadata DB / MCP); runs on a predicate cue or a strong hit; hits shrink the catalog and become candidate_columns; binds ≤ 4 filters → filter_plan&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="400" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-fg" value="&lt;b&gt;filter_grounder&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;normalise date/number operands; decide the column (planner ∩ eligible reachable hits; role word / remembered choice → resolve; single other column → retarget + disclose; competing roles → structured ask); ground the value: T0 cache → T1 metadata (complete+fresh → fuzzy fix) → T2 point probe → T3 DISTINCT (server-side timeout only) → T4 LIKE (candidates only) → resolved / unverified / ask&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="500" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-pb" value="&lt;b&gt;prompt_builder&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · render jeen_insights_system on the schema-linked bundle + runtime filter contract → system_prompt, structured_prompt&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="600" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-sg" value="&lt;b&gt;sql_generator&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;LLM (primary) · tool-calling run_sql generation; error_context injected on retries → generated_sql or clarification&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="700" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-sv" value="&lt;b&gt;sqlglot_validate&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;tool · parse; single read-only statement; schema qualifier; table/column allowlist; resolved filters kept → sqlglot_error&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="800" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-dc" value="&lt;b&gt;dlp_check&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;tool · column-aware governed-pattern check (expands *), raw-text fallback → dlp_blocked, governance_error&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="900" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-eq" value="&lt;b&gt;execute_query&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;DB · read-only SqlRunner with limit / max_result_rows / statement_timeout → query_result, exec_error&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1000" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-efc" value="&lt;b&gt;empty_filter_result_check&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · 0 rows + unresolved text filter + no earlier pass → needs_filter_reground&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1100" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-trc" value="&lt;b&gt;trivial_result_check&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · ≤ 1 row and ≤ 5 columns → is_trivial (skip the eval call)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1200" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-fea" value="&lt;b&gt;fused_eval_analytics&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;LLM (primary) · SQL: stats + 12-row sample → answers_intent, summary, insights, follow-ups · ML: analysis_narration, never rejects&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1300" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-rf" value="&lt;b&gt;response_formatter&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · pick the answer by terminal state (proposal › analysis_error › analysis › clarification › dlp › route › eval › trivial › error) and build the API contract: sql, results, answer, metrics, routing, status, findings&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="420" y="1400" width="520" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-stm" value="&lt;b&gt;save_to_memory&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;DB · persist SQL, execution status, preview, result artifact and turn artifact (best effort, never fails the answer)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1490" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-ol" value="&lt;b&gt;observability_log&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · emit one QUERY_EVENT structured log (route, retries, tokens, latency, slim node trace)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1580" width="240" height="64" as="geometry"/>
+        </mxCell>
+
+        <!-- ── Left column: memory / routing side nodes + feedback ──────── -->
+        <mxCell id="n-hs" value="&lt;b&gt;history_search&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;DB · &quot;did I ask about X last week?&quot; — search the user's turns on this connection by keyword + time window; deterministic answer, no LLM → answer, history_matches&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="40" y="150" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-cap" value="&lt;b&gt;capability_answer&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;LLM (primary) · explain the assistant and the skill catalog (SKILLS registry); static fallback on failure&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="40" y="250" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-mag" value="&lt;b&gt;memory_answer_generator&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;LLM (router) · one call over ledger + schema/sample of the referenced turns → replay | compute (Postgres SELECT over stored rows as jsonb CTEs) | answer | needs_query; rows recovered cache → snapshot → re-run, on demand&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="40" y="350" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-pdb" value="&lt;b&gt;prior_data_binder&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;LLM (router) · extract the values a new query needs from a prior result (SELECT over its stored rows) and bind them to a live catalog column as a resolved IN filter → filter_plan, prior_bindings&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="40" y="500" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-fc" value="&lt;b&gt;feedback_classifier&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · classify the failure → resolve_filters | missing_table | syntax | exec | semantic | exhausted (retry_count &amp;gt; LANGGRAPH_MAX_RETRIES = 3)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#b85450;strokeWidth=1.5;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="40" y="800" width="240" height="64" as="geometry"/>
+        </mxCell>
+
+        <!-- ── Right column: ML skills branch ───────────────────────────── -->
+        <mxCell id="n-ap" value="&lt;b&gt;analysis_planner&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;LLM (router) · bind the question to a registered skill; fill params from catalog + grounded filters; clarify or fall back to SQL&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="500" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-ag" value="&lt;b&gt;analysis_guard&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;DB · canonicalise identifiers; catalog type guards; 1-row span probe; window fill; history guards; confirm card; hourly limiter&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="600" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-asq" value="&lt;b&gt;analysis_sql&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · deterministic sqlglot aggregate SQL per skill family; limit = row cap + 1; retry_count = 0&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="700" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-ar" value="&lt;b&gt;analysis_run&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;ML · send aggregate rows (filter values redacted) to AnalysisRunner; row-cap check; audit → analysis_result, headline&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="1000" width="240" height="64" as="geometry"/>
+        </mxCell>
+
+        <!-- ── Arcs: entry and memory ───────────────────────────────────── -->
+        <mxCell id="e01" value="default" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-start" target="n-cc">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e02" value="analysis_resume | analysis_confirmed — re-entry from /api/analysis/run (skips memory, router, filters, planner)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;dashed=1;align=left;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.25;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-start" target="n-cl">
+          <mxGeometry x="0.1" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="840" y="40"/>
+              <mxPoint x="840" y="316"/>
+            </Array>
+            <mxPoint x="8" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e03" value="always — ledger built, no LLM call" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-cc" target="n-fr">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e04" value="route == history_lookup (history_query set)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=0;exitY=0.2;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fr" target="n-hs">
+          <mxGeometry x="-0.4" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="480" y="213"/>
+              <mxPoint x="480" y="182"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e05" value="always — matching turns listed" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-hs" target="n-rf">
+          <mxGeometry x="-0.92" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="24" y="182"/>
+              <mxPoint x="24" y="1432"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e55" value="memory_action == compute — table computed from stored rows gets narrated like a live result" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;align=left;exitX=1;exitY=0.9;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-mag" target="n-trc">
+          <mxGeometry x="0.82" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="540" y="408"/>
+              <mxPoint x="540" y="1232"/>
+            </Array>
+            <mxPoint x="-330" y="-10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e56" value="prior_refs set — bind values from the referenced result first" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fg" target="n-pdb">
+          <mxGeometry y="-8" relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e57" value="bound (or nothing to bind) → resolved IN filter in filter_plan" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-pdb" target="n-pb">
+          <mxGeometry x="0.35" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="160" y="632"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e58" value="filter_clarification_required — more than MEMORY_MAX_BOUND_VALUES values, ask to narrow" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-pdb" target="n-rf">
+          <mxGeometry x="-0.85" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="24" y="532"/>
+              <mxPoint x="24" y="1432"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ── Arcs: fused_router ───────────────────────────────────────── -->
+        <mxCell id="e06" value="route == capability" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fr" target="n-cap">
+          <mxGeometry x="-0.5" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="160" y="232"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e07" value="route == from_memory" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=0;exitY=0.8;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fr" target="n-mag">
+          <mxGeometry x="-0.7" y="8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="400" y="251"/>
+              <mxPoint x="400" y="382"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e08" value="greeting | out_of_scope | unsafe | clarify_route — answer already set, no data access" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;align=left;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.923;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fr" target="n-rf">
+          <mxGeometry x="-0.97" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="232"/>
+            </Array>
+            <mxPoint x="110" y="-10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e09" value="needs_query | needs_analysis (default)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-fr" target="n-cl">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e10" value="always" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.192;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-cap" target="n-rf">
+          <mxGeometry x="-0.95" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="520" y="282"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e11" value="needs_query — escape hatch / rows evicted" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-mag" target="n-cl">
+          <mxGeometry x="-0.3" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="480" y="366"/>
+              <mxPoint x="480" y="348"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e12" value="answer ready | replayed result" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0.192;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-mag" target="n-rf">
+          <mxGeometry x="-0.85" y="8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="520" y="398"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ── Arcs: catalog and filters ────────────────────────────────── -->
+        <mxCell id="e13" value="catalog_blocked — no usable catalog, fail closed" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;align=left;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.923;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-cl" target="n-rf">
+          <mxGeometry x="-0.97" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="332"/>
+            </Array>
+            <mxPoint x="110" y="-10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e14" value="(resume | confirmed) &amp; on_analysis_branch — params already validated, enter at the guard" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;dashed=1;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.25;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-cl" target="n-ag">
+          <mxGeometry x="-0.3" y="10" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1390" y="348"/>
+              <mxPoint x="1390" y="616"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e15" value="catalog ok" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-cl" target="n-fp">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e16" value="filter_clarification_required — filter names an unknown column" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;align=left;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.923;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fp" target="n-rf">
+          <mxGeometry x="-0.97" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="432"/>
+            </Array>
+            <mxPoint x="110" y="-10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e17" value="filter_plan (possibly empty)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-fp" target="n-fg">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e18" value="filter_clarification_required" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;align=left;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0.923;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fg" target="n-rf">
+          <mxGeometry x="-0.97" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="516"/>
+            </Array>
+            <mxPoint x="110" y="-10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e19" value="route == needs_analysis" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;exitX=1;exitY=0.6;exitDx=0;exitDy=0;entryX=0;entryY=0.6;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fg" target="n-ap">
+          <mxGeometry x="0.2" y="10" relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e20" value="route == needs_query" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-fg" target="n-pb">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e21" value="always" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-pb" target="n-sg">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ── Arcs: ML branch ──────────────────────────────────────────── -->
+        <mxCell id="e22" value="analysis_clarification → proposal card (clarify)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;dashed=1;align=left;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-ap" target="n-rf">
+          <mxGeometry x="-0.878" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1420" y="532"/>
+            </Array>
+            <mxPoint x="8" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e23" value="no skill fits → needs_query (planner_fallback)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;exitX=0;exitY=0.85;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-ap" target="n-pb">
+          <mxGeometry x="0.4" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1000" y="554"/>
+              <mxPoint x="1000" y="632"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e24" value="skill + params bound" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;" edge="1" parent="1" source="n-ap" target="n-ag">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e25" value="guard failure | confirm card | analysis_error" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;dashed=1;align=left;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-ag" target="n-rf">
+          <mxGeometry x="-0.867" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1420" y="648"/>
+            </Array>
+            <mxPoint x="8" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e26" value="guards pass &amp; confirmed / remembered" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;" edge="1" parent="1" source="n-ag" target="n-asq">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e27" value="analysis_error (unsupported filter / builder)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;dashed=1;align=left;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-asq" target="n-rf">
+          <mxGeometry x="-0.858" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1420" y="732"/>
+            </Array>
+            <mxPoint x="8" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e28" value="generated_sql — shared validate / DLP / execute nodes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.7;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-asq" target="n-sv">
+          <mxGeometry x="0.4" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1240" y="845"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ── Arcs: SQL generation, validation, execution ──────────────── -->
+        <mxCell id="e29" value="generated_sql" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-sg" target="n-sv">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e30" value="clarification | empty reply" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;align=left;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.923;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-sg" target="n-rf">
+          <mxGeometry x="-0.97" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="732"/>
+            </Array>
+            <mxPoint x="110" y="-10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e31" value="valid" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-sv" target="n-dc">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e32" value="sqlglot_error (SQL path) → syntax | missing_table" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-sv" target="n-fc">
+          <mxGeometry y="-8" relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e33" value="sqlglot_error on ML path — not repaired" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;align=left;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0.923;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-sv" target="n-rf">
+          <mxGeometry x="-0.97" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="816"/>
+            </Array>
+            <mxPoint x="110" y="-10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e34" value="safe" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-dc" target="n-eq">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e35" value="dlp_blocked — governed column; terminal, never reaches the data source" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;align=left;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.923;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-dc" target="n-rf">
+          <mxGeometry x="-0.97" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="932"/>
+            </Array>
+            <mxPoint x="110" y="-10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e36" value="rows (SQL path)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-eq" target="n-efc">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e37" value="exec_error (SQL path) → exec" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.67;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-eq" target="n-fc">
+          <mxGeometry x="-0.6" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="200" y="1032"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e38" value="rows &amp; on_analysis_branch" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;exitX=1;exitY=0.6;exitDx=0;exitDy=0;entryX=0;entryY=0.6;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-eq" target="n-ar">
+          <mxGeometry x="0.2" y="10" relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e39" value="exec_error on ML path" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;align=left;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0.923;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-eq" target="n-rf">
+          <mxGeometry x="-0.97" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="1016"/>
+            </Array>
+            <mxPoint x="110" y="-10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e40" value="needs_filter_reground → resolve_filters (once)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.42;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-efc" target="n-fc">
+          <mxGeometry x="-0.5" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="140" y="1132"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e41" value="no reground" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-efc" target="n-trc">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e42" value="analysis_result — envelope becomes query_result + headline" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.3;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-ar" target="n-trc">
+          <mxGeometry x="0.4" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1240" y="1219"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e43" value="post-SQL guard failure | analysis_error | row cap" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;dashed=1;align=left;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-ar" target="n-rf">
+          <mxGeometry x="-0.813" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1420" y="1032"/>
+            </Array>
+            <mxPoint x="8" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e44" value="is_trivial | eval disabled (eval_analytics_override ?? EVAL_ANALYTICS_ENABLED)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;align=left;exitX=1;exitY=0.7;exitDx=0;exitDy=0;entryX=0.923;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-trc" target="n-rf">
+          <mxGeometry x="-0.97" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="1245"/>
+            </Array>
+            <mxPoint x="110" y="-10" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e45" value="non-trivial &amp; eval on" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-trc" target="n-fea">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e46" value="answers_intent ≠ false | ML path (narration never rejects an engine result)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-fea" target="n-rf">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e47" value="answers_intent == false → semantic" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.25;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fea" target="n-fc">
+          <mxGeometry x="-0.7" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="100" y="1332"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ── Arcs: feedback_classifier outputs ────────────────────────── -->
+        <mxCell id="e48" value="syntax | exec | semantic → regenerate (retry_count += 1)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fc" target="n-sg">
+          <mxGeometry x="0.3" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="160" y="732"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e49" value="resolve_filters → one more grounding pass" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=1;exitY=0.2;exitDx=0;exitDy=0;entryX=0;entryY=0.7;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fc" target="n-fg">
+          <mxGeometry x="0.45" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="400" y="813"/>
+              <mxPoint x="400" y="545"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e50" value="missing_table → reload catalog, re-plan" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.33;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fc" target="n-cl">
+          <mxGeometry x="0.7" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="10" y="832"/>
+              <mxPoint x="10" y="321"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e51" value="exhausted (retry_count &amp;gt; max_retries)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0.1;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fc" target="n-rf">
+          <mxGeometry x="0.6" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="64" y="1432"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ── Arcs: tail ───────────────────────────────────────────────── -->
+        <mxCell id="e52" value="always" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-rf" target="n-stm">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e53" value="always" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-stm" target="n-ol">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e54" value="always" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-ol" target="n-end">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

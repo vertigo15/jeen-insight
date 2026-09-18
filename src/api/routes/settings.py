@@ -84,22 +84,22 @@ PROMPT_REGISTRY: List[Dict[str, Any]] = [
         "label": "Memory Answer",
         "group": "AI Agent",
         "description": (
-            "Answers the user directly from conversation history when no "
-            "live database query is needed (e.g. follow-ups about previous results). "
-            "If a new query is required it signals the graph to fall through to SQL."
+            "Handles follow-ups about a prior turn's answer or data: replays the "
+            "stored table, writes a small SQL over the stored rows (max, sort, "
+            "what-if), answers from the ledger, or signals that a live query is needed."
         ),
         "path": _PROMPTS_DIR / "memory_answer.md",
     },
     {
-        "name": "memory_summarizer",
-        "label": "Memory Summary",
+        "name": "prior_data_binder",
+        "label": "Prior Data Binder",
         "group": "AI Agent",
         "description": (
-            "Condenses the conversation history into a short paragraph when the "
-            "token budget is exceeded. The summary is re-injected into the router "
-            "prompt as {conversation_summary}."
+            "When a new question builds on a prior result (\"the top 4 products from "
+            "the previous answer\"), extracts the needed values from the stored rows "
+            "and binds them as a verified filter for the SQL generator."
         ),
-        "path": _PROMPTS_DIR / "memory_summarizer.md",
+        "path": _PROMPTS_DIR / "prior_data_binder.md",
     },
     {
         "name": "sql_generator",
@@ -1180,6 +1180,8 @@ def _try_reload_prompt_loader() -> bool:
 
 def _mask_url(url: str) -> str:
     """Mask the subdomain of an Azure endpoint for display."""
+    if not (url or "").strip():
+        return "—"
     try:
         from urllib.parse import urlparse
         parsed = urlparse(url)

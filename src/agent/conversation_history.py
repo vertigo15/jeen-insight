@@ -494,6 +494,18 @@ class ConversationHistoryService:
         Joins the conversation row so context can never mix connections or
         continue a conversation that has been deleted. Before migration 022 the
         same scoping is applied on the turn rows themselves.
+
+        In-flight turns (``execution_status = 'pending'``) are excluded: the
+        agents fetch this context concurrently with inserting the current
+        turn's pending row, so without the filter the question being answered
+        could nondeterministically appear as its own "prior turn" and take one
+        of the window's slots. ``IS DISTINCT FROM`` keeps legacy rows whose
+        status is NULL.
+
+        With the conversation schema each row also carries the turn's stored
+        ``answer`` (plain text), ``result_kind`` and ``snapshot_status`` from
+        ``insights_turn_artifacts``, so the memory ledger can present question,
+        answer and data availability without a second query.
         """
         try:
             async with self.pool.acquire() as conn:
@@ -503,13 +515,16 @@ class ConversationHistoryService:
                         SELECT cs.id, cs.parent_query_id, cs.sequence_number,
                                cs.natural_language_query, cs.generated_sql,
                                cs.execution_status, cs.row_count, cs.result_preview,
-                               cs.result_artifact, cs.created_at
+                               cs.result_artifact, cs.created_at,
+                               a.answer AS turn_answer, a.result_kind, a.snapshot_status
                         FROM insights_conversation_sessions cs
                         JOIN insights_conversations c ON c.id = cs.session_id
+                        LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id
                         WHERE cs.session_id = $1
                           AND cs.user_id = $2
                           AND c.user_id = $2
                           AND ($4::text IS NULL OR c.source_key = $4)
+                          AND cs.execution_status IS DISTINCT FROM 'pending'
                         ORDER BY cs.sequence_number DESC
                         LIMIT $3
                         """,
@@ -518,6 +533,12 @@ class ConversationHistoryService:
                         limit,
                         source_key,
                     )
+                    out = []
+                    for r in rows:
+                        d = dict(r)
+                        d["answer"] = insight_text(_jsonb(d.pop("turn_answer", None)))
+                        out.append(d)
+                    return out
                 else:
                     rows = await conn.fetch(
                         """
@@ -529,6 +550,7 @@ class ConversationHistoryService:
                         WHERE session_id = $1
                           AND user_id = $2
                           AND ($4::text IS NULL OR source_key = $4)
+                          AND execution_status IS DISTINCT FROM 'pending'
                         ORDER BY sequence_number DESC
                         LIMIT $3
                         """,
@@ -540,6 +562,77 @@ class ConversationHistoryService:
                 return [dict(r) for r in rows]
         except Exception:
             logger.exception("Failed to get conversation context")
+            return []
+
+    async def search_turns(
+        self,
+        *,
+        user_id: str,
+        source_key: Optional[str],
+        keywords: List[str],
+        since: datetime,
+        until: datetime,
+        limit: int = 10,
+        exclude_query_id: Optional[UUID | str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Entries of the application history log whose question mentions any of
+        *keywords* in ``[since, until)``, newest first.
+
+        Backs the ``history_lookup`` route ("did I ask about revenue last
+        week?"). Reads exactly what :meth:`get_history_log` shows — every query
+        of this user on this connection in ``insights_conversation_sessions`` —
+        so the answer matches the History log drawer. Case-insensitive
+        substring match; with no keywords the time window alone applies. The
+        turn being answered right now is excluded so a question can never match
+        itself. Never raises.
+
+        Indexes: ``idx_insights_turns_user_source_recent`` (022) serves the
+        user/source/window scan and the ordering; ``idx_insights_turns_question_trgm``
+        (026, when ``pg_trgm`` is available) serves the ``ILIKE``.
+        """
+        words = [w.strip() for w in (keywords or []) if w and w.strip()]
+        args: List[Any] = [user_id, source_key, since, until]
+        clauses: List[str] = []
+        predicates: List[str] = []
+        for word in words:
+            args.append(f"%{word}%")
+            predicates.append(f"cs.natural_language_query ILIKE ${len(args)}")
+        if predicates:
+            clauses.append(f"AND ({' OR '.join(predicates)})")
+        if exclude_query_id:
+            args.append(str(exclude_query_id))
+            clauses.append(f"AND cs.id::text <> ${len(args)}")
+        args.append(max(1, int(limit)))
+        limit_param = f"${len(args)}"
+        extra = "\n                          ".join(clauses)
+        # The stored answer lives in insights_turn_artifacts (migration 022+).
+        answer_select = "a.answer AS turn_answer" if self.conversation_schema_ready else "NULL AS turn_answer"
+        answer_join = "LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id" if self.conversation_schema_ready else ""
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT cs.id, cs.session_id, cs.natural_language_query, cs.generated_sql,
+                           cs.execution_status, cs.row_count, cs.created_at, {answer_select}
+                    FROM insights_conversation_sessions cs
+                    {answer_join}
+                    WHERE cs.user_id = $1
+                      AND ($2::text IS NULL OR cs.source_key = $2)
+                      AND cs.created_at >= $3 AND cs.created_at < $4
+                      {extra}
+                    ORDER BY cs.created_at DESC
+                    LIMIT {limit_param}
+                    """,
+                    *args,
+                )
+            out: List[Dict[str, Any]] = []
+            for r in rows:
+                d = dict(r)
+                d["answer"] = insight_text(_jsonb(d.pop("turn_answer", None)))
+                out.append(d)
+            return out
+        except Exception:
+            logger.exception("Failed to search the history log")
             return []
 
     async def get_conversation_history(

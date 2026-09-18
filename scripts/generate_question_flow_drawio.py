@@ -3,10 +3,10 @@
 
 from __future__ import annotations
 
-import html
 import uuid
 from pathlib import Path
 from xml.dom import minidom
+from xml.etree import ElementTree
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 OUT = Path(__file__).resolve().parents[1] / "docs" / "question-to-answer-flow.drawio"
@@ -129,16 +129,16 @@ def page_overview() -> tuple[str, Element, int, int]:
     agent = d.box("JeenInsightsAgent\n.process_question()", 560, 120, 200, 50, API)
 
     u = d.box("SimpleUserResolver", 840, 70, 220, 35, LOGIC)
-    ctx = d.box("get_conversation_context", 840, 115, 220, 35, LOGIC)
-    aud = d.box("log_query → query_id", 840, 160, 220, 35, LOGIC)
-    cat = d.box("Catalog preload", 840, 205, 220, 35, LOGIC)
+    d.box("get_conversation_context", 840, 115, 220, 35, LOGIC)
+    d.box("log_query → query_id", 840, 160, 220, 35, LOGIC)
+    d.box("Catalog preload", 840, 205, 220, 35, LOGIC)
 
-    lg = d.box("16 nodes:\nrouter → SQL → execute → eval", 1140, 70, 240, 60, GRAPH)
+    lg = d.box("25 nodes:\nmemory ledger → router → SQL / ML / memory → execute → eval", 1140, 70, 240, 60, GRAPH)
 
     meta = d.box("Metadata DB", 60, 340, 170, 45, DB)
-    mcp = d.box("MCP server", 250, 340, 170, 45, DB)
-    pg = d.box("User PostgreSQL", 60, 395, 170, 45, DB)
-    hist = d.box("insights_conversation_sessions", 250, 395, 200, 45, DB)
+    d.box("MCP server", 250, 340, 170, 45, DB)
+    d.box("User PostgreSQL", 60, 395, 170, 45, DB)
+    d.box("insights_conversation_sessions", 250, 395, 200, 45, DB)
 
     chart = d.box("ChartManager", 540, 300, 180, 40, UI)
     ge = d.box("POST /api/generate-chart", 740, 300, 200, 40, API)
@@ -183,7 +183,7 @@ def page_sequence() -> tuple[str, Element, int, int]:
         d.edge(ids[src], ids[tgt], lbl)
         y += 30
 
-    note = d.box(
+    d.box(
         "Flask injects user_context from session cookie\nOptional: /api/generate-insights, /api/generate-chart",
         40, 560, 880, 50,
         "text;html=1;strokeColor=none;fillColor=#fff2cc;align=left;verticalAlign=middle;fontSize=11;",
@@ -242,63 +242,28 @@ def page_catalog() -> tuple[str, Element, int, int]:
 
 
 def page_langgraph() -> tuple[str, Element, int, int]:
-    d = DiagramBuilder()
-    s = d.box("START", 400, 20, 80, 40, TERM)
-    e = d.box("END", 400, 1180, 80, 40, TERM)
+    """Page 5 is the grouped overview from docs/agent-state-flow.drawio.
 
-    msc = d.box("memory_shrink_check", 340, 80, 200, 40, LOGIC)
-    ms = d.box("memory_summarizer (LLM)", 120, 160, 200, 40, LLM)
-    fr = d.box("fused_router (LLM)", 340, 240, 200, 40, LLM)
-    mag = d.box("memory_answer_generator (LLM)", 80, 320, 240, 40, LLM)
-    cl = d.box("catalog_lookup (DB/MCP)", 340, 400, 200, 40, DB)
-    pb = d.box("prompt_builder", 340, 480, 200, 40, LOGIC)
-    sg = d.box("sql_generator (LLM)", 340, 560, 200, 40, LLM)
-    sv = d.box("sqlglot_validate", 340, 640, 200, 40, TOOL)
-    dc = d.box("dlp_check", 340, 720, 200, 40, TOOL)
-    eq = d.box("execute_query (PostgresSqlRunner)", 340, 800, 240, 40, DB)
-    trc = d.box("trivial_result_check", 340, 880, 200, 40, LOGIC)
-    fea = d.box("fused_eval_analytics (LLM)", 120, 960, 220, 40, LLM)
-    fc = d.box("feedback_classifier", 680, 640, 200, 40, LOGIC)
-    rf = d.box("response_formatter", 340, 1040, 200, 40, LOGIC)
-    stm = d.box("save_to_memory (DB)", 340, 1100, 200, 40, DB)
-    ol = d.box("observability_log", 340, 1140, 200, 40, LOGIC)
-
-    d.edge(s, msc)
-    d.edge(msc, ms, "over budget")
-    d.edge(msc, fr, "within budget")
-    d.edge(ms, fr)
-    d.edge(fr, cl, "needs_query")
-    d.edge(fr, mag, "from_memory")
-    d.edge(fr, rf, "out_of_scope / unsafe / greeting")
-    d.edge(mag, rf, "answer ready")
-    d.edge(mag, cl, "needs fresh data")
-    d.edge(cl, pb)
-    d.edge(pb, sg)
-    d.edge(sg, sv, "SQL")
-    d.edge(sg, rf, "clarification")
-    d.edge(sv, dc, "valid")
-    d.edge(sv, fc, "syntax error")
-    d.edge(dc, eq, "safe")
-    d.edge(dc, rf, "blocked")
-    d.edge(eq, trc, "rows")
-    d.edge(eq, fc, "exec error")
-    d.edge(trc, rf, "trivial / eval off")
-    d.edge(trc, fea, "needs eval")
-    d.edge(fea, rf, "answers intent")
-    d.edge(fea, fc, "wrong result")
-    d.edge(fc, sg, "retry SQL")
-    d.edge(fc, cl, "missing table")
-    d.edge(fc, rf, "exhausted")
-    d.edge(rf, stm)
-    d.edge(stm, ol)
-    d.edge(ol, e)
-
-    leg = d.box(
-        "Purple=LLM · Green=DB · Gray=Logic · Orange=Tools (sqlglot, DLP)",
-        40, 20, 260, 50,
-        "text;html=1;strokeColor=none;fillColor=#f5f5f5;align=left;fontSize=10;",
+    That file is the single source of truth for the graph (its node and arc set
+    is checked against graph.py); embedding its first page here keeps this
+    end-to-end deck in step without a second hand-drawn layout.
+    """
+    source = OUT.parent / "agent-state-flow.drawio"
+    tree = ElementTree.parse(source)
+    first = tree.getroot().find("diagram")
+    if first is None:
+        raise RuntimeError(f"{source} has no <diagram> page")
+    model = first.find("mxGraphModel")
+    if model is None:
+        raise RuntimeError(f"{source}: first page has no mxGraphModel")
+    nodes = sum(
+        1 for c in model.iter("mxCell")
+        if c.get("vertex") == "1" and (c.get("id") or "").startswith("o-")
+        and not (c.get("id") or "").startswith("o-g") and c.get("id") not in ("o-title", "o-s", "o-e")
     )
-    return "5 - LangGraph agent (16 nodes)", d.to_mx(960, 1280), 960, 1280
+    pw = int(model.get("pageWidth", "1320"))
+    ph = int(model.get("pageHeight", "1620"))
+    return f"5 - LangGraph agent ({nodes} nodes, from agent-state-flow.drawio)", model, pw, ph
 
 
 def page_sql() -> tuple[str, Element, int, int]:
@@ -314,7 +279,7 @@ def page_sql() -> tuple[str, Element, int, int]:
     d.edge(ro, pool, "yes")
     d.edge(pool, tx)
     d.edge(tx, rows)
-    note = d.box("src/tools/sql_tool.py → PostgresSqlRunner.run_sql()", 40, 280, 400, 35,
+    d.box("src/tools/sql_tool.py → PostgresSqlRunner.run_sql()", 40, 280, 400, 35,
                  "text;html=1;strokeColor=none;fillColor=#f5f5f5;align=left;fontSize=11;")
     return "6 - SQL execution tool", d.to_mx(1000, 360), 1000, 360
 
@@ -348,8 +313,8 @@ def page_followups() -> tuple[str, Element, int, int]:
     gc = d.box("POST /api/generate-chart", 420, 230, 200, 40, API)
     ec = d.box("POST /api/edit-chart", 420, 290, 180, 40, API)
     ech = d.box("Apache ECharts", 420, 350, 160, 40, UI)
-    ac1 = d.box("@ tables · # columns · / templates", 780, 170, 260, 40, UI)
-    ac2 = d.box("GET knowledge-* · suggest-questions", 780, 230, 260, 40, API)
+    d.box("@ tables · # columns · / templates", 780, 170, 260, 40, UI)
+    d.box("GET knowledge-* · suggest-questions", 780, 230, 260, 40, API)
     for chain in [(res, im), (im, ge), (ge, ev), (ev, dbi), (res, cm), (cm, gc), (gc, ech), (cm, ec), (ec, ech)]:
         d.edge(*chain)
     return "8 - Optional follow-ups", d.to_mx(1100, 400), 1100, 400
@@ -363,7 +328,7 @@ def page_persistence() -> tuple[str, Element, int, int]:
     sid = d.box("currentSessionId (UUID)", 60, 90, 200, 40, UI)
     cookie = d.box("Flask session cookie\nuser_id", 60, 150, 200, 40, UI)
     ics = d.box("insights_conversation_sessions", 380, 90, 300, 80, DB)
-    pin = d.box("insights_pinned_questions", 780, 90, 200, 40, DB)
+    d.box("insights_pinned_questions", 780, 90, 200, 40, DB)
     rec = d.box("Recent questions", 780, 150, 200, 40, DB)
     log = d.box("History log drawer", 1000, 90, 180, 40, DB)
     d.edge(cookie, ics)
