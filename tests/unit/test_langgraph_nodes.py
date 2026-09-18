@@ -290,17 +290,56 @@ class TestSqlglotValidate:
 
     def test_verified_filter_must_be_present_with_canonical_value(self):
         validate = make_sqlglot_validate(enabled=True)
+        plan = {
+            "filters": [{
+                "table": "orders",
+                "column": "status",
+                "op": "equals",
+                "value": "Paid",
+                "resolved": True,
+            }]
+        }
         state = {
-            "generated_sql": "SELECT * FROM orders WHERE status = 'paid'",
+            "generated_sql": "SELECT * FROM orders WHERE status = 'Paid'",
             "known_tables": ["orders"],
             "table_columns": {"orders": ["status"]},
+            "filter_plan": plan,
+        }
+        assert validate(state)["sqlglot_error"] is None
+        # SQL equality is case-sensitive: 'paid' for the canonical 'Paid'
+        # would validate and then return zero rows, so it is rejected.
+        drifted = {**state, "generated_sql": "SELECT * FROM orders WHERE status = 'paid'"}
+        assert "did not preserve" in validate(drifted)["sqlglot_error"]
+
+    def test_verified_filter_may_sit_on_any_chosen_column(self):
+        """"Any of these fields": the user picked several columns for one value."""
+        validate = make_sqlglot_validate(enabled=True)
+        state = {
+            "generated_sql": (
+                "SELECT * FROM sales s JOIN dim_dealer d ON d.id = s.dealer_id "
+                "WHERE d.city = 'Moscow'"
+            ),
+            "known_tables": ["sales", "dim_dealer", "dim_customer"],
+            "table_columns": {"sales": ["dealer_id"], "dim_dealer": ["id", "city"], "dim_customer": ["id", "city"]},
             "filter_plan": {
                 "filters": [{
-                    "table": "orders",
-                    "column": "status",
-                    "op": "equals",
-                    "value": "Paid",
-                    "resolved": True,
+                    "table": "dim_customer", "column": "city", "op": "equals", "value": "Moscow",
+                    "resolved": True, "any_of_columns": ["dim_customer.city", "dim_dealer.city"],
+                }]
+            },
+        }
+        assert validate(state)["sqlglot_error"] is None
+
+    def test_verified_contains_filter_is_kept_as_a_substring_match(self):
+        validate = make_sqlglot_validate(enabled=True)
+        state = {
+            "generated_sql": "SELECT * FROM product WHERE name ILIKE '%Mountain-300%'",
+            "known_tables": ["product"],
+            "table_columns": {"product": ["name"]},
+            "filter_plan": {
+                "filters": [{
+                    "table": "product", "column": "name", "op": "contains",
+                    "value": "Mountain-300", "resolved": True,
                 }]
             },
         }

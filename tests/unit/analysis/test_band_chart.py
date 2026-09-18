@@ -63,6 +63,24 @@ def test_forecast_band_joins_forecast_to_last_actual_and_marks_start():
     assert "flagged" not in by_role
 
 
+def test_band_series_values_are_display_rounded_for_the_tooltip():
+    """The model's long floats (e.g. 811,098.2338606511) are trimmed so the
+    tooltip reads like the actual measure — 2 decimals for values >= 1."""
+    env = _anomaly_envelope()
+    spec = env.chart_spec.model_dump(mode="json")
+    opt = build_band_option(spec, {"columns": env.columns, "rows": env.rows})
+    checked = 0
+    for s in opt["series"]:
+        for point in s.get("data", []):
+            y = point[-1] if isinstance(point, (list, tuple)) else point
+            if not isinstance(y, (int, float)):
+                continue
+            expected = round(y, 2 if abs(y) >= 1 else 4)
+            assert abs(y - expected) < 1e-9, f"{s.get('name')} value {y!r} not display-rounded"
+            checked += 1
+    assert checked > 0
+
+
 def test_band_accepts_positional_rows_and_rejects_empty():
     env = _anomaly_envelope()
     spec = env.chart_spec.model_dump(mode="json")

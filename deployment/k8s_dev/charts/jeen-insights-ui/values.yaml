@@ -30,6 +30,12 @@ serviceAccount:
 
 service:
   port: 8501
+  # ClusterIP behind an Ingress/Route, or LoadBalancer on clusters that expose
+  # apps directly (e.g. an internal Azure load balancer via annotations).
+  type: ClusterIP
+  annotations: {}
+  # Optional fixed address for a LoadBalancer service.
+  loadBalancerIP: ""
 
 apiBaseUrl: ""
 

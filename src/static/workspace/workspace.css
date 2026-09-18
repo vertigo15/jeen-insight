@@ -442,6 +442,7 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-ask {
   height: 30px; padding: 0 14px; border: 0; border-radius: 9999px;
   background: var(--text); color: var(--bg); font-size: 13px;
+  transform: translateY(2px);
 }
 .v3-ask:hover { opacity: .85; }
 .v3-ask:disabled { opacity: .45; cursor: not-allowed; }
@@ -669,24 +670,53 @@ body.v3-ready .sp-overlay {
 .v3-chip--ml { border-color: var(--rose); color: var(--rose); }
 .v3-chip--ml::before { content: "✦ "; }
 
-.v3-ml-card { display: grid; gap: 12px; text-align: start; }
+.v3-filter-clarify .v3-ml-actions { gap: 8px; }
+.v3-filter-option small { color: var(--muted); font-weight: 400; margin-inline-start: 4px; }
+.v3-filter-other .v3-text-btn { color: var(--link); background: transparent; border: 0; padding: 0; font-size: 12.5px; cursor: pointer; }
+.v3-filtered-by { margin: 12px 0; padding: 10px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); }
+.v3-filtered-by-title { color: var(--faint); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 8px; }
+.v3-filter-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.v3-filter-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 9999px; border: 1px solid var(--border2); font: 12px var(--font-mono); color: var(--text); background: var(--soft); }
+.v3-filter-chip.is-unverified { border-style: dashed; color: var(--muted); }
+.v3-filter-chip small { color: var(--faint); font-family: inherit; }
+.v3-filter-evidence { margin-inline-start: 6px; color: var(--faint); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+.v3-filter-switch { margin-inline-start: 6px; padding: 0 8px; height: 20px; border: 1px solid var(--border2); border-radius: 9999px; background: var(--bg); color: var(--link); font: 11px var(--font-mono); cursor: pointer; }
+.v3-filter-switch:hover { background: var(--soft); }
+.v3-filter-note { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.v3-ml-card { display: grid; gap: 10px; text-align: start; }
 .v3-ml-card.is-busy { opacity: .6; pointer-events: none; }
 .v3-ml-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .v3-ml-kind { color: var(--muted); font-size: 12px; }
 .v3-ml-tier { margin-inline-start: auto; color: var(--faint); font-family: var(--font-mono); font-size: 11px; }
 .v3-ml-message { margin: 0; color: var(--text); font-size: 15px; line-height: 1.45; }
 .v3-ml-refusal { font-weight: 500; }
-.v3-ml-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Confirm card — planning line + framed parameter panel (skill-states mockup, State B). */
+.v3-ml-plan { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.v3-ml-phase {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 9px; border-radius: 9999px;
+  background: var(--rosesoft); color: var(--rose); font-size: 11px; font-weight: 500; white-space: nowrap;
+}
+.v3-ml-reading { color: var(--muted); font-size: 13px; line-height: 1.45; }
+.v3-ml-panel {
+  display: grid; gap: 12px; padding: 14px 16px; border-radius: 14px;
+  background: var(--soft); border: 1px solid var(--border2);
+}
+.v3-ml-on { color: var(--faint); font-size: 12px; }
+.v3-ml-panel .v3-skill-chip { height: 24px; text-transform: uppercase; letter-spacing: .02em; }
+
+.v3-ml-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .v3-ml-chip {
-  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 6px 0 10px;
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px 0 11px;
   border: 1px solid var(--border2); border-radius: 9999px; background: var(--bg);
   font-size: 12px; color: var(--muted);
 }
+.v3-ml-chip > span { color: var(--muted); font-size: 11px; }
 .v3-ml-chip select, .v3-ml-chip input {
   border: 0; background: transparent; color: var(--text); font-family: var(--font-mono); font-size: 12px;
-  min-width: 48px; max-width: 180px; padding: 0 4px; outline: none;
+  min-width: 40px; max-width: 180px; padding: 0 2px; outline: none;
 }
-.v3-ml-chip input[type="number"] { width: 72px; }
+.v3-ml-chip input[type="number"] { width: 64px; }
 .v3-ml-egress { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 .v3-ml-guards { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .v3-ml-guards li { display: flex; gap: 10px; font-size: 12px; color: var(--muted); }
@@ -694,14 +724,26 @@ body.v3-ready .sp-overlay {
 .v3-ml-guards li.is-ok::before { content: "✓"; color: var(--ok); }
 .v3-ml-guards li.is-fail::before { content: "✕"; }
 .v3-ml-guard-name { font-family: var(--font-mono); min-width: 120px; }
-.v3-ml-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.v3-ml-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .v3-ml-run {
-  height: 34px; padding: 0 16px; border: 0; border-radius: 10px; background: var(--rose); color: var(--bg);
+  height: 32px; padding: 0 18px; border: 0; border-radius: 9999px; background: var(--text); color: var(--bg);
   font-size: 13px; font-weight: 500; cursor: pointer;
 }
+.v3-ml-run:hover { opacity: .85; }
 .v3-ml-run small { opacity: .8; font-weight: 400; margin-inline-start: 4px; }
-.v3-ml-run:disabled { opacity: .5; cursor: default; }
-.v3-ml-remember { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.v3-ml-run:disabled { opacity: .45; cursor: default; }
+.v3-ml-alt {
+  height: 32px; padding: 0 14px; border: 1px solid var(--border2); border-radius: 9999px;
+  background: var(--bg); color: var(--text); font-size: 12.5px; cursor: pointer;
+}
+.v3-ml-alt:hover { background: var(--soft); }
+.v3-ml-alt:disabled { opacity: .5; cursor: default; }
+.v3-ml-sql { color: var(--muted); }
+.v3-ml-tiermeta {
+  margin-inline-start: auto; color: var(--faint); font-family: var(--font-mono);
+  font-size: 10.5px; letter-spacing: .04em; white-space: nowrap;
+}
+.v3-ml-remember { display: inline-flex; align-items: center; gap: 6px; color: var(--faint); font-size: 12px; }
 .v3-ml-exits { display: flex; flex-wrap: wrap; gap: 8px; }
 .v3-ml-exit {
   height: 32px; padding: 0 12px; border: 1px solid var(--border2); border-radius: 10px;

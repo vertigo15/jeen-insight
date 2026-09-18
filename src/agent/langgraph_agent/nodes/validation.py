@@ -296,10 +296,17 @@ def _literal_values(expression, sqlglot) -> List[str]:
 
 
 def _same_value(expected: object, actual: str) -> bool:
-    """Compare SQL literal values without accepting a numeric near-match."""
+    """Compare SQL literal values: numbers by value, everything else byte-exact.
+
+    A verified text value is the canonical spelling read from the source; SQL
+    equality on most engines is case-sensitive, so ``'paid'`` for ``Paid``
+    would validate and then return zero rows. Numbers still compare by value
+    so ``1000.50`` and ``1000.5`` agree, and dates/ISO strings must match
+    exactly.
+    """
     expected_text = str(expected).strip()
     actual_text = str(actual).strip()
-    if expected_text.casefold() == actual_text.casefold():
+    if expected_text == actual_text:
         return True
     try:
         from decimal import Decimal
@@ -357,6 +364,13 @@ def _check_resolved_filters(
         expected = item.get("value")
         if not table or not column:
             continue
+        # "Any of these fields": the user chose to match the value in several
+        # columns, so the predicate may sit on any one of them.
+        targets = [(table, column)]
+        for extra in item.get("any_of_columns") or []:
+            parts = str(extra).lower().split(".")
+            if len(parts) == 2 and (parts[0], parts[1]) not in targets:
+                targets.append((parts[0], parts[1]))
         matched = False
         for stmt in stmts:
             if stmt is None:
@@ -365,6 +379,8 @@ def _check_resolved_filters(
                 predicates = stmt.find_all(sqlglot.exp.In)
             elif op == "between":
                 predicates = stmt.find_all(sqlglot.exp.Between)
+            elif op == "contains":
+                predicates = list(stmt.find_all(sqlglot.exp.Like)) + list(stmt.find_all(sqlglot.exp.ILike))
             else:
                 exp_name = {
                     "equals": "EQ", "gt": "GT", "gte": "GTE",
@@ -373,9 +389,16 @@ def _check_resolved_filters(
                 predicate_type = getattr(sqlglot.exp, exp_name, None) if exp_name else None
                 predicates = stmt.find_all(predicate_type) if predicate_type else []
             for predicate in predicates:
-                if not _predicate_contains_target(
-                    predicate, table, column, table_columns, stmt, sqlglot
+                if not any(
+                    _predicate_contains_target(predicate, t, c, table_columns, stmt, sqlglot)
+                    for t, c in targets
                 ):
+                    continue
+                if op == "contains":
+                    actual_values = [v.strip("%") for v in _literal_values(predicate, sqlglot)]
+                    if any(_same_value(expected, actual) for actual in actual_values):
+                        matched = True
+                        break
                     continue
                 if op == "in":
                     actual_values = _literal_values(predicate, sqlglot)

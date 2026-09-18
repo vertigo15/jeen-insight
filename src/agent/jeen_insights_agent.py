@@ -122,6 +122,7 @@ class JeenInsightsAgent:
         llm_timeout: Optional[int] = None,
         progress_callback: Optional[ProgressCallback] = None,
         analysis_enabled: Optional[bool] = None,
+        filter_choices: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Run the LangGraph text-to-SQL pipeline.
 
@@ -129,8 +130,16 @@ class JeenInsightsAgent:
         sourced from the user's settings panel.  ``None`` means "use the
         server's default".  Server-side bounds are enforced by the Pydantic
         request schema. ``analysis_enabled=False`` keeps this one question on
-        the SQL path even when it reads like an ML request.
+        the SQL path even when it reads like an ML request. ``filter_choices``
+        carries the user's answers to earlier column/value clarifications
+        (``{literal, table, column, any}``) so the grounder honours them
+        instead of asking again.
         """
+        extra: Dict[str, Any] = {}
+        if analysis_enabled is not None:
+            extra["analysis_enabled_override"] = analysis_enabled
+        if filter_choices:
+            extra["filter_choices"] = [c for c in filter_choices if isinstance(c, dict)][:20]
         return await self._run(
             question=question,
             session_id=session_id,
@@ -140,7 +149,7 @@ class JeenInsightsAgent:
             eval_analytics=eval_analytics,
             llm_timeout=llm_timeout,
             progress_callback=progress_callback,
-            analysis={"analysis_enabled_override": analysis_enabled} if analysis_enabled is not None else None,
+            analysis=extra or None,
         )
 
     async def process_confirmed_analysis(
@@ -219,6 +228,17 @@ class JeenInsightsAgent:
             # log_query is non-fatal: if the audit insert fails (e.g. DB
             # hiccup) the flow continues with query_id=None and the error is
             # surfaced in the UI via formatted_response["error"].
+            # Remembered filter-grounding choices: persist the answers this
+            # request carries, then load the user's full set for the grounder.
+            from src.metadata.filter_preferences import get_filter_preference_store
+            preference_store = get_filter_preference_store()
+            incoming_choices = list((analysis or {}).get("filter_choices") or [])
+            if incoming_choices:
+                try:
+                    await preference_store.save(str(user.id), self.source_key, incoming_choices)
+                except Exception as exc:  # noqa: BLE001 - memory must never fail a question
+                    logger.info("filter preference save skipped (%s)", type(exc).__name__)
+
             results = await asyncio.gather(
                 _load_catalog_bundle(
                     self.source_key,
@@ -234,6 +254,7 @@ class JeenInsightsAgent:
                     question=question,
                     parent_query_id=parent_query_id,
                 ),
+                preference_store.load(str(user.id), self.source_key),
                 return_exceptions=True,
             )
 
@@ -247,6 +268,9 @@ class JeenInsightsAgent:
             )
             query_id = (
                 results[2] if not isinstance(results[2], Exception) else None
+            )
+            filter_preferences: List[Dict[str, Any]] = (
+                results[3] if not isinstance(results[3], Exception) else []
             )
 
             # Surface non-fatal pre-graph errors for observability.
@@ -325,6 +349,20 @@ class JeenInsightsAgent:
                 "filter_match_threshold": runtime.sql_filter_match_threshold,
                 "filter_lookup_timeout_ms": runtime.sql_filter_lookup_timeout_ms,
                 "filter_cache_ttl_seconds": runtime.sql_filter_cache_ttl_seconds,
+                "filter_metadata_evidence_enabled": runtime.sql_filter_metadata_evidence_enabled,
+                "filter_value_visibility": runtime.sql_filter_value_visibility,
+                "filter_unverified_execution": runtime.sql_filter_unverified_execution,
+                "filter_source_probe_enabled": runtime.sql_filter_source_probe_enabled,
+                "filter_source_distinct_enabled": runtime.sql_filter_source_distinct_enabled,
+                "filter_probe_denylist": runtime.sql_filter_probe_denylist,
+                "filter_existence_max_age_hours": runtime.sql_filter_existence_max_age_hours,
+                "filter_absence_max_age_hours": runtime.sql_filter_absence_max_age_hours,
+                "filter_candidates": [],
+                "filter_choices": [],
+                "filter_preferences": filter_preferences,
+                "filter_clarification": None,
+                "plan_assumptions": [],
+                "filter_metrics": None,
                 # ── SQL loop ────────────────────────────────────────────
                 "retry_count": 0,
                 "generated_sql": None,

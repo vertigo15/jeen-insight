@@ -153,6 +153,59 @@ def _format_trivial_value(value: Any) -> str:
     return f"{number:,.4f}".rstrip("0").rstrip(".")
 
 
+def _filter_summary(state: AgentState) -> Optional[Dict[str, Any]]:
+    """Provenance of the filters that shaped this answer, for the UI.
+
+    ``resolved`` carries raw → canonical value, target, operator and the
+    evidence tier; ``unverified`` the literals no evidence could confirm;
+    ``assumptions`` the disclosed decisions (corrections, retargets).
+    """
+    show_values = str(state.get("filter_value_visibility") or "source_wide") == "source_wide"
+    resolved = []
+    for item in state.get("resolved_filters") or []:
+        if not isinstance(item, dict):
+            continue
+        chosen = {str(item.get("table") or "").lower() + "." + str(item.get("column") or "").lower()}
+        chosen |= {str(c).lower() for c in (item.get("any_of_columns") or [])}
+        # Other columns the reverse lookup found the value in (already
+        # governance-filtered by the planner): the UI offers them as a switch.
+        alternatives: List[Dict[str, Any]] = []
+        seen: set = set()
+        for hit in item.get("candidate_columns") or []:
+            if not isinstance(hit, dict):
+                continue
+            key = f"{str(hit.get('table') or '').lower()}.{str(hit.get('column') or '').lower()}"
+            if key in chosen or key in seen or not hit.get("table") or not hit.get("column"):
+                continue
+            seen.add(key)
+            alternatives.append({
+                "table": hit.get("table"), "column": hit.get("column"),
+                "value": hit.get("value") if show_values else None,
+            })
+        resolved.append({
+            "table": item.get("table"),
+            "column": item.get("column"),
+            "op": item.get("op"),
+            "value": item.get("value"),
+            "raw_value": item.get("raw_value"),
+            "evidence": item.get("evidence") or ("typed" if item.get("resolved") else None),
+            "tier": item.get("tier"),
+            "any_of_columns": item.get("any_of_columns"),
+            "alternatives": alternatives[:4],
+        })
+    unverified = [
+        {"table": u.get("target", "").split(".")[0] if isinstance(u.get("target"), str) else None,
+         "column": u.get("target", "").split(".")[-1] if isinstance(u.get("target"), str) else None,
+         "value": u.get("value"), "reason": u.get("reason")}
+        for u in (state.get("unresolved_filters") or [])
+        if isinstance(u, dict) and u.get("value") is not None
+    ]
+    assumptions = [a for a in (state.get("plan_assumptions") or []) if a]
+    if not resolved and not unverified and not assumptions:
+        return None
+    return {"resolved": resolved, "unverified": unverified, "assumptions": assumptions}
+
+
 # ── response_formatter ────────────────────────────────────────────────────────
 
 
@@ -265,6 +318,20 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
         formatted["metrics"]["skill"] = state.get("analysis_skill")
     if state.get("parent_query_id"):
         formatted["parent_query_id"] = state.get("parent_query_id")
+    # Filter grounding provenance: what was matched, corrected, retargeted or
+    # left unverified, so the UI can show "Filtered by …" and offer a switch,
+    # and a structured column/value question when the grounder had to ask.
+    filter_summary = _filter_summary(state)
+    if filter_summary:
+        formatted["filters"] = filter_summary
+        if filter_summary.get("assumptions") and answer and not state.get("filter_clarification"):
+            note = " ".join(filter_summary["assumptions"])
+            if note not in answer:
+                formatted["answer"] = f"{answer}\n\nNote: {note}"
+    if state.get("filter_clarification"):
+        formatted["filter_clarification"] = state["filter_clarification"]
+    if state.get("filter_metrics"):
+        formatted["metrics"]["filter_grounding"] = state["filter_metrics"]
     if proposal:
         kind = proposal.get("kind")
         formatted["status"] = {"confirm": "confirm", "clarify": "clarify", "guard": "blocked"}.get(kind, kind)
@@ -398,6 +465,51 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
             if isinstance(load_ms, int):
                 detail += f" · {load_ms}ms"
             ev["detail"] = detail
+
+        elif node == "filter_planner":
+            plan = state.get("filter_plan") or {}
+            planned = [f for f in (plan.get("filters") or []) if isinstance(f, dict)]
+            candidates = state.get("filter_candidates") or []
+            columns = {f"{c.get('table')}.{c.get('column')}" for c in candidates if isinstance(c, dict)}
+            detail = f"{len(planned)} filter(s) planned"
+            if columns:
+                detail += f" · reverse lookup hit {len(columns)} column(s): {', '.join(sorted(columns)[:3])}"
+            elif not planned:
+                detail += " · no predicate cue or captured-value hit"
+            ev["detail"] = detail
+
+        elif node == "filter_grounder":
+            metrics = state.get("filter_metrics") or {}
+            resolved = state.get("resolved_filters") or []
+            unresolved = state.get("unresolved_filters") or []
+            tiers = metrics.get("tiers") or {}
+            parts = [f"{len(resolved)} resolved"]
+            if unresolved:
+                parts.append(f"{len(unresolved)} unverified")
+            if state.get("filter_clarification"):
+                parts.append(f"asked ({(state.get('filter_clarification') or {}).get('kind')})")
+                ev["status"] = "warn"
+            if tiers:
+                parts.append("tiers " + " ".join(f"{k}:{v}" for k, v in sorted(tiers.items())))
+            probes = metrics.get("source_probes")
+            if probes:
+                parts.append(f"{probes} source probe(s)")
+            if metrics.get("elapsed_ms") is not None:
+                parts.append(f"{metrics['elapsed_ms']}ms")
+            if state.get("plan_assumptions"):
+                parts.append(f"{len(state['plan_assumptions'])} disclosed")
+            ev["detail"] = " · ".join(parts)
+            # Structured copy for dashboards / observability queries.
+            ev["filter_grounding"] = {
+                "resolved": len(resolved),
+                "unverified": len(unresolved),
+                "asked": bool(state.get("filter_clarification")),
+                "tiers": tiers,
+                "source_probes": probes or 0,
+                "metadata_reads": metrics.get("metadata_reads", 0),
+                "elapsed_ms": metrics.get("elapsed_ms"),
+                "evidence": sorted({str(f.get("evidence") or "") for f in resolved if isinstance(f, dict)}),
+            }
 
         elif node == "prompt_builder":
             sp = state.get("structured_prompt") or {}
@@ -718,6 +830,45 @@ async def _persist_turn_artifact(
 # ── observability_log ─────────────────────────────────────────────────────────
 
 
+def _grounding_event(state: AgentState, *, rows: int) -> Optional[Dict[str, Any]]:
+    """Aggregatable filter-grounding fields for the query_completed event."""
+    plan = state.get("filter_plan") or {}
+    planned = [f for f in (plan.get("filters") or []) if isinstance(f, dict)]
+    metrics = state.get("filter_metrics") or {}
+    if not planned and not metrics:
+        return None
+    resolved = [f for f in (state.get("resolved_filters") or []) if isinstance(f, dict)]
+    unresolved = state.get("unresolved_filters") or []
+    clarification = state.get("filter_clarification") or {}
+    executed_ok = (
+        state.get("query_result") is not None
+        and not state.get("exec_error")
+        and not state.get("sqlglot_error")
+        and not state.get("dlp_blocked")
+        and bool(state.get("generated_sql"))
+    )
+    return {
+        "planned": len(planned),
+        "resolved": len(resolved),
+        "unverified": len(unresolved),
+        "asked": bool(clarification),
+        "asked_kind": clarification.get("kind") if clarification else None,
+        "evidence": sorted({str(f.get("evidence") or "") for f in resolved}),
+        "tiers": metrics.get("tiers") or {},
+        "source_probes": metrics.get("source_probes", 0),
+        "metadata_reads": metrics.get("metadata_reads", 0),
+        "grounding_ms": metrics.get("elapsed_ms"),
+        "disclosed": len(state.get("plan_assumptions") or []),
+        "user_choice_applied": bool(state.get("filter_choices")),
+        "reground_passes": int(state.get("empty_filter_diagnostics") or 0),
+        # Zero rows from a query that actually ran: with every filter verified
+        # it is a real "no data"; with an unverified literal it is the failure
+        # mode grounding exists to remove. Failed/blocked queries do not count.
+        "zero_rows": executed_ok and rows == 0,
+        "zero_rows_with_unverified": executed_ok and rows == 0 and bool(unresolved),
+    }
+
+
 def observability_log(state: AgentState) -> Dict[str, Any]:
     """Emit a structured event at the end of every graph run.
 
@@ -770,6 +921,10 @@ def observability_log(state: AgentState) -> Dict[str, Any]:
         # node runs inside the graph, so the three tail nodes are necessarily
         # absent here; the stored column is the complete record.
         "nodes": slim_trace(state.get("trace") or []),
+        # Filter grounding outcome, first-class so a log pipeline can chart
+        # clarification rate, verification mix, probe count and tier usage
+        # (and zero-result rate split by whether the filters were verified).
+        "filter_grounding": _grounding_event(state, rows=len(result.get("rows") or [])),
     }
 
     # First-class structured fields via ``extra`` + a compact summary on the

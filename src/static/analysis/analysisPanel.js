@@ -139,16 +139,30 @@
         if (kind === 'confirm') {
             const chips = (proposal.chips || []).map(chipControl).join('');
             const grain = GRAIN_ADJ[series.grain] || series.grain || '';
-            return `<div class="v3-ml-card is-confirm">${head}
-              <p class="v3-ml-message">${esc(proposal.message)}</p>
-              <div class="v3-ml-chips" data-chip-row>${chips}</div>
-              <p class="v3-ml-egress">${esc(proposal.egress_summary || `SQL rolls the measure up to ${grain} totals; only those rows are sent to the analysis service.`)}</p>
-              ${guardList(proposal.guard_results, false)}
-              <div class="v3-ml-actions">
-                <button type="button" class="v3-ml-run" data-run>Run ${proposal.estimated_seconds ? `<small>~${esc(proposal.estimated_seconds)}s</small>` : ''}</button>
-                <button type="button" class="v3-text-btn" data-sql-instead>Answer with SQL instead</button>
-                <label class="v3-ml-remember"><input type="checkbox" data-remember> Don't ask again for ${skill} on this connection</label>
+            const skillKey = String(proposal.skill || 'analysis').toUpperCase();
+            const tierBits = [];
+            if (proposal.tier) tierBits.push(`TIER ${proposal.tier} · ${proposal.tier === 'A' ? 'AGGREGATE' : 'ROW-LEVEL'}`);
+            if (proposal.estimated_seconds) tierBits.push(`~${proposal.estimated_seconds}s`);
+            return `<div class="v3-ml-card is-confirm">
+              <div class="v3-ml-plan">
+                <span class="v3-ml-phase">Planning</span>
+                <span class="v3-ml-reading">${esc(proposal.message)}</span>
               </div>
+              <div class="v3-ml-panel">
+                <div class="v3-ml-chips" data-chip-row>
+                  <span class="v3-skill-chip">${esc(skillKey)}</span>
+                  <span class="v3-ml-on">on</span>
+                  ${chips}
+                </div>
+                <p class="v3-ml-egress">${esc(proposal.egress_summary || `SQL rolls the measure up to ${grain} totals; only those rows are sent to the analysis service.`)}</p>
+                <div class="v3-ml-actions">
+                  <button type="button" class="v3-ml-run" data-run>Run</button>
+                  <button type="button" class="v3-ml-alt" data-switch-skill>Use a different skill</button>
+                  <button type="button" class="v3-text-btn v3-ml-sql" data-sql-instead>Answer with SQL instead</button>
+                  ${tierBits.length ? `<span class="v3-ml-tiermeta">${esc(tierBits.join(' · '))}</span>` : ''}
+                </div>
+              </div>
+              <label class="v3-ml-remember"><input type="checkbox" data-remember> Don't ask again for ${skill} on this connection</label>
             </div>`;
         }
         if (kind === 'clarify') {

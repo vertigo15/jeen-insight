@@ -44,6 +44,10 @@ class MetadataLoader:
         # Whether `metadata_sources` exposes `connection_schema` or `database_schema`.
         # Probed lazily on first use.
         self._schema_column: Optional[str] = None
+        # Whether Schema Modeler's profile table exists in this metadata DB.
+        self._has_profile_table: Optional[bool] = None
+        # Whether metadata_relationships carries structured from/to endpoints.
+        self._structured_relationships: Optional[bool] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -63,6 +67,7 @@ class MetadataLoader:
         sources = await self._load_sources(source_key)
         knowledge_pairs = await self._load_knowledge_pairs(source_key)
         business_terms = await self._load_business_terms(source_key)
+        statistics, samples = await self._load_column_evidence(source_key)
 
         bundle: Dict[str, str] = {
             "tables": _format_lines(tables, empty="No tables registered."),
@@ -75,6 +80,8 @@ class MetadataLoader:
             "business_terms": _format_lines(
                 business_terms, empty="No business terms registered."
             ),
+            "column_statistics": statistics,
+            "column_samples": samples,
         }
         self._cache[source_key] = (now + _CACHE_TTL_SECONDS, bundle)
         return bundle
@@ -308,12 +315,13 @@ class MetadataLoader:
         return [r["line"] for r in rows]
 
     async def _load_columns(self, source_key: str) -> List[str]:
-        """Return one line per column.  Only meaningful attributes are emitted:
+        """Return one line per visible column.  Only meaningful attributes are emitted:
 
         - Description is omitted when absent (no 'No description' noise).
         - PK flag only shown when TRUE  (most columns are not PKs).
         - NOT NULL constraint only shown when NOT nullable (default is nullable).
-        - Hidden flag omitted entirely (irrelevant to query generation).
+        - Columns curated as hidden (or dropped from the source) are left out:
+          the model must not be offered a field the catalog owner hid.
         """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
@@ -331,24 +339,107 @@ class MetadataLoader:
                     AS line
                 FROM public.metadata_columns
                 WHERE source = $1
+                  AND COALESCE(is_hidden, FALSE) = FALSE
+                  AND COALESCE(is_deleted, FALSE) = FALSE
                 ORDER BY table_name, column_name
                 """,
                 source_key,
             )
         return [r["line"] for r in rows]
 
+    async def _has_profiles(self) -> bool:
+        if self._has_profile_table is None:
+            try:
+                async with self.pool.acquire() as conn:
+                    found = await conn.fetchval(
+                        "SELECT 1 FROM information_schema.tables "
+                        "WHERE table_schema = 'public' AND table_name = 'metadata_column_profiles'"
+                    )
+                self._has_profile_table = bool(found)
+            except Exception as exc:  # noqa: BLE001
+                logger.info("metadata_loader: profile table probe failed (%s)", exc)
+                self._has_profile_table = False
+        return self._has_profile_table
+
+    async def _load_column_evidence(self, source_key: str) -> tuple[str, str]:
+        """Compact per-column statistics and sample values from Schema Modeler profiles.
+
+        Statistics (semantic type, distinct count, null ratio) are emitted for
+        visible columns; sample values only for non-sensitive categorical
+        columns, capped and fenced as untrusted data because they are database
+        content, not instructions. Both are hints for the model; existence is
+        proved by the grounder, not by these lines.
+        """
+        if not await self._has_profiles():
+            return "", ""
+        try:
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT DISTINCT ON (lower(p.table_name), lower(p.column_name))
+                           p.table_name, p.column_name, p.semantic_type, p.column_role,
+                           p.distinct_count, p.distinct_is_approximate, p.null_ratio,
+                           p.domain_is_complete, p.top_values, p.example_values,
+                           p.example_strategy, p.sensitivity_tag, p.data_type
+                    FROM public.metadata_column_profiles p
+                    LEFT JOIN public.metadata_columns c
+                           ON c.source = p.source
+                          AND lower(c.table_name) = lower(p.table_name)
+                          AND lower(c.column_name) = lower(p.column_name)
+                    WHERE p.source = $1
+                      AND COALESCE(p.status, 'success') = 'success'
+                      AND COALESCE(c.is_hidden, FALSE) = FALSE
+                      AND COALESCE(c.is_deleted, FALSE) = FALSE
+                    ORDER BY lower(p.table_name), lower(p.column_name), p.profiled_at DESC NULLS LAST
+                    """,
+                    source_key,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.info("metadata_loader: column evidence unavailable (%s)", exc)
+            return "", ""
+        return _format_column_evidence(rows)
+
     async def _load_relationships(self, source_key: str) -> List[str]:
+        """One line per join edge.
+
+        Schema Modeler stores structured endpoints (``from_table.from_column ->
+        to_table.to_column``); those are preferred because the schema linker's
+        reachability and the grounder's join-path filter parse table names from
+        these lines. Older catalogs only have the free-text ``relation`` column,
+        so that remains the fallback.
+        """
+        structured_sql = """
+            SELECT COALESCE(
+                CASE
+                    WHEN from_table IS NOT NULL AND to_table IS NOT NULL
+                    THEN from_table || '.' || COALESCE(from_column, '') || ' -> ' ||
+                         to_table || '.' || COALESCE(to_column, '')
+                END,
+                relation
+            ) AS relation
+            FROM public.metadata_relationships
+            WHERE source = $1
+              AND COALESCE(is_deleted, FALSE) = FALSE
+              AND COALESCE(is_active, TRUE) = TRUE
+            ORDER BY 1
+        """
+        legacy_sql = """
+            SELECT relation
+            FROM public.metadata_relationships
+            WHERE source = $1
+            ORDER BY relation
+        """
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT relation
-                FROM public.metadata_relationships
-                WHERE source = $1
-                ORDER BY relation
-                """,
-                source_key,
-            )
-        return [r["relation"] for r in rows]
+            if self._structured_relationships is not False:
+                try:
+                    rows = await conn.fetch(structured_sql, source_key)
+                    self._structured_relationships = True
+                    return [r["relation"] for r in rows if r["relation"]]
+                except asyncpg.UndefinedColumnError:
+                    self._structured_relationships = False
+                    logger.info("metadata_relationships has no structured endpoints; using relation text")
+            rows = await conn.fetch(legacy_sql, source_key)
+        return [r["relation"] for r in rows if r["relation"]]
 
     async def _load_sources(self, source_key: str) -> List[str]:
         col = self._schema_column or ""
@@ -409,6 +500,72 @@ class MetadataLoader:
 # ----------------------------------------------------------------------
 # Module-level helpers
 # ----------------------------------------------------------------------
+_MAX_STATISTIC_LINES = 400
+_MAX_SAMPLE_LINES = 150
+_MAX_SAMPLES_PER_COLUMN = 5
+_SAMPLE_CLASSES = ("categorical", "boolean", "geo")
+_SAMPLE_STRATEGIES = ("enumerated", "examples", "top_values")
+_TEXT_HINTS = ("char", "text", "string", "varchar", "nvarchar", "character")
+_DATA_BEGIN = "<<<BEGIN_UNTRUSTED_DATA>>>"
+_DATA_END = "<<<END_UNTRUSTED_DATA>>>"
+
+
+def _json_list(raw: Any) -> List[Dict[str, Any]]:
+    import json  # noqa: PLC0415
+
+    data = raw
+    if isinstance(raw, (str, bytes)):
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+
+def _format_column_evidence(rows: List[Any]) -> tuple[str, str]:
+    """Render profile rows as the ``column_statistics`` / ``column_samples`` sections."""
+    statistics: List[str] = []
+    samples: List[str] = []
+    for row in rows:
+        target = f"{row['table_name']}.{row['column_name']}"
+        parts = []
+        if row["semantic_type"]:
+            parts.append(str(row["semantic_type"]))
+        if row["distinct_count"] is not None:
+            approx = "~" if row["distinct_is_approximate"] else ""
+            parts.append(f"distinct {approx}{int(row['distinct_count'])}")
+        if row["null_ratio"] is not None:
+            parts.append(f"nulls {round(float(row['null_ratio']) * 100)}%")
+        if row["sensitivity_tag"]:
+            parts.append(f"sensitive:{row['sensitivity_tag']}")
+        if parts and len(statistics) < _MAX_STATISTIC_LINES:
+            statistics.append(f"- {target}: {', '.join(parts)}")
+
+        if row["sensitivity_tag"] or len(samples) >= _MAX_SAMPLE_LINES:
+            continue
+        data_type = str(row["data_type"] or "").lower()
+        text_like = not data_type or any(hint in data_type for hint in _TEXT_HINTS)
+        eligible = (
+            str(row["semantic_type"] or "") in _SAMPLE_CLASSES
+            or str(row["example_strategy"] or "") in _SAMPLE_STRATEGIES
+        )
+        if not text_like or not eligible:
+            continue
+        values = [str(item.get("value")) for item in _json_list(row["top_values"]) if item.get("value") is not None]
+        if not values:
+            values = [str(item.get("value")) for item in _json_list(row["example_values"]) if item.get("value") is not None]
+        if not values:
+            continue
+        shown = [v.replace("\n", " ")[:60] for v in values[:_MAX_SAMPLES_PER_COLUMN]]
+        more = len(values) - len(shown)
+        suffix = f" (+{more} more)" if more > 0 else (" (complete)" if row["domain_is_complete"] else "")
+        samples.append(f"- {target}: " + ", ".join(f"'{v}'" for v in shown) + suffix)
+
+    statistics_text = "\n".join(statistics)
+    samples_text = f"{_DATA_BEGIN}\n" + "\n".join(samples) + f"\n{_DATA_END}" if samples else ""
+    return statistics_text, samples_text
+
+
 def _format_lines(lines: List[str], empty: str) -> str:
     """Join non-empty lines with newlines; return `empty` when nothing matched."""
     cleaned = [line for line in lines if line and line.strip()]

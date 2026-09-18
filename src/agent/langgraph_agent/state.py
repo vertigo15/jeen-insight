@@ -126,12 +126,37 @@ class AgentState(TypedDict, total=False):
     filter_resolution_attempts: int
     empty_filter_diagnostics: int
     needs_filter_reground: bool
+    # Reverse-lookup hits for the question's literals: which catalogued columns
+    # actually contain a value like the word the user typed.
+    filter_candidates: List[Dict[str, Any]]
+    # The user's answers to earlier column/value clarifications in this request
+    # ({literal, table, column, any, value}); honoured before asking again.
+    filter_choices: List[Dict[str, Any]]
+    # Remembered answers for this user on this connection, loaded from
+    # insights_filter_preferences: literal-level rows plus role-level rows
+    # ({literal: "", role: "city", table, column}) reused for new literals.
+    filter_preferences: List[Dict[str, Any]]
+    # Structured clarification (kind column|value, options, allow_any/other)
+    # rendered by the UI as buttons; ``clarification`` keeps the prose form.
+    filter_clarification: Optional[Dict[str, Any]]
+    # Disclosed decisions ("'mosco' matched Customer city = 'Moscow'") shown
+    # with the answer so a silent retarget or correction cannot go unnoticed.
+    plan_assumptions: List[str]
+    filter_metrics: Optional[Dict[str, Any]]          # tiers used, probes issued, elapsed
     # Per-request snapshot of runtime filter controls.
     filter_resolution_enabled: bool
     filter_max_domain_values: int
     filter_match_threshold: float
     filter_lookup_timeout_ms: int
     filter_cache_ttl_seconds: int
+    filter_metadata_evidence_enabled: bool
+    filter_value_visibility: str                      # none | source_wide | user_scoped
+    filter_unverified_execution: str                  # ask | allow
+    filter_source_probe_enabled: bool
+    filter_source_distinct_enabled: bool
+    filter_probe_denylist: str
+    filter_existence_max_age_hours: int
+    filter_absence_max_age_hours: int
 
     # ── SQL generation loop ───────────────────────────────────────────────
     retry_count: int

@@ -44,6 +44,19 @@ class TestClamp:
         with pytest.raises(ValueError):
             rs.clamp("max_result_rows", "not a number")
 
+    def test_enum_keys_accept_only_their_choices(self):
+        assert rs.clamp("sql_filter_value_visibility", " Source_Wide ") == "source_wide"
+        assert rs.clamp("sql_filter_unverified_execution", "allow") == "allow"
+        with pytest.raises(ValueError):
+            rs.clamp("sql_filter_value_visibility", "everyone")
+
+    def test_text_keys_are_trimmed_and_capped(self):
+        assert rs.clamp("sql_filter_probe_denylist", "  people.*, hr.salary ") == "people.*, hr.salary"
+        assert len(rs.clamp("sql_filter_probe_denylist", "x" * 5000)) == 2000
+
+    def test_choices_lists_enum_values_for_the_ui(self):
+        assert rs.choices()["sql_filter_value_visibility"] == ("none", "source_wide", "user_scoped")
+
 
 class TestBounds:
     def test_booleans_are_omitted(self):
@@ -51,6 +64,8 @@ class TestBounds:
         b = rs.bounds()
         assert "dax_entity_resolution_enabled" not in b
         assert "dax_entity_cross_column_enabled" not in b
+        assert "sql_filter_value_visibility" not in b
+        assert "sql_filter_probe_denylist" not in b
 
     def test_numeric_keys_are_present(self):
         b = rs.bounds()

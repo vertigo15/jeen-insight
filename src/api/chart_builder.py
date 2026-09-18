@@ -1302,6 +1302,17 @@ def _num_or_none(value: Any) -> Optional[float]:
     return None if f != f else f  # NaN → None
 
 
+def _round_display(value: Optional[float]) -> Optional[float]:
+    """Trim the model's long floats for the tooltip so the band's computed
+    series (expected / lower / upper) read like the actual measure — e.g.
+    811,098.2338606511 → 811,098.23 — matching the 2-decimal grouping the
+    actual series already shows. Kept coarse for large values, finer for
+    sub-unit ratios."""
+    if value is None:
+        return None
+    return round(value, 2 if abs(value) >= 1 else 4)
+
+
 def build_band_option(spec: Dict[str, Any], dataset: Dict[str, Any]) -> Dict[str, Any]:
     """ECharts option for an ML result: actual line, expected/forecast line,
     interval band, flagged points, optional forecast-start marker.
@@ -1329,7 +1340,7 @@ def build_band_option(spec: Dict[str, Any], dataset: Dict[str, Any]) -> Dict[str
         for x, r in zip(xs, rows):
             if where and not r.get(where):
                 continue
-            v = _num_or_none(r.get(col))
+            v = _round_display(_num_or_none(r.get(col)))
             if v is not None:
                 data.append([x, v])
         return data
@@ -1339,7 +1350,8 @@ def build_band_option(spec: Dict[str, Any], dataset: Dict[str, Any]) -> Dict[str
         lo_col, hi_col = interval["lower_column"], interval["upper_column"]
         base, delta = [], []
         for x, r in zip(xs, rows):
-            lo, hi = _num_or_none(r.get(lo_col)), _num_or_none(r.get(hi_col))
+            lo = _round_display(_num_or_none(r.get(lo_col)))
+            hi = _round_display(_num_or_none(r.get(hi_col)))
             if lo is None or hi is None:
                 continue
             base.append([x, lo])

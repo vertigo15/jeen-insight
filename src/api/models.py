@@ -35,6 +35,10 @@ class QueryRequest(BaseModel):
     # analysis: False = answer with SQL even if the question reads like an ML
     # request ("Answer with SQL instead" on a confirm card). None = server default.
     analysis: Optional[bool] = None
+    # The user's answers to earlier filter clarifications in this session
+    # ([{literal, table, column, any}]): which column a value belongs to, or
+    # the exact value they meant. Honoured by the grounder before asking again.
+    filter_choices: Optional[List[Dict[str, Any]]] = Field(default=None, max_length=20)
 
 
 class QueryResponse(BaseModel):
@@ -59,6 +63,11 @@ class QueryResponse(BaseModel):
     #   {route, path (ml|sql|…), source, reason, skill}. Declared here so
     #   Pydantic keeps it and the UI/tests can read it without the trace.
     routing: Optional[Dict[str, Any]] = None
+    # Filter grounding provenance {resolved, unverified, assumptions} and, when
+    # the grounder had to ask which column / value was meant, a structured
+    # question {kind, literal, message, options, allow_any, allow_other}.
+    filters: Optional[Dict[str, Any]] = None
+    filter_clarification: Optional[Dict[str, Any]] = None
     # Per-node execution trace. Each entry: {node, elapsed_ms, icon, type, detail, ...}
     trace: Optional[List[Dict[str, Any]]] = None
     # Result analysis from the inline eval node, present only when the caller
@@ -275,6 +284,11 @@ class GenerateInsightsRequest(BaseModel):
     # SQL that produced the dataset — when provided the LangGraph eval node is
     # used instead of the legacy insight_service path.
     sql: Optional[str] = None
+    # Serialized ML ResultEnvelope (skill/facts/params/caveats/headline). When
+    # present the request is an ML turn: findings + follow-ups are built from the
+    # engine facts and the summary is grounded in them. Falls back to the
+    # persisted turn analysis (by query_id) when omitted.
+    analysis: Optional[Dict[str, Any]] = None
 
 
 class GenerateInsightsResponse(BaseModel):

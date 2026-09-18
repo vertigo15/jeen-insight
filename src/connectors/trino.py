@@ -28,6 +28,9 @@ class TrinoSqlRunner(SqlRunner):
 
     database_type = "trino"
     sqlglot_dialect = "trino"
+    # ``query_max_execution_time`` is a Trino session property enforced by the
+    # coordinator, so the query is killed server-side, not just abandoned here.
+    supports_server_side_timeout = True
 
     def __init__(
         self,
@@ -73,10 +76,17 @@ class TrinoSqlRunner(SqlRunner):
         self, sql: str, statement_timeout_ms: int
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
         timeout = _timeout_seconds(statement_timeout_ms, self.request_timeout)
+        session_properties = (
+            {"query_max_execution_time": f"{max(1, int(round(timeout)))}s"}
+            if statement_timeout_ms and statement_timeout_ms > 0 else None
+        )
         try:
             return await asyncio.wait_for(
-                self._run_blocking(lambda cur: _fetch_rows(cur, sql)),
-                timeout=timeout,
+                self._run_blocking(
+                    lambda cur: _fetch_rows(cur, sql), session_properties=session_properties
+                ),
+                # Give the coordinator a moment to enforce its own limit first.
+                timeout=timeout + 1.0,
             )
         except asyncio.TimeoutError as exc:
             raise QueryTimeout("Trino query exceeded the configured timeout.") from exc
@@ -113,13 +123,15 @@ class TrinoSqlRunner(SqlRunner):
         except Exception:
             return []
 
-    async def _run_blocking(self, fn):
+    async def _run_blocking(self, fn, session_properties: Optional[Dict[str, str]] = None):
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._executor, self._with_cursor, fn)
+        return await loop.run_in_executor(
+            self._executor, self._with_cursor, fn, session_properties
+        )
 
-    def _with_cursor(self, fn):
+    def _with_cursor(self, fn, session_properties: Optional[Dict[str, str]] = None):
         try:
-            conn = self._connect()
+            conn = self._connect(session_properties)
             try:
                 cur = conn.cursor()
                 try:
@@ -133,7 +145,7 @@ class TrinoSqlRunner(SqlRunner):
         except Exception as exc:  # noqa: BLE001
             raise _classify_trino_error(exc) from exc
 
-    def _connect(self):
+    def _connect(self, session_properties: Optional[Dict[str, str]] = None):
         try:
             from trino import dbapi
             from trino.auth import BasicAuthentication, JWTAuthentication
@@ -150,6 +162,7 @@ class TrinoSqlRunner(SqlRunner):
             "schema": self.schema,
             "http_scheme": self.http_scheme,
             "request_timeout": self.request_timeout,
+            "session_properties": session_properties or None,
         }
         if self.auth == "jwt" or self.access_token:
             kwargs["auth"] = JWTAuthentication(self.access_token or self.password or "")

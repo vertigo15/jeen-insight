@@ -1,0 +1,141 @@
+# Defence AKS overlay (cluster aks-openmetadata-dev161-weu, kube context
+# defence-aks-openmetadata-dev161). Follows the conventions of the Schema
+# Modeler release in the same cluster: images from the attached ACR (no pull
+# secret), no ingress controller — the UI is an internal Azure LoadBalancer
+# reached over the VPN as http://jeen-insights.dev161.internal — and the
+# `apps` node pool.
+#
+#   helm dependency build deployment/k8s_dev
+#   helm upgrade --install jeen-insights deployment/k8s_dev \
+#     --kube-context defence-aks-openmetadata-dev161 --namespace jeen-insights \
+#     --values deployment/k8s_dev/values.defence.yaml \
+#     --set jeen-insights-api.image.tag=<tag> \
+#     --set jeen-insights-ui.image.tag=<tag> \
+#     --set jeen-insights-analytics.image.tag=<tag> \
+#     --atomic --wait --timeout 10m
+#
+# Secrets: the hand-created `jeen-insights-secrets` Secret (metadata DB
+# credentials shared with Schema Modeler, plus the generated FLASK_SECRET_KEY,
+# INTERNAL_API_SECRET, INTERNAL_ANALYTICS_SECRET, APP_ENCRYPTION_KEY and
+# SETUP_BOOTSTRAP_TOKEN). No Key Vault / External Secrets in this cluster.
+
+global:
+  environment: defence-dev
+  cloudProvider: azure
+  commonLabels:
+    app.kubernetes.io/part-of: jeen-insights
+  existingSecret:
+    name: jeen-insights-secrets
+    optional: false
+  externalSecrets:
+    enabled: false
+  # One replica per component; Recreate avoids two pods contending for the
+  # same LoadBalancer/session state during a rollout.
+  strategy:
+    type: Recreate
+  nodeSelector:
+    agentpool: apps
+  env:
+    JEEN_DEV_MODE: "false"
+    INTERNAL_AUTH_ENABLED: "true"
+    LOG_LEVEL: INFO
+    LOG_FORMAT: json
+    HOME: /tmp
+    MPLCONFIGDIR: /tmp/mpl
+    METADATA_DB_SSL: "true"
+    LLM_TIMEOUT_SECONDS: "120"
+    LANGGRAPH_MAX_RETRIES: "3"
+    DB_STATEMENT_TIMEOUT_MS: "30000"
+    MAX_RESULT_ROWS: "10000"
+    CONVERSATION_CONTEXT_TURNS: "5"
+    CONVERSATION_PERSISTENCE_ENABLED: "true"
+
+jeen-insights-api:
+  enabled: true
+  fullnameOverride: jeen-insights-api
+  image:
+    repository: acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-api
+    pullPolicy: IfNotPresent
+  env:
+    ML_SKILLS_ENABLED: "true"
+    ANALYSIS_RUNNER: sandbox
+    ANALYSIS_SANDBOX_URL: http://jeen-insights-analytics:8100
+    ANALYSIS_SANDBOX_AUDIENCE: jeen-insights-analytics
+    ANALYSIS_TIMEOUT_SECONDS: "30"
+    ANALYSIS_MEMORY_MB: "1024"
+    ANALYSIS_MAX_SERIES_ROWS: "1500"
+    ANALYSIS_MAX_ENTITY_ROWS: "50000"
+    ANALYSIS_RUNS_PER_HOUR_PER_USER: "60"
+    # No internet egress from the defence network: map tiles / geocoding off.
+    OSM_MAPS_ENABLED: "false"
+    OSM_SEAMARKS_ENABLED: "false"
+    OSM_TERRAIN_ENABLED: "false"
+    OSM_GEOCODER_PROVIDER: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  nodeSelector:
+    agentpool: apps
+  networkPolicy:
+    enabled: false
+
+jeen-insights-analytics:
+  enabled: true
+  fullnameOverride: jeen-insights-analytics
+  image:
+    repository: acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-analytics
+    pullPolicy: IfNotPresent
+  env:
+    ANALYSIS_SANDBOX_AUDIENCE: jeen-insights-analytics
+    ANALYSIS_TIMEOUT_SECONDS: "30"
+    ANALYSIS_MEMORY_MB: "1024"
+    ANALYSIS_MAX_SERIES_ROWS: "1500"
+    ANALYSIS_MAX_CONCURRENT: "2"
+  nodeSelector:
+    agentpool: apps
+  # Ingress from the API pods only, no egress (enforced when the cluster's
+  # CNI implements NetworkPolicy; otherwise inert).
+  networkPolicy:
+    enabled: true
+
+jeen-insights-ui:
+  enabled: true
+  fullnameOverride: jeen-insights-ui
+  image:
+    repository: acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-ui
+    pullPolicy: IfNotPresent
+  apiBaseUrl: http://jeen-insights-api:8000
+  env:
+    UI_PORT: "8501"
+    RATELIMIT_STORAGE_URI: memory://
+    # Browser-facing URL over the VPN (internal DNS record → LoadBalancer IP).
+    # Plain HTTP like the other apps in this cluster, so the session cookie
+    # must not be marked Secure.
+    PUBLIC_APP_URL: http://jeen-insights.dev161.internal
+    SESSION_COOKIE_SECURE: "false"
+    # Local accounts for the first deployment; Entra/Keycloak SSO later.
+    AZURE_AD_CLIENT_ID: ""
+    AZURE_AD_TENANT_ID: ""
+    AZURE_AD_REDIRECT_URI: ""
+  service:
+    port: 80
+    type: LoadBalancer
+    annotations:
+      service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+  ingress:
+    enabled: false
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  nodeSelector:
+    agentpool: apps
+  networkPolicy:
+    enabled: false

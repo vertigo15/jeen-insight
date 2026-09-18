@@ -46,8 +46,11 @@ class InsightsManager {
      * @param {string} question - Original user question
      * @param {string|null} queryId - Query ID for linking to history (optional)
      * @param {string|null} sql - SQL that produced the results (optional)
+     * @param {Object|null} analysis - ML ResultEnvelope (skill/facts/...). When
+     *   present the server builds algorithm-aware findings + follow-ups from the
+     *   engine facts and a grounded summary, instead of the row-based path.
      */
-    async generateInsights(results, question, queryId = null, sql = null) {
+    async generateInsights(results, question, queryId = null, sql = null, analysis = null) {
         const container = this._getContainer();
         if (!container) {
             console.error('[InsightsManager] Insights container not found');
@@ -79,6 +82,9 @@ class InsightsManager {
         if (queryId) requestBody.query_id = queryId;
         // Forward the SQL so the server can use the LangGraph eval node.
         if (sql) requestBody.sql = sql;
+        // Forward the ML analysis envelope so the server narrates from the engine
+        // facts (algorithm-aware) rather than the raw result rows.
+        if (analysis && analysis.skill) requestBody.analysis = analysis;
 
         this._devTrace('running', {
             detail: sql

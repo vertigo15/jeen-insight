@@ -45,7 +45,7 @@ from src.agent.token_usage import merge_usage
 
 logger = logging.getLogger(__name__)
 
-_VALID_ROUTES = frozenset({"needs_query", "needs_analysis", "from_memory", "out_of_scope", "unsafe"})
+_VALID_ROUTES = frozenset({"needs_query", "needs_analysis", "from_memory", "capability", "out_of_scope", "unsafe"})
 
 # ── Greeting short-circuit ────────────────────────────────────────────────────
 # Simple inputs that are clearly social/conversational are caught locally before

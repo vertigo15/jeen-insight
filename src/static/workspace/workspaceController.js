@@ -628,6 +628,12 @@
             if (llmTimeout !== null && llmTimeout !== undefined) payload.llm_timeout = llmTimeout;
             // "Answer with SQL instead": skip the ML route for this one question.
             if (options.analysis === false) payload.analysis = false;
+            // Filter clarifications: the answer to "which field / which value did
+            // you mean" is remembered for the conversation and sent with every
+            // later question so the grounder never asks the same thing twice.
+            if (options.filterChoice) this._rememberFilterChoice(payload.session_id, options.filterChoice);
+            const choices = this._filterChoicesFor(payload.session_id);
+            if (choices.length) payload.filter_choices = choices;
 
             const stale = () => generation !== this._generation;
             try {
@@ -651,6 +657,86 @@
                     this.render();
                 }
             }
+        },
+
+        _filterChoicesFor(sessionId) {
+            const key = sessionId || '_pending';
+            return (this._filterChoices && this._filterChoices[key]) || [];
+        },
+
+        _rememberFilterChoice(sessionId, choice) {
+            if (!choice || !choice.literal) return;
+            const key = sessionId || '_pending';
+            this._filterChoices = this._filterChoices || {};
+            const list = (this._filterChoices[key] || []).filter((c) => String(c.literal).toLowerCase() !== String(choice.literal).toLowerCase());
+            list.push(choice);
+            this._filterChoices[key] = list.slice(-20);
+        },
+
+        /** Structured "which field / which value did you mean" card from the grounder. */
+        _filterClarifyHtml(clarify, answer) {
+            const options = Array.isArray(clarify.options) ? clarify.options : [];
+            const buttons = options.map((option, index) => {
+                const value = option.value ? ` <small>= ${esc(option.value)}</small>` : '';
+                const title = option.description ? ` title="${esc(option.description)}"` : '';
+                return `<button type="button" class="v3-ml-alt v3-filter-option" data-filter-option="${index}"${title}>${esc(option.label)}${value}</button>`;
+            }).join('');
+            const any = clarify.allow_any && options.length > 1
+                ? '<button type="button" class="v3-ml-alt v3-filter-option" data-filter-any>Any of these fields</button>' : '';
+            const other = clarify.allow_other
+                ? '<button type="button" class="v3-text-btn" data-filter-other>Something else…</button>' : '';
+            return `<div class="v3-route-clarify v3-filter-clarify">
+              <p class="v3-ml-message" dir="${directionOf(answer)}">${esc(answer)}</p>
+              <div class="v3-ml-actions">${buttons}${any}</div>
+              ${other ? `<div class="v3-filter-other">${other}</div>` : ''}
+            </div>`;
+        },
+
+        _bindFilterClarify(root, turn, clarify) {
+            const options = Array.isArray(clarify.options) ? clarify.options : [];
+            root.querySelectorAll('[data-filter-option]').forEach((button) => button.addEventListener('click', () => {
+                const option = options[Number(button.dataset.filterOption)];
+                if (!option) return;
+                const choice = { literal: clarify.literal, table: option.table, column: option.column };
+                // A value option ("Moscow") tells the grounder the exact spelling;
+                // the question itself is re-sent unchanged so the same literal is
+                // planned again and matched to this remembered answer.
+                if (clarify.kind === 'value' && option.value) choice.value = option.value;
+                this.send(turn.question, { filterChoice: choice });
+            }));
+            root.querySelector('[data-filter-any]')?.addEventListener('click', () => {
+                this.send(turn.question, { filterChoice: { literal: clarify.literal, any: true } });
+            });
+            root.querySelector('[data-filter-other]')?.addEventListener('click', () => {
+                const input = document.getElementById('v3-composer-input') || document.querySelector('textarea, input[type="text"]');
+                if (input) { input.focus(); }
+            });
+        },
+
+        /** "Filtered by …" provenance block for the SQL dock. */
+        _filtersHtml(data) {
+            const filters = data && data.filters;
+            if (!filters) return '';
+            const chips = [];
+            (filters.resolved || []).forEach((f, index) => {
+                const value = Array.isArray(f.value) ? f.value.join(', ') : String(f.value ?? '');
+                const raw = f.raw_value != null && String(f.raw_value).toLowerCase() !== value.toLowerCase()
+                    ? ` <small>(from “${esc(String(f.raw_value))}”)</small>` : '';
+                const where = f.any_of_columns && f.any_of_columns.length > 1
+                    ? f.any_of_columns.join(' or ') : `${f.table}.${f.column}`;
+                const evidence = f.evidence ? ` <span class="v3-filter-evidence" title="verified via ${esc(f.evidence)}${f.tier ? ' ' + esc(f.tier) : ''}">${esc(f.evidence)}</span>` : '';
+                // Other fields that hold this value: one click re-asks with that field.
+                const switches = (f.alternatives || []).map((alt, altIndex) =>
+                    `<button type="button" class="v3-filter-switch" data-filter-switch="${index}:${altIndex}" title="Filter on ${esc(alt.table)}.${esc(alt.column)} instead">use ${esc(alt.table)}.${esc(alt.column)}</button>`).join('');
+                chips.push(`<span class="v3-filter-chip is-verified">${esc(where)} ${esc(f.op === 'in' ? 'in' : f.op === 'contains' ? 'contains' : '=')} <strong>${esc(value)}</strong>${raw}${evidence}${switches}</span>`);
+            });
+            (filters.unverified || []).forEach((f) => {
+                const value = Array.isArray(f.value) ? f.value.join(', ') : String(f.value ?? '');
+                chips.push(`<span class="v3-filter-chip is-unverified" title="${esc(f.reason || 'not verified')}">${esc(`${f.table || ''}.${f.column || ''}`)} ≈ <strong>${esc(value)}</strong> <small>unverified</small></span>`);
+            });
+            if (!chips.length && !(filters.assumptions || []).length) return '';
+            const notes = (filters.assumptions || []).map((a) => `<div class="v3-filter-note">${esc(a)}</div>`).join('');
+            return `<div class="v3-filtered-by"><div class="v3-filtered-by-title">Filtered by</div><div class="v3-filter-chips">${chips.join('')}</div>${notes}</div>`;
         },
 
         async _stream(payload, onEvent, signal) {
@@ -1464,10 +1550,14 @@
                 ? `guard: ${failed.map((g) => g.name).join(', ') || 'refused'} · 0 rows sent`
                 : kind === 'clarify' ? 'one question before running' : 'confirm before running';
             document.getElementById('v3-result-title').textContent = turn.question;
-            document.getElementById('v3-meta-row').innerHTML = `
-              <span class="v3-status${kind === 'guard' ? ' is-blocked' : ''}">${statusLabel}</span>
-              ${skill ? `<span class="v3-skill-chip">${esc(skill)}</span>` : ''}
-              <span class="v3-result-meta">${esc(meta)}${turn.restored ? ' · restored' : ''}</span>`;
+            // Guard keeps a status strip (it saves to history and reads as a result);
+            // confirm/clarify lead with the Planning line inside the card, so the strip
+            // stays out of the way — matching the skill-states mockup.
+            document.getElementById('v3-meta-row').innerHTML = kind === 'guard'
+                ? `<span class="v3-status is-blocked">${statusLabel}</span>
+                   ${skill ? `<span class="v3-skill-chip">${esc(skill)}</span>` : ''}
+                   <span class="v3-result-meta">${esc(meta)}${turn.restored ? ' · restored' : ''}</span>`
+                : (turn.restored ? '<span class="v3-result-meta">restored</span>' : '');
             placeholder.innerHTML = window.JeenAnalysisUI
                 ? window.JeenAnalysisUI.proposalHtml(proposal)
                 : `<strong>${esc(statusLabel)}</strong><span>${esc(textOf(data.answer))}</span>`;
@@ -1548,6 +1638,9 @@
                 }
             }));
             card.querySelector('[data-sql-instead]')?.addEventListener('click', () => this.send(turn.question, { analysis: false }));
+            // "Use a different skill": return the cursor to the composer so the user can
+            // rephrase toward another analysis (same intent as the clarify switch_skill exit).
+            card.querySelector('[data-switch-skill]')?.addEventListener('click', () => this.input?.focus());
         },
 
         _analysisConnection() {
@@ -1701,11 +1794,22 @@
             if (this._placeholderDefault === null) this._placeholderDefault = placeholder.innerHTML;
             const data = turn.result || {};
             const answer = textOf(data.answer);
+            const filterClarify = data.filter_clarification;
             document.getElementById('v3-result-title').textContent = turn.question;
-            document.getElementById('v3-meta-row').innerHTML = `
-              <span class="v3-status">Answered</span>
-              <span class="v3-result-meta">text answer${turn.restored ? ' · restored' : ''}</span>`;
-            placeholder.innerHTML = `<strong>Answer</strong><span dir="${directionOf(answer)}">${esc(answer || 'No data was needed for this answer.')}</span>`;
+            if (filterClarify && Array.isArray(filterClarify.options)) {
+                // The grounder could not tell which field (or which value) a word
+                // of the question meant: offer the candidates instead of guessing.
+                document.getElementById('v3-meta-row').innerHTML = `
+                  <span class="v3-status">Needs a choice</span>
+                  <span class="v3-result-meta">${filterClarify.kind === 'column' ? 'which field?' : 'which value?'}</span>`;
+                placeholder.innerHTML = this._filterClarifyHtml(filterClarify, answer);
+                this._bindFilterClarify(placeholder, turn, filterClarify);
+            } else {
+                document.getElementById('v3-meta-row').innerHTML = `
+                  <span class="v3-status">Answered</span>
+                  <span class="v3-result-meta">text answer${turn.restored ? ' · restored' : ''}</span>`;
+                placeholder.innerHTML = `<strong>Answer</strong><span dir="${directionOf(answer)}">${esc(answer || 'No data was needed for this answer.')}</span>`;
+            }
             placeholder.hidden = false;
             document.getElementById('v3-chart-block').hidden = true;
             document.getElementById('v3-table-block').hidden = true;
@@ -2023,6 +2127,14 @@
             body.querySelector('[data-copy-sql]')?.addEventListener('click', () => navigator.clipboard.writeText(turn.result.sql || ''));
             body.querySelector('[data-full-profile]')?.addEventListener('click', () => this._openFullProfile());
             body.querySelector('[data-dev-details]')?.addEventListener('click', () => document.getElementById('dev-panel-btn')?.click());
+            body.querySelectorAll('[data-filter-switch]').forEach((button) => button.addEventListener('click', () => {
+                const [i, j] = String(button.dataset.filterSwitch).split(':').map(Number);
+                const filter = ((turn.result || {}).filters || {}).resolved?.[i];
+                const alt = filter && (filter.alternatives || [])[j];
+                if (!filter || !alt) return;
+                const literal = filter.raw_value != null ? String(filter.raw_value) : (Array.isArray(filter.value) ? filter.value[0] : String(filter.value));
+                this.send(turn.question, { filterChoice: { literal, table: alt.table, column: alt.column } });
+            }));
         },
 
         _sqlHtml(turn) {
@@ -2041,6 +2153,7 @@
                 ['Retries', metrics.retry_count == null ? '—' : metrics.retry_count],
             ];
             return `<div class="v3-stats">${stats.map(([label, value]) => `<div class="v3-stat"><div class="v3-stat-label">${label}</div><div class="v3-stat-value">${esc(value)}</div></div>`).join('')}</div>
+              ${this._filtersHtml(data)}
               <div class="v3-sql-card">
                 <div class="v3-sql-provenance">generated · ${validation} · read-only <button data-dev-details>Developer details</button><button data-copy-sql>Copy</button></div>
                 <pre>${esc(data.sql || '-- No SQL or DAX was generated for this answer.')}</pre>

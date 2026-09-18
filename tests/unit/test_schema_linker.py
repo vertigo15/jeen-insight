@@ -195,3 +195,30 @@ class TestRelationshipExpansion:
         # Both related tables should appear.
         assert "Orders" in out["tables"]
         assert "Customers" in out["tables"]
+
+
+class TestStructuredRelationships:
+    def test_structured_edges_use_table_components_only(self):
+        from src.metadata.schema_linker import _build_adjacency
+
+        tables = {"fact_sales", "dim_store", "store", "orders", "dim_status", "status"}
+        text = "[('fact_sales.store -> dim_store.id',), ('orders.status -> dim_status.code',)]"
+        adjacency = _build_adjacency(text, tables)
+        assert adjacency["fact_sales"] == {"dim_store"}
+        assert adjacency["orders"] == {"dim_status"}
+        # A column that happens to share a table's name is not an edge.
+        assert adjacency["store"] == set() and adjacency["status"] == set()
+
+    def test_structured_line_with_an_uncatalogued_table_adds_no_edge_at_all(self):
+        from src.metadata.schema_linker import _build_adjacency
+
+        tables = {"fact_sales", "store"}
+        adjacency = _build_adjacency("[('fact_sales.store -> archived_dim_store.id',)]", tables)
+        assert adjacency["fact_sales"] == set() and adjacency["store"] == set()
+
+    def test_legacy_prose_still_yields_pairwise_edges(self):
+        from src.metadata.schema_linker import _build_adjacency
+
+        tables = {"fact_sales", "dim_store"}
+        adjacency = _build_adjacency("[('fact_sales joins dim_store on store_id',)]", tables)
+        assert adjacency["fact_sales"] == {"dim_store"}
