@@ -652,7 +652,7 @@ export class ChartManager {
         if (!this.state.isEChartsLoaded) {
             await this.loadECharts();
         }
-        displayConfig = this._withWorkspaceTheme(displayConfig);
+        displayConfig = this._finalizeForRender(this._withWorkspaceTheme(displayConfig));
         await ensureMapsForOption(displayConfig);
 
         const chartConfig = {
@@ -735,8 +735,18 @@ export class ChartManager {
         this._renderDisplayConfig(displayConfig, 'Failed to apply palette');
     }
 
+    /**
+     * Last step before an ECharts render: restore the function formatters that
+     * the JSON deep-clones in the palette / theme / toggle steps drop.
+     */
+    _finalizeForRender(displayConfig) {
+        if (!displayConfig || this._isOsmMapOption(displayConfig)) return displayConfig;
+        return this._applyValueFormatting(displayConfig);
+    }
+
     /** Render an already-prepared option and record it as the current state. */
     _renderDisplayConfig(displayConfig, errorLabel) {
+        displayConfig = this._finalizeForRender(displayConfig);
         const chartConfig = {
             type: this._optionChartType(displayConfig),
             options: displayConfig,
@@ -947,7 +957,9 @@ export class ChartManager {
         if (this.chartOptionsPanel) {
             this.chartOptionsPanel.syncTogglesFromConfig(withDerived);
         }
-        const displayConfig = this._withWorkspaceTheme(this._withQuickToggles(withDerived));
+        const displayConfig = this._finalizeForRender(
+            this._withWorkspaceTheme(this._withQuickToggles(withDerived))
+        );
 
         const chartConfig = {
             type: this._optionChartType(displayConfig),
@@ -1605,10 +1617,17 @@ export class ChartManager {
     }
 
     /**
-     * Attach the compact/currency/percent value formatter to value axes and the
-     * tooltip, driven by the server's `jeenFormat` hint. The hint is remembered
-     * so chat-edited configs (which may drop it) keep consistent formatting.
-     * Mutates and returns the option object; strips `jeenFormat` before ECharts.
+     * Attach the compact/currency/percent value formatter to value axes, data
+     * labels, gauges and the tooltip, driven by the server's `jeenFormat` hint.
+     * The hint is remembered so chat-edited configs (which may drop it) keep
+     * consistent formatting.
+     *
+     * Formatters are functions, and several later steps (palette, workspace
+     * theme, quick toggles) deep-clone the option through JSON, which silently
+     * drops them. So this is idempotent, leaves the plain-data `jeenFormat`
+     * hints in place (ECharts ignores unknown keys, like `jeenRole`), and is
+     * re-run as the last step before every render — see `_finalizeForRender`.
+     * Mutates and returns the option object.
      */
     _applyValueFormatting(options) {
         if (!options || typeof options !== 'object') return options;
@@ -1620,7 +1639,6 @@ export class ChartManager {
                 symbol: options.jeenFormat.symbol || '',
                 scale: options.jeenFormat.scale,
             };
-            delete options.jeenFormat;
         }
         const primaryMeta = this._valueFormat || { kind: 'number', compact: true, symbol: '' };
         const primaryFmt = makeValueFormatter(primaryMeta);
@@ -1641,7 +1659,6 @@ export class ChartManager {
                 const f = axis.jeenFormat ? makeValueFormatter(axis.jeenFormat) : primaryFmt;
                 axis.axisLabel = { ...(axis.axisLabel || {}), formatter: f };
             }
-            if (axis.jeenFormat) delete axis.jeenFormat;
         };
         applyAxis(options.xAxis);
         applyAxis(options.yAxis);
@@ -1652,6 +1669,7 @@ export class ChartManager {
         const series = Array.isArray(options.series) ? options.series : [];
         const seriesFmts = [];
         let perSeriesDiff = false;
+        let hasGauge = false;
         series.forEach((s, i) => {
             if (!s || typeof s !== 'object') { seriesFmts[i] = primaryFmt; return; }
             let f = primaryFmt;
@@ -1660,7 +1678,6 @@ export class ChartManager {
                 meta = s.jeenFormat;
                 f = makeValueFormatter(meta);
                 perSeriesDiff = true;
-                delete s.jeenFormat;
             }
             seriesFmts[i] = f;
             if ((s.type === 'bar' || s.type === 'line' || s.type === 'scatter')
@@ -1674,6 +1691,13 @@ export class ChartManager {
                 if (s.label.fontSize == null) s.label.fontSize = 11;
                 // Drop labels that would collide instead of overprinting them.
                 if (!s.labelLayout) s.labelLayout = { hideOverlap: true };
+            } else if (s.type === 'gauge') {
+                // The server emits "{value}" templates for gauges; the big
+                // KPI number and the dial ticks read as 4.1M / 500K, not
+                // 4147192.9 / 500000.
+                hasGauge = true;
+                s.detail = { ...(s.detail || {}), formatter: (v) => f(v) };
+                s.axisLabel = { ...(s.axisLabel || {}), formatter: (v) => f(v) };
             }
         });
 
@@ -1685,7 +1709,17 @@ export class ChartManager {
         }
 
         const tip = options.tooltip;
-        if (tip && !Array.isArray(tip) && typeof tip.formatter !== 'string') {
+        if (hasGauge && tip && !Array.isArray(tip)) {
+            // Gauge tooltips arrive as a "{b}: {c}" template, which would print
+            // the raw number; replace it with the same formatter as the dial.
+            tip.formatter = (params) => {
+                const p = Array.isArray(params) ? params[0] : params;
+                const f = seriesFmts[p?.seriesIndex ?? 0] || primaryFmt;
+                const name = (p && (p.name || p.seriesName)) || '';
+                return `${p?.marker || ''} ${name}: ${f(pickValue(p))}`.trim();
+            };
+            delete tip.valueFormatter;
+        } else if (tip && !Array.isArray(tip) && typeof tip.formatter !== 'string') {
             const isAxis = tip.trigger === 'axis';
             const hasPairs = series.some((s) => s && Array.isArray(s.data)
                 && s.data.length && Array.isArray(s.data[0]));
