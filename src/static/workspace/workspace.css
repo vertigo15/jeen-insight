@@ -179,6 +179,10 @@ body.v3-ready > .app-layout { display: none !important; }
 }
 .v3-conversation[hidden] { display: none !important; }
 .v3-tabs-wrap { padding: 4px 18px 12px; }
+.v3-tabs-wrap[hidden] { display: none; }
+/* With the tab bar hidden (default), give the panel a little breathing room
+   below the top bar so the first message / search field is not flush against it. */
+.v3-conversation.v3-tabs-hidden .v3-panel { padding-top: 8px; }
 .v3-tabs {
   display: flex;
   gap: 4px;

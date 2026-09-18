@@ -1529,6 +1529,11 @@ export class SettingsPage {
                     <select class="settings-select" id="sp-rowlimit">
                         ${[25,100,500,1000].map(n=>`<option value="${n}"${prefs.rowLimit===n?' selected':''}>${n} rows</option>`).join('')}
                     </select>`)}
+                ${this._row('Conversation tabs', 'Show the Conversation / Tables / Pinned / History tab bar above the chat. All of these are always available from the side rail.', `
+                    <select class="settings-select" id="sp-convtabs">
+                        <option value="hide"${prefs.conversationTabs==='hide'?' selected':''}>Hidden (default)</option>
+                        <option value="show"${prefs.conversationTabs==='show'?' selected':''}>Shown</option>
+                    </select>`)}
             </div>
             <div class="sp-card">
                 <div class="sp-card-title">Chart &amp; Insights</div>
@@ -1568,6 +1573,10 @@ export class SettingsPage {
             if (this._onApplyTheme) this._onApplyTheme(e.target.value);
         });
         this._content.querySelector('#sp-rowlimit')?.addEventListener('change', e => Preferences.setRowLimit(e.target.value));
+        this._content.querySelector('#sp-convtabs')?.addEventListener('change', e => {
+            Preferences.setConversationTabs(e.target.value);
+            _applyConversationTabs(e.target.value);
+        });
         this._content.querySelector('#sp-charttype')?.addEventListener('change', e => Preferences.setChartType(e.target.value));
         this._content.querySelector('#sp-insights')?.addEventListener('change', e => Preferences.setAutoInsights(e.target.value));
         this._content.querySelector('#sp-temp')?.addEventListener('change', e => Preferences.setTemperature(e.target.value));
@@ -1576,6 +1585,7 @@ export class SettingsPage {
             Preferences.resetAll();
             this._renderGeneral();
             if (this._onApplyTheme) this._onApplyTheme(Preferences.DEFAULTS.theme);
+            _applyConversationTabs(Preferences.DEFAULTS.conversationTabs);
         });
     }
 
@@ -3084,6 +3094,11 @@ function _esc(text) {
     const d = document.createElement('div');
     d.textContent = String(text || '');
     return d.innerHTML;
+}
+
+/** Tell the live workspace (workspaceController.js) to show/hide the chat tab bar. */
+function _applyConversationTabs(value) {
+    document.dispatchEvent(new CustomEvent('jeen:conversation-tabs', { detail: { visible: value === 'show' } }));
 }
 
 function _prettyJson(value) {

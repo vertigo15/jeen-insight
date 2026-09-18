@@ -48,6 +48,13 @@
         observability_log: 'save',
     };
 
+    // Mirrors the 'conversationTabs' preference owned by settings/preferences.js.
+    // Read raw here because that module is imported asynchronously after this
+    // script has already mounted the shell; hidden is the default.
+    function conversationTabsPreferred() {
+        try { return localStorage.getItem('conversationTabs') === 'show'; } catch (_) { return false; }
+    }
+
     const esc = (value) => {
         if (typeof window.escapeHtml === 'function') return window.escapeHtml(String(value == null ? '' : value));
         return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({
@@ -233,6 +240,8 @@
                 target?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             });
             document.addEventListener('jeen:osm-map-ready', () => this.renderTable());
+            document.addEventListener('jeen:conversation-tabs', (event) => this.setTabsVisible(!!event.detail?.visible));
+            this.setTabsVisible(conversationTabsPreferred());
             this.setTab('conversation');
             this._renderEmptySuggestions();
             this._applyResponsive();
@@ -532,6 +541,18 @@
             if (tab === 'tables' && typeof window.loadTables === 'function') window.loadTables();
             if (tab === 'pinned' && typeof window.displayHistory === 'function') window.displayHistory();
             if (tab === 'conversations') this.loadConversationList();
+        },
+
+        /**
+         * Show or hide the Conversation / Tables / Pinned / History tab bar at
+         * the top of the chat panel. The side rail exposes the same sections,
+         * so the bar is hidden unless the user opts in from Settings > General.
+         */
+        setTabsVisible(visible) {
+            const wrap = document.querySelector('.v3-tabs-wrap');
+            if (!wrap) return;
+            wrap.hidden = !visible;
+            document.getElementById('v3-conversation')?.classList.toggle('v3-tabs-hidden', !visible);
         },
 
         toggleConversation() {
