@@ -1358,6 +1358,9 @@ def suggest_questions():
 
 @app.route("/api/settings/prompts", methods=["GET"])
 def settings_list_prompts():
+    guard = _admin_required()
+    if guard:
+        return guard
     return _proxy_get("/api/settings/prompts", timeout=10)
 
 
@@ -1369,9 +1372,60 @@ def settings_reload_prompts():
     return _proxy_post("/api/settings/prompts/reload", payload={}, timeout=10)
 
 
+@app.route("/api/settings/prompt-contexts", methods=["GET"])
+def settings_prompt_contexts():
+    guard = _admin_required()
+    if guard:
+        return guard
+    return _proxy_get("/api/settings/prompt-contexts", timeout=15)
+
+
 @app.route("/api/settings/prompts/<name>", methods=["GET"])
 def settings_get_prompt(name: str):
+    guard = _admin_required()
+    if guard:
+        return guard
     return _proxy_get(f"/api/settings/prompts/{name}", timeout=10)
+
+
+@app.route("/api/settings/prompts/<name>/resolved", methods=["GET"])
+def settings_resolve_prompt(name: str):
+    guard = _admin_required()
+    if guard:
+        return guard
+    # Resolving injects the live catalog, which may go through MCP — allow time.
+    connection = request.args.get("connection")
+    return _proxy_get(
+        f"/api/settings/prompts/{name}/resolved",
+        params={"connection": connection} if connection else None,
+        timeout=45,
+    )
+
+
+@app.route("/api/settings/prompts/<name>/versions", methods=["GET"])
+def settings_prompt_versions(name: str):
+    guard = _admin_required()
+    if guard:
+        return guard
+    return _proxy_get(f"/api/settings/prompts/{name}/versions", timeout=10)
+
+
+@app.route("/api/settings/prompts/<name>/versions/<int:version_id>", methods=["GET"])
+def settings_prompt_version(name: str, version_id: int):
+    guard = _admin_required()
+    if guard:
+        return guard
+    return _proxy_get(f"/api/settings/prompts/{name}/versions/{version_id}", timeout=10)
+
+
+@app.route("/api/settings/prompts/<name>/restore/<int:version_id>", methods=["POST"])
+def settings_restore_prompt_version(name: str, version_id: int):
+    guard = _admin_required()
+    if guard:
+        return guard
+    return _proxy_post(
+        f"/api/settings/prompts/{name}/restore/{version_id}", payload={}, timeout=10
+    )
 
 
 @app.route("/api/settings/prompts/<name>", methods=["PUT"])
@@ -1409,11 +1463,17 @@ def settings_reset_prompt(name: str):
 
 @app.route("/api/settings/models", methods=["GET"])
 def settings_list_models():
+    guard = _admin_required()
+    if guard:
+        return guard
     return _proxy_get("/api/settings/models", timeout=10)
 
 
 @app.route("/api/settings/models/health", methods=["GET"])
 def settings_models_health():
+    guard = _admin_required()
+    if guard:
+        return guard
     # ?refresh=true re-probes every provider, which can take a while.
     refresh = request.args.get("refresh", "").lower() in ("1", "true", "yes")
     return _proxy_get(
@@ -1425,6 +1485,9 @@ def settings_models_health():
 
 @app.route("/api/settings/models/active", methods=["GET"])
 def settings_get_active_model():
+    guard = _admin_required()
+    if guard:
+        return guard
     return _proxy_get("/api/settings/models/active", timeout=10)
 
 
@@ -1452,6 +1515,9 @@ def settings_app_info():
 
 @app.route("/api/settings/runtime", methods=["GET"])
 def settings_get_runtime():
+    guard = _admin_required()
+    if guard:
+        return guard
     return _proxy_get("/api/settings/runtime", timeout=10)
 
 

@@ -3,13 +3,20 @@
  *
  * Full-screen two-column layout:
  *   Left  — grouped navigation (like the reference design)
- *   Right — content area (General params · Prompt editor · About)
+ *   Right — content area (General params · Prompts list/editor · About)
  *
  * Navigation groups
  * -----------------
- *   USER        General (runtime preferences)
- *   AI AGENT    9 LangGraph prompts
+ *   USER        General (personal prefs) + admin-only workspace settings
+ *   AI AGENT    Prompts — one entry; the list of editable prompts comes from
+ *               GET /api/settings/prompts (list → editor with a back link)
  *   OTHER       At the bottom — About · Logout · Close
+ *
+ * Rendering discipline
+ * --------------------
+ *   Every renderer starts with `_onTab(id)` and re-checks `_renderSeq` after
+ *   each await, so a slow fetch (or a stale event handler) can never paint
+ *   over the tab the user has since switched to.
  *
  * @module settingsPage
  */
@@ -27,41 +34,37 @@ const ICONS = {
     logout:   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`,
     catalog:  `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>`,
     link:     `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
+    shield:   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>`,
+    plug:     `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a6 6 0 0 1-12 0V8z"/></svg>`,
 };
 
 // ── Navigation definition ─────────────────────────────────────────────────────
 const ICONS_USERS = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`;
 
+// Workspace-wide settings (catalog source, global LLM, guardrails, prompts)
+// are admin-only: every write behind them is admin-gated server-side, and
+// /api/mcp/* is admin-only even for reads, so showing them to members only
+// produces blank panes and 403 toasts.
 const NAV = [
         {
         group: 'USER',
         items: [
-            { id: 'general',           label: 'General',              icon: ICONS.general,  type: 'general' },
-            { id: 'metadata-catalog',  label: 'Metadata & Catalog',   icon: ICONS.catalog,  type: 'metadata-catalog' },
-            { id: 'ai-models',         label: 'AI Models',            icon: ICONS.models,   type: 'ai-models' },
-            { id: 'query-safety',      label: 'Query & Safety',       icon: ICONS.general,  type: 'query-safety' },
-            { id: 'my-connections',    label: 'My Connections',       icon: ICONS.link,     type: 'my-connections', gate: 'connections' },
-            { id: 'integrations',      label: 'Integrations',         icon: ICONS.link,     type: 'integrations', gate: 'admin' },
-            { id: 'users',             label: 'Users',                icon: ICONS_USERS,    type: 'users', gate: 'admin' },
+            { id: 'general',           label: 'General',              icon: ICONS.general },
+            { id: 'metadata-catalog',  label: 'Metadata & Catalog',   icon: ICONS.catalog,  gate: 'admin' },
+            { id: 'ai-models',         label: 'AI Models',            icon: ICONS.models,   gate: 'admin' },
+            { id: 'query-safety',      label: 'Query & Safety',       icon: ICONS.shield,   gate: 'admin' },
+            { id: 'my-connections',    label: 'My Connections',       icon: ICONS.link,     gate: 'connections' },
+            { id: 'integrations',      label: 'Integrations',         icon: ICONS.plug,     gate: 'admin' },
+            { id: 'users',             label: 'Users',                icon: ICONS_USERS,    gate: 'admin' },
         ],
     },
     {
         group: 'AI AGENT',
         items: [
-            { id: 'prompt:jeen_insights_system', label: 'System Prompt', icon: ICONS.prompt, type: 'prompt' },
-            { id: 'prompt:fused_router',         label: 'Router',         icon: ICONS.prompt, type: 'prompt' },
-            { id: 'prompt:fused_eval_analytics', label: 'Eval & Analytics', icon: ICONS.prompt, type: 'prompt' },
-            { id: 'prompt:memory_answer',        label: 'Memory Answer',  icon: ICONS.prompt, type: 'prompt' },
-            { id: 'prompt:prior_data_binder',    label: 'Prior Data Binder', icon: ICONS.prompt, type: 'prompt' },
-            { id: 'prompt:sql_generator',        label: 'SQL Retry',      icon: ICONS.prompt, type: 'prompt' },
-        ],
-    },
-    {
-        group: 'OTHER FEATURES',
-        items: [
-            { id: 'prompt:chart_editor',             label: 'Chart Editor',  icon: ICONS.prompt, type: 'prompt' },
-            { id: 'prompt:insights',                 label: 'Insights',      icon: ICONS.prompt, type: 'prompt' },
-            { id: 'prompt:autocomplete_suggestions', label: 'Autocomplete',  icon: ICONS.prompt, type: 'prompt' },
+            // One entry for every editable prompt; the list itself comes from
+            // GET /api/settings/prompts so new registry entries appear without
+            // touching this file.
+            { id: 'prompts', label: 'Prompts', icon: ICONS.prompt, gate: 'admin' },
         ],
     },
 ];
@@ -79,7 +82,13 @@ export class SettingsPage {
         this._root       = null;    // overlay wrapper
         this._content    = null;    // right content panel
         this._activeId   = 'general';
+        // Monotonic render generation. Bumped on every tab switch so a renderer
+        // that resumes after an await can tell the user has moved on.
+        this._renderSeq  = 0;
         this._prompts    = {};      // name → {meta, content, dirty, editing}
+        this._promptOpen = null;    // prompt name shown in the editor, or null for the list
+        this._promptsLoading = null; // in-flight _loadPrompts() promise (shared, never duplicated)
+        this._promptsError = null;  // last _loadPrompts() failure message, if any
         this._models     = null;    // cached model list (Array)
         this._onApplyTheme = null;
         this._promptContexts = null; // connection choices for resolved prompt view
@@ -119,7 +128,8 @@ export class SettingsPage {
         this._open = true;
         document.body.style.overflow = 'hidden';
         this._applyNavGating();
-        this._loadPrompts();
+        // Prompt metadata is admin-only server-side; don't fetch it for members.
+        if (_isAdmin()) this._loadPrompts();
         // If the previously-active section is now gated off, fall back to General.
         const activeEl = this._root.querySelector(`.sp-nav-item[data-id="${this._activeId}"]`);
         if (activeEl && activeEl.hidden) this._activeId = 'general';
@@ -128,9 +138,28 @@ export class SettingsPage {
 
     close() {
         if (!this._open) return;
+        if (!this._confirmLeavePrompt()) return;
         this._root.hidden = true;
         this._open = false;
         document.body.style.overflow = '';
+    }
+
+    /** True while Settings is open on tab `id` — renderers bail out otherwise. */
+    _onTab(id) { return this._open && this._activeId === id; }
+
+    /**
+     * Guard every exit from a dirty prompt editor (back link, nav click, Close,
+     * Escape). Returns false when the user chose to stay.
+     */
+    _confirmLeavePrompt() {
+        const name = this._promptOpen;
+        const entry = name ? this._prompts[name] : null;
+        if (!entry || !entry.editing || !entry.dirty) return true;
+        const label = entry.meta?.label || name;
+        if (!confirm(`Discard unsaved changes to ${label}?`)) return false;
+        entry.editing = false;
+        entry.dirty = false;
+        return true;
     }
 
     toggle() { this._open ? this.close() : this.open(); }
@@ -232,11 +261,15 @@ export class SettingsPage {
 
     _buildNavItem(item) {
         const el = document.createElement('button');
+        el.type = 'button';
         el.className = 'sp-nav-item';
         el.dataset.id = item.id;
+        // Labels are hidden at narrow widths; the tooltip is the only hint left.
+        el.title = item.label;
         if (item.gate) el.dataset.gate = item.gate;
-        el.innerHTML = `${item.icon}<span class="sp-nav-label">${_esc(item.label)}</span><span class="sp-nav-dot" hidden></span>`;
-        el.addEventListener('click', () => this._activate(item.id));
+        el.innerHTML = `${item.icon}<span class="sp-nav-label">${_esc(item.label)}</span>`
+            + `<span class="sp-nav-count" hidden></span><span class="sp-nav-dot" hidden></span>`;
+        el.addEventListener('click', () => this._activate(item.id, { fromNav: true }));
         return el;
     }
 
@@ -257,12 +290,25 @@ export class SettingsPage {
 
     // ── Navigation ────────────────────────────────────────────────────────────
 
-    _activate(id) {
+    _activate(id, { fromNav = false } = {}) {
+        // Leaving a dirty prompt editor needs consent, whichever tab is next.
+        if (fromNav && this._promptOpen && id !== this._activeId && !this._confirmLeavePrompt()) return;
+        // Clicking "Prompts" in the sidebar always returns to the list; only
+        // open()/re-render keep the remembered editor.
+        if (id === 'prompts' && fromNav) {
+            if (this._promptOpen && !this._confirmLeavePrompt()) return;
+            this._promptOpen = null;
+        }
+
         this._activeId = id;
+        this._renderSeq += 1;
 
         // Update active state in sidebar
         this._root.querySelectorAll('.sp-nav-item').forEach(el => {
-            el.classList.toggle('is-active', el.dataset.id === id);
+            const active = el.dataset.id === id;
+            el.classList.toggle('is-active', active);
+            if (active) el.setAttribute('aria-current', 'page');
+            else el.removeAttribute('aria-current');
         });
 
         // Render content
@@ -282,56 +328,91 @@ export class SettingsPage {
             this._renderMyConnections();
         } else if (id === 'about') {
             this._renderAbout();
-        } else if (id.startsWith('prompt:')) {
-            const name = id.slice(7);
-            this._renderPrompt(name);
+        } else if (id === 'prompts') {
+            if (this._promptOpen) this._renderPrompt(this._promptOpen);
+            else this._renderPromptList();
         }
     }
 
     // ── Load prompts from API ─────────────────────────────────────────────────
 
-    async _loadPrompts() {
-        try {
-            const res = await fetch('/api/settings/prompts');
-            if (!res.ok) return;
-            const list = await res.json();
-            list.forEach(p => {
-                if (!this._prompts[p.name]) {
-                    this._prompts[p.name] = { meta: p, content: null, dirty: false, editing: false };
-                } else {
-                    this._prompts[p.name].meta = p;
-                }
-                this._updateDot(p.name, p.is_custom);
-            });
-        } catch (e) {
-            console.warn('[SettingsPage] could not load prompts:', e);
-        }
+    /**
+     * Fetch prompt metadata for every registered prompt. Shared promise so the
+     * un-awaited call in open() and the list page never race two requests.
+     */
+    _loadPrompts() {
+        if (this._promptsLoading) return this._promptsLoading;
+        this._promptsLoading = (async () => {
+            try {
+                const res = await fetch('/api/settings/prompts');
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const list = await res.json();
+                list.forEach(p => {
+                    if (!this._prompts[p.name]) {
+                        this._prompts[p.name] = { meta: p, content: null, dirty: false, editing: false };
+                    } else {
+                        this._prompts[p.name].meta = p;
+                    }
+                });
+                this._promptsError = null;
+                this._updatePromptsCount();
+            } catch (e) {
+                this._promptsError = e.message || String(e);
+                console.warn('[SettingsPage] could not load prompts:', e);
+            } finally {
+                this._promptsLoading = null;
+            }
+        })();
+        return this._promptsLoading;
     }
 
     async _fetchPromptContent(name) {
-        if (this._prompts[name]?.content !== null) return;
+        if (this._prompts[name] && this._prompts[name].content !== null) return;
+        if (!this._prompts[name]) this._prompts[name] = { meta: {}, content: null, dirty: false, editing: false };
+        const entry = this._prompts[name];
+        entry.loadError = null;
         try {
-            const res = await fetch(`/api/settings/prompts/${name}`);
-            if (!res.ok) return;
+            const res = await fetch(`/api/settings/prompts/${encodeURIComponent(name)}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
-            if (!this._prompts[name]) this._prompts[name] = {};
-            this._prompts[name].content = data.content;
-            this._prompts[name].meta = data;
+            entry.content = data.content;
+            entry.meta = data;
         } catch (e) {
+            // Leave content null: the editor must not offer Edit/Save over an
+            // empty body, or one click would wipe the prompt.
+            entry.loadError = e.message || String(e);
             console.warn('[SettingsPage] could not fetch prompt:', name, e);
         }
     }
 
-    _updateDot(name, isCustom) {
-        const btn = this._root.querySelector(`[data-id="prompt:${name}"]`);
+    /** Number of prompts whose active version is custom (not the file default). */
+    _customPromptCount() {
+        return Object.values(this._prompts).filter(p => p.meta?.is_custom).length;
+    }
+
+    /**
+     * Reflect the custom-prompt count on the "Prompts" nav item: a numeric
+     * pill at full width, the plain dot when the sidebar is icon-only.
+     */
+    _updatePromptsCount() {
+        const btn = this._root?.querySelector('.sp-nav-item[data-id="prompts"]');
         if (!btn) return;
+        const n = this._customPromptCount();
+        const pill = btn.querySelector('.sp-nav-count');
         const dot = btn.querySelector('.sp-nav-dot');
-        if (dot) dot.hidden = !isCustom;
+        if (pill) {
+            pill.hidden = n === 0;
+            pill.textContent = String(n);
+            pill.setAttribute('aria-label', `${n} custom prompt${n === 1 ? '' : 's'}`);
+        }
+        if (dot) dot.hidden = n === 0;
     }
 
     // ── AI Models ─────────────────────────────────────────────────────────────
 
     async _renderModels() {
+        if (!this._onTab('ai-models')) return;
+        const seq = this._renderSeq;
         this._content.innerHTML = `
             <div class="sp-section-header">
                 <h2 class="sp-section-title">AI Models</h2>
@@ -349,13 +430,18 @@ export class SettingsPage {
                 </div>
             </div>`;
 
+        let loadError = null;
         try {
             const res = await fetch('/api/settings/models');
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             this._models = await res.json();
         } catch (e) {
-            document.getElementById('sp-models-list').innerHTML =
-                `<p style="color:var(--color-muted)">Could not load models: ${_esc(e.message)}</p>`;
+            loadError = e;
+        }
+        if (seq !== this._renderSeq) return;
+        if (loadError) {
+            const list = document.getElementById('sp-models-list');
+            if (list) list.innerHTML = `<p style="color:var(--color-muted)">Could not load models: ${_esc(loadError.message)}</p>`;
             return;
         }
 
@@ -370,6 +456,8 @@ export class SettingsPage {
     }
 
     async _loadHealth(refresh) {
+        if (!this._onTab('ai-models')) return;
+        const seq = this._renderSeq;
         const btn = document.getElementById('sp-models-recheck');
         const summary = document.getElementById('sp-models-health-summary');
         if (btn) { btn.disabled = true; btn.textContent = refresh ? 'Checking…' : btn.textContent; }
@@ -384,6 +472,8 @@ export class SettingsPage {
                 const h = byName[m.name];
                 if (h) { m.healthy = h.healthy; m.health_detail = h.detail; }
             });
+            // The cache update above is worth keeping; the DOM is not ours anymore.
+            if (seq !== this._renderSeq) return;
             this._renderModelCards();
             if (summary) {
                 const age = data.checked_age_seconds;
@@ -395,15 +485,18 @@ export class SettingsPage {
                 summary.textContent = parts.join(' · ') + ago;
             }
         } catch (e) {
-            if (summary) summary.textContent = 'Health check unavailable';
+            if (seq === this._renderSeq && summary) summary.textContent = 'Health check unavailable';
             console.error('[SettingsPage] health load failed:', e);
         } finally {
-            const b = document.getElementById('sp-models-recheck');
-            if (b) { b.disabled = false; b.textContent = 'Re-check health'; }
+            if (seq === this._renderSeq) {
+                const b = document.getElementById('sp-models-recheck');
+                if (b) { b.disabled = false; b.textContent = 'Re-check health'; }
+            }
         }
     }
 
     _renderModelCards() {
+        if (!this._onTab('ai-models')) return;
         const container = document.getElementById('sp-models-list');
         if (!container || !this._models) return;
 
@@ -487,6 +580,8 @@ export class SettingsPage {
     // ── Metadata & Catalog ───────────────────────────────────────────────────
 
     async _renderMetadataCatalog() {
+        if (!this._onTab('metadata-catalog')) return;
+        const seq = this._renderSeq;
         // Use the active connection from the main app (localStorage) first,
         // then fall back to whatever was last viewed, then first available.
         if (!this._mcpConn) {
@@ -519,6 +614,7 @@ export class SettingsPage {
 
         // Load status
         await this._mcpLoadStatus();
+        if (seq !== this._renderSeq) return;
         this._mcpRender();
     }
 
@@ -552,6 +648,10 @@ export class SettingsPage {
     }
 
     _mcpRender() {
+        // Every MCP action handler (activate, delete, health check, tool call…)
+        // re-renders through here after its own await, so this single check is
+        // what keeps a slow MCP call from painting over another tab.
+        if (!this._onTab('metadata-catalog')) return;
         const S   = this._mcpStatus || {};
         const src = S.catalog_source || 'db';
 
@@ -1602,6 +1702,8 @@ export class SettingsPage {
     // ── Query & Safety (global runtime guardrails) ────────────────────────────
 
     async _renderQuerySafety() {
+        if (!this._onTab('query-safety')) return;
+        const seq = this._renderSeq;
         this._content.innerHTML = `
             <div class="sp-section-header">
                 <h2 class="sp-section-title">Query &amp; Safety</h2>
@@ -1617,6 +1719,7 @@ export class SettingsPage {
             data = await res.json();
         } catch (e) {
             console.error('[SettingsPage] load runtime settings failed:', e);
+            if (seq !== this._renderSeq) return;
             this._content.innerHTML = `
                 <div class="sp-section-header">
                     <h2 class="sp-section-title">Query &amp; Safety</h2>
@@ -1625,6 +1728,7 @@ export class SettingsPage {
             `;
             return;
         }
+        if (seq !== this._renderSeq) return;
 
         const b = data.bounds || {};
         const tb = b.db_statement_timeout_ms || { min: 0, max: 600000 };
@@ -1952,28 +2056,206 @@ export class SettingsPage {
             </div>`;
     }
 
+    // ── Prompts list ──────────────────────────────────────────────────────────
+
+    /** Eyebrow link shown above the editor title; returns to the prompt list. */
+    _promptBackLinkHtml() {
+        return `<button type="button" class="sp-back-link" id="sp-prompt-back">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+            Prompts
+        </button>`;
+    }
+
+    _wirePromptBackLink(name) {
+        this._content.querySelector('#sp-prompt-back')?.addEventListener('click', () => {
+            if (!this._confirmLeavePrompt()) return;
+            this._promptOpen = null;
+            // Return focus to the row the user came from so keyboard users
+            // don't lose their place in the list.
+            this._renderPromptList({ focusName: name });
+        });
+    }
+
+    /** Move focus to a list row (after a paint) unless the user has moved focus elsewhere. */
+    _focusPromptRow(name) {
+        const row = this._content.querySelector(`.sp-prompt-row[data-name="${CSS.escape(name)}"]`);
+        if (!row) return;
+        const active = document.activeElement;
+        const userMoved = active && active !== document.body && !this._content.contains(active);
+        if (userMoved) return;
+        row.focus({ preventScroll: true });
+        row.scrollIntoView({ block: 'nearest' });
+    }
+
+    _openPrompt(name) {
+        this._promptOpen = name;
+        this._renderPrompt(name).then(() => {
+            const h2 = this._content.querySelector('.sp-section-title');
+            if (h2 && this._onTab('prompts') && this._promptOpen === name) {
+                h2.setAttribute('tabindex', '-1');
+                h2.focus({ preventScroll: true });
+            }
+        });
+    }
+
+    _promptListHeader(summary) {
+        return `
+            <div class="sp-section-header">
+                <h2 class="sp-section-title">Prompts</h2>
+                <p class="sp-section-desc">Templates that drive the agent and its features. Custom prompts override the shipped defaults; a model override runs one prompt on a different model.</p>
+                ${summary ? `<div class="sp-models-toolbar"><span class="sp-models-health-summary">${summary}</span></div>` : ''}
+            </div>`;
+    }
+
+    _knownPromptMetas() {
+        return Object.values(this._prompts).map(p => p.meta).filter(m => m && m.name);
+    }
+
+    /**
+     * Paint the list immediately from whatever metadata is cached (open()
+     * usually has it), then refresh from the API and repaint if still on the
+     * list. Never leaves the previous pane on screen while a fetch is in flight.
+     */
+    async _renderPromptList({ focusName = null } = {}) {
+        if (!this._onTab('prompts')) return;
+        const seq = this._renderSeq;
+
+        const cached = this._knownPromptMetas();
+        if (cached.length) {
+            this._paintPromptList(cached);
+            if (focusName) this._focusPromptRow(focusName);
+        } else if (!this._promptsError) {
+            this._content.innerHTML = this._promptListHeader('') + `
+                <div class="sp-card sp-card--list">
+                    <ul class="sp-prompt-list" aria-hidden="true">
+                        ${Array.from({ length: 12 }, () => '<li><div class="skeleton" style="height:32px;margin:6px 0;border-radius:6px;"></div></li>').join('')}
+                    </ul>
+                </div>`;
+        }
+
+        await this._loadPrompts();
+        if (seq !== this._renderSeq || !this._onTab('prompts') || this._promptOpen) return;
+
+        const prompts = this._knownPromptMetas();
+        if (!prompts.length) {
+            this._content.innerHTML = this._promptListHeader('') + `
+                <div class="sp-card">
+                    <div class="sp-card-title">Could not load prompts — ${_esc(this._promptsError || 'no prompts returned')}</div>
+                    <div class="sp-card-footer" style="margin-top:var(--space-3)">
+                        <button type="button" class="sp-btn-ghost" id="sp-prompts-retry">Retry</button>
+                    </div>
+                </div>`;
+            this._content.querySelector('#sp-prompts-retry')?.addEventListener('click', () => this._renderPromptList());
+            return;
+        }
+        // Repainting replaces the focused row; put focus back on its successor.
+        const focusedRow = document.activeElement?.closest?.('.sp-prompt-row')?.dataset.name || focusName;
+        this._paintPromptList(prompts);
+        if (focusedRow) this._focusPromptRow(focusedRow);
+    }
+
+    _paintPromptList(prompts) {
+        // Group in order of first appearance; the registry already orders them.
+        const groups = new Map();
+        prompts.forEach(m => {
+            const g = m.group || 'Other';
+            if (!groups.has(g)) groups.set(g, []);
+            groups.get(g).push(m);
+        });
+
+        const customCount = prompts.filter(m => m.is_custom).length;
+        const overrideCount = prompts.filter(m => m.model_name).length;
+        const summaryParts = [`${prompts.length} prompts`];
+        summaryParts.push(customCount ? `${customCount} custom` : 'all at default');
+        if (overrideCount) summaryParts.push(`${overrideCount} model override${overrideCount === 1 ? '' : 's'}`);
+
+        const row = (m) => {
+            const modelLabel = m.model_name ? this._modelDisplayName(m.model_name) : '';
+            const ariaBits = [m.label || m.name];
+            if (m.is_custom) ariaBits.push('custom');
+            if (modelLabel) ariaBits.push(`runs on ${modelLabel}`);
+            const ago = m.is_custom && m.updated_at ? _relativeTime(m.updated_at) : '';
+            return `<li>
+                <button type="button" class="sp-prompt-row" data-name="${_esc(m.name)}" aria-label="${_esc(ariaBits.join(', '))}">
+                    <span class="sp-prompt-row-name">${_esc(m.label || m.name)}</span>
+                    <span class="sp-prompt-row-desc" title="${_esc(m.description || '')}">${_esc(m.description || '')}</span>
+                    <span class="sp-prompt-row-status">${m.is_custom
+                        ? `<span class="sp-badge sp-badge-custom">Custom</span>${ago ? `<span class="sp-prompt-row-ago" title="${_esc(m.updated_at)}">${_esc(ago)}</span>` : ''}`
+                        : ''}</span>
+                    <span class="sp-prompt-row-model" title="${modelLabel ? _esc(`Runs on ${modelLabel}`) : ''}">${_esc(modelLabel)}</span>
+                    <span class="sp-prompt-row-chev" aria-hidden="true">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+                    </span>
+                </button>
+            </li>`;
+        };
+
+        this._content.innerHTML = this._promptListHeader(_esc(summaryParts.join(' · '))) + Array.from(groups.entries()).map(([g, items]) => `
+            <div class="sp-card sp-card--list">
+                <h3 class="sp-card-title">${_esc(g)} <span class="sp-card-count">${items.length}</span></h3>
+                <ul class="sp-prompt-list">${items.map(row).join('')}</ul>
+            </div>`).join('');
+
+        this._content.querySelectorAll('.sp-prompt-row').forEach(btn => {
+            btn.addEventListener('click', () => this._openPrompt(btn.dataset.name));
+        });
+    }
+
+    /** Human-friendly model label for a model name, falling back to the name. */
+    _modelDisplayName(name) {
+        const m = (this._models || []).find(x => x.name === name);
+        return m ? (m.display_name || m.name) : name;
+    }
+
+    // ── Prompt editor ─────────────────────────────────────────────────────────
+
     async _renderPrompt(name) {
+        if (!this._onTab('prompts') || this._promptOpen !== name) return;
+        const seq = this._renderSeq;
         // Show loading skeleton while fetching
         if (!this._prompts[name] || this._prompts[name].content === null) {
             this._content.innerHTML = `
                 <div class="sp-section-header">
+                    ${this._promptBackLinkHtml()}
                     <div class="skeleton" style="height:24px;width:200px;margin-bottom:8px;"></div>
                     <div class="skeleton" style="height:14px;width:400px;"></div>
                 </div>
                 <div class="sp-card" style="padding:24px">
                     <div class="skeleton" style="height:400px;width:100%;border-radius:8px;"></div>
                 </div>`;
+            this._wirePromptBackLink(name);
             await this._fetchPromptContent(name);
         }
 
         // Ensure the model list is available for the model selector.
         await this._ensureModels();
         await this._ensurePromptContexts();
+        if (seq !== this._renderSeq || !this._onTab('prompts') || this._promptOpen !== name) return;
 
         const entry = this._prompts[name];
         if (!entry) return;
 
         const meta    = entry.meta || {};
+
+        // A failed fetch must never offer Edit over an empty body — one Save
+        // would overwrite the prompt with nothing.
+        if (entry.content === null) {
+            this._content.innerHTML = `
+                <div class="sp-section-header">
+                    ${this._promptBackLinkHtml()}
+                    <h2 class="sp-section-title">${_esc(meta.label || name)}</h2>
+                </div>
+                <div class="sp-card">
+                    <div class="sp-card-title">Could not load this prompt — ${_esc(entry.loadError || 'unknown error')}</div>
+                    <div class="sp-card-footer" style="margin-top:var(--space-3)">
+                        <button type="button" class="sp-btn-ghost" id="sp-prompt-retry">Retry</button>
+                    </div>
+                </div>`;
+            this._wirePromptBackLink(name);
+            this._content.querySelector('#sp-prompt-retry')?.addEventListener('click', () => this._renderPrompt(name));
+            return;
+        }
+
         const content = entry.content || '';
         const isCustom = meta.is_custom || false;
         const placeholders = meta.placeholders || _extractPlaceholders(content);
@@ -2001,6 +2283,7 @@ export class SettingsPage {
 
         this._content.innerHTML = `
             <div class="sp-section-header">
+                ${this._promptBackLinkHtml()}
                 <div class="sp-prompt-title-row">
                     <h2 class="sp-section-title">${_esc(meta.label || name)}</h2>
                     <span class="sp-badge ${isCustom ? 'sp-badge-custom' : 'sp-badge-default'}">${isCustom ? 'Custom' : 'Default'}</span>
@@ -2035,7 +2318,7 @@ export class SettingsPage {
                 <div class="sp-prompt-footer-right">
                     ${isEditing
                         ? `<button class="sp-btn-secondary" id="sp-cancel-${name}">Cancel</button>
-                           <button class="sp-btn-primary" id="sp-save-${name}" ${isDirty ? '' : ''}>Save prompt</button>`
+                           <button class="sp-btn-primary" id="sp-save-${name}" ${isDirty ? '' : 'disabled'}>Save prompt</button>`
                         : `<button class="sp-btn-secondary" id="sp-edit-${name}">Edit</button>`
                     }
                 </div>
@@ -2053,11 +2336,15 @@ export class SettingsPage {
             </details>` : ''}
         `;
 
-        // Textarea live-dirty tracking
+        this._wirePromptBackLink(name);
+
+        // Textarea live-dirty tracking; Save only lights up once something changed.
         const ta = this._content.querySelector(`#sp-prompt-ta-${name}`);
+        const saveBtn = this._content.querySelector(`#sp-save-${name}`);
         if (ta) {
             ta.addEventListener('input', () => {
                 entry.dirty = (ta.value !== content);
+                if (saveBtn) saveBtn.disabled = !entry.dirty;
             });
         }
 
@@ -2121,7 +2408,7 @@ export class SettingsPage {
         // Reset button
         this._content.querySelector(`#sp-reset-${name}`)?.addEventListener('click', async () => {
             if (!isCustom) return;
-            if (!confirm('Reset this prompt to its original default? Your custom changes will be lost.')) return;
+            if (!confirm('Reset this prompt to its original default? Your custom changes and its model override will be lost.')) return;
             await this._resetPrompt(name);
         });
 
@@ -2146,7 +2433,7 @@ export class SettingsPage {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             this._prompts[name] = { meta: data, content: data.content, dirty: false, editing: false };
-            this._updateDot(name, true);
+            this._updatePromptsCount();
             this._renderPrompt(name);
             _showToast('Prompt saved', 'success');
         } catch (e) {
@@ -2162,7 +2449,7 @@ export class SettingsPage {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             this._prompts[name] = { meta: data, content: data.content, dirty: false, editing: false };
-            this._updateDot(name, false);
+            this._updatePromptsCount();
             this._renderPrompt(name);
             _showToast('Reset to default', 'info');
         } catch (e) {
@@ -2275,7 +2562,7 @@ export class SettingsPage {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             this._prompts[name] = { meta: data, content: data.content, dirty: false, editing: false };
-            this._updateDot(name, true);
+            this._updatePromptsCount();
             this._renderPrompt(name);
             _showToast(`Restored to v${data.version - 1} (now saved as v${data.version})`, 'success');
         } catch (e) {
@@ -2289,6 +2576,7 @@ export class SettingsPage {
     // ── Integrations (admin: connector registry & authorization) ──────────────
 
     async _renderIntegrations() {
+        if (!this._onTab('integrations')) return;
         this._content.innerHTML = `
             <div class="sp-section-header">
                 <h2 class="sp-section-title">Integrations</h2>
@@ -2369,6 +2657,7 @@ export class SettingsPage {
     }
 
     async _loadIntegrationsBody(body) {
+        if (!this._onTab('integrations')) return;
         let catalog = [], connectors = [], groupRoles = [];
         try {
             const [cRes, lRes, gRes] = await Promise.all([
@@ -2803,6 +3092,7 @@ export class SettingsPage {
     // ── My Connections (user: connect/disconnect personal integrations) ───────
 
     async _renderMyConnections() {
+        if (!this._onTab('my-connections')) return;
         this._content.innerHTML = `
             <div class="sp-section-header">
                 <h2 class="sp-section-title">My Connections</h2>
@@ -2814,6 +3104,7 @@ export class SettingsPage {
     }
 
     async _loadMyConnections() {
+        if (!this._onTab('my-connections')) return;
         const list = this._content.querySelector('#sp-myconn-list');
         if (!list) return;
         let connections = [];
@@ -2876,7 +3167,7 @@ export class SettingsPage {
     }
 
     async _renderUsers() {
-        const me = window._currentUser || {};
+        if (!this._onTab('users')) return;
 
         this._content.innerHTML = `
             <div class="sp-section-header">
@@ -2914,23 +3205,31 @@ export class SettingsPage {
     }
 
     async _loadUsers() {
+        if (!this._onTab('users')) return;
+        const seq = this._renderSeq;
         try {
             const res = await fetch('/api/users');
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const users = await res.json();
+            if (seq !== this._renderSeq) return;
 
-            document.getElementById('sp-users-loading').style.display = 'none';
-            document.getElementById('sp-users-body').style.display = 'block';
+            const loading = document.getElementById('sp-users-loading');
+            const body = document.getElementById('sp-users-body');
+            if (loading) loading.style.display = 'none';
+            if (body) body.style.display = 'block';
 
             this._renderUserRows(users);
             this._wireAddForm();
         } catch (e) {
-            document.getElementById('sp-users-loading').innerHTML =
+            if (seq !== this._renderSeq) return;
+            const loading = document.getElementById('sp-users-loading');
+            if (loading) loading.innerHTML =
                 `<p style="color:var(--color-muted);font-size:13px">Could not load users: ${_esc(e.message)}</p>`;
         }
     }
 
     _renderUserRows(users) {
+        if (!this._onTab('users')) return;
         const me = window._currentUser || {};
         const ROLE_LABEL = { admin: 'Admin', editor: 'Editor', viewer: 'Viewer' };
         const tbody = document.getElementById('sp-users-rows');
@@ -3056,6 +3355,8 @@ export class SettingsPage {
     // ── About ─────────────────────────────────────────────────────────
 
     async _renderAbout() {
+        if (!this._onTab('about')) return;
+        const seq = this._renderSeq;
         this._content.innerHTML = `
             <!-- This application was developed by Eldad Hertz -->
             <div class="sp-section-header">
@@ -3071,6 +3372,7 @@ export class SettingsPage {
             const res = await fetch('/api/settings/app-info');
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const info = await res.json();
+            if (seq !== this._renderSeq) return;
             document.getElementById('sp-about-card').innerHTML = `
                 <div class="sp-card-title">${_esc(info.name)}</div>
                 <div class="sp-about-grid">
@@ -3083,7 +3385,9 @@ export class SettingsPage {
                 </div>
             `;
         } catch (e) {
-            document.getElementById('sp-about-card').innerHTML = `<p style="color:var(--color-muted)">Could not load app info.</p>`;
+            if (seq !== this._renderSeq) return;
+            const card = document.getElementById('sp-about-card');
+            if (card) card.innerHTML = `<p style="color:var(--color-muted)">Could not load app info.</p>`;
         }
     }
 }
@@ -3094,6 +3398,11 @@ function _esc(text) {
     const d = document.createElement('div');
     d.textContent = String(text || '');
     return d.innerHTML;
+}
+
+/** Client-side mirror of the server's admin gate (auth.js populates _currentUser). */
+function _isAdmin() {
+    return (window._currentUser || {}).role === 'admin';
 }
 
 /** Tell the live workspace (workspaceController.js) to show/hide the chat tab bar. */

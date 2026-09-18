@@ -78,7 +78,7 @@ def _response(current: rs.RuntimeSettings) -> RuntimeSettingsResponse:
     )
 
 
-@router.get("/runtime", response_model=RuntimeSettingsResponse)
+@router.get("/runtime", response_model=RuntimeSettingsResponse, dependencies=[Depends(require_admin)])
 async def get_runtime():
     """Return the effective runtime guardrails plus their clamp bounds."""
     current = await rs.get_runtime_settings(use_cache=False)

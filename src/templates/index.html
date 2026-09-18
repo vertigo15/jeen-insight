@@ -19,7 +19,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Hebrew:wght@400;500;600&family=Urbanist:ital,wght@0,300;0,400;0,500;0,600;0,700;0,900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=101">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=102">
     <link rel="stylesheet" href="{{ url_for('static', filename='workspace/workspace.css') }}?v=13">
     <link rel="stylesheet" href="{{ url_for('static', filename='workspace/onboarding.css') }}?v=4">
     <!-- CodeMirror 6 via ESM — exposes window.CodeMirrorService -->
@@ -428,7 +428,7 @@
 <script src="{{ url_for('static', filename='workspace/onboarding.js') }}?v=6"></script>
 <!-- Settings page (full-screen) -->
 <script type="module">
-  import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=58';
+  import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=59';
   const _sp = new SettingsPage();
   _sp.mount({
       onApplyTheme: (t) => {

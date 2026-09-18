@@ -5,9 +5,10 @@ Covers:
   1. Settings button opens the full-screen overlay
   2. All sidebar nav items are present
   3. General section – preference controls render with options
-  4. AI Models section – model cards load (available + unavailable)
-  5. Each AI Agent prompt – content loads, placeholder chips shown
-  6. Each Other Features prompt – content loads
+  4. AI Models section – model cards load (chat models only)
+  5. Prompts section – grouped list of every registered prompt; each row opens
+     the editor (content, badge, description) and the back link returns to the
+     row that was opened
   7. About section – app info fields populated
   8. Close button dismisses the overlay
   9. Escape key also closes the overlay
@@ -16,7 +17,7 @@ Run from the repo root:
     python tests/integration/test_settings_selenium.py
 
 Or via pytest (requires a running app at http://localhost:8501):
-    pytest tests/integration/test_settings_selenium.py -v -s
+    SETTINGS_TEST_PASSWORD=admin pytest tests/integration/test_settings_selenium.py -v -s
 """
 
 from __future__ import annotations
@@ -35,41 +36,49 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-APP_URL = "http://localhost:8501"
+APP_URL = os.environ.get("SETTINGS_TEST_APP_URL", "http://localhost:8501")
+# The seeded admin password differs between deployments (migration 010 rotates
+# it); the local docker-compose stack uses ``admin``.
+ADMIN_EMAIL = os.environ.get("SETTINGS_TEST_EMAIL", "admin")
+ADMIN_PASSWORD = os.environ.get("SETTINGS_TEST_PASSWORD", "ChangeMe123!")
 SHORT_WAIT = 5   # seconds – fast DOM checks
-LONG_WAIT  = 15  # seconds – async data fetches
+# Async data fetches go UI → API → remote Postgres; a cold pool alone can take
+# ~5 s, and the workspace's own initial loads compete for the same connection.
+LONG_WAIT  = 30  # seconds
 SCREENSHOT_DIR = "tests/screenshots/settings"
 
-# Nav item data-id values we expect in the sidebar
+# Nav item data-id values we expect in the sidebar for a local (non-Entra)
+# admin. ``my-connections`` is deliberately absent: it is gated on an Entra
+# identity and stays hidden for the password-login admin this test uses.
 EXPECTED_NAV_IDS = [
     "general",
     "metadata-catalog",
     "ai-models",
+    "query-safety",
+    "integrations",
     "users",
-    "prompt:jeen_insights_system",
-    "prompt:fused_router",
-    "prompt:fused_eval_analytics",
-    "prompt:memory_answer",
-    "prompt:memory_summarizer",
-    "prompt:sql_generator",
-    "prompt:chart_editor",
-    "prompt:insights",
-    "prompt:autocomplete_suggestions",
+    "prompts",
     "about",
 ]
 
-# Prompt nav IDs with their expected placeholder chips
-PROMPT_IDS = [
-    "prompt:jeen_insights_system",
-    "prompt:fused_router",
-    "prompt:fused_eval_analytics",
-    "prompt:memory_answer",
-    "prompt:memory_summarizer",
-    "prompt:sql_generator",
-    "prompt:chart_editor",
-    "prompt:insights",
-    "prompt:autocomplete_suggestions",
+# Every prompt in src/api/routes/settings.py::PROMPT_REGISTRY, by ``name``.
+# The Prompts list is built from the API, so all of them must appear as rows.
+PROMPT_NAMES = [
+    "jeen_insights_system",
+    "fused_router",
+    "fused_eval_analytics",
+    "memory_answer",
+    "prior_data_binder",
+    "sql_generator",
+    "analysis_planner",
+    "analysis_narration",
+    "chart_editor",
+    "chart_map_editor",
+    "insights",
+    "autocomplete_suggestions",
 ]
+# Registry groups → number of prompts each (drives the h3 group headers).
+PROMPT_GROUP_COUNT = 2
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -101,8 +110,8 @@ def _wait(driver: webdriver.Chrome, timeout: int = SHORT_WAIT) -> WebDriverWait:
 def _login(
     driver: webdriver.Chrome,
     wait: WebDriverWait,
-    email: str = "admin",
-    password: str = "ChangeMe123!",
+    email: str = ADMIN_EMAIL,
+    password: str = ADMIN_PASSWORD,
 ) -> None:
     """Fill and submit the login form; wait until the main app loads."""
     # If we're already on the app page, skip.
@@ -230,8 +239,16 @@ def test_settings_page():
             EC.presence_of_element_located((By.CSS_SELECTOR, ".sp-model-card"))
         )
         all_cards = driver.find_elements(By.CSS_SELECTOR, ".sp-model-card")
-        assert len(all_cards) >= 4, f"Expected ≥4 model cards, found {len(all_cards)}"
+        assert len(all_cards) >= 1, f"Expected ≥1 model card, found {len(all_cards)}"
         print(f"   ✓ Total model cards: {len(all_cards)}")
+
+        # Only chat-capable models may be offered as the global LLM — embedding,
+        # transcription and rerank rows share the catalogue but must be filtered.
+        for card in all_cards:
+            text = card.text.lower()
+            for banned in ("embedding", "whisper", "rerank", "transcri"):
+                assert banned not in text, f"Non-chat model offered as LLM: {card.text!r}"
+        print("   ✓ No embedding / transcription / rerank cards")
 
         available_cards = driver.find_elements(
             By.CSS_SELECTOR, ".sp-model-card:not(.is-unavailable)"
@@ -264,21 +281,56 @@ def test_settings_page():
 
         _screenshot(driver, "04_ai_models")
 
-        # ── 5. Prompt sections (AI Agent + Other Features) ────────────────────
-        print("\n── 5. Prompt sections ──")
-        for nav_id in PROMPT_IDS:
-            prompt_name = nav_id.replace("prompt:", "")
+        # ── 5. Prompts: list → editor → back ─────────────────────────────────
+        print("\n── 5. Prompts section ──")
+        _click_nav(driver, short, "prompts")
+
+        title = short.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".sp-section-title"))
+        ).text
+        assert "Prompts" in title, f"Expected 'Prompts' in section title, got: {title!r}"
+
+        # The list is built from GET /api/settings/prompts — every registered
+        # prompt must have a row, grouped under an <h3> per registry group.
+        long.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, "button.sp-prompt-row")) >= len(PROMPT_NAMES))
+        rows = driver.find_elements(By.CSS_SELECTOR, "button.sp-prompt-row")
+        row_names = [r.get_attribute("data-name") for r in rows]
+        assert len(rows) == len(PROMPT_NAMES), f"Expected {len(PROMPT_NAMES)} prompt rows, found {len(rows)}: {row_names}"
+        for name in PROMPT_NAMES:
+            assert name in row_names, f"Prompt '{name}' missing from the list"
+        groups = driver.find_elements(By.CSS_SELECTOR, ".sp-card--list h3.sp-card-title")
+        assert len(groups) == PROMPT_GROUP_COUNT, f"Expected {PROMPT_GROUP_COUNT} prompt groups, found {len(groups)}"
+        print(f"   ✓ {len(rows)} prompt rows in {len(groups)} groups")
+
+        # The nav pill counts custom prompts and matches the Custom badges.
+        custom_rows = driver.find_elements(By.CSS_SELECTOR, "button.sp-prompt-row .sp-badge-custom")
+        pill = driver.find_element(By.CSS_SELECTOR, '.sp-nav-item[data-id="prompts"] .sp-nav-count')
+        if custom_rows:
+            assert pill.is_displayed(), "Custom prompts exist but the nav count pill is hidden"
+            assert pill.text.strip() == str(len(custom_rows)), \
+                f"Nav count pill says {pill.text!r}, list shows {len(custom_rows)} custom"
+        else:
+            assert not pill.is_displayed(), "No custom prompts but the nav count pill is visible"
+        print(f"   ✓ Nav count pill ↔ {len(custom_rows)} custom rows")
+        _screenshot(driver, "05_prompts_list")
+
+        for prompt_name in PROMPT_NAMES:
             print(f"   Checking: {prompt_name}")
-            _click_nav(driver, short, nav_id)
+            # Re-query every time: the list re-renders after each back navigation.
+            row = short.until(EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, f'button.sp-prompt-row[data-name="{prompt_name}"]')
+            ))
+            row.click()
 
-            # Section title must be non-empty
-            title_el = short.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".sp-section-title"))
+            # Editor header: back link, non-empty title and description. The first
+            # render awaits content + models + prompt-contexts, so use the long wait.
+            short.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".sp-back-link")))
+            title_el = long.until(
+                lambda d: next((t for t in d.find_elements(By.CSS_SELECTOR, ".sp-section-title")
+                                if t.text.strip() and t.text.strip() != "Prompts"), None)
             )
-            assert title_el.text.strip(), f"Prompt '{prompt_name}': section title is empty"
-
-            # Description must be present
-            desc_el = short.until(
+            assert title_el is not None, f"Prompt '{prompt_name}': editor title never rendered"
+            desc_el = long.until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, ".sp-section-desc"))
             )
             assert desc_el.text.strip(), f"Prompt '{prompt_name}': description is empty"
@@ -293,8 +345,7 @@ def test_settings_page():
                 )
                 views = driver.find_elements(By.CSS_SELECTOR, ".sp-prompt-view")
                 textareas = driver.find_elements(By.CSS_SELECTOR, ".sp-prompt-textarea")
-                has_content = views or textareas
-                assert has_content, f"Prompt '{prompt_name}': no prompt view or textarea"
+                assert views or textareas, f"Prompt '{prompt_name}': no prompt view or textarea"
                 if views:
                     text = views[0].text.strip()
                     assert text, f"Prompt '{prompt_name}': prompt view is empty"
@@ -305,11 +356,20 @@ def test_settings_page():
                 pytest.fail(f"Prompt '{prompt_name}': content did not load within {LONG_WAIT}s")
 
             # Badge must say 'Default' or 'Custom'
-            badges = driver.find_elements(By.CSS_SELECTOR, ".sp-badge")
+            badges = driver.find_elements(By.CSS_SELECTOR, ".sp-prompt-title-row .sp-badge")
             assert badges, f"Prompt '{prompt_name}': no badge found"
             badge_text = badges[0].text
             assert badge_text in ("Default", "Custom"), \
                 f"Prompt '{prompt_name}': unexpected badge text {badge_text!r}"
+
+            # Back link returns to the list and focuses the row we came from.
+            back = driver.find_element(By.CSS_SELECTOR, ".sp-back-link")
+            assert back.text.strip() == "Prompts", f"Back link text {back.text!r}"
+            back.click()
+            short.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, "button.sp-prompt-row")) >= len(PROMPT_NAMES))
+            focused_name = driver.execute_script("return document.activeElement && document.activeElement.dataset.name")
+            assert focused_name == prompt_name, \
+                f"After back, focus is on {focused_name!r}, expected {prompt_name!r}"
 
         _screenshot(driver, "05_last_prompt")
 
