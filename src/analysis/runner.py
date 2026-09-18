@@ -46,7 +46,7 @@ from src.analysis.guards import (
     series_count,
     slices,
 )
-from src.analysis.series import prepare_series, split_series_groups
+from src.analysis.series import format_period, partial_tail_sentence, prepare_series, split_series_groups
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,8 @@ def execute_skill(
     try:
         if spec.family == "series":
             return _run_series_family(spec, typed, rows, columns, override_guards=override_guards,
-                                      base_low_confidence=bool(ctx_raw.get("low_confidence")), make_ctx=_ctx, t0=t0)
+                                      base_low_confidence=bool(ctx_raw.get("low_confidence")), make_ctx=_ctx, t0=t0,
+                                      data_end=ctx_raw.get("data_end"))
         if spec.family == "contribution":
             return _run_contribution(spec, typed, rows, columns, override_guards=override_guards,
                                      base_low_confidence=bool(ctx_raw.get("low_confidence")), make_ctx=_ctx, t0=t0)
@@ -178,27 +179,49 @@ def _extra_values(spec: SkillSpec, typed: Any):
     return []
 
 
+def _partial_tail_guard(sf) -> GuardResult:
+    """Informational: names the incomplete trailing period that was set aside."""
+    tail = sf.partial_tail
+    return GuardResult(
+        name="partial_tail", passed=True, overridable=False,
+        detail=f"{format_period(tail.ts, sf.grain)} set aside as incomplete ({tail.reason}); "
+               f"{sf.n} complete {sf.period_label(plural=True)} analysed",
+        observed=float(sf.n),
+    )
+
+
 def _run_one_series(spec: SkillSpec, typed: Any, rows, columns, *, override_guards, base_low_confidence, make_ctx,
-                    guard_prefix: List[GuardResult] = ()):
+                    guard_prefix: List[GuardResult] = (), data_end: Any = None):
     """Prepare → guards → engine for one series. Returns (envelope | None, guards)."""
-    sf = prepare_series(rows, typed.series, columns=columns, extra_values=_extra_values(spec, typed))
+    sf = prepare_series(rows, typed.series, columns=columns, extra_values=_extra_values(spec, typed), data_end=data_end)
     if sf.n == 0:
         return None, [GuardResult(name="series_length", passed=False, detail="0 of 12 periods", overridable=False)]
     horizon = getattr(typed, "horizon", None)
-    guards = list(guard_prefix) + run_post_sql_guards(sf, guard_names=list(spec.guards), horizon=horizon)
+    guards = list(guard_prefix)
+    if sf.partial_tail is not None:
+        guards.append(_partial_tail_guard(sf))
+    guards += run_post_sql_guards(sf, guard_names=list(spec.guards), horizon=horizon)
     refused = failed(guards)
     if refused and not override_guards:
         return None, guards
     ctx = make_ctx(base_low_confidence or bool(refused))
     engine = importlib.import_module(spec.engine)
-    return engine.run(typed, sf, ctx, guard_results=guards), guards
+    envelope = engine.run(typed, sf, ctx, guard_results=guards)
+    if sf.partial_tail is not None:
+        # Engines that already explain the set-aside period (forecast) are left
+        # alone; every other series skill gets the one shared sentence.
+        sentence = partial_tail_sentence(sf)
+        if sentence and not any(sentence in c for c in envelope.caveats):
+            envelope.caveats.append(sentence)
+    return envelope, guards
 
 
-def _run_series_family(spec, typed, rows, columns, *, override_guards, base_low_confidence, make_ctx, t0) -> RunOutcome:
+def _run_series_family(spec, typed, rows, columns, *, override_guards, base_low_confidence, make_ctx, t0,
+                       data_end: Any = None) -> RunOutcome:
     group_by = getattr(typed.series, "group_by", None)
     if not group_by:
         envelope, guards = _run_one_series(spec, typed, rows, columns, override_guards=override_guards,
-                                           base_low_confidence=base_low_confidence, make_ctx=make_ctx)
+                                           base_low_confidence=base_low_confidence, make_ctx=make_ctx, data_end=data_end)
         if envelope is None:
             return RunOutcome(status="guard_failed", guard_results=guards, elapsed_ms=_elapsed(t0))
         return RunOutcome(status="ok", envelope=envelope, elapsed_ms=_elapsed(t0))
@@ -217,7 +240,8 @@ def _run_series_family(spec, typed, rows, columns, *, override_guards, base_low_
     all_guards: List[GuardResult] = [count_guard]
     for sid, group_rows in groups.items():
         envelope, guards = _run_one_series(spec, typed, group_rows, columns, override_guards=override_guards,
-                                           base_low_confidence=base_low_confidence or not count_guard.passed, make_ctx=make_ctx)
+                                           base_low_confidence=base_low_confidence or not count_guard.passed, make_ctx=make_ctx,
+                                           data_end=data_end)
         for g in guards:
             all_guards.append(g.model_copy(update={"name": f"{g.name}[{sid}]"}))
         if envelope is None:
@@ -237,6 +261,14 @@ def _run_series_family(spec, typed, rows, columns, *, override_guards, base_low_
     if skipped:
         notes.append(f"Series skipped by guards: {', '.join(skipped)}.")
     details = top.details.model_copy(update={"notes": notes})
+    # The top series' caveats travel as-is; the others' set-aside periods would
+    # otherwise change their history with no word to the reader.
+    set_aside = [g.name[len("partial_tail["):-1] for g in all_guards if g.name.startswith("partial_tail[")]
+    set_aside_note = (
+        [f"An incomplete last period was set aside for {len(set_aside)} series ({', '.join(set_aside)}); "
+         "see each series' partial_tail guard for the numbers."]
+        if set_aside and set(set_aside) != {top_id} else []
+    )
     facts = {
         "skill": spec.name, "group_by": group_by, "series_count": len(envelopes), "top_series": top_id,
         "series": {sid: env.facts for sid, env in envelopes.items()},
@@ -253,7 +285,7 @@ def _run_series_family(spec, typed, rows, columns, *, override_guards, base_low_
         "facts": facts,
         "headline": f"{len(envelopes)} series by {group_by}; largest ({top_id}): {top.headline}",
         "caveats": [f"Each series was analysed separately; the chart shows {top_id}. Filter the rows table by series_id for the others."]
-                   + top.caveats,
+                   + set_aside_note + top.caveats,
         "params": typed.model_dump(mode="json"),
     })
     return RunOutcome(status="ok", envelope=merged, elapsed_ms=_elapsed(t0))

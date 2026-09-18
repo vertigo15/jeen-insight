@@ -163,7 +163,8 @@ def create_app(executor: Optional[ForkExecutor] = None) -> FastAPI:
         cap = MAX_ENTITY_ROWS if SKILLS[body.skill].family == "entity" else MAX_SERIES_ROWS
         if len(rows) > cap:
             raise HTTPException(status_code=413, detail=f"input too large: {len(rows)} rows (max {cap} for {body.skill})")
-        context = {k: v for k, v in body.context.items() if k in ("sql", "query_ts", "filters_summary", "low_confidence")}
+        context = {k: v for k, v in body.context.items()
+                   if k in ("sql", "query_ts", "filters_summary", "low_confidence", "data_end")}
         context["runner"] = "sandbox"
         t0 = time.monotonic()
         async with app.state.semaphore:

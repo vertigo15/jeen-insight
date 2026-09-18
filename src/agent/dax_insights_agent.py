@@ -128,7 +128,6 @@ class DaxInsightsAgent:
             prompt_loader=prompt_loader,
             deployment_name=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
             max_retries=settings.DAX_MAX_RETRIES,
-            max_history_tokens=settings.LANGGRAPH_MAX_HISTORY_TOKENS,
             dlp_enabled=settings.DLP_ENABLED,
             dax_validation_enabled=settings.DAX_VALIDATION_ENABLED,
             eval_analytics_enabled=settings.EVAL_ANALYTICS_ENABLED,
@@ -240,8 +239,9 @@ class DaxInsightsAgent:
                 "token_usage": {},
                 # ── Memory ──────────────────────────────────────────────
                 "conversation_history": conversation_context,
-                "memory_summary": None,
-                "is_over_budget": False,
+                "memory_window": runtime.conversation_context_turns,
+                "prior_refs": [],
+                "history_query": None,
                 # ── Routing ─────────────────────────────────────────────
                 "route": "needs_query",
                 "route_reason": "",

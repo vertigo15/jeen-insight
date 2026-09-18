@@ -8,7 +8,9 @@ Field groups:
   Input        — set once before graph invocation.
   Connection   — set once before graph invocation from the Connection object.
   Audit        — set by process_question and updated by LLM / execution nodes.
-  Memory       — populated by memory_shrink_check / memory_summarizer nodes.
+  Memory       — the loaded turn window plus the ledger built by context_composer;
+                 prior_refs / memory_action / prior_bindings written by the
+                 router, memory_answer_generator and prior_data_binder.
   Routing      — written by fused_router.
   Catalog      — written by catalog_lookup + prompt_builder.
   SQL loop     — written/updated across sql_generator + retry nodes.
@@ -56,17 +58,39 @@ class AgentState(TypedDict, total=False):
     token_usage: Dict[str, int]  # {input_tokens, output_tokens, total_tokens}
 
     # ── Memory ────────────────────────────────────────────────────────────
+    # The last ``memory_window`` completed turns of this conversation, oldest
+    # first, each with question, SQL, answer, result artifact and snapshot
+    # status. ``memory_ledger`` is the compact view every prompt reads (built
+    # once by ``context_composer``); rows are fetched by reference, never
+    # stored in state.
     conversation_history: List[Dict[str, Any]]
-    memory_summary: Optional[str]
-    is_over_budget: bool
+    memory_window: Optional[int]                    # conversation_context_turns at request time
+    memory_ledger: List[Dict[str, Any]]             # see nodes/context.py
+    memory_telemetry: Dict[str, Any]                # surfaced as metrics.memory
+    # Handles (``T3``) of prior turns the router says this question depends on.
+    prior_refs: List[str]
+    # What memory_answer_generator did: replay | compute | answer | needs_query.
+    memory_action: Optional[str]
+    # Resolved filters prior_data_binder derived from prior results (kept across
+    # catalog refresh / filter reground so the binding is not recomputed).
+    prior_bindings: List[Dict[str, Any]]
+    # For route == history_lookup: {keywords: [...], since: ISO date|None, until: ISO date|None}
+    history_query: Optional[Dict[str, Any]]
+    # history_search output: [{query_id, session_id, question, answer, created_at}]
+    history_matches: List[Dict[str, Any]]
 
     # ── Routing ───────────────────────────────────────────────────────────
-    # Values: needs_query | needs_analysis | from_memory | out_of_scope | unsafe
+    # Values: needs_query | needs_analysis | from_memory | history_lookup |
+    #         capability | clarify_route | out_of_scope | unsafe | greeting
     route: str
     route_reason: str
     # Where the ML-vs-SQL decision came from: router_llm | keyword_cue |
-    # ml_disabled | request_override | greeting | planner_fallback
+    # ml_disabled | request_override | greeting | planner_fallback | route_uncertain
     route_source: Optional[str]
+    # When the SQL-vs-ML choice is genuinely ambiguous (low router confidence and
+    # no strong cue), the router asks instead of guessing: {message, confidence,
+    # skill_hint}. The UI offers "Run the analysis" / "Answer directly".
+    route_clarification: Optional[Dict[str, Any]]
 
     # ── ML skills (analysis branch) ────────────────────────────────────────
     # Written by analysis_planner / analysis_guard / analysis_sql / analysis_run.
@@ -91,6 +115,9 @@ class AgentState(TypedDict, total=False):
     analysis_dropped_filters: List[str]              # grounded filters v1 could not express
     analysis_span: Optional[Dict[str, Any]]          # {min_ts, max_ts, n} from the probe
     analysis_result: Optional[Dict[str, Any]]
+    # The finished run's setup card ({chips, egress_summary}) so the answer pane
+    # can offer "Edit setup" and re-run with a parameter patch.
+    analysis_definition: Optional[Dict[str, Any]]
     analysis_error: Optional[str]
     low_confidence: bool
     parent_query_id: Optional[UUID]

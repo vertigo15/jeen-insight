@@ -114,3 +114,55 @@ def empty_state(monkeypatch):
     monkeypatch.setattr(api_state, "metadata_loader", None)
     monkeypatch.setattr(api_state, "history_service", None)
     monkeypatch.setattr(api_state, "agent_registry", None)
+
+
+class FakeSnapshotEngine:
+    """Test double for ``SnapshotSqlEngine`` (memory computations over prior rows).
+
+    Production runs the model's SELECT in the metadata PostgreSQL with each
+    stored result exposed as an ``insights_mem_*`` CTE over a JSONB parameter
+    (no table is created). Unit tests have no database, so this double keeps
+    the real contract — the same sqlglot validation, the same per-column type
+    inference and the same ``insights_`` prefix check — and returns the result a
+    test scripted for that exact SQL (``script(sql, rows=...)`` or
+    ``script(sql, error=...)``). Unscripted SQL fails loudly. Only used from tests.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list = []
+        self._results: dict = {}
+
+    def script(self, sql: str, *, rows=None, columns=None, error: str | None = None) -> "FakeSnapshotEngine":
+        key = " ".join(sql.split())
+        if error is not None:
+            self._results[key] = {"error": error}
+        else:
+            rows = list(rows or [])
+            cols = list(columns or (list(rows[0].keys()) if rows else []))
+            self._results[key] = {"columns": cols, "rows": rows, "row_count": len(rows), "truncated": False}
+        return self
+
+    async def run(self, tables, sql, *, max_rows=2000):
+        from src.agent.snapshot_sql import MEMORY_TABLE_PREFIX, prepare_table, validate_snapshot_sql
+
+        self.calls.append(sql)
+        error = validate_snapshot_sql(sql, tables.keys())
+        if error:
+            return {"error": error}
+        for name, dataset in tables.items():
+            assert str(name).startswith(MEMORY_TABLE_PREFIX), f"memory table {name!r} lacks the insights_ prefix"
+            prepare_table(dataset)  # the real type inference must accept every stored result
+        key = " ".join(sql.split())
+        if key not in self._results:
+            raise AssertionError(f"FakeSnapshotEngine: no scripted result for SQL {sql!r}")
+        result = dict(self._results[key])
+        if "rows" in result and len(result["rows"]) > max_rows:
+            result["rows"] = result["rows"][:max_rows]
+            result["row_count"] = max_rows
+            result["truncated"] = True
+        return result
+
+
+@pytest.fixture
+def snapshot_engine() -> FakeSnapshotEngine:
+    return FakeSnapshotEngine()

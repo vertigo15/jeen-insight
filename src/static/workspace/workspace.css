@@ -179,6 +179,10 @@ body.v3-ready > .app-layout { display: none !important; }
 }
 .v3-conversation[hidden] { display: none !important; }
 .v3-tabs-wrap { padding: 4px 18px 12px; }
+.v3-tabs-wrap[hidden] { display: none; }
+/* With the tab bar hidden (default), give the panel a little breathing room
+   below the top bar so the first message / search field is not flush against it. */
+.v3-conversation.v3-tabs-hidden .v3-panel { padding-top: 8px; }
 .v3-tabs {
   display: flex;
   gap: 4px;
@@ -711,12 +715,17 @@ body.v3-ready .sp-overlay {
   border: 1px solid var(--border2); border-radius: 9999px; background: var(--bg);
   font-size: 12px; color: var(--muted);
 }
-.v3-ml-chip > span { color: var(--muted); font-size: 11px; }
+.v3-ml-chip > span { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .v3-ml-chip select, .v3-ml-chip input {
   border: 0; background: transparent; color: var(--text); font-family: var(--font-mono); font-size: 12px;
   min-width: 40px; max-width: 180px; padding: 0 2px; outline: none;
 }
 .v3-ml-chip input[type="number"] { width: 64px; }
+/* "Edit setup": the finished run's parameter card, opened above the chart. */
+.v3-meta-row .v3-ml-edit { white-space: nowrap; }
+.v3-meta-row .v3-ml-edit[aria-expanded="true"] { background: var(--soft); color: var(--link2); }
+.v3-ml-definition { margin-bottom: 14px; padding: 16px 18px; border: 1px solid var(--border2); border-radius: 16px; background: var(--bg); }
+.v3-ml-definition[hidden] { display: none; }
 .v3-ml-egress { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 .v3-ml-guards { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .v3-ml-guards li { display: flex; gap: 10px; font-size: 12px; color: var(--muted); }

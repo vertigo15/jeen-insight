@@ -11,10 +11,13 @@
    *   - 'chartTypePreference'    string  'auto' | 'bar' | … | 'map'
  *   - 'autoInsights'           string  'on' | 'off'
  *   - 'temperature'            number  in [0, 1] OR null/undefined for "auto"
+ *   - 'conversationTabs'       string  'show' | 'hide'
  *
  * Note: 'theme' was already used by index.html's anti-FOUC bootstrap, so
  * we don't change its key. The bootstrap reads the raw value; this module
- * is the authoritative writer.
+ * is the authoritative writer. Likewise 'conversationTabs' is read raw by
+ * workspace/workspaceController.js at boot (it is a classic script that runs
+ * before this module has been imported).
  *
  * @module preferences
  */
@@ -28,6 +31,7 @@ const KEYS = {
     aiAnalytics: 'aiAnalytics',   // 'on' | 'off'  — run insights in background
     llmTimeout: 'llmTimeout',     // seconds as string, or 'server' for server default
     chartPalette: 'chartPalette', // palette id from chart-feature/utils/chartPalettes.js
+    conversationTabs: 'conversationTabs', // 'show' | 'hide' — tab bar above the chat panel
 };
 
 const DEFAULTS = Object.freeze({
@@ -39,6 +43,7 @@ const DEFAULTS = Object.freeze({
     aiAnalytics: 'on',   // show insights in background by default
     llmTimeout: 'server', // 'server' = use server default; else seconds as string
     chartPalette: 'jeen', // 'jeen' = theme/server colours, no override
+    conversationTabs: 'hide', // the side rail already exposes every section
 });
 
 const ALLOWED_THEMES = new Set(['light', 'dark', 'system']);
@@ -52,6 +57,7 @@ const ALLOWED_AI_ANALYTICS  = new Set(['on', 'off']);
 const ALLOWED_LLM_TIMEOUTS  = new Set(['server', '10', '15', '20', '30', '60', '120']);
 // Keep in sync with CHART_PALETTES in chart-feature/utils/chartPalettes.js.
 const ALLOWED_CHART_PALETTES = new Set(['jeen', 'purple', 'blue', 'green', 'teal', 'warm', 'classic']);
+const ALLOWED_CONVERSATION_TABS = new Set(['show', 'hide']);
 
 function _readString(key, allowed, fallback) {
     try {
@@ -96,7 +102,15 @@ export const Preferences = {
             aiAnalytics: _readString(KEYS.aiAnalytics, ALLOWED_AI_ANALYTICS, DEFAULTS.aiAnalytics),
             llmTimeout: _readString(KEYS.llmTimeout, ALLOWED_LLM_TIMEOUTS, DEFAULTS.llmTimeout),
             chartPalette: _readString(KEYS.chartPalette, ALLOWED_CHART_PALETTES, DEFAULTS.chartPalette),
+            conversationTabs: _readString(KEYS.conversationTabs, ALLOWED_CONVERSATION_TABS, DEFAULTS.conversationTabs),
         };
+    },
+
+    setConversationTabs(value) {
+        if (!ALLOWED_CONVERSATION_TABS.has(value)) return false;
+        if (value === DEFAULTS.conversationTabs) localStorage.removeItem(KEYS.conversationTabs);
+        else localStorage.setItem(KEYS.conversationTabs, value);
+        return true;
     },
 
     setChartPalette(value) {

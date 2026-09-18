@@ -33,8 +33,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
-# Mutating settings routes are admin-only. Read-only GETs stay available to any
-# authenticated Principal (the settings UI shows a read subset to non-admins).
+# Every settings route is admin-only except ``/app-info`` (the About tab is
+# visible to all roles). The settings UI hides the admin tabs client-side;
+# these dependencies are the server-side counterpart.
 _ADMIN = [Depends(require_admin)]
 
 # ── Prompt file registry ──────────────────────────────────────────────────────────────────
@@ -84,22 +85,22 @@ PROMPT_REGISTRY: List[Dict[str, Any]] = [
         "label": "Memory Answer",
         "group": "AI Agent",
         "description": (
-            "Answers the user directly from conversation history when no "
-            "live database query is needed (e.g. follow-ups about previous results). "
-            "If a new query is required it signals the graph to fall through to SQL."
+            "Handles follow-ups about a prior turn's answer or data: replays the "
+            "stored table, writes a small SQL over the stored rows (max, sort, "
+            "what-if), answers from the ledger, or signals that a live query is needed."
         ),
         "path": _PROMPTS_DIR / "memory_answer.md",
     },
     {
-        "name": "memory_summarizer",
-        "label": "Memory Summary",
+        "name": "prior_data_binder",
+        "label": "Prior Data Binder",
         "group": "AI Agent",
         "description": (
-            "Condenses the conversation history into a short paragraph when the "
-            "token budget is exceeded. The summary is re-injected into the router "
-            "prompt as {conversation_summary}."
+            "When a new question builds on a prior result (\"the top 4 products from "
+            "the previous answer\"), extracts the needed values from the stored rows "
+            "and binds them as a verified filter for the SQL generator."
         ),
-        "path": _PROMPTS_DIR / "memory_summarizer.md",
+        "path": _PROMPTS_DIR / "prior_data_binder.md",
     },
     {
         "name": "sql_generator",
@@ -213,6 +214,9 @@ class PromptMeta(BaseModel):
     version: int = 1
     model_id: Optional[int] = None
     model_name: Optional[str] = None
+    # When the active version was created (ISO 8601). ``None`` for a prompt
+    # that has never been saved and is still served from its file default.
+    updated_at: Optional[str] = None
 
 
 class PromptDetail(PromptMeta):
@@ -238,7 +242,7 @@ class _SafeFormatDict(dict):
 
 _LIST_PROMPTS_SQL = """
     SELECT ip.prompt_place, ip.version, ip.is_custom, ip.model_id,
-           am.name AS model_name, ip.content
+           am.name AS model_name, ip.content, ip.created_at
     FROM insights_prompts ip
     LEFT JOIN admin_models am ON am.id = ip.model_id
     WHERE ip.is_active = true
@@ -262,7 +266,7 @@ async def _db_get_prompt(place: str) -> Optional[Dict[str, Any]]:
         row = await conn.fetchrow(
             """
             SELECT ip.prompt_place, ip.version, ip.is_custom, ip.model_id,
-                   am.name AS model_name, ip.content
+                   am.name AS model_name, ip.content, ip.created_at
             FROM insights_prompts ip
             LEFT JOIN admin_models am ON am.id = ip.model_id
             WHERE ip.prompt_place = $1 AND ip.is_active = true
@@ -524,7 +528,7 @@ def _render_prompt_template(content: str, values: Dict[str, str]) -> str:
 
 # ── Routes ────────────────────────────────────────────────────────────────────────
 
-@router.get("/prompts", response_model=List[PromptMeta])
+@router.get("/prompts", response_model=List[PromptMeta], dependencies=_ADMIN)
 async def list_prompts():
     """Return metadata for all prompts (no content), ordered by the registry."""
     db_rows = await _db_list_prompts()
@@ -543,11 +547,17 @@ async def list_prompts():
             version=row.get("version", 1),
             model_id=row.get("model_id"),
             model_name=row.get("model_name"),
+            updated_at=_iso_or_none(row.get("created_at")),
         ))
     return result
 
 
-@router.get("/prompts/{name}", response_model=PromptDetail)
+def _iso_or_none(value: Any) -> Optional[str]:
+    """ISO 8601 for a datetime, ``None`` for a missing/NULL timestamp."""
+    return value.isoformat() if value else None
+
+
+@router.get("/prompts/{name}", response_model=PromptDetail, dependencies=_ADMIN)
 async def get_prompt(name: str):
     """Return full content for a single prompt."""
     entry = _entry_for(name)
@@ -560,12 +570,14 @@ async def get_prompt(name: str):
         version   = row["version"]
         model_id  = row["model_id"]
         model_name = row["model_name"]
+        updated_at = _iso_or_none(row.get("created_at"))
     else:
         content   = _read_file(entry["path"])
         is_custom = False
         version   = 1
         model_id  = None
         model_name = None
+        updated_at = None
     return PromptDetail(
         name=name,
         label=entry["label"],
@@ -577,16 +589,17 @@ async def get_prompt(name: str):
         version=version,
         model_id=model_id,
         model_name=model_name,
+        updated_at=updated_at,
     )
 
 
-@router.get("/prompt-contexts")
+@router.get("/prompt-contexts", dependencies=_ADMIN)
 async def list_prompt_contexts():
     """Connection choices for prompt resolved view."""
     return await _list_prompt_context_connections()
 
 
-@router.get("/prompts/{name}/resolved")
+@router.get("/prompts/{name}/resolved", dependencies=_ADMIN)
 async def resolve_prompt(
     name: str,
     connection: str = Query(..., description="source_key/catalog to resolve against"),
@@ -723,6 +736,7 @@ async def save_prompt(name: str, body: PromptUpdate):
         version=new_version,
         model_id=row["model_id"] if row else None,
         model_name=row["model_name"] if row else None,
+        updated_at=_iso_or_none(row.get("created_at")) if row else None,
     )
 
 
@@ -738,6 +752,7 @@ async def reset_prompt(name: str):
     _invalidate_cache(name)
     logger.info("settings: reset prompt '%s' to default (v%d)", name, new_version)
 
+    row = await _db_get_prompt(name)
     return PromptDetail(
         name=name,
         label=entry["label"],
@@ -749,6 +764,7 @@ async def reset_prompt(name: str):
         version=new_version,
         model_id=None,
         model_name=None,
+        updated_at=_iso_or_none(row.get("created_at")) if row else None,
     )
 
 
@@ -782,13 +798,18 @@ async def set_prompt_model(name: str, body: SetPromptModelRequest):
     if body.model_name:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id FROM admin_models WHERE name = $1 AND is_enabled = true",
+                "SELECT id, type FROM admin_models WHERE name = $1 AND is_enabled = true",
                 body.model_name,
             )
         if not row:
             raise HTTPException(
                 status_code=404,
                 detail=f"Model '{body.model_name}' not found or not enabled",
+            )
+        if not _is_chat_model_row(dict(row)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model '{body.model_name}' is a {row['type']} model and cannot run a prompt",
             )
         model_id = row["id"]
 
@@ -824,7 +845,7 @@ class PromptVersionDetail(PromptVersionMeta):
     content: str
 
 
-@router.get("/prompts/{name}/versions", response_model=List[PromptVersionMeta])
+@router.get("/prompts/{name}/versions", response_model=List[PromptVersionMeta], dependencies=_ADMIN)
 async def list_prompt_versions(name: str):
     """Return all saved version rows for *name*, newest first."""
     if not _entry_for(name):
@@ -856,7 +877,7 @@ async def list_prompt_versions(name: str):
     ]
 
 
-@router.get("/prompts/{name}/versions/{version_id}", response_model=PromptVersionDetail)
+@router.get("/prompts/{name}/versions/{version_id}", response_model=PromptVersionDetail, dependencies=_ADMIN)
 async def get_prompt_version(name: str, version_id: int):
     """Return full content for a specific version row by its DB id."""
     if not _entry_for(name):
@@ -926,6 +947,7 @@ async def restore_prompt_version(name: str, version_id: int):
         version=new_version,
         model_id=active_row["model_id"] if active_row else None,
         model_name=active_row["model_name"] if active_row else None,
+        updated_at=_iso_or_none(active_row.get("created_at")) if active_row else None,
     )
 
 
@@ -948,7 +970,12 @@ class SetModelRequest(BaseModel):
 
 
 async def _list_models_from_db() -> List[Dict[str, Any]]:
-    """Query admin_models with credential availability from admin_models_providers."""
+    """Query admin_models with credential availability from admin_models_providers.
+
+    Returns every row (including embedding / transcription / rerank models);
+    callers that expose a *selectable LLM* list must filter with
+    :func:`_is_chat_model_row`.
+    """
     from src.metadata import get_metadata_pool
     pool = await get_metadata_pool()
     async with pool.acquire() as conn:
@@ -959,6 +986,7 @@ async def _list_models_from_db() -> List[Dict[str, Any]]:
                 am.name,
                 am.display_name,
                 am.description,
+                am.type,
                 am.is_enabled,
                 am.deployment_name,
                 EXISTS(
@@ -976,6 +1004,19 @@ async def _list_models_from_db() -> List[Dict[str, Any]]:
             """
         )
     return [dict(r) for r in rows]
+
+
+def _is_chat_model_row(row: Dict[str, Any]) -> bool:
+    """True when this admin_models row can serve as the text-to-SQL LLM.
+
+    Embedding, rerank, transcription and image models share the catalogue but
+    cannot answer a chat prompt; offering them as the global model (or as a
+    per-prompt override) breaks every query. Delegates to ``llm_health`` so the
+    health probe and the settings list agree on what counts as a chat model
+    (NULL/unknown types are treated as chat so a real model is never hidden).
+    """
+    from src.agent import llm_health
+    return llm_health._is_chat_model(row.get("type"))
 
 
 async def _get_active_from_db() -> Optional[str]:
@@ -1005,10 +1046,12 @@ async def _set_active_in_db(name: str) -> None:
         )
 
 
-@router.get("/models", response_model=List[ModelInfo])
+@router.get("/models", response_model=List[ModelInfo], dependencies=_ADMIN)
 async def list_models():
-    """Return all admin_models with availability and active flags.
+    """Return the chat-capable admin_models with availability and active flags.
 
+    Non-chat rows (embedding, rerank, transcription, image) are excluded — they
+    cannot generate SQL and must never be selectable as the global model.
     ``available`` is true when the model has at least one enabled row in
     ``admin_models_providers`` (i.e. credentials are configured).
     ``is_active`` reflects the persisted ``active_model`` setting.
@@ -1029,6 +1072,8 @@ async def list_models():
 
     result = []
     for r in rows:
+        if not _is_chat_model_row(r):
+            continue
         available = bool(r.get("has_credentials")) and bool(r.get("is_enabled", True))
         h = health.get(r["name"])
         result.append(ModelInfo(
@@ -1045,7 +1090,7 @@ async def list_models():
     return result
 
 
-@router.get("/models/health")
+@router.get("/models/health", dependencies=_ADMIN)
 async def models_health(refresh: bool = False):
     """Probe each enabled model's credentials and report which actually work.
 
@@ -1066,9 +1111,12 @@ async def models_health(refresh: bool = False):
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"Could not probe models: {exc}") from exc
 
-    # Sort working first, then failing, then skipped (non-chat / no driver).
+    # Non-chat models are not listed on the Models tab (see ``list_models``), so
+    # keep them out of the summary counts too — otherwise "N n/a" over-reports.
+    chat_only = [h for h in health.values() if llm_health._is_chat_model(h.model_type)]
+    # Sort working first, then failing, then skipped (no driver installed).
     _rank = {llm_health.PASS: 0, llm_health.FAIL: 1, llm_health.SKIP: 2}
-    items = sorted(health.values(), key=lambda h: (_rank.get(h.status, 3), h.name))
+    items = sorted(chat_only, key=lambda h: (_rank.get(h.status, 3), h.name))
     healthy = [h.name for h in items if h.healthy is True]
     failing = [h.name for h in items if h.healthy is False]
     skipped = [h.name for h in items if h.healthy is None]
@@ -1083,7 +1131,7 @@ async def models_health(refresh: bool = False):
     }
 
 
-@router.get("/models/active")
+@router.get("/models/active", dependencies=_ADMIN)
 async def get_active_model():
     """Return the persisted active model name.
 
@@ -1107,7 +1155,11 @@ async def set_active_model(body: SetModelRequest):
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Could not query models: {exc}") from exc
 
-    match = next((r for r in rows if r["name"] == body.name), None)
+    # Non-chat rows are not offered by ``list_models`` and must not be reachable
+    # by name either — an embedding model as the global LLM breaks every query.
+    match = next(
+        (r for r in rows if r["name"] == body.name and _is_chat_model_row(r)), None
+    )
     if not match:
         raise HTTPException(status_code=404, detail=f"Model '{body.name}' not found")
     if not match.get("has_credentials"):
@@ -1180,6 +1232,8 @@ def _try_reload_prompt_loader() -> bool:
 
 def _mask_url(url: str) -> str:
     """Mask the subdomain of an Azure endpoint for display."""
+    if not (url or "").strip():
+        return "—"
     try:
         from urllib.parse import urlparse
         parsed = urlparse(url)

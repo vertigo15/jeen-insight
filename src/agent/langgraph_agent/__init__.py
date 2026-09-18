@@ -1,7 +1,7 @@
 """LangGraph-based text-to-SQL agent package.
 
 Exports two graphs:
-  ``build_graph``                 — full text-to-SQL pipeline (16 nodes)
+  ``build_graph``                 — full text-to-SQL pipeline (25 nodes; see docs/agent-state-flow.md)
   ``build_insights_eval_graph``   — standalone eval subgraph for the insights API
 """
 from src.agent.langgraph_agent.graph import (

@@ -2,12 +2,22 @@
 
 Routes
 ------
-needs_query     The question requires a database query (text-to-SQL).
+needs_query     The question requires a database query (text-to-SQL). May carry
+                ``prior_refs`` when it builds on a prior result ("the top 4
+                products from T3 — show their sales").
 needs_analysis  The question asks for an ML skill (anomalies, forecast, …).
-from_memory     The question can be answered from conversation history.
+from_memory     The question is about a prior turn's answer or data and can be
+                served from the stored result (replay, recompute, what-if).
+history_lookup  A meta-question about past questions ("did I ask about X last
+                week?") answered by searching persisted history.
+capability      A question about the assistant itself.
 out_of_scope    The question is unrelated to the data source.
 unsafe          The question requests data mutation or is otherwise blocked.
 greeting        Caught by local regex — zero LLM cost, ~0ms.
+
+The router sees the turn ledger (``nodes/context.py``): question, SQL, answer
+and result shape of the last N turns, each with a handle ``T1``…``TN``. It
+names the turns a question depends on in ``prior_refs``.
 
 On JSON parse failure the node defaults to ``needs_query`` so the flow
 continues safely rather than aborting.
@@ -34,9 +44,10 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict
+from datetime import date
+from typing import Any, Dict, List, Optional
 
-from src.agent.langgraph_agent.nodes.artifacts import build_artifact_manifest
+from src.agent.langgraph_agent.nodes.context import find_turn, ledger_for, render_ledger
 from src.agent.langgraph_agent.nodes.safety_text import fence_untrusted
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
@@ -45,7 +56,12 @@ from src.agent.token_usage import merge_usage
 
 logger = logging.getLogger(__name__)
 
-_VALID_ROUTES = frozenset({"needs_query", "needs_analysis", "from_memory", "capability", "out_of_scope", "unsafe"})
+_VALID_ROUTES = frozenset({
+    "needs_query", "needs_analysis", "from_memory", "history_lookup",
+    "capability", "out_of_scope", "unsafe",
+})
+_MAX_PRIOR_REFS = 3
+_MAX_HISTORY_KEYWORDS = 6
 
 # ── Greeting short-circuit ────────────────────────────────────────────────────
 # Simple inputs that are clearly social/conversational are caught locally before
@@ -67,9 +83,6 @@ _GREETING_ANSWER = (
     "Ask me anything about your data and I'll query it for you."
 )
 
-# How many recent turns to surface to the router when no summary exists.
-_ROUTER_HISTORY_TURNS = 3
-
 # Where the final ML-vs-SQL decision came from (surfaced as ``routing.source``).
 ROUTE_SOURCE_LLM = "router_llm"
 ROUTE_SOURCE_CUE = "keyword_cue"
@@ -77,6 +90,21 @@ ROUTE_SOURCE_DISABLED = "ml_disabled"
 ROUTE_SOURCE_OVERRIDE = "request_override"
 ROUTE_SOURCE_GREETING = "greeting"
 ROUTE_SOURCE_PLANNER_FALLBACK = "planner_fallback"
+ROUTE_SOURCE_UNCERTAIN = "route_uncertain"
+
+# Below this router confidence — with no strong keyword cue — the SQL-vs-ML
+# choice is treated as genuinely ambiguous and the user is asked instead of
+# guessed at. Kept high enough that clear questions never trigger a prompt.
+CLARIFY_CONFIDENCE = 0.6
+
+
+def _route_clarify_message(confidence: Optional[float]) -> str:
+    sure = f" (only about {int(round((confidence or 0) * 100))}% sure either way)" if confidence is not None else ""
+    return (
+        f"I can take this two ways{sure}: answer it directly with a database query, "
+        "or run a statistical/ML analysis (forecast, anomaly check, drivers, segments, …). "
+        "Which would you like?"
+    )
 
 
 def resolve_ml_route(
@@ -86,29 +114,57 @@ def resolve_ml_route(
     *,
     ml_skills_enabled: bool,
     analysis_override: Any,
+    confidence: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Apply the ML gate and the keyword-cue upgrade to the router LLM's answer.
+    """Apply the ML gate, the keyword-cue upgrade and the low-confidence clarify
+    to the router LLM's answer.
 
-    Returns ``{"route", "reason", "source", "skill_hint"}``. This is the one
-    place the ML-vs-SQL rule lives; the node and the dry-run endpoint both call it.
+    Returns ``{"route", "reason", "source", "skill_hint", "confidence"}``. This is
+    the one place the ML-vs-SQL rule lives; the node and the dry-run endpoint both
+    call it. ``route`` may be ``clarify_route`` when the choice is ambiguous.
     """
     from src.agent.analysis_planner import detect_analysis_intent  # noqa: PLC0415
 
     route, reason = llm_route, llm_reason or ""
-    ml_allowed = bool(ml_skills_enabled) and analysis_override is not False
     hint = detect_analysis_intent(question) if question else None
+    ml_allowed = bool(ml_skills_enabled) and analysis_override is not False
+
+    # 1. Explicit request override — the user already chose ("Answer with SQL
+    #    instead" → False, "Run the analysis" → True). It only ever flips between
+    #    the two DATA routes; it must NEVER turn a greeting / from_memory /
+    #    capability / out_of_scope / unsafe classification into a query or a model.
+    if route in ("needs_query", "needs_analysis"):
+        if analysis_override is False:
+            return {"route": "needs_query", "reason": f"{reason} (answering with SQL as requested)".strip(),
+                    "source": ROUTE_SOURCE_OVERRIDE, "skill_hint": hint, "confidence": confidence}
+        if analysis_override is True and ml_skills_enabled:
+            return {"route": "needs_analysis", "reason": "running the analysis as requested",
+                    "source": ROUTE_SOURCE_OVERRIDE, "skill_hint": hint, "confidence": confidence}
+
+    # 2. Router leaned ML but ML is disabled → SQL.
     if route == "needs_analysis" and not ml_allowed:
-        source = ROUTE_SOURCE_OVERRIDE if analysis_override is False else ROUTE_SOURCE_DISABLED
-        suffix = "answering with SQL as requested" if analysis_override is False else "ML skills disabled; answering with SQL"
-        return {"route": "needs_query", "reason": f"{reason} ({suffix})".strip(), "source": source, "skill_hint": hint}
+        return {"route": "needs_query", "reason": f"{reason} (ML skills disabled; answering with SQL)".strip(),
+                "source": ROUTE_SOURCE_DISABLED, "skill_hint": hint, "confidence": confidence}
+
+    # 3. Strong keyword cue → ML. A confident signal; never ask.
     if route == "needs_query" and ml_allowed and hint:
-        return {
-            "route": "needs_analysis",
-            "reason": f"keyword cue for {hint}" + (f"; router said: {reason}" if reason else ""),
-            "source": ROUTE_SOURCE_CUE,
-            "skill_hint": hint,
-        }
-    return {"route": route, "reason": reason, "source": ROUTE_SOURCE_LLM, "skill_hint": hint}
+        return {"route": "needs_analysis",
+                "reason": f"keyword cue for {hint}" + (f"; router said: {reason}" if reason else ""),
+                "source": ROUTE_SOURCE_CUE, "skill_hint": hint, "confidence": confidence}
+
+    # 4. Genuinely ambiguous SQL-vs-ML → ask rather than guess. Only when ML is
+    #    allowed, there is no strong cue, the router is a data route, and the
+    #    model itself reported low confidence. (No extra LLM call — the single
+    #    router call already produced the confidence, so this stays cheap and
+    #    fires only on real borderline questions.)
+    if (ml_allowed and hint is None and route in ("needs_query", "needs_analysis")
+            and isinstance(confidence, (int, float)) and not isinstance(confidence, bool)
+            and confidence < CLARIFY_CONFIDENCE):
+        return {"route": "clarify_route",
+                "reason": f"unsure whether to answer directly or run an analysis (confidence {confidence:.2f})",
+                "source": ROUTE_SOURCE_UNCERTAIN, "skill_hint": None, "confidence": confidence}
+
+    return {"route": route, "reason": reason, "source": ROUTE_SOURCE_LLM, "skill_hint": hint, "confidence": confidence}
 
 
 def explain_routing(question: str, *, ml_skills_enabled: bool, analysis_override: Any = None) -> Dict[str, Any]:
@@ -144,27 +200,35 @@ def explain_routing(question: str, *, ml_skills_enabled: bool, analysis_override
             "reason": "no keyword cue; the router LLM decides between text-to-SQL and an ML skill from the question's intent"}
 
 
-def _format_recent_history(history: Any) -> str:
-    """Build a compact ``Q: … / SQL: …`` block from the last few turns.
+def _parse_prior_refs(raw: Any, ledger: List[Dict[str, Any]]) -> List[str]:
+    """Canonical ledger handles from whatever the model returned (list or string)."""
+    if isinstance(raw, str):
+        raw = [part for part in re.split(r"[,\s]+", raw) if part]
+    if not isinstance(raw, list):
+        return []
+    handles: List[str] = []
+    for item in raw:
+        turn = find_turn(ledger, item)
+        if turn and turn["handle"] not in handles:
+            handles.append(turn["handle"])
+        if len(handles) >= _MAX_PRIOR_REFS:
+            break
+    return handles
 
-    Used as a fallback for the router's {conversation_summary} placeholder when
-    no condensed memory summary exists yet, so the router can still detect
-    follow-up questions ("and for last month?") that depend on prior context.
-    """
-    if not history:
-        return ""
-    recent = list(history)[-_ROUTER_HISTORY_TURNS:]
-    lines = []
-    for qa in recent:
-        q = (qa.get("natural_language_query") or "").strip()
-        sql = (qa.get("generated_sql") or "").strip()
-        if not q:
-            continue
-        line = f"Q: {q}"
-        if sql:
-            line += f"\nSQL: {sql}"
-        lines.append(line)
-    return "\n".join(lines)
+
+def _parse_history_query(raw: Any) -> Optional[Dict[str, Any]]:
+    """``{keywords: [...], since: str|None, until: str|None}`` or None."""
+    if not isinstance(raw, dict):
+        return None
+    keywords = raw.get("keywords")
+    if isinstance(keywords, str):
+        keywords = [keywords]
+    words = [str(k).strip() for k in (keywords or []) if str(k).strip()][:_MAX_HISTORY_KEYWORDS]
+    since = str(raw["since"]).strip() if raw.get("since") else None
+    until = str(raw["until"]).strip() if raw.get("until") else None
+    if not words and not since and not until:
+        return None
+    return {"keywords": words, "since": since, "until": until}
 
 
 def make_fused_router(
@@ -196,20 +260,16 @@ def make_fused_router(
             }
 
         # ── LLM classification ────────────────────────────────────────────
-        # Prefer the condensed memory summary; otherwise fall back to a compact
-        # block of the most recent turns so follow-ups still have context.
-        history = state.get("conversation_history")
-        summary = state.get("memory_summary")
-        if not summary:
-            summary = _format_recent_history(history)
-        summary = summary or "No prior conversation."
-        # Append a manifest of prior result sets (columns, row counts, small
-        # stats) so the router can tell when a question is a follow-up over
-        # already-retrieved data vs. one needing a fresh query.
-        manifest = build_artifact_manifest(history or [])
-        if manifest:
-            # Manifest embeds prior question text (user data) → fence it.
-            summary = f"{summary}\n\n{fence_untrusted(manifest, label='prior results')}"
+        # The ledger gives the router each prior turn's question, SQL, answer
+        # and result shape under a handle (T1…TN), so it can both detect
+        # follow-ups and name the turn a question depends on. It embeds prior
+        # question text (user data) → fence it.
+        ledger = ledger_for(state)
+        rendered = render_ledger(ledger)
+        summary = (
+            fence_untrusted(rendered, label="conversation ledger")
+            if rendered else "No prior conversation."
+        )
         source = state.get("connection_display_name") or "the database"
 
         system_msg = await prompt_loader.arender(
@@ -217,6 +277,7 @@ def make_fused_router(
             question=question,
             conversation_summary=summary,
             source_description=source,
+            today=date.today().isoformat(),
         )
         model_override = await prompt_loader.model_override_for("fused_router")
 
@@ -236,6 +297,9 @@ def make_fused_router(
         content = (response.get("content") or "").strip()
         route = "needs_query"
         reason = ""
+        confidence: Any = None
+        prior_refs: List[str] = []
+        history_query: Optional[Dict[str, Any]] = None
 
         # Strip possible markdown fences before JSON parsing
         json_str = content
@@ -256,30 +320,57 @@ def make_fused_router(
                     "fused_router: unknown route %r — defaulting to needs_query", candidate
                 )
             reason = str(parsed.get("reason", ""))
+            raw_conf = parsed.get("confidence")
+            if isinstance(raw_conf, (int, float)) and not isinstance(raw_conf, bool):
+                confidence = max(0.0, min(1.0, float(raw_conf)))
+            prior_refs = _parse_prior_refs(parsed.get("prior_refs"), ledger)
+            history_query = _parse_history_query(parsed.get("history_query"))
         except (json.JSONDecodeError, AttributeError, TypeError):
             logger.warning(
                 "fused_router: could not parse JSON response %r — defaulting to needs_query",
                 content[:200],
             )
 
+        # A history question with nothing to search for cannot be answered;
+        # treat it as a data question rather than returning an empty list.
+        if route == "history_lookup" and history_query is None:
+            route, reason = "needs_query", f"{reason} (history_lookup without a query)".strip()
+
         decision = resolve_ml_route(
             route, reason, question,
+            confidence=confidence,
             ml_skills_enabled=ml_skills_enabled,
             analysis_override=state.get("analysis_enabled_override"),
         )
         route, reason = decision["route"], decision["reason"]
 
-        logger.info("fused_router: route=%s | source=%s | reason=%s", route, decision["source"], reason)
+        logger.info(
+            "fused_router: route=%s | source=%s | prior_refs=%s | reason=%s",
+            route, decision["source"], prior_refs, reason,
+        )
 
         usage = response.get("usage") or {}
-        return {
+        result: Dict[str, Any] = {
             "route": route,
             "route_reason": reason,
             "route_source": decision["source"],
+            "prior_refs": prior_refs,
+            "history_query": history_query,
             "llm_call_count": (state.get("llm_call_count") or 0) + 1,
             "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
             "token_usage": merge_usage(state.get("token_usage") or {}, usage),
             "node_prompts": {**(state.get("node_prompts") or {}), "fused_router": system_msg},
         }
+        # Ambiguous SQL-vs-ML: ask instead of guessing. The message becomes the
+        # answer; the UI offers "Run the analysis" / "Answer directly".
+        if route == "clarify_route":
+            msg = _route_clarify_message(decision.get("confidence"))
+            result["answer"] = msg
+            result["route_clarification"] = {
+                "message": msg,
+                "confidence": decision.get("confidence"),
+                "skill_hint": decision.get("skill_hint"),
+            }
+        return result
 
     return fused_router

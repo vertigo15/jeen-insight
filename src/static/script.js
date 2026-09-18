@@ -2766,18 +2766,18 @@ window._traceSearchInput = _traceSearchInput;
 const _TRACE_FLOW_COLUMNS_SQL = [
     {
         title: 'Memory',
-        hint: 'Conversation context and optional summarisation.',
-        nodes: ['memory_shrink_check', 'memory_summarizer', 'memory_answer_generator'],
+        hint: 'Builds the turn ledger, answers from stored prior results, or searches past questions.',
+        nodes: ['context_composer', 'memory_answer_generator', 'history_search'],
     },
     {
         title: 'Routing',
-        hint: 'Classifies the request and chooses the logical branch.',
-        nodes: ['fused_router'],
+        hint: 'Classifies the request and chooses the logical branch; "what can you do?" is answered here.',
+        nodes: ['fused_router', 'capability_answer'],
     },
     {
         title: 'Catalog + Prompt',
-        hint: 'Loads MCP/DB metadata and builds the system prompt.',
-        nodes: ['catalog_lookup', 'prompt_builder'],
+        hint: 'Loads MCP/DB metadata, binds values from prior results, and builds the system prompt.',
+        nodes: ['catalog_lookup', 'prior_data_binder', 'prompt_builder'],
     },
     {
         title: 'SQL + Safety',
@@ -2797,15 +2797,20 @@ const _TRACE_FLOW_COLUMNS_SQL = [
 ];
 
 const _TRACE_FLOW_EDGES_SQL = [
-    ['memory_shrink_check', 'memory_summarizer', 'over budget'],
-    ['memory_shrink_check', 'fused_router', 'within budget'],
-    ['memory_summarizer', 'fused_router', 'then route'],
+    ['context_composer', 'fused_router', 'ledger'],
     ['fused_router', 'memory_answer_generator', 'from memory'],
+    ['fused_router', 'history_search', 'history lookup'],
+    ['fused_router', 'capability_answer', 'capability'],
+    ['capability_answer', 'response_formatter', 'help answer'],
     ['fused_router', 'catalog_lookup', 'needs query'],
     ['fused_router', 'response_formatter', 'blocked / greeting'],
     ['memory_answer_generator', 'catalog_lookup', 'needs fresh data'],
+    ['memory_answer_generator', 'trivial_result_check', 'computed table'],
     ['memory_answer_generator', 'response_formatter', 'answer ready'],
+    ['history_search', 'response_formatter', 'matches'],
+    ['catalog_lookup', 'prior_data_binder', 'uses prior result'],
     ['catalog_lookup', 'prompt_builder', 'catalog bundle'],
+    ['prior_data_binder', 'prompt_builder', 'bound values'],
     ['prompt_builder', 'sql_generator', 'system prompt'],
     ['sql_generator', 'sqlglot_validate', 'SQL'],
     ['sql_generator', 'response_formatter', 'clarification'],
@@ -2834,13 +2839,13 @@ const _TRACE_FLOW_EDGES_SQL = [
 const _TRACE_FLOW_COLUMNS_DAX = [
     {
         title: 'Memory',
-        hint: 'Conversation context and optional summarisation.',
-        nodes: ['memory_shrink_check', 'memory_summarizer', 'memory_answer_generator'],
+        hint: 'Builds the turn ledger, answers from stored prior results, or searches past questions.',
+        nodes: ['context_composer', 'memory_answer_generator', 'history_search'],
     },
     {
         title: 'Routing',
-        hint: 'Classifies the request and chooses the logical branch.',
-        nodes: ['fused_router'],
+        hint: 'Classifies the request and chooses the logical branch; "what can you do?" is answered here.',
+        nodes: ['fused_router', 'capability_answer'],
     },
     {
         title: 'Catalog + Plan',
@@ -2865,14 +2870,17 @@ const _TRACE_FLOW_COLUMNS_DAX = [
 ];
 
 const _TRACE_FLOW_EDGES_DAX = [
-    ['memory_shrink_check', 'memory_summarizer', 'over budget'],
-    ['memory_shrink_check', 'fused_router', 'within budget'],
-    ['memory_summarizer', 'fused_router', 'then route'],
+    ['context_composer', 'fused_router', 'ledger'],
     ['fused_router', 'memory_answer_generator', 'from memory'],
+    ['fused_router', 'history_search', 'history lookup'],
+    ['fused_router', 'capability_answer', 'capability'],
+    ['capability_answer', 'response_formatter', 'help answer'],
     ['fused_router', 'dax_catalog_lookup', 'needs query'],
     ['fused_router', 'response_formatter', 'blocked / greeting'],
     ['memory_answer_generator', 'dax_catalog_lookup', 'needs fresh data'],
+    ['memory_answer_generator', 'trivial_result_check', 'computed table'],
     ['memory_answer_generator', 'response_formatter', 'answer ready'],
+    ['history_search', 'response_formatter', 'matches'],
     ['dax_catalog_lookup', 'dax_query_planner', 'catalog ready'],
     ['dax_catalog_lookup', 'response_formatter', 'blocked'],
     ['dax_query_planner', 'dax_prompt_builder', 'plan ready'],
@@ -3144,9 +3152,9 @@ function _buildTraceFlowHtml(events, metrics) {
 }
 
 function _traceNodeType(node) {
-    if (['memory_summarizer', 'fused_router', 'memory_answer_generator', 'sql_generator', 'fused_eval_analytics',
-         'dax_query_planner', 'dax_generator', 'dax_repair'].includes(node)) return 'llm';
-    if (['catalog_lookup', 'execute_query', 'save_to_memory',
+    if (['fused_router', 'capability_answer', 'memory_answer_generator', 'prior_data_binder', 'sql_generator',
+         'fused_eval_analytics', 'dax_query_planner', 'dax_generator', 'dax_repair'].includes(node)) return 'llm';
+    if (['catalog_lookup', 'execute_query', 'save_to_memory', 'history_search',
          'dax_catalog_lookup', 'pbi_execute_query'].includes(node)) return 'db';
     return 'logic';
 }
@@ -3702,10 +3710,12 @@ function _buildTimingBar(wallMs, graphMs, llmMs, dbMs) {
 // Hovering a node name in the log shows what that pipeline step does, so the
 // log is self-documenting. Keep in sync with the LangGraph nodes in graph.py.
 const _NODE_INFO = {
-    memory_shrink_check:     'Checks whether the conversation history exceeds the token budget and needs summarising.',
-    memory_summarizer:       'LLM call that compresses older conversation turns into a short summary to stay within the token budget.',
-    fused_router:            'LLM router that classifies the question (needs_query / from_memory / greeting / out_of_scope / unsafe) and picks the path.',
-    memory_answer_generator: 'Answers directly from conversation memory when no new SQL is required.',
+    context_composer:        'Builds the turn ledger (question, SQL, answer, result shape and data availability of the last N turns) that the router, SQL generator and memory nodes read. Detail shows turns loaded vs window and the ledger size.',
+    fused_router:            'LLM router that classifies the question (needs_query / from_memory / history_lookup / capability / greeting / out_of_scope / unsafe), names the prior turns it refers to, and picks the path.',
+    memory_answer_generator: 'Serves a follow-up about a prior answer or its data from the stored result: replays the table, computes over the stored rows (one SELECT in the metadata Postgres, rows passed as a JSONB parameter, no tables created), answers from the ledger, or falls through to a live query.',
+    history_search:          'Answers "did I ask about X last week?" by searching the persisted questions of this user on this connection. No LLM call.',
+    capability_answer:       'Answers questions about the assistant itself ("what can you do?", "can I change the model?") from a help prompt. No query, no data lookup.',
+    prior_data_binder:       'When the new question builds on a prior result ("the top 4 products from the previous answer"), extracts the values from the stored rows and binds them as a verified filter for the SQL generator.',
     catalog_lookup:          'Loads the metadata catalog (tables, columns, relationships) from the MCP server or the metadata DB. Detail shows the source, cache HIT/MISS and load time.',
     prompt_builder:          'Assembles the system prompt and the structured prompt shown in the Prompt tab.',
     sql_generator:           'LLM call that writes the SQL for the question (and repairs it on retries).',
@@ -3735,10 +3745,12 @@ const _NODE_INFO = {
 // still shown on hover (and is searchable), but the timeline reads in plain
 // English. Unknown nodes fall back to a prettified version of the raw name.
 const _NODE_LABELS = {
-    memory_shrink_check:     'Memory check',
-    memory_summarizer:       'Memory summarize',
+    context_composer:        'Memory ledger',
     fused_router:            'Router',
     memory_answer_generator: 'Answer from memory',
+    history_search:          'Search history',
+    capability_answer:       'Capability answer',
+    prior_data_binder:       'Bind prior data',
     catalog_lookup:          'Catalog lookup',
     prompt_builder:          'Prompt build',
     sql_generator:           'SQL generation',

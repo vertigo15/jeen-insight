@@ -10,13 +10,15 @@ the SQL flow cannot regress.
 
 Graph topology (``fmt`` = response_formatter, ``feedback`` = dax_feedback_router):
 
-    START → memory_shrink_check ─(over budget)→ memory_summarizer ─┐
-                                └─(within budget)──────────────────┴→ fused_router
+    START → context_composer → fused_router
 
     fused_router ─(greeting | out_of_scope | unsafe)────────────────→ fmt
-                 ├(from_memory)→ memory_answer_generator ─(answered)→ fmt
-                 │                                       └(needs_query)┐
-                 └(needs_query)───────────────────────────────────────┴→ dax_catalog_lookup
+                 ├(capability)→ capability_answer ──────────────────→ fmt
+                 ├(history_lookup)→ history_search ─────────────────→ fmt
+                 ├(from_memory)→ memory_answer_generator ─(prose)───→ fmt
+                 │                  ├(replayed / recomputed table)→ trivial_result_check
+                 │                  └(needs_query)┐
+                 └(needs_query)───────────────────┴→ dax_catalog_lookup
 
     dax_catalog_lookup    ─(blocked)→ fmt          └→ dax_query_planner
     dax_query_planner     ─(clarify)→ fmt          └→ dax_entity_resolver
@@ -48,19 +50,22 @@ from typing import Any, Optional
 from langgraph.graph import END, START, StateGraph
 
 from src.agent.conversation_history import ConversationHistoryService
+from src.agent.langgraph_agent.nodes.capability import make_capability_answer
+from src.agent.langgraph_agent.nodes.context import context_composer
 from src.agent.langgraph_agent.nodes.eval import make_fused_eval_analytics
 from src.agent.langgraph_agent.nodes.execution import trivial_result_check
-from src.agent.langgraph_agent.nodes.memory import (
-    make_memory_shrink_check,
-    make_memory_summarizer,
-)
 from src.agent.langgraph_agent.nodes.output import (
     make_save_to_memory,
     observability_log,
     response_formatter,
 )
+from src.agent.langgraph_agent.nodes.history import make_history_search
+from src.agent.langgraph_agent.nodes.memory_answer import (
+    make_memory_answer_generator,
+    memory_needs_eval,
+    on_memory_branch,
+)
 from src.agent.langgraph_agent.nodes.router import make_fused_router
-from src.agent.langgraph_agent.nodes.sql_gen import make_memory_answer_generator
 from src.agent.langgraph_agent_dax.nodes.catalog import (
     make_dax_catalog_lookup,
     make_dax_prompt_builder,
@@ -83,7 +88,9 @@ from src.agent.langgraph_agent_dax.nodes.planner import make_dax_query_planner
 from src.agent.langgraph_agent_dax.prompt_loader import DaxPromptLoader
 from src.agent.langgraph_agent_dax.state import DaxAgentState
 from src.agent.llm_service import LangChainLlmService
+from src.agent.prior_results import PriorResultStore
 from src.agent.progress import emit_progress
+from src.agent.snapshot_sql import SnapshotSqlEngine
 from src.connectors.powerbi_token import TokenProviderFactory
 from src.metadata import MetadataLoader
 
@@ -97,10 +104,11 @@ _DAX_GRAPH_RECURSION_LIMIT = 64
 
 
 _NODE_META: dict[str, tuple[str, str]] = {
-    "memory_shrink_check":     ("🧠", "logic"),
-    "memory_summarizer":       ("🤏", "llm"),
+    "context_composer":        ("🧠", "logic"),
     "fused_router":            ("🔀", "llm"),
+    "capability_answer":       ("💡", "llm"),
     "memory_answer_generator": ("💬", "llm"),
+    "history_search":          ("🗂", "db"),
     "dax_catalog_lookup":      ("📦", "db"),
     "dax_query_planner":       ("🗺", "llm"),
     "dax_entity_resolver":     ("🔍", "db"),
@@ -199,7 +207,6 @@ def build_dax_graph(
     prompt_loader: DaxPromptLoader,
     deployment_name: str,
     max_retries: int = 4,
-    max_history_tokens: int = 3000,
     dlp_enabled: bool = True,
     dax_validation_enabled: bool = True,
     eval_analytics_enabled: bool = True,
@@ -210,6 +217,7 @@ def build_dax_graph(
     entity_match_threshold: float = 78.0,
     entity_cross_column_enabled: bool = True,
     token_provider_factory: Optional[TokenProviderFactory] = None,
+    snapshot_engine: Optional[SnapshotSqlEngine] = None,
 ) -> Any:
     """Build and compile the text-to-DAX LangGraph.
 
@@ -223,11 +231,19 @@ def build_dax_graph(
     def n(name, fn):
         builder.add_node(name, _timed(name, fn))
 
-    # Shared, engine-agnostic nodes (imported read-only).
-    n("memory_shrink_check",     make_memory_shrink_check(max_history_tokens))
-    n("memory_summarizer",       make_memory_summarizer(router_llm, prompt_loader))
+    # Shared, engine-agnostic nodes (imported read-only). Prior results are
+    # recovered from the cache or the stored snapshot only: a DAX turn cannot be
+    # re-run through ``run_sql``, so no ``rerun`` is wired. Computations over
+    # stored rows run in the metadata Postgres like the SQL graph's.
+    prior_results = PriorResultStore(history_service=history_service)
+    engine = snapshot_engine or SnapshotSqlEngine(getattr(history_service, "pool", None))
+    n("context_composer",        context_composer)
     n("fused_router",            make_fused_router(router_llm, prompt_loader))
-    n("memory_answer_generator", make_memory_answer_generator(router_llm, prompt_loader))
+    n("capability_answer",       make_capability_answer(
+        router_llm, prompt_loader, fallback=_dax_capability_fallback))
+    n("memory_answer_generator", make_memory_answer_generator(
+        router_llm, prompt_loader, store=prior_results, engine=engine))
+    n("history_search",          make_history_search(history_service))
     n("trivial_result_check",    trivial_result_check)
     n("fused_eval_analytics",    make_fused_eval_analytics(llm, prompt_loader))
     n("response_formatter",      response_formatter)
@@ -256,14 +272,12 @@ def build_dax_graph(
     n("dax_feedback_router",     make_dax_feedback_router(max_retries))
 
     # Edges.
-    builder.add_edge(START, "memory_shrink_check")
-    builder.add_conditional_edges(
-        "memory_shrink_check",
-        lambda s: "memory_summarizer" if s.get("is_over_budget") else "fused_router",
-    )
-    builder.add_edge("memory_summarizer", "fused_router")
+    builder.add_edge(START, "context_composer")
+    builder.add_edge("context_composer", "fused_router")
     builder.add_conditional_edges("fused_router", _route_from_router)
+    builder.add_edge("capability_answer", "response_formatter")
     builder.add_conditional_edges("memory_answer_generator", _route_from_memory_answer)
+    builder.add_edge("history_search", "response_formatter")
 
     builder.add_conditional_edges("dax_catalog_lookup", _route_from_catalog)
     builder.add_conditional_edges("dax_query_planner", _route_from_planner)
@@ -294,11 +308,29 @@ def build_dax_graph(
 # ── Routing functions ─────────────────────────────────────────────────────────
 
 
+def _dax_capability_fallback(display: str) -> str:
+    """Static help text when the capability LLM call fails on a DAX connection."""
+    return (
+        f"I'm Jeen Insights, an AI data analyst for the Power BI dataset **{display}**. "
+        "Ask a data question in plain language and I write and run a read-only DAX "
+        "query against the dataset's tables, measures and relationships, then show "
+        "the table, a chart and short insights. You can refer back to earlier "
+        "answers in the conversation. Statistical / ML analysis skills are available "
+        "on SQL database connections, not on Power BI datasets."
+    )
+
+
 def _route_from_router(state: DaxAgentState) -> str:
     route = state.get("route", "needs_query")
     if route == "from_memory":
         return "memory_answer_generator"
-    if route in ("out_of_scope", "unsafe", "greeting"):
+    if route == "history_lookup":
+        return "history_search"
+    if route == "capability":
+        return "capability_answer"
+    # ``clarify_route`` only exists for the SQL graph's analysis branch; the DAX
+    # router runs with analysis disabled, so treat it like any other terminal.
+    if route in ("out_of_scope", "unsafe", "greeting", "clarify_route"):
         return "response_formatter"
     return "dax_catalog_lookup"
 
@@ -306,6 +338,10 @@ def _route_from_router(state: DaxAgentState) -> str:
 def _route_from_memory_answer(state: DaxAgentState) -> str:
     if state.get("route") == "needs_query":
         return "dax_catalog_lookup"
+    # A recomputed table gets the same narration as a live result; a replay
+    # already carries its original answer.
+    if memory_needs_eval(state):
+        return "trivial_result_check"
     return "response_formatter"
 
 
@@ -370,6 +406,10 @@ def _make_route_from_trivial(eval_enabled: bool):
 
 def _route_from_eval(state: DaxAgentState) -> str:
     eval_result = state.get("eval_result") or {}
+    # A memory result was computed deterministically from stored rows; the DAX
+    # repair loop has no planner/prompt state for it and must not be entered.
+    if on_memory_branch(state):
+        return "response_formatter"
     return (
         "response_formatter"
         if eval_result.get("answers_intent", True)

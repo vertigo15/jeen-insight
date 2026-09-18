@@ -5,18 +5,24 @@ the persisted turn artifact) speaks these shapes. They deliberately import no
 ML library so the API process, the sandbox image and the browser-facing models
 can all depend on them without pulling in statsforecast.
 
-Bump ``CONTRACT_VERSION`` whenever a field changes meaning; the per-user
-"don't ask again" consent is scoped to it, so a contract change re-prompts.
+Bump ``CONTRACT_VERSION`` whenever a field changes meaning or a params shape
+gains a field: the sandbox refuses a mismatched version, which is what keeps
+an API from sending a field an older sandbox's ``extra="forbid"`` model would
+reject. The per-user "don't ask again" consent is scoped to it, so a contract
+change re-prompts once, and pending proposals ask to be re-asked.
+
+History: 1 → 2 gave ``ForecastParams`` a ``window`` (the look-back, until then
+a private planner hint the cards could neither show nor change).
 """
 
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Dict, List, Literal, Optional, Type
+from typing import Any, Dict, List, Literal, Optional, Type, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-CONTRACT_VERSION = "1"
+CONTRACT_VERSION = "2"
 
 Grain = Literal["day", "week", "month"]
 Agg = Literal["sum", "count", "avg", "min", "max"]
@@ -134,15 +140,21 @@ class ForecastParams(BaseModel):
 
     ``horizon`` is in periods of ``series.grain``; the ``max_horizon`` guard caps
     it at ``min(n/3, 2 × longest seasonal period)``. ``interval`` is the
-    prediction-interval level (0.80 → an 80% band).
+    prediction-interval level (0.80 → an 80% band). ``method`` ``auto`` runs
+    the shortlist and keeps the baseline unless a model beats it; any other
+    value is an explicit choice and is returned even when it does not.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     series: SeriesRequest
+    # Look-back in periods of ``series.grain``; the guard fills the default
+    # (day 90 / week 26 / month 24) from the span probe and records it here so
+    # the cards can show and change it. The series range is what the engine reads.
+    window: Optional[int] = Field(default=None, ge=12, le=1500)
     horizon: int = Field(default=8, ge=1, le=104)
     interval: float = Field(default=0.80, ge=0.50, le=0.99)
-    method: Literal["auto", "auto_arima", "auto_ets", "theta", "seasonal_naive"] = "auto"
+    method: Literal["auto", "auto_arima", "auto_ets", "theta", "drift", "seasonal_naive"] = "auto"
 
 
 class ChangepointParams(BaseModel):
@@ -785,6 +797,22 @@ def parse_params(skill: str, raw: Dict[str, Any]) -> BaseModel:
     return get_skill(skill).params_model.model_validate(raw)
 
 
+def method_options(skill: str) -> List[str]:
+    """The selectable ``method`` values of a skill, read from its params model.
+
+    The one source for the ``model`` chip on the confirm card and on a finished
+    result's setup card, so the two can never drift apart. Empty for skills
+    without a ``method``.
+    """
+    try:
+        field = get_skill(skill).params_model.model_fields.get("method")
+    except KeyError:
+        return []
+    if field is None:
+        return []
+    return [arg for arg in get_args(field.annotation) if isinstance(arg, str)]
+
+
 # Where the data lives is decided by the planner from the catalog and by the
 # connection settings — never by a client patch. A case-variant table name
 # would otherwise pass a case-folded catalog check yet name a different
@@ -813,6 +841,7 @@ def merge_params_patch(skill: str, base: Dict[str, Any], patch: Dict[str, Any]) 
     for key, value in (patch or {}).items():
         if key in ("series", "entity", "cohort", "experiment"):
             continue
+        value = _unset_sentinel(key, value)
         if key in top_fields:
             merged[key] = value
         elif key in nested_fields:
@@ -821,9 +850,20 @@ def merge_params_patch(skill: str, base: Dict[str, Any], patch: Dict[str, Any]) 
         merged_nested = dict(merged.get(nested_key) or {})
         for key, value in nested_patch.items():
             if key in nested_fields:
-                merged_nested[key] = value
+                merged_nested[key] = _unset_sentinel(key, value)
         merged[nested_key] = merged_nested
     return spec.params_model.model_validate(merged)
+
+
+# The card shows an optional field's "no value" as a word the user can pick
+# again; the patch must turn it back into None rather than a column called "none".
+_UNSET_SENTINELS = {"group_by": ("none", ""), "k": ("auto", "")}
+
+
+def _unset_sentinel(key: str, value: Any) -> Any:
+    if isinstance(value, str) and value.strip().lower() in _UNSET_SENTINELS.get(key, ()):
+        return None
+    return value
 
 
 # ── Proposal / clarification (API-facing) ─────────────────────────────────────

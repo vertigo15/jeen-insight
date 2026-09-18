@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Optional
 
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
@@ -64,14 +64,26 @@ def _static_answer(display: str) -> str:
         "analytics/ML skill (anomaly detection, forecast, changepoint, seasonality, "
         "correlation, contribution, clustering, driver analysis, regression, classification, "
         "cohort retention, A/B test). Before an ML skill runs I show a confirm card where you "
-        "can change parameters and the method (for example anomaly detection: auto or 3-sigma; "
-        "forecast: ARIMA/ETS/theta/seasonal-naive) - or just say it, e.g. \"flag anomalies in "
-        "profit using 3-sigma\"."
+        "can change parameters and the model (for example anomaly detection: auto or 3-sigma; "
+        "forecast: ARIMA/ETS/theta/drift/seasonal-naive) - or just say it, e.g. \"flag anomalies in "
+        "profit using 3-sigma\". A finished analysis has Edit setup in its status strip to reopen "
+        "that card and re-run with a different model or other parameters."
     )
 
 
-def make_capability_answer(llm: LangChainLlmService, prompt_loader: PromptLoader):
-    """Return an async ``capability_answer`` node that explains the assistant."""
+def make_capability_answer(
+    llm: LangChainLlmService,
+    prompt_loader: PromptLoader,
+    *,
+    fallback: Optional[Callable[[str], str]] = None,
+):
+    """Return an async ``capability_answer`` node that explains the assistant.
+
+    The prompt is ``capability_answer`` from the loader — the DAX loader serves
+    its own Power BI version under the same name. ``fallback`` builds the static
+    answer used when the model call fails (defaults to the SQL/ML text).
+    """
+    static = fallback or _static_answer
 
     async def capability_answer(state: AgentState) -> Dict[str, Any]:
         question = state.get("question", "")
@@ -97,11 +109,11 @@ def make_capability_answer(llm: LangChainLlmService, prompt_loader: PromptLoader
                 model_override=model_override,
                 timeout=state.get("llm_timeout_seconds"),
             )
-            answer = (response.get("content") or "").strip() or _static_answer(display)
+            answer = (response.get("content") or "").strip() or static(display)
             usage = response.get("usage") or {}
         except Exception:  # noqa: BLE001 — a help answer must never hard-fail the turn
             logger.exception("capability_answer: LLM call failed; using static answer")
-            answer, usage = _static_answer(display), {}
+            answer, usage = static(display), {}
 
         latency_ms = int((time.monotonic() - t0) * 1000)
         return {

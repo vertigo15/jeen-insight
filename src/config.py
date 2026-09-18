@@ -7,9 +7,12 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """Application settings from environment variables."""
 
-    # Azure OpenAI Configuration
-    AZURE_OPENAI_API_KEY: str
-    AZURE_OPENAI_ENDPOINT: str
+    # Azure OpenAI Configuration. Optional: LLM credentials normally live in the
+    # metadata DB (Settings → AI Models); these are only the env fallback used
+    # when the DB has no active model. Blank in air-gapped deployments that use
+    # an on-prem OpenAI-compatible endpoint configured through the UI.
+    AZURE_OPENAI_API_KEY: str = ""
+    AZURE_OPENAI_ENDPOINT: str = ""
     AZURE_OPENAI_API_VERSION: str = "2025-01-01-preview"
     AZURE_OPENAI_DEPLOYMENT_NAME: str = "gpt-5.1"
 
@@ -79,10 +82,23 @@ class Settings(BaseSettings):
 
     # LangGraph agent settings
     LANGGRAPH_MAX_RETRIES: int = 3
-    LANGGRAPH_MAX_HISTORY_TOKENS: int = 3000
-    # Optional cheaper deployment for router/summarizer nodes.
+    # Optional cheaper deployment for the router, filter planner and memory nodes.
     # Defaults to AZURE_OPENAI_DEPLOYMENT_NAME when empty.
     AZURE_OPENAI_ROUTER_DEPLOYMENT: str = ""
+
+    # ── Conversation memory (prior results referenced by follow-up questions) ──
+    # Rows of a prior turn shown to the memory model as a sample; the full data
+    # is only ever read by the database (a jsonb_to_recordset CTE in the metadata
+    # Postgres — no tables are created).
+    MEMORY_SAMPLE_ROWS: int = 3
+    # Row ceiling for computing over a prior result (snapshot cap by default).
+    MEMORY_COMPUTE_MAX_ROWS: int = 2000
+    # Max literal values a prior result may contribute to a new live query
+    # ("the top 4 products from T3" → WHERE product IN (...)).
+    MEMORY_MAX_BOUND_VALUES: int = 100
+    # "Did I ask about X?" without an explicit period searches this far back.
+    HISTORY_LOOKUP_DEFAULT_DAYS: int = 30
+    HISTORY_LOOKUP_MAX_RESULTS: int = 10
     DLP_ENABLED: bool = True
     SQLGLOT_VALIDATION_ENABLED: bool = True
     # Reject table references qualified with a schema/catalog that doesn't match

@@ -57,6 +57,21 @@ def _strip_private(params: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in (params or {}).items() if not str(k).startswith("_")}
 
 
+def _reset_range_if_window_changed(params: Dict[str, Any], patch: Dict[str, Any]) -> None:
+    """A changed window or grain needs a fresh history range from the span probe.
+
+    The guard keeps an existing ``series.start``/``end`` (a stored confirm card
+    already carries the range it was shown with), so without this a wider
+    window typed on a card, or a "Look back N periods" guard exit, would leave
+    the range exactly where it was.
+    """
+    patch = patch or {}
+    changed = bool(patch.get("grain") or (patch.get("series") or {}).get("grain") or "window" in patch)
+    if changed and isinstance(params.get("series"), dict):
+        params["series"]["start"] = None
+        params["series"]["end"] = None
+
+
 async def _resolve_clarification(agent: Any, proposal: Dict[str, Any], patch: Dict[str, Any], connection: str) -> Dict[str, Any]:
     """Turn a clarification pick into full params by re-validating the stored
     plan with the pick applied. Nothing from the client becomes a parameter
@@ -185,6 +200,7 @@ async def run_analysis(request: AnalysisRunRequest, principal: Principal = Depen
             first = exc.errors()[0] if exc.errors() else {}
             raise HTTPException(status_code=422, detail=f"Invalid parameter: {first.get('loc')} — {first.get('msg')}")
         params = typed.model_dump(mode="json")
+        _reset_range_if_window_changed(params, request.params_patch or {})
         # A guard exit re-runs the guard and then still asks for consent on a
         # first run; the confirm card itself is the consent.
         confirmed = kind == "confirm"
@@ -262,11 +278,7 @@ async def rerun_analysis(request: AnalysisRerunRequest, principal: Principal = D
         first = exc.errors()[0] if exc.errors() else {}
         raise HTTPException(status_code=422, detail=f"Invalid parameter: {first.get('loc')} — {first.get('msg')}")
     params = typed.model_dump(mode="json")
-    # A changed grain or window needs a fresh window from the span probe.
-    if (patch.get("grain") or (patch.get("series") or {}).get("grain") or "window" in patch):
-        if "series" in params:
-            params["series"]["start"] = None
-            params["series"]["end"] = None
+    _reset_range_if_window_changed(params, patch)
 
     agent = await resolve_agent(request.connection)
     from src.agent.analysis_planner import diff_params  # noqa: PLC0415
@@ -355,8 +367,6 @@ async def _patch_from_instruction(agent: Any, skill: str, base_params: Dict[str,
             patch.setdefault("entity", {})[key] = change["to"]
         else:
             patch[key] = change["to"]
-    if outcome.params.get("_window"):
-        patch["window"] = outcome.params["_window"]
     return patch
 
 

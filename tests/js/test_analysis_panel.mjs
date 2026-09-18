@@ -44,6 +44,62 @@ const analysis = {
     // The method is named visibly in the strip (spec §8), not only on hover.
     assert.match(html, /v3-ml-method[^>]*>MSTL, m=52, robust residual band</);
     assert.doesNotMatch(UI.stripSegments({ analysis: { ...analysis, method_used: '' } }), /v3-ml-method/);
+    // The model is changed on the setup card, never from a strip control; and no
+    // "Edit setup" without a definition (older persisted turns).
+    assert.doesNotMatch(html, /data-ml-method/);
+    assert.doesNotMatch(html, /<select/);
+    assert.doesNotMatch(html, /data-ml-edit/);
+}
+
+// ── setup card ("Edit setup") ────────────────────────────────────────────────
+{
+    const withSetup = {
+        ...analysis, skill: 'forecast', method_used: 'Drift',
+        params: { series: { grain: 'month', measure_column: 'SalesAmount' }, window: 24, horizon: 8, method: 'auto' },
+        definition: {
+            chips: [
+                { key: 'measure_column', label: 'measure', value: 'SalesAmount', options: ['SalesAmount', 'Profit'] },
+                { key: 'grain', label: 'grain', value: 'month', options: ['day', 'week', 'month'] },
+                { key: 'window', label: 'window', value: 24, options: [] },
+                { key: 'horizon', label: 'horizon', value: 8, options: [] },
+                { key: 'method', label: 'model', value: 'auto', options: ['auto', 'drift'] },
+                { key: 'group_by', label: 'split by', value: 'none', options: ['none', 'Territory'] },
+            ],
+            egress_summary: 'SQL rolls SUM(SalesAmount) up to about 24 monthly totals on AW. Only those rows are sent to the analysis service.',
+        },
+    };
+    const strip = UI.stripSegments({ analysis: withSetup });
+    assert.match(strip, /<button [^>]*data-ml-edit[^>]*>Edit setup<\/button>/);
+    assert.doesNotMatch(strip, /<select/, 'the strip carries no model control');
+    const html = UI.definitionHtml(withSetup);
+    assert.match(html, /v3-ml-card is-confirm is-definition/);
+    assert.match(html, /<select data-chip="measure_column" data-original="SalesAmount"/);
+    assert.match(html, /<option value="SalesAmount" selected>/);
+    // The model lives here, labelled "model", keyed `method`.
+    assert.match(html, /<label class="v3-ml-chip"><span>model<\/span><select data-chip="method" data-original="auto"/);
+    assert.match(html, /<option value="drift">drift<\/option>/);
+    // A filled window is a number input (the forecast look-back is a real parameter now).
+    assert.match(html, /<input data-chip="window" data-original="24" type="number"/);
+    assert.match(html, /<input data-chip="horizon" data-original="8" type="number"/);
+    assert.match(html, /<span>split by<\/span>/);
+    assert.match(html, /data-run>Re-run</);
+    assert.match(html, /data-cancel>Cancel</);
+    assert.match(html, /sent to the analysis service/);
+    assert.match(html, /TIER A · AGGREGATE/);
+    assert.doesNotMatch(html, /data-remember/, 'consent belongs to the first-run card only');
+    assert.doesNotMatch(html, /style="/);
+    assert.equal(UI.definitionHtml({ ...withSetup, definition: { chips: [] } }), '');
+    assert.equal(UI.definitionHtml(analysis), '');
+    // A decimal typed into the window is rounded before it becomes a patch.
+    const fakeCard = {
+        querySelectorAll() {
+            return [
+                { dataset: { chip: 'window', original: '24' }, value: '36.6', type: 'number' },
+                { dataset: { chip: 'method', original: 'auto' }, value: 'drift', type: 'select-one' },
+            ];
+        },
+    };
+    assert.deepEqual(JSON.parse(JSON.stringify(UI.collectPatch(fakeCard))), { window: 37, method: 'drift' });
 }
 
 // ── proposal expiry ──────────────────────────────────────────────────────────

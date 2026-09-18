@@ -4,49 +4,52 @@
 It wires all node factories with their service dependencies and returns a compiled
 LangGraph ``CompiledStateGraph`` that can be invoked with ``await graph.ainvoke(state)``.
 
-Graph topology (simplified):
-    START
-      └─ memory_shrink_check ──(over budget)──► memory_summarizer ─┐
-                              └─(within)──────────────────────────┘
-                                                                    │
-                                                               fused_router
-                                ┌──(from_memory)─────────────────► memory_answer_generator
-                                │                                       │  (answer ready)
-                                │                                       ▼
-                                │                              response_formatter ◄──────┐
-                                ├──(out_of_scope / unsafe) ──────────────────────────►  │
-                                └──(needs_query) ──► catalog_lookup ──► prompt_builder   │
-                                                            │                            │
-                                                       sql_generator ◄──────────────────┤
-                                                            │                    feedback│
-                                                    ┌───────┴─────────┐     classifier  │
-                                               (SQL)|                 |(clarif)         │
-                                          sqlglot_validate        response_formatter    │
-                                         ┌────┴────┐                                   │
-                                    (valid)|      (error)                               │
-                                       dlp_check   └──► feedback_classifier ───────────┘
-                                      ┌──┴──┐
-                                (safe)|   (blocked)
-                               execute_query ──(error)──► feedback_classifier
-                                     │ (rows)
-                              trivial_result_check
-                                  ┌───┴───┐
-                            (yes) │       │ (no)
-                       response_formatter  fused_eval_analytics ──(wrong)──► feedback_classifier
-                                                │ (correct)
-                                        response_formatter
-                                                │
-                                         save_to_memory
-                                                │
-                                       observability_log
-                                                │
-                                              END
+Graph topology (simplified; ``fmt`` = response_formatter):
+
+    START ─(analysis resume)─► catalog_lookup
+      └─► context_composer ─► fused_router
+            ├─(greeting | out_of_scope | unsafe | clarify_route)─► fmt
+            ├─(capability)─► capability_answer ─► fmt
+            ├─(history_lookup)─► history_search ─► fmt
+            ├─(from_memory)─► memory_answer_generator
+            │        ├─(replay | prose answer)─► fmt
+            │        ├─(computed table)─► trivial_result_check
+            │        └─(needs_query)─► catalog_lookup
+            └─(needs_query | needs_analysis)─► catalog_lookup
+                    ├─(catalog_blocked)─► fmt
+                    └─► filter_planner ─► filter_grounder
+                              ├─(needs_analysis)─► analysis_planner ─► analysis_guard ─► analysis_sql ─┐
+                              ├─(prior_refs)─► prior_data_binder ─► prompt_builder                  │
+                              └─► prompt_builder ─► sql_generator                                     │
+                                        ├─(clarification)─► fmt                                       │
+                                        └─► sqlglot_validate ◄────────────────────────────────────────┘
+                                                 ├─(error, SQL path)─► feedback_classifier
+                                                 └─(valid)─► dlp_check ─(blocked)─► fmt
+                                                                  └─(safe)─► execute_query
+                                                                       ├─(error, SQL path)─► feedback_classifier
+                                                                       ├─(rows, ML path)─► analysis_run ─► trivial_result_check
+                                                                       └─(rows)─► empty_filter_result_check
+                                                                                  ├─(reground)─► feedback_classifier
+                                                                                  └─► trivial_result_check
+                                                                                         ├─(trivial | eval off)─► fmt
+                                                                                         └─► fused_eval_analytics
+                                                                                                ├─(wrong, SQL path)─► feedback_classifier
+                                                                                                └─► fmt
+    feedback_classifier ─► sql_generator | catalog_lookup | filter_grounder | fmt
+    fmt ─► save_to_memory ─► observability_log ─► END
+
+Conversation memory: ``context_composer`` builds the turn ledger (question, SQL,
+answer, result shape and data availability of the last N turns) that the
+router, the SQL generator and the memory nodes read; rows are recovered by
+reference (``PriorResultStore``) and computed over in the metadata Postgres as
+``jsonb_to_recordset`` CTEs (``SnapshotSqlEngine``, no tables created), never
+pasted into prompts. See ``nodes/context.py``, ``nodes/memory_answer.py``,
+``nodes/binder.py`` and ``nodes/history.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import time
 from typing import Any, List, Optional
@@ -61,8 +64,10 @@ from src.agent.langgraph_agent.nodes.analysis import (
     make_analysis_run,
     on_analysis_branch,
 )
+from src.agent.langgraph_agent.nodes.binder import make_prior_data_binder
 from src.agent.langgraph_agent.nodes.capability import make_capability_answer
 from src.agent.langgraph_agent.nodes.catalog import make_catalog_lookup, make_prompt_builder
+from src.agent.langgraph_agent.nodes.context import context_composer
 from src.agent.langgraph_agent.nodes.eval import make_fused_eval_analytics
 from src.agent.langgraph_agent.nodes.execution import make_execute_query, trivial_result_check
 from src.agent.langgraph_agent.nodes.feedback import make_feedback_classifier
@@ -71,9 +76,11 @@ from src.agent.langgraph_agent.nodes.filtering import (
     make_filter_grounder,
     make_filter_planner,
 )
-from src.agent.langgraph_agent.nodes.memory import (
-    make_memory_shrink_check,
-    make_memory_summarizer,
+from src.agent.langgraph_agent.nodes.history import make_history_search
+from src.agent.langgraph_agent.nodes.memory_answer import (
+    make_memory_answer_generator,
+    memory_needs_eval,
+    on_memory_branch,
 )
 from src.agent.langgraph_agent.nodes.output import (
     make_save_to_memory,
@@ -81,37 +88,48 @@ from src.agent.langgraph_agent.nodes.output import (
     response_formatter,
 )
 from src.agent.langgraph_agent.nodes.router import make_fused_router
-from src.agent.langgraph_agent.nodes.sql_gen import (
-    make_memory_answer_generator,
-    make_sql_generator,
-)
+from src.agent.langgraph_agent.nodes.sql_gen import make_sql_generator
 from src.agent.langgraph_agent.nodes.validation import make_dlp_check, make_sqlglot_validate
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
+from src.agent.prior_results import PriorResultStore, make_sql_rerun
 from src.agent.progress import emit_progress
+from src.agent.snapshot_sql import SnapshotSqlEngine
 from src.metadata import MetadataLoader
 from src.connectors import SqlRunner
 
 logger = logging.getLogger(__name__)
 
-# The value-grounding diagnostic introduces one bounded loop in addition to the
-# existing SQL repair loop. Keep retry budgets—not LangGraph's default 25
-# supersteps—as the effective bound for a legitimate recovery path.
-_GRAPH_RECURSION_LIMIT = 48
+# Retry budgets — not LangGraph's default 25 supersteps — must be the effective
+# bound for a legitimate recovery path. The longest path that honours every
+# budget (max_retries=3, one filter reground) is:
+#   prefix   8  context_composer → fused_router → memory_answer_generator (escape
+#               hatch) → catalog_lookup → filter_planner → filter_grounder →
+#               prior_data_binder → prompt_builder
+#   reground 9  sql_generator … empty_filter_result_check → feedback_classifier →
+#               filter_grounder → prior_data_binder → prompt_builder
+#   attempts 32 4 × (sql_generator, sqlglot_validate, dlp_check, execute_query,
+#               empty_filter_result_check, trivial_result_check,
+#               fused_eval_analytics, feedback_classifier)
+#   tail     3  response_formatter → save_to_memory → observability_log
+#   = 52 supersteps. 64 leaves headroom (the DAX graph uses the same value).
+_GRAPH_LONGEST_LEGAL_PATH = 52
+_GRAPH_RECURSION_LIMIT = 64
 
 
 # ── Node metadata for the trace panel ────────────────────────────────────────
 # (icon, type)  type is one of: llm | db | logic
 _NODE_META: dict[str, tuple[str, str]] = {
-    "memory_shrink_check":     ("🧠", "logic"),
-    "memory_summarizer":       ("🤏", "llm"),
+    "context_composer":        ("🧠", "logic"),
     "fused_router":            ("🔀", "llm"),
     "capability_answer":       ("💡", "llm"),
     "memory_answer_generator": ("💬", "llm"),
+    "history_search":          ("🗂", "db"),
     "catalog_lookup":          ("📦", "db"),
     "filter_planner":          ("🎯", "llm"),
     "filter_grounder":         ("🔎", "db"),
+    "prior_data_binder":       ("🧷", "llm"),
     "prompt_builder":          ("🔧", "logic"),
     "sql_generator":           ("🧠", "llm"),
     "sqlglot_validate":        ("✅", "logic"),
@@ -222,7 +240,6 @@ def build_graph(
     prompt_loader: PromptLoader,
     deployment_name: str,
     max_retries: int = 3,
-    max_history_tokens: int = 3000,
     dlp_enabled: bool = True,
     sqlglot_validation_enabled: bool = True,
     eval_analytics_enabled: bool = True,
@@ -242,6 +259,9 @@ def build_graph(
     analysis_audit: Optional[Any] = None,
     analysis_max_series_rows: int = 1500,
     analysis_max_entity_rows: int = 50_000,
+    memory_compute_max_rows: int = 2000,
+    memory_max_bound_values: int = 100,
+    snapshot_engine: Optional[SnapshotSqlEngine] = None,
 ) -> Any:
     """Build and compile the LangGraph text-to-SQL agent.
 
@@ -251,9 +271,9 @@ def build_graph(
         Primary (large-model) LLM service — used for sql_generator and
         fused_eval_analytics.
     router_llm:
-        Router/summarizer LLM service — used for fused_router, memory nodes,
-        and memory_answer_generator.  May be the same object as ``llm`` when
-        no separate cheaper deployment is configured.
+        Router LLM service — used for fused_router, filter_planner,
+        memory_answer_generator and prior_data_binder.  May be the same object
+        as ``llm`` when no separate cheaper deployment is configured.
     sql_runner:
         Query runner for the selected data source (already enforces read-only safety).
     metadata_loader:
@@ -266,8 +286,6 @@ def build_graph(
         Azure OpenAI deployment name stored in the query history record.
     max_retries:
         Maximum number of SQL repair attempts before giving up.
-    max_history_tokens:
-        Estimated token budget for conversation history before summarisation.
     dlp_enabled:
         When True, DLP patterns are checked before executing any SQL.
     sqlglot_validation_enabled:
@@ -277,6 +295,13 @@ def build_graph(
         (planner → guard → sql → run). ``analysis_store`` persists proposals
         and consent; ``analysis_runner_provider`` returns the configured
         ``AnalysisRunner`` (None → skills disabled at run time).
+    memory_compute_max_rows / memory_max_bound_values:
+        Row ceiling for computing over a prior result's stored rows, and the
+        most values a prior result may contribute to a new query's ``IN`` list.
+    snapshot_engine:
+        Runs the memory computations (a SELECT in the metadata Postgres over the
+        stored rows exposed as ``jsonb_to_recordset`` CTEs; no tables are created).
+        Defaults to an engine on ``history_service.pool``; tests inject a double.
 
     Returns
     -------
@@ -289,11 +314,21 @@ def build_graph(
     def n(name, fn):  # shorthand: wrap + register
         builder.add_node(name, _timed(name, fn))
 
-    n("memory_shrink_check",     make_memory_shrink_check(max_history_tokens))
-    n("memory_summarizer",       make_memory_summarizer(router_llm, prompt_loader))
+    # Prior results are recovered cache → stored snapshot → re-run at the source,
+    # and computed over in the metadata Postgres as jsonb_to_recordset CTEs.
+    prior_results = PriorResultStore(
+        history_service=history_service,
+        rerun=make_sql_rerun(sql_runner),
+        max_rows=memory_compute_max_rows,
+    )
+    engine = snapshot_engine or SnapshotSqlEngine(getattr(history_service, "pool", None))
+
+    n("context_composer",        context_composer)
     n("fused_router",            make_fused_router(router_llm, prompt_loader, ml_skills_enabled=ml_skills_enabled))
     n("capability_answer",       make_capability_answer(llm, prompt_loader))
-    n("memory_answer_generator", make_memory_answer_generator(router_llm, prompt_loader))
+    n("memory_answer_generator", make_memory_answer_generator(
+        router_llm, prompt_loader, store=prior_results, engine=engine, max_rows=memory_compute_max_rows))
+    n("history_search",          make_history_search(history_service))
     n("catalog_lookup",          make_catalog_lookup(metadata_loader, require_catalog_for_query))
     # Metadata-first value evidence (Schema Modeler profiles / captured values)
     # shared by the planner's reverse lookup and the grounder's tiers.
@@ -317,6 +352,9 @@ def build_graph(
             value_store_provider=store_provider,
         ),
     )
+    n("prior_data_binder",       make_prior_data_binder(
+        router_llm, prompt_loader, store=prior_results, engine=engine,
+        max_values=memory_max_bound_values, max_rows=memory_compute_max_rows))
     n("prompt_builder",          make_prompt_builder(prompt_loader))
     n("sql_generator",           make_sql_generator(llm, prompt_loader))
     n("sqlglot_validate",        make_sqlglot_validate(sqlglot_validation_enabled, require_catalog_for_query, enforce_schema_qualifier))
@@ -355,22 +393,19 @@ def build_graph(
     # goes straight to the catalog so the guard has the schema it needs.
     builder.add_conditional_edges(
         START,
-        lambda s: "catalog_lookup" if (s.get("analysis_resume") or s.get("analysis_confirmed")) else "memory_shrink_check",
+        lambda s: "catalog_lookup" if (s.get("analysis_resume") or s.get("analysis_confirmed")) else "context_composer",
     )
-
-    builder.add_conditional_edges(
-        "memory_shrink_check",
-        lambda s: "memory_summarizer" if s.get("is_over_budget") else "fused_router",
-    )
-    builder.add_edge("memory_summarizer", "fused_router")
+    builder.add_edge("context_composer", "fused_router")
 
     builder.add_conditional_edges("fused_router", _route_from_router)
     builder.add_edge("capability_answer", "response_formatter")
+    builder.add_edge("history_search", "response_formatter")
     builder.add_conditional_edges("memory_answer_generator", _route_from_memory_answer)
 
     builder.add_conditional_edges("catalog_lookup", _route_from_catalog)
     builder.add_conditional_edges("filter_planner", _route_from_filter_planner)
     builder.add_conditional_edges("filter_grounder", _route_from_filter_grounder)
+    builder.add_conditional_edges("prior_data_binder", _route_from_binder)
     builder.add_edge("prompt_builder", "sql_generator")
 
     builder.add_conditional_edges("analysis_planner", _route_from_analysis_planner)
@@ -409,9 +444,13 @@ def _route_from_router(state: AgentState) -> str:
     route = state.get("route", "needs_query")
     if route == "from_memory":
         return "memory_answer_generator"
+    if route == "history_lookup":
+        return "history_search"
     if route == "capability":
         return "capability_answer"
-    if route in ("out_of_scope", "unsafe", "greeting"):
+    # clarify_route: the SQL-vs-ML choice was ambiguous — the router already set
+    # the question + options as the answer, so go straight to formatting.
+    if route in ("out_of_scope", "unsafe", "greeting", "clarify_route"):
         return "response_formatter"
     return "catalog_lookup"  # needs_query (default)
 
@@ -420,6 +459,10 @@ def _route_from_memory_answer(state: AgentState) -> str:
     # If the memory-answer node set escape hatch, run a real query
     if state.get("route") == "needs_query":
         return "catalog_lookup"
+    # A table computed over stored rows gets the same narration as a live
+    # result; a replay already carries its original answer, prose is final.
+    if memory_needs_eval(state):
+        return "trivial_result_check"
     return "response_formatter"
 
 
@@ -446,7 +489,16 @@ def _route_from_filter_grounder(state: AgentState) -> str:
     # available to the planner for free.
     if state.get("route") == "needs_analysis":
         return "analysis_planner"
+    # The question builds on a prior result → bind its values before the
+    # prompt is rendered, so the SQL model receives them as a verified filter.
+    if state.get("prior_refs"):
+        return "prior_data_binder"
     return "prompt_builder"
+
+
+def _route_from_binder(state: AgentState) -> str:
+    # Too many values to carry into an IN list → ask the user to narrow it.
+    return "response_formatter" if state.get("filter_clarification_required") else "prompt_builder"
 
 
 def _route_from_analysis_planner(state: AgentState) -> str:
@@ -518,15 +570,12 @@ def _make_route_from_trivial(eval_enabled: bool):
     return _route_from_trivial
 
 
-def _route_from_trivial(state: AgentState) -> str:  # kept for direct test imports
-    return "response_formatter" if state.get("is_trivial") else "fused_eval_analytics"
-
-
 def _route_from_eval(state: AgentState) -> str:
     eval_result = state.get("eval_result") or {}
-    # An ML result was produced by a validated engine; a doubtful narration
-    # must never trigger the SQL repair loop.
-    if on_analysis_branch(state):
+    # An ML result was produced by a validated engine, and a memory result was
+    # computed from stored rows; a doubtful narration must never trigger the
+    # SQL repair loop for either (there is no system prompt to retry with).
+    if on_analysis_branch(state) or on_memory_branch(state):
         return "response_formatter"
     return (
         "response_formatter"

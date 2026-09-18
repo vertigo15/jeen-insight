@@ -63,11 +63,19 @@ class QueryResponse(BaseModel):
     #   {route, path (ml|sql|…), source, reason, skill}. Declared here so
     #   Pydantic keeps it and the UI/tests can read it without the trace.
     routing: Optional[Dict[str, Any]] = None
+    # When the SQL-vs-ML choice was ambiguous, the router asks instead of guessing:
+    # {message, confidence, skill_hint}. The UI renders the two choices ("Run the
+    # analysis" / "Answer directly"). Declared so Pydantic keeps it in the contract.
+    route_clarification: Optional[Dict[str, Any]] = None
     # Filter grounding provenance {resolved, unverified, assumptions} and, when
     # the grounder had to ask which column / value was meant, a structured
     # question {kind, literal, message, options, allow_any, allow_other}.
     filters: Optional[Dict[str, Any]] = None
     filter_clarification: Optional[Dict[str, Any]] = None
+    # history_lookup route ("did I ask about X last week?"): the matching past
+    # turns [{query_id, session_id, question, answer, created_at}] so the UI can
+    # link back to them. Declared so Pydantic keeps it in the contract.
+    history_matches: Optional[List[Dict[str, Any]]] = None
     # Per-node execution trace. Each entry: {node, elapsed_ms, icon, type, detail, ...}
     trace: Optional[List[Dict[str, Any]]] = None
     # Result analysis from the inline eval node, present only when the caller

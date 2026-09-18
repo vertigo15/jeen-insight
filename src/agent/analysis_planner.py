@@ -21,7 +21,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from pydantic import ValidationError
@@ -46,7 +46,7 @@ _MAX_OPTIONS = 6
 # ("drop", "spike", "expect") only inform the LLM hint.
 _STRONG_CUES: Dict[str, Sequence[str]] = {
     "forecast": (
-        r"\bforecast", r"\bpredict(?!s|or)", r"\bprojection", r"\bproject(ed|ion)?\b.*\b(next|coming|future)\b",
+        r"\bfore?cas?t(s|ed|ing)?\b", r"\bpredict(?!s|or)", r"\bprojection", r"\bproject(ed|ion)?\b.*\b(next|coming|future)\b",
         r"\bnext (quarter|month|year|week|\d+ (days|weeks|months))\b", r"\brun[- ]rate\b", r"\bat this rate\b",
         r"\bwhat will\b", r"\bhow much will\b", r"\bwill .* (be|reach|grow|fall|hit)\b",
     ),
@@ -279,6 +279,92 @@ def _coerce_date(value: Any) -> Optional[str]:
         return None
 
 
+# Calendar-part column names. A forecast must not scope its *history* by the
+# period it is asked to project: the grounder turns "forecast for Jul-Dec 2008"
+# into year/month filters, which — applied to the training data — would empty
+# the series. Matched as whole, separator-normalised names (NOT substrings) so
+# "CandidateStatus"/"YearlyIncome" are never mistaken for calendar columns.
+_TEMPORAL_COLUMNS = frozenset({
+    "year", "calendaryear", "fiscalyear", "yearmonth",
+    "quarter", "calendarquarter", "fiscalquarter",
+    "month", "monthname", "monthnumber", "calendarmonth", "monthofyear",
+    "week", "weeknumber", "weekofyear", "calendarweek",
+    "day", "dayofweek", "dayofmonth", "dayofyear",
+    "date", "calendardate", "period", "fiscalperiod", "reportingperiod",
+})
+
+
+def _norm_col(column: Optional[str]) -> str:
+    return re.sub(r"[^a-z0-9]", "", (column or "").lower())
+
+
+def _is_temporal_column(column: Optional[str], date_column: Optional[str]) -> bool:
+    c = _norm_col(column)
+    if not c:
+        return False
+    return c == _norm_col(date_column) or c in _TEMPORAL_COLUMNS
+
+
+def _is_calendar_table(table: Optional[str]) -> bool:
+    """A date/calendar dimension: every filter on it names a period, not an entity."""
+    name = _norm_col(table)
+    return bool(name) and any(token in name for token in ("date", "calendar", "period", "dimtime"))
+
+
+def _is_calendar_range_filter(item: Dict[str, Any], cands: Dict[str, "TableCandidates"]) -> bool:
+    """A grounded ``between`` on a date column of a calendar table (DimDate).
+
+    Only a calendar table qualifies: a range on DimCustomer.SignupDate is a
+    filter on who is counted, not the period to project.
+    """
+    if str(item.get("op") or "").lower() != "between":
+        return False
+    value = item.get("value")
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return False
+    table = str(item.get("table") or "").strip()
+    if not _is_calendar_table(table):
+        return False
+    tc = cands.get(table.lower())
+    column = str(item.get("column") or "").strip().lower()
+    return bool(tc) and column in {c.lower() for c in tc.date_columns}
+
+
+def _closed_range_periods(start: Optional[str], last: Optional[str], grain: str) -> Optional[int]:
+    """:func:`_range_periods` for a closed ``[start, last]`` range, as the grounder emits."""
+    last_day = _coerce_date(last)
+    if last_day is None:
+        return None
+    end_excl = (date.fromisoformat(last_day) + timedelta(days=1)).isoformat()
+    return _range_periods(_coerce_date(start), end_excl, grain)
+
+
+def _range_periods(start: Optional[str], end: Optional[str], grain: str) -> Optional[int]:
+    """How many ``grain`` periods a [start, end) range covers, or None.
+
+    Turns a named forecast target window into a horizon. ``end`` is treated as
+    exclusive (the planner's convention); stepping back one day makes an
+    inclusive end (2008-12-31) and an exclusive one (2009-01-01) count the same
+    number of grain buckets — so "Jul-Dec 2008" is 6 months either way."""
+    if not start or not end:
+        return None
+    try:
+        s = date.fromisoformat(str(start)[:10])
+        e = date.fromisoformat(str(end)[:10])
+    except ValueError:
+        return None
+    if e <= s:
+        return None
+    last = max(s, e - timedelta(days=1))
+    if grain == "month":
+        n = (last.year - s.year) * 12 + (last.month - s.month) + 1
+    elif grain == "week":
+        n = (last - s).days // 7 + 1
+    else:
+        n = (last - s).days + 1
+    return max(1, min(int(n), 104))
+
+
 def build_params_from_plan(
     plan: Dict[str, Any],
     cands: Dict[str, TableCandidates],
@@ -420,13 +506,48 @@ def build_params_from_plan(
             params["sensitivity"] = round(sens, 3)
     elif skill == "forecast":
         horizon = _coerce_int(plan.get("horizon"), 1, 104)
+        # A forecast projects FROM history INTO the future. A named target
+        # period ("forecast for Jul-Dec 2008") — whether the planner expressed
+        # it as start/end or the grounder derived year/month filters from it —
+        # is the horizon to PROJECT, not a filter on the training history:
+        # applying it would leave an empty series (the guard's span probe then
+        # blocks with "0 rows match the requested filters"). So derive the
+        # horizon from that window, forecast from all available history, and
+        # drop the temporal filters. A genuine training window is uncommon; the
+        # confirm card lets the user set start/end explicitly.
+        span = _range_periods(start, end, grain)
+        if span:
+            horizon = span
+        elif horizon is None:
+            # Neither a horizon nor a window in the plan: the grounder may have
+            # bound the period to the calendar table (DimDate.FullDateAlternateKey);
+            # that closed range is the horizon. An explicit plan value wins over it.
+            for item in resolved_filters or []:
+                if _is_calendar_range_filter(item, cands):
+                    horizon = _closed_range_periods(item["value"][0], item["value"][1], grain)
+                    if horizon:
+                        break
+        series["start"] = None
+        series["end"] = None
+        series["filters"] = [
+            f.model_dump() for f in kept_filters
+            if not _is_temporal_column(f.column, date_col)
+        ]
+        # A calendar-table range was the target period, not a lost filter: do not
+        # report it as "not applied". Every other cross-table filter still is.
+        temporal_dropped = {
+            f"{str(item.get('table') or '').strip()}.{str(item.get('column') or '').strip()}"
+            for item in (resolved_filters or [])
+            if _is_calendar_range_filter(item, cands)
+        }
+        dropped = [d for d in dropped if d not in temporal_dropped]
         if horizon:
             params["horizon"] = horizon
         interval = _coerce_float(plan.get("interval"), 0.50, 0.99)
         if interval is not None:
             params["interval"] = round(interval, 2)
         if window:
-            params["_window"] = window  # consumed by the guard for the default range
+            params["window"] = window  # the guard fills the history range from it
     elif skill in ("changepoint", "seasonality"):
         if window:
             params["window"] = max(window, 24) if skill == "seasonality" else window
@@ -483,8 +604,6 @@ def build_params_from_plan(
     except ValidationError as exc:
         return PlanOutcome(kind="fallback", reason=f"plan failed validation: {exc.errors()[0].get('msg') if exc.errors() else exc}")
     out = typed.model_dump(mode="json")
-    if "_window" in params:
-        out["_window"] = params["_window"]
     return PlanOutcome(
         kind="params", skill=skill, params=out, dropped_filters=dropped,
         reason=str(plan.get("reason") or ""),

@@ -40,6 +40,10 @@ def crashy_execute(skill, params, series, *, override_guards=False, context=None
     os._exit(3)
 
 
+def echo_context_execute(skill, params, series, *, override_guards=False, context=None):
+    return RunOutcome(status="error", error="|".join(f"{k}={v}" for k, v in sorted((context or {}).items())))
+
+
 def _token(audience="jeen-insights-analytics"):
     return issue_internal_token({"user_id": "user-a", "role": "service"}, audience=audience)
 
@@ -86,6 +90,30 @@ def test_sandbox_audience_has_its_own_signing_key(fast_app, monkeypatch):
     monkeypatch.setenv("INTERNAL_API_SECRET", "sandbox-key-" + "b" * 48)  # even if someone tried the same bytes as API key…
     with pytest.raises(PrincipalError):  # …the audience still does not match
         verify_internal_token(sandbox_token, audience="jeen-insights-api")
+
+
+def test_forecast_window_is_accepted_by_the_engine_entry_point():
+    """Contract 2 gave ForecastParams a window; the extra-forbid model the sandbox
+    validates with must take it (the version check protects an older image)."""
+    assert CONTRACT_VERSION == "2"
+    idx, y = seasonal_series(n=30, grain="week", amplitude=0)
+    out = execute_skill("forecast", {"series": series_request(), "window": 36, "horizon": 4}, to_payload(idx, y))
+    assert out.status == "ok", out.error
+    assert out.envelope.params["window"] == 36
+    # A payload from the previous contract is refused at the door, before any parsing.
+    app = create_app(executor=ForkExecutor(ExecutorConfig(timeout_seconds=10), target=fake_execute))
+    stale = dict(_payload(), contract_version="1")
+    assert TestClient(app).post("/run", json=stale, headers={"Authorization": f"Bearer {_token()}"}).status_code == 409
+
+
+def test_run_forwards_only_the_allowlisted_context_keys():
+    """``data_end`` (the span probe's newest timestamp) reaches the engine so it
+    can prove a trailing period incomplete; identity and unknown keys do not."""
+    app = create_app(executor=ForkExecutor(ExecutorConfig(timeout_seconds=10), target=echo_context_execute))
+    payload = _payload()
+    payload["context"] = {"sql": "SELECT 1", "data_end": "2008-07-16 00:00:00", "user_id": "leak?", "code": "print(1)"}
+    body = TestClient(app).post("/run", json=payload, headers={"Authorization": f"Bearer {_token()}"}).json()
+    assert body["error"] == "data_end=2008-07-16 00:00:00|runner=sandbox|sql=SELECT 1"
 
 
 def test_health_reports_engines_and_limits(fast_app):

@@ -49,6 +49,7 @@ from src.analysis.contracts import (
     ParamChip,
     SeriesRequest,
     get_skill,
+    method_options,
     parse_params,
 )
 from src.analysis.guards import max_horizon, series_length
@@ -199,14 +200,14 @@ def _chips(skill: str, params: Dict[str, Any], cands) -> List[ParamChip]:
         ]
         if skill == "clustering":
             chips.append(ParamChip(key="k", label="segments", value=params.get("k") or "auto", options=["auto", 2, 3, 4, 5, 6, 7, 8]))
-            chips.append(ParamChip(key="method", label="method", value=params.get("method", "kmeans"), options=["kmeans", "hdbscan"]))
+            chips.append(ParamChip(key="method", label="model", value=params.get("method", "kmeans"), options=method_options(skill)))
         else:
             chips.append(ParamChip(key="target", label="target", value=entity.get("target"),
                                    options=(tc.numeric_columns[:12] if tc else [])))
             chips.append(ParamChip(key="holdout", label="holdout", value=params.get("holdout", 0.2), options=[0.1, 0.2, 0.3]))
             if skill == "driver_analysis":
-                chips.append(ParamChip(key="method", label="method", value=params.get("method", "hgb"),
-                                       options=["hgb", "auto", "xgboost", "lightgbm"]))
+                chips.append(ParamChip(key="method", label="model", value=params.get("method", "hgb"),
+                                       options=method_options(skill)))
         return chips
 
     if spec.family == "cohort":
@@ -265,13 +266,12 @@ def _chips(skill: str, params: Dict[str, Any], cands) -> List[ParamChip]:
     if skill == "anomaly_detection":
         chips.append(ParamChip(key="sensitivity", label="sensitivity", value=params.get("sensitivity", 0.95),
                                options=[0.8, 0.9, 0.95, 0.99]))
-        chips.append(ParamChip(key="method", label="method", value=params.get("method", "auto"), options=["auto", "sigma3"]))
+        chips.append(ParamChip(key="method", label="model", value=params.get("method", "auto"), options=method_options(skill)))
     elif skill == "forecast":
         chips.append(ParamChip(key="horizon", label="horizon", value=params.get("horizon", 8), options=[]))
         chips.append(ParamChip(key="interval", label="interval", value=params.get("interval", 0.8),
                                options=[0.5, 0.8, 0.9, 0.95]))
-        chips.append(ParamChip(key="method", label="method", value=params.get("method", "auto"),
-                               options=["auto", "auto_arima", "auto_ets", "theta", "seasonal_naive"]))
+        chips.append(ParamChip(key="method", label="model", value=params.get("method", "auto"), options=method_options(skill)))
     elif skill == "changepoint":
         chips.append(ParamChip(key="max_changepoints", label="max breaks", value=params.get("max_changepoints", 5), options=[1, 3, 5, 10]))
     elif skill == "correlation":
@@ -417,7 +417,6 @@ def make_analysis_guard(
     async def analysis_guard(state: AgentState) -> Dict[str, Any]:
         skill = state.get("analysis_skill") or ""
         params: Dict[str, Any] = dict(state.get("analysis_params") or {})
-        window_hint = params.pop("_window", None)
         spec = get_skill(skill)
         bundle = state.get("metadata_bundle") or {}
         cands = catalog_candidates(bundle.get("columns", ""))
@@ -578,7 +577,7 @@ def make_analysis_guard(
 
         # ── Fill the analysis window from the probe ───────────────────────
         end_ts = pd.Timestamp(series.end) if series.end else _shift_periods(last, grain, 1)
-        window = int(window_hint or params.get("window") or default_window_periods(grain))
+        window = int(params.get("window") or default_window_periods(grain))
         if series.start:
             start_ts = pd.Timestamp(series.start)
         else:
@@ -984,6 +983,9 @@ def make_analysis_run(
             "filters_summary": describe_filters(FilterSpec(**f) for f in filters),
             "low_confidence": bool(state.get("low_confidence")),
             "runner": getattr(runner, "name", "unknown"),
+            # The newest source timestamp from the span probe: lets the series
+            # preparation prove, not guess, that the last period is incomplete.
+            "data_end": (state.get("analysis_span") or {}).get("max_ts"),
             # Only used by the sandbox client to mint its token; never sent onward.
             "user_id": str(state.get("user_id") or ""),
         }
@@ -1047,6 +1049,7 @@ def make_analysis_run(
         logger.info("analysis_run: %s ok — %s (%dms, %d rows)", skill, env.method_used, elapsed, len(env.rows))
         return {
             "analysis_result": env.model_dump(mode="json"),
+            "analysis_definition": _definition(state, skill, params, env.egress.rows_sent_to_model),
             "analysis_guard_results": [g.model_dump(mode="json") for g in env.guard_results],
             "low_confidence": env.low_confidence,
             "query_result": {"columns": env.columns, "rows": env.rows, "row_count": len(env.rows)},
@@ -1055,3 +1058,25 @@ def make_analysis_run(
         }
 
     return analysis_run
+
+
+def _definition(state: AgentState, skill: str, params: Dict[str, Any], rows_sent: int) -> Optional[Dict[str, Any]]:
+    """The finished run's setup as the confirm card would show it.
+
+    The same chips (measure, date column, grain, window, method, …) with the
+    values that actually ran, so the answer pane can offer "Edit setup" and
+    re-run with a patch. Best effort: a missing catalog costs the card, never
+    the result.
+    """
+    try:
+        bundle = state.get("metadata_bundle") or {}
+        cands = catalog_candidates(bundle.get("columns", ""))
+        chips = _chips(skill, params, cands)
+        display = str(state.get("connection_display_name") or state.get("source_key") or "")
+        return {
+            "chips": [c.model_dump(mode="json") for c in chips],
+            "egress_summary": _egress_summary(skill, params, int(rows_sent or 0), display),
+        }
+    except Exception:  # noqa: BLE001
+        logger.debug("analysis_run: could not build the setup card", exc_info=True)
+        return None

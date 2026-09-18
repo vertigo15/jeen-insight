@@ -237,6 +237,9 @@ def _narrate_forecast(facts: Dict[str, Any], params: Dict[str, Any]) -> Narratio
                 f"Interval at {end.get('period')}: {fmt_value(end.get('lower'))}-{fmt_value(end.get('upper'))} "
                 f"({fmt_pct(facts.get('interval'), 0)})."
             )
+    # An incomplete trailing period (facts["partial_tail"]) is not restated
+    # here: the engine's first caveat already names it with its numbers and
+    # narrate() carries that caveat into the findings.
     if facts.get("pct_change_vs_trailing") is not None:
         findings.append(
             f"The {horizon}-{_period_word(grain)} horizon total is {fmt_signed_pct(facts.get('pct_change_vs_trailing'))} "

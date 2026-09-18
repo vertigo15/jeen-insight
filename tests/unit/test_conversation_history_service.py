@@ -179,6 +179,64 @@ def test_get_conversation_context_scopes_by_source_in_both_modes():
     assert "source_key = $4" in sql
 
 
+def test_get_conversation_context_excludes_in_flight_turns_in_both_modes():
+    """The agents fetch context concurrently with inserting the current turn's
+    'pending' row; that row must never come back as a prior turn. NULL statuses
+    (legacy rows) must still be returned, hence IS DISTINCT FROM."""
+    for ready in (True, False):
+        conn = _FakeConn(responses=[[]])
+        asyncio.run(ConversationHistoryService(_FakePool(conn), conversation_schema_ready=ready)
+                    .get_conversation_context(session_id=SESSION, user_id="u", source_key="s"))
+        assert "execution_status IS DISTINCT FROM 'pending'" in _sql_of(conn), f"schema_ready={ready}"
+
+
+def test_get_conversation_context_joins_turn_answer_when_schema_ready():
+    from datetime import datetime, timezone
+
+    ready = _FakeConn(responses=[[{
+        "id": QID, "natural_language_query": "q", "generated_sql": "SELECT 1", "execution_status": "success",
+        "row_count": 1, "result_preview": None, "result_artifact": None, "created_at": datetime.now(timezone.utc),
+        "turn_answer": '[{"t": "Sales ", "hl": null}, {"t": "grew", "hl": "pos"}]', "result_kind": "table",
+        "snapshot_status": "stored",
+    }]])
+    rows = asyncio.run(ConversationHistoryService(_FakePool(ready), conversation_schema_ready=True)
+                       .get_conversation_context(session_id=SESSION, user_id="u", source_key="s"))
+    assert "LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id" in _sql_of(ready)
+    assert rows[0]["answer"] == "Sales grew"          # fragment array flattened to text
+    assert rows[0]["snapshot_status"] == "stored" and rows[0]["result_kind"] == "table"
+    assert "turn_answer" not in rows[0]
+
+
+def test_search_turns_reads_the_history_log_rows_with_keyword_and_window_predicates():
+    """history_lookup must answer from what the History log drawer shows: the
+    user's queries on this connection in insights_conversation_sessions (same
+    scoping as get_history_log), minus the turn being answered right now."""
+    from datetime import datetime, timezone
+
+    since, until = datetime(2026, 9, 13, tzinfo=timezone.utc), datetime(2026, 9, 17, tzinfo=timezone.utc)
+    ready = _FakeConn(responses=[[]])
+    asyncio.run(ConversationHistoryService(_FakePool(ready), conversation_schema_ready=True)
+                .search_turns(user_id="u", source_key="s", keywords=["revenue", "sales"], since=since, until=until,
+                              limit=7, exclude_query_id=QID))
+    sql = _sql_of(ready)
+    assert "FROM insights_conversation_sessions cs" in sql
+    assert "insights_conversations c" not in sql                     # same scope as the History log, not conversation-joined
+    assert "WHERE cs.user_id = $1 AND ($2::text IS NULL OR cs.source_key = $2)" in sql
+    assert "LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id" in sql   # only to attach the stored answer
+    assert "cs.natural_language_query ILIKE $5 OR cs.natural_language_query ILIKE $6" in sql
+    assert "cs.created_at >= $3 AND cs.created_at < $4" in sql
+    assert "cs.id::text <> $7" in sql and "LIMIT $8" in sql
+    assert "pending" not in sql                                       # the log shows every status
+    args = ready.calls[0][2]
+    assert args[4:6] == ("%revenue%", "%sales%") and args[6] == str(QID) and args[7] == 7
+
+    legacy = _FakeConn(responses=[[]])
+    asyncio.run(ConversationHistoryService(_FakePool(legacy), conversation_schema_ready=False)
+                .search_turns(user_id="u", source_key="s", keywords=[], since=since, until=until))
+    sql = _sql_of(legacy)
+    assert "insights_turn_artifacts" not in sql and "ILIKE" not in sql and "LIMIT $5" in sql
+
+
 def test_new_schema_methods_short_circuit_without_schema():
     """Every method that only makes sense once migration 022 exists must return
     its empty value without touching the pool (no logged DB errors)."""

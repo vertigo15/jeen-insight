@@ -43,7 +43,10 @@
       body: 'Type @ for tables, # for columns, / for saved templates.'
     },
     {
+      // The tab bar is hidden by default (Settings > General), so fall back to
+      // the always-visible rail icon for the same section.
       id: 'tables', selector: '#v3-tab-tables', placement: 'below-left', inPanel: true, finish: true,
+      fallbackSelector: '[data-rail="tables"]', fallbackPlacement: 'right',
       title: 'Not sure what is in there? Browse tables and columns.',
       body: 'Curated business terms sit next to the physical column names, so you can see what the agent sees.'
     }
@@ -154,11 +157,29 @@
     }
     if (attempt < 8) { setTimeout(function () { spotlightPin(attempt + 1); }, 150); return; }
     var tab = document.getElementById('v3-tab-pinned');
+    var placement = 'below-left';
+    if (!isVisible(tab)) { tab = document.querySelector('[data-rail="pinned"]'); placement = 'right'; }
     if (tab) showHint(tab, {
-      placement: 'below-left',
+      placement: placement,
       title: 'Pinned lives here',
       body: 'Ask a question, then tap its star to pin it — it will show up in this list to reuse.'
     });
+  }
+
+  function isVisible(node) {
+    return !!node && !(node.offsetWidth === 0 && node.offsetHeight === 0);
+  }
+
+  // A step's primary target may be hidden by a user preference (e.g. the chat
+  // tab bar); use its fallback when one is declared and visible.
+  function resolveStepTarget(step) {
+    var target = document.querySelector(step.selector);
+    if (isVisible(target)) return { target: target, placement: step.placement };
+    if (step.fallbackSelector) {
+      var alt = document.querySelector(step.fallbackSelector);
+      if (isVisible(alt)) return { target: alt, placement: step.fallbackPlacement || step.placement };
+    }
+    return null;
   }
 
   function checklist() { return (state.data && state.data.checklist) || {}; }
@@ -489,14 +510,16 @@
     if (step.tab && window.ChatController) window.ChatController.setTab(step.tab);
 
     clearHighlight();
-    var target = document.querySelector(step.selector);
+    var resolved = resolveStepTarget(step);
 
     // Step 2 guard: no starter chips (empty suggestions) -> skip to next step.
-    if (!target || (target.offsetWidth === 0 && target.offsetHeight === 0)) {
+    if (!resolved) {
       if (tour.index < TOUR_STEPS.length - 1) { tour.index++; renderStep(); return; }
       finishTour(); return;
     }
+    var target = resolved.target;
     tour.target = target;
+    tour.placement = resolved.placement;
     target.classList.add('jo-target-highlight');
     if (step.pill) target.classList.add('jo-target-highlight--pill');
 
@@ -566,7 +589,7 @@
 
   function positionCoach(step) {
     if (!tour) return;
-    placeCoach(tour.target, tour.coach, step.placement);
+    placeCoach(tour.target, tour.coach, tour.placement || step.placement);
   }
 
   function reposition() { if (tour) positionCoach(TOUR_STEPS[tour.index]); }
