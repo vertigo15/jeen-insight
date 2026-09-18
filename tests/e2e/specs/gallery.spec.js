@@ -23,6 +23,25 @@ test('gallery: forecast confirm card (ML path)', async ({ page }) => {
   await shot(page, '02-forecast-confirm.png');
 });
 
+test('gallery: forecast confirm card, dark mode', async ({ page }) => {
+  await openHarness(page);
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+  await ask(page, Q.forecast);
+  await expect(page.locator('#v3-placeholder .v3-ml-card.is-confirm')).toBeVisible();
+  await shot(page, '02b-forecast-confirm-dark.png');
+});
+
+test('gallery: forecast confirm card with edits (changed markers, live summary)', async ({ page }) => {
+  await openHarness(page);
+  await ask(page, Q.forecast);
+  const card = page.locator('#v3-placeholder .v3-ml-card.is-confirm');
+  await card.locator('[data-chip="grain"]').selectOption('month');
+  await card.locator('[data-chip="horizon"]').fill('6');
+  await card.locator('[data-chip="window"]').fill('5');
+  await expect(card.locator('.v3-ml-field.is-invalid')).toHaveCount(1);
+  await shot(page, '02c-forecast-confirm-edited.png');
+});
+
 test('gallery: anomaly confirm card', async ({ page }) => {
   await openHarness(page);
   await ask(page, Q.anomaly);
@@ -52,6 +71,18 @@ test('gallery: completed ML result with Model details', async ({ page }) => {
   await page.click('[data-dock="model"]');
   await expect(page.locator('#v3-dock-body')).toBeVisible();
   await shot(page, '06-ml-result-model-details.png');
+});
+
+test('gallery: Edit setup on a finished result', async ({ page }) => {
+  await openHarness(page);
+  await ask(page, Q.forecast);
+  await page.click('#v3-placeholder .v3-ml-card [data-run]');
+  await expect(page.locator('#v3-meta-row .v3-skill-chip')).toHaveText('forecast');
+  await page.click('#v3-meta-row [data-ml-edit]');
+  const setup = page.locator('#v3-ml-definition .v3-ml-card.is-definition');
+  await expect(setup).toBeVisible();
+  await expect(setup.locator('[data-summary]')).toContainText('SUM(Profit)');
+  await page.screenshot({ path: path.join(SHOTS, '09-edit-setup.png') });
 });
 
 test('gallery: re-run parameter diff', async ({ page }) => {

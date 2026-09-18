@@ -7,7 +7,9 @@ import pytest
 from pydantic import ValidationError
 
 from src.analysis.contracts import (
+    AGG_LABELS,
     CONTRACT_VERSION,
+    METHOD_LABELS,
     PARAMS_BY_SKILL,
     SKILLS,
     AnomalyParams,
@@ -17,10 +19,12 @@ from src.analysis.contracts import (
     EngineInfo,
     ForecastParams,
     ModelDetails,
+    ParamChip,
     Provenance,
     ResultEnvelope,
     SeriesRequest,
     Validation,
+    field_bounds,
     get_skill,
     merge_params_patch,
     method_options,
@@ -196,6 +200,38 @@ def test_merge_params_patch_turns_the_cards_unset_words_back_into_none():
     assert merge_params_patch("clustering", {"entity": entity}, {"k": 3}).k == 3
     # "auto" stays a real value where it is one.
     assert merge_params_patch("forecast", {"series": _series()}, {"method": "auto"}).method == "auto"
+    # A setup card persisted before the multiselect still sends features as one string.
+    merged = merge_params_patch("clustering", {"entity": entity}, {"features": "YearlyIncome, Age, TotalChildren"})
+    assert merged.entity.features == ["YearlyIncome", "Age", "TotalChildren"]
+    assert merge_params_patch("clustering", {"entity": entity}, {"features": ["Age", "YearlyIncome"]}).entity.features == ["Age", "YearlyIncome"]
+
+
+def test_field_bounds_read_the_contract_including_nested_request_models():
+    # Top-level numeric fields: ge/le.
+    assert field_bounds("forecast", "window") == (12, 1500)
+    assert field_bounds("forecast", "horizon") == (1, 104)
+    assert field_bounds("forecast", "interval") == (0.5, 0.99)
+    assert field_bounds("seasonality", "window") == (24, 1500)
+    # Nested request models: row_cap on EntityRequest, max_periods on CohortRequest.
+    assert field_bounds("clustering", "row_cap") == (100, 200_000)
+    assert field_bounds("cohort_retention", "max_periods") == (2, 36)
+    # List fields report a count.
+    assert field_bounds("clustering", "features") == (2, 8)
+    assert field_bounds("contribution", "dimensions") == (1, 4)
+    # Unbounded or unknown keys are simply unbounded.
+    assert field_bounds("forecast", "measure_column") == (None, None)
+    assert field_bounds("forecast", "no_such_field") == (None, None)
+
+
+def test_param_chip_metadata_is_optional_and_labels_cover_every_enum():
+    # Chips persisted before the metadata existed still parse and land in one section.
+    chip = ParamChip(key="window", label="window", value=24)
+    assert chip.group == "Setup" and chip.min is None and chip.option_labels == {}
+    # Every selectable method of every skill has a human name.
+    for skill in SKILLS:
+        for option in method_options(skill):
+            assert option in METHOD_LABELS, f"{skill}.{option} has no label"
+    assert set(AGG_LABELS) == {"sum", "count", "avg", "min", "max"}
 
 
 def test_series_request_flags_additive_aggregates():

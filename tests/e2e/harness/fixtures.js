@@ -82,13 +82,40 @@
         low_confidence: false,
     };
 
+    // Production-shaped setup chips (what nodes/analysis.py _chips() emits for a
+    // forecast): sections, units, help, bounds and human option names.
+    const GRAIN_LABELS = { day: 'Day', week: 'Week', month: 'Month' };
+    const forecastChips = [
+        { key: 'measure_column', label: 'Measure', value: 'Profit', options: ['Profit', 'SalesAmount', 'OrderQuantity'], group: 'Data', required: true, help: 'The numeric column to analyse.' },
+        { key: 'agg', label: 'Aggregate', value: 'sum', options: ['sum', 'count', 'avg', 'min', 'max'], group: 'Data',
+          option_labels: { sum: 'Sum', count: 'Count', avg: 'Average', min: 'Minimum', max: 'Maximum' }, help: 'How rows are rolled up per period.' },
+        { key: 'date_column', label: 'Date column', value: 'OrderDate', options: ['OrderDate', 'ShipDate', 'DueDate'], group: 'Data', required: true, help: 'The date that defines the timeline.' },
+        { key: 'group_by', label: 'Split by', value: 'none', options: ['none', 'SalesTerritoryKey', 'CurrencyKey'], group: 'Data',
+          option_labels: { none: '— none —' }, help: 'One series per value of this column.' },
+        { key: 'grain', label: 'Grain', value: 'week', options: ['day', 'week', 'month'], group: 'Model', option_labels: GRAIN_LABELS, help: 'The size of one period.' },
+        { key: 'window', label: 'Look-back window', value: 26, kind: 'number', step: 1, min: 12, max: 1500, unit_from: 'grain', group: 'Model',
+          defaults_by_grain: { day: 90, week: 26, month: 24 }, help: 'How much history the model learns from.' },
+        { key: 'method', label: 'Model', value: 'auto', options: ['auto', 'auto_arima', 'auto_ets', 'theta', 'drift', 'seasonal_naive'], group: 'Model',
+          option_labels: { auto: 'Auto', auto_arima: 'Auto ARIMA', auto_ets: 'Auto ETS', theta: 'Theta', drift: 'Drift', seasonal_naive: 'Seasonal naive' },
+          help: 'Auto cross-validates the shortlist and keeps the baseline unless a model beats it.' },
+        { key: 'horizon', label: 'Horizon', value: 8, kind: 'number', step: 1, min: 1, max: 104, unit_from: 'grain', group: 'Output', help: 'How far ahead to project.' },
+        { key: 'interval', label: 'Interval', value: 0.9, options: [0.5, 0.8, 0.9, 0.95], group: 'Output',
+          option_labels: { '0.5': '50%', '0.8': '80%', '0.9': '90%', '0.95': '95%' },
+          help: 'Width of the prediction band: 90% means the true value should fall inside it 9 times in 10.' },
+    ];
+
     const forecastAnalysis = {
         skill: 'forecast',
         method_used: 'AutoETS(ZZN) + MSTL, m=52',
         chart_spec: CHART_SPEC,
         params: {
             series: { table: 'FactInternetSales', schema_name: 'dbo', measure_column: 'Profit', agg: 'sum', grain: 'week', filters: [], start: '2026-03-02', end: '2026-08-31' },
-            horizon: 8, interval: 0.9, method: 'auto',
+            window: 26, horizon: 8, interval: 0.9, method: 'auto',
+        },
+        // "Edit setup" on the finished result: the same chips with the values that ran.
+        definition: {
+            chips: forecastChips,
+            egress_summary: 'SQL rolls SUM(Profit) up to about 26 weekly totals on sales_db. Only those rows are sent to the analysis service; no FactInternetSales rows are read.',
         },
         validation: { metric: 'MASE', value: 0.71, band: 'good', coverage: 0.9, coverage_n: 8, basis: 'rolling CV, 3 folds' },
         egress: { tier: 'A', rows_sent_to_model: 26, columns: ['ts', 'value'] },
@@ -208,20 +235,19 @@
             'Here are the weekly Profit totals.',
         ),
 
+        // Production density: every field the real planner emits, with metadata.
         forecast_confirm: () => proposalResult(Q.forecast, {
             proposal_id: 'prop-forecast-1', kind: 'confirm', skill: 'forecast', tier: 'A',
-            message: 'Forecast weekly Profit 8 weeks ahead from the last 26 weeks.',
+            message: 'Reading this as a forecast of SUM(Profit) by week over the last 26 weeks. Confirm or adjust before I run it.',
             estimated_seconds: 6,
-            egress_summary: 'SQL rolls Profit up to 26 weekly totals; only those rows are sent to the analysis service.',
-            chips: [
-                { key: 'horizon', label: 'Horizon (weeks)', value: 8 },
-                { key: 'grain', label: 'Grain', value: 'week', options: ['day', 'week', 'month'] },
-                { key: 'interval', label: 'Interval', value: 0.9 },
-            ],
+            egress_summary: 'SQL rolls SUM(Profit) up to about 26 weekly totals on sales_db. Only those rows are sent to the analysis service; no FactInternetSales rows are read.',
+            chips: forecastChips,
             params: forecastAnalysis.params,
             guard_results: [{ name: 'series_length', passed: true, detail: '26 of 12 weeks needed' }],
         }),
 
+        // Minimal, metadata-less chips — the shape of a card persisted before the
+        // setup form existed. Must still render (one "Setup" section) and run.
         anomaly_confirm: () => proposalResult(Q.anomaly, {
             proposal_id: 'prop-anomaly-1', kind: 'confirm', skill: 'anomaly_detection', tier: 'A',
             message: 'Scan weekly Profit for points outside a robust seasonal band.',
