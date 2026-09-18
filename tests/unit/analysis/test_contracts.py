@@ -23,6 +23,7 @@ from src.analysis.contracts import (
     Validation,
     get_skill,
     merge_params_patch,
+    method_options,
     parse_params,
 )
 
@@ -56,7 +57,32 @@ def test_params_defaults_match_spec():
 
     f = parse_params("forecast", {"series": _series(grain="month")})
     assert isinstance(f, ForecastParams)
-    assert (f.horizon, f.interval, f.method) == (8, 0.80, "auto")
+    assert (f.horizon, f.interval, f.method, f.window) == (8, 0.80, "auto", None)
+
+
+def test_forecast_window_is_a_real_bounded_patchable_parameter():
+    # Contract 2: the forecast look-back is a field like the other series skills',
+    # not a private planner hint — so the cards can show it and patches can change it.
+    assert CONTRACT_VERSION == "2"
+    assert parse_params("forecast", {"series": _series(), "window": 36}).window == 36
+    for bad in (11, 1501, "lots"):
+        with pytest.raises(ValidationError):
+            parse_params("forecast", {"series": _series(), "window": bad})
+    base = {"series": _series(grain="month"), "horizon": 8}
+    assert merge_params_patch("forecast", base, {"window": 36}).window == 36
+    assert merge_params_patch("forecast", {**base, "window": 24}, {"horizon": 12}).window == 24  # untouched by other patches
+
+
+def test_method_options_come_from_the_params_model():
+    # One source for the confirm-card chip and the result strip's model selector.
+    assert method_options("forecast") == ["auto", "auto_arima", "auto_ets", "theta", "drift", "seasonal_naive"]
+    assert method_options("anomaly_detection") == ["auto", "sigma3"]
+    assert method_options("clustering") == ["kmeans", "hdbscan"]
+    assert method_options("driver_analysis") == ["hgb", "xgboost", "lightgbm", "auto"]
+    assert method_options("changepoint") == [] and method_options("experiment_test") == []
+    assert method_options("no_such_skill") == []
+    for option in method_options("forecast"):
+        assert parse_params("forecast", {"series": _series(), "method": option}).method == option
 
 
 def test_params_reject_out_of_range_and_unknown_fields():
@@ -156,6 +182,20 @@ def test_merge_params_patch_is_allowlisted():
     # A patch that breaks validation still raises.
     with pytest.raises(ValidationError):
         merge_params_patch("anomaly_detection", base, {"sensitivity": 2})
+
+
+def test_merge_params_patch_turns_the_cards_unset_words_back_into_none():
+    # The chips show "split by: none" and "segments: auto"; picking them again
+    # must clear the field, not name a column "none" or fail on int("auto").
+    base = {"series": {**_series(), "group_by": "Territory"}}
+    assert merge_params_patch("anomaly_detection", base, {"group_by": "none"}).series.group_by is None
+    assert merge_params_patch("anomaly_detection", base, {"series": {"group_by": "None"}}).series.group_by is None
+    assert merge_params_patch("anomaly_detection", base, {"group_by": "Region"}).series.group_by == "Region"
+    entity = {"table": "DimCustomer", "entity_key": "CustomerKey", "features": ["YearlyIncome", "TotalChildren"]}
+    assert merge_params_patch("clustering", {"entity": entity, "k": 4}, {"k": "auto"}).k is None
+    assert merge_params_patch("clustering", {"entity": entity}, {"k": 3}).k == 3
+    # "auto" stays a real value where it is one.
+    assert merge_params_patch("forecast", {"series": _series()}, {"method": "auto"}).method == "auto"
 
 
 def test_series_request_flags_additive_aggregates():

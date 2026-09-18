@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.agent.analysis_planner import (
+    _is_temporal_column,
+    _range_periods,
     build_params_from_plan,
     catalog_candidates,
     detect_analysis_intent,
@@ -17,6 +19,23 @@ from src.agent.analysis_planner import (
     plan_analysis,
     render_catalog,
 )
+
+
+def test_is_temporal_column_matches_calendar_parts_not_lookalikes():
+    for col in ("CalendarYear", "month", "Fiscal_Quarter", "WeekNumber", "OrderDate"):
+        assert _is_temporal_column(col, "OrderDate"), col
+    # Contain "date"/"year" as substrings but are NOT calendar columns → keep them.
+    for col in ("CandidateStatus", "YearlyIncome", "LastUpdate", "SalesReason"):
+        assert not _is_temporal_column(col, "OrderDate"), col
+
+
+def test_range_periods_counts_grain_buckets_half_open():
+    assert _range_periods("2008-07-01", "2008-12-31", "month") == 6   # inclusive end
+    assert _range_periods("2008-07-01", "2009-01-01", "month") == 6   # exclusive end
+    assert _range_periods("2008-01-01", "2008-01-08", "week") == 1
+    assert _range_periods(None, "2009-01-01", "month") is None
+    assert _range_periods("2009-01-01", "2008-01-01", "month") is None  # reversed
+    assert _range_periods("not-a-date", "2009-01-01", "month") is None
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 
 _COLUMNS = (
@@ -33,6 +52,11 @@ _COLUMNS = (
 
 @pytest.mark.parametrize("question,expected", [
     ("Forecast revenue for the next quarter", "forecast"),
+    # Common misspellings must still route to the forecast skill, otherwise the
+    # question falls through to text-to-SQL and dead-ends (regression: a
+    # "show forcast for 7-2008 to 12-2008" turn failed the filter guard).
+    ("show forcast for 7-2008 to 12-2008", "forecast"),
+    ("show it per month and do 6 month forcat", "forecast"),
     ("Will profit grow next month?", "forecast"),
     ("At this rate where do we land?", "forecast"),
     ("Is anything weird in profit over the last six months?", "anomaly_detection"),
@@ -74,11 +98,86 @@ def test_plan_is_validated_and_case_corrected():
     assert out.params["window"] == 26 and out.params["sensitivity"] == 0.9
 
 
-def test_plan_forecast_carries_horizon_and_window_hint():
+def test_plan_forecast_carries_horizon_and_window():
     out = build_params_from_plan(_plan(skill="forecast", horizon=13, interval=0.9, window_periods=104),
                                  catalog_candidates(_COLUMNS), resolved_filters=[], connection_schema=None, connection_catalog=None)
     assert out.kind == "params" and out.params["horizon"] == 13 and out.params["interval"] == 0.9
-    assert out.params["_window"] == 104
+    # The look-back is an ordinary forecast parameter (not a private hint), so the
+    # cards can show it and a patch can change it.
+    assert out.params["window"] == 104
+    assert not any(k.startswith("_") for k in out.params)
+    # Without a window in the plan the field is present but unset; the guard fills it.
+    out = build_params_from_plan(_plan(skill="forecast", window_periods=None), catalog_candidates(_COLUMNS),
+                                 resolved_filters=[], connection_schema=None, connection_catalog=None)
+    assert out.params["window"] is None
+
+
+def test_plan_forecast_target_range_becomes_horizon_not_a_history_filter():
+    # "forecast for Jul-Dec 2008": the grounder derives calendaryear/month filters
+    # and the planner sets start/end to the target window. For a forecast these are
+    # the horizon to project, NOT filters on the (empty) training history — else the
+    # span guard blocks with "0 rows match the requested filters".
+    filters = [
+        {"table": "FactInternetSales", "column": "CalendarYear", "op": "equals", "value": "2008"},
+        {"table": "FactInternetSales", "column": "Month", "op": "between", "value": ["7", "12"]},
+        {"table": "FactInternetSales", "column": "SalesReason", "op": "equals", "value": "Promotion"},
+    ]
+    out = build_params_from_plan(
+        _plan(skill="forecast", grain="month", start="2008-07-01", end="2008-12-31", window_periods=None),
+        catalog_candidates(_COLUMNS), resolved_filters=filters, connection_schema=None, connection_catalog=None,
+    )
+    assert out.kind == "params"
+    s = out.params["series"]
+    assert out.params["horizon"] == 6            # Jul..Dec = 6 months → the horizon
+    assert s["start"] is None and s["end"] is None  # history is not scoped to the target
+    assert {f["column"] for f in s["filters"]} == {"SalesReason"}  # temporal filters dropped; real filter kept
+
+
+_DIMDATE_COLUMNS = _COLUMNS + (
+    "- DimDate.FullDateAlternateKey - Type: date\n- DimDate.DateKey - Type: integer\n"
+    "- DimCustomer.SignupDate - Type: date\n- DimCustomer.CustomerKey - Type: integer\n"
+)
+_DIMDATE_RANGE = {"table": "dimdate", "column": "fulldatealternatekey", "op": "between",
+                  "value": ["2008-07-01", "2009-01-31"], "data_type": "date", "resolved": True}
+
+
+def _forecast(filters, **plan_over):
+    plan = _plan(**{"skill": "forecast", "grain": "month", "start": None, "end": None, "window_periods": None, **plan_over})
+    return build_params_from_plan(plan, catalog_candidates(_DIMDATE_COLUMNS), resolved_filters=filters,
+                                  connection_schema=None, connection_catalog=None)
+
+
+def test_plan_forecast_takes_horizon_from_a_period_bound_to_the_calendar_table():
+    # "forecast the profit for the next 6 month (7/2008 to 1/2009)": the grounder
+    # bound the period to DimDate.FullDateAlternateKey. With no horizon in the plan
+    # that closed range is the horizon — 7 months — and is not reported as a
+    # filter that was "not applied"; a real other-table filter still is.
+    out = _forecast([_DIMDATE_RANGE, {"table": "DimProduct", "column": "ProductKey", "op": "equals", "value": "310"}])
+    assert out.kind == "params"
+    assert out.params["horizon"] == 7  # Jul 2008 .. Jan 2009 inclusive
+    assert out.params["series"]["start"] is None and out.params["series"]["end"] is None
+    assert out.dropped_filters == ["DimProduct.ProductKey"]
+    # Day grain counts every day of the closed range.
+    assert _forecast([_DIMDATE_RANGE], grain="day").params["horizon"] == 104  # capped; 215 days asked
+    assert _forecast([dict(_DIMDATE_RANGE, value=["2008-07-01", "2008-07-06"])], grain="day").params["horizon"] == 6
+
+
+def test_plan_forecast_explicit_plan_values_beat_the_grounded_range():
+    # "next 6 months (7/2008 to 1/2009)": the plan's own horizon (6) is kept over
+    # the 7-month grounded range; likewise a plan start/end window.
+    assert _forecast([_DIMDATE_RANGE], horizon=6).params["horizon"] == 6
+    assert _forecast([_DIMDATE_RANGE], start="2008-07-01", end="2008-12-31").params["horizon"] == 6
+    assert _forecast([_DIMDATE_RANGE], horizon=6, start="2008-07-01", end="2009-03-31").params["horizon"] == 9
+
+
+def test_plan_forecast_ignores_date_ranges_on_non_calendar_tables():
+    # A signup-date range filters who is counted; it is neither the horizon nor
+    # silently hidden from the "not applied" report.
+    signup = {"table": "DimCustomer", "column": "SignupDate", "op": "between",
+              "value": ["2007-01-01", "2007-06-30"], "data_type": "date", "resolved": True}
+    out = _forecast([signup])
+    assert out.params["horizon"] == 8  # default: the range said nothing about the horizon
+    assert out.dropped_filters == ["DimCustomer.SignupDate"]
 
 
 def test_plan_ambiguity_becomes_clarification_with_patches():

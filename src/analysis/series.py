@@ -11,6 +11,12 @@ value and stays NaN (the ``gap_ratio`` guard then decides).
 Seasonal periods are *candidates* by grain and are only kept when a
 seasonal-strength test confirms them on at least two full cycles. Grain alone
 never establishes seasonality.
+
+The trailing period is the one the calendar cannot vouch for: a month whose
+data stops on the 16th is a month-to-date figure, not a month. Such a period
+is *set aside* — kept on the frame as :attr:`SeriesFrame.partial_tail` so the
+result can name it, but removed from what the guards and engines see — rather
+than fed to a model that would take the shortfall for a collapse.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 from src.analysis.contracts import DEFAULT_WINDOW_PERIODS, SeriesRequest
+from src.analysis.engines.common import fmt_value
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +39,38 @@ logger = logging.getLogger(__name__)
 # cycle should still shape the expected line.
 SEASONAL_STRENGTH_MIN = 0.30
 
+# A trailing week or month is incomplete when its data stops more than this
+# many days before the period's last day. The slack keeps a Friday-ending week
+# or a month that ends on a weekend from being set aside for a business that
+# is closed at weekends.
+PARTIAL_TAIL_SLACK_DAYS = 2
+# Without a data-end timestamp, an additive tail (SUM/COUNT) is taken as
+# incomplete when it is below this share of the typical recent period while the
+# period before it was ordinary — the signature of a load that stopped
+# mid-period. A genuine collapse looks the same for one period; the caveat
+# names the numbers either way so the reader can tell.
+PARTIAL_TAIL_VALUE_SHARE = 0.25
+PARTIAL_TAIL_PRIOR_SHARE_MIN = 0.50
+PARTIAL_TAIL_REFERENCE_MIN = 6
+PARTIAL_TAIL_REFERENCE_MAX = 12
+
 _PERIOD_LABEL = {"day": "day", "week": "week", "month": "month"}
 _PERIOD_LABEL_PLURAL = {"day": "days", "week": "weeks", "month": "months"}
+
+
+@dataclass(frozen=True)
+class PartialTail:
+    """A trailing period set aside because its data does not cover the whole period.
+
+    ``value`` is the aggregate observed so far (the to-date figure); ``reason``
+    carries the numbers behind the decision; ``basis`` is ``"date"`` when the
+    data-end timestamp proved it and ``"value"`` when only the shortfall did.
+    """
+
+    ts: pd.Timestamp
+    value: Optional[float]
+    reason: str
+    basis: str
 
 
 @dataclass
@@ -48,6 +85,9 @@ class SeriesFrame:
     seasonal_periods: List[int] = field(default_factory=list)
     seasonal_strength: Dict[int, float] = field(default_factory=dict)
     missing_policy: str = ""
+    # The incomplete trailing period that was set aside, if any. It is not in
+    # ``frame``; ``n`` and the guards count complete periods only.
+    partial_tail: Optional[PartialTail] = None
 
     # ── Derived counts ────────────────────────────────────────────────────
     @property
@@ -191,6 +231,138 @@ def seasonal_strength(y: Sequence[float], period: int) -> float:
         return 0.0
 
 
+# ── Incomplete trailing period ────────────────────────────────────────────────
+
+
+def period_last_day(ts: pd.Timestamp, freq: str) -> pd.Timestamp:
+    """The final calendar day of the period that starts at ``ts``."""
+    one = pd.tseries.frequencies.to_offset(freq)
+    return (pd.Timestamp(ts) + one) - pd.Timedelta(days=1)
+
+
+def _fmt_day(ts: pd.Timestamp) -> str:
+    return f"{ts.day} {ts.strftime('%b %Y')}"
+
+
+def parse_data_end(data_end: Optional[Any]) -> Optional[pd.Timestamp]:
+    """The newest source timestamp as a naive midnight, or None when unreadable."""
+    if data_end is None:
+        return None
+    try:
+        end = pd.Timestamp(data_end)
+    except (TypeError, ValueError):
+        logger.debug("parse_data_end: unreadable data_end %r ignored", data_end)
+        return None
+    if pd.isna(end):
+        return None
+    if end.tzinfo is not None:
+        end = end.tz_localize(None)
+    return end.normalize()
+
+
+# Same-phase lag per grain for the seasonal check of the value rule.
+_SEASON_LAG = {"month": 12, "week": 52, "day": 7}
+
+
+def _same_phase_was_low(prior: pd.Series, grain: str, share: float) -> bool:
+    """True when the period one cycle before the tail was itself under ``share``
+    of the periods around it — the tail is then a season, not a stub."""
+    lag = _SEASON_LAG.get(grain)
+    if lag is None or len(prior) < lag + PARTIAL_TAIL_REFERENCE_MIN:
+        return False
+    same = float(prior.iloc[-lag])
+    # Its neighbourhood: up to a cycle before it and everything after it up to the tail.
+    around = pd.concat([prior.iloc[-lag - PARTIAL_TAIL_REFERENCE_MAX:-lag], prior.iloc[-lag + 1:]])
+    reference = float(np.median(around.to_numpy(dtype=float))) if len(around) else 0.0
+    return reference > 0 and same < share * reference
+
+
+def detect_partial_tail(
+    frame: pd.DataFrame,
+    grain: str,
+    freq: str,
+    request: SeriesRequest,
+    data_end: Optional[Any] = None,
+) -> Optional[PartialTail]:
+    """Decide whether the last period of ``frame`` is incomplete.
+
+    Two rules:
+
+    * **date** — ``data_end`` (the newest source timestamp) falls inside the
+      last week/month and stops more than :data:`PARTIAL_TAIL_SLACK_DAYS`
+      before its final day. A day is atomic at date resolution and is never
+      partial by this rule.
+    * **value** — for a SUM/COUNT of a non-negative history, the tail is under
+      :data:`PARTIAL_TAIL_VALUE_SHARE` of the typical recent period while the
+      period before it was at least half of typical, and the same period one
+      cycle earlier was not itself that low (a seasonal trough or a holiday
+      shutdown is a season, not a stub). Daily series compare with the same
+      weekday so a quiet Sunday is not mistaken for a partial day.
+
+    The value rule runs even when ``data_end`` shows the period's days are
+    covered: a load that stops mid-period is not the only way a period ends up
+    incomplete — the AdventureWorks sample has rows on every day of its final
+    month at 3% of the usual total. The reason then says so, and the caveat
+    calls the period a *likely* partial load rather than a fact.
+    """
+    if len(frame) < 2:
+        return None
+    ts = pd.Timestamp(frame.index[-1])
+    observed = bool(frame["observed"].iloc[-1])
+    raw = frame["y"].iloc[-1]
+    value = None if pd.isna(raw) else float(raw)
+
+    end = parse_data_end(data_end) if grain != "day" else None
+    days_covered = False
+    if end is not None:
+        last_day = period_last_day(ts, freq)
+        if ts <= end < last_day:
+            missing = int((last_day - end).days)
+            if missing > PARTIAL_TAIL_SLACK_DAYS:
+                total = int((last_day - ts).days) + 1
+                covered = int((end - ts).days) + 1
+                return PartialTail(
+                    ts=ts, value=value, basis="date",
+                    reason=f"data ends {_fmt_day(end)}, {covered} of {total} days",
+                )
+        days_covered = end >= ts
+
+    if not (request.is_additive and observed and value is not None and value >= 0):
+        return None
+    prior = frame["y"].iloc[:-1].astype(float).fillna(0.0)
+    if len(prior) < PARTIAL_TAIL_REFERENCE_MIN or bool((prior < 0).any()):
+        return None
+    if grain == "day" and len(prior) >= 3 * 7:
+        # Same weekday, most recent first: ``previous`` is a week ago, not yesterday.
+        reference_pool = prior.iloc[-7::-7].iloc[:PARTIAL_TAIL_REFERENCE_MAX]
+        previous = float(reference_pool.iloc[0])
+    else:
+        reference_pool = prior.iloc[-PARTIAL_TAIL_REFERENCE_MAX:]
+        previous = float(prior.iloc[-1])
+    reference = float(np.median(reference_pool.to_numpy(dtype=float)))
+    if reference <= 0 or value >= PARTIAL_TAIL_VALUE_SHARE * reference:
+        return None
+    if previous < PARTIAL_TAIL_PRIOR_SHARE_MIN * reference:
+        return None  # already falling before the tail: a trend, not a partial load
+    if grain != "day" and _same_phase_was_low(prior, grain, PARTIAL_TAIL_PRIOR_SHARE_MIN):
+        return None  # this period is low every cycle: a season, not a partial load
+    reason = f"{fmt_value(value)} against a typical {fmt_value(reference)}"
+    reason += f", although its data runs to {_fmt_day(end)}" if days_covered and end is not None else " so far"
+    return PartialTail(ts=ts, value=value, basis="value", reason=reason)
+
+
+def partial_tail_sentence(sf: "SeriesFrame") -> str:
+    """One caveat sentence naming the set-aside period and why."""
+    tail = sf.partial_tail
+    if tail is None:
+        return ""
+    period = format_period(tail.ts, sf.grain)
+    ends = f"; the history used ends at {format_period(sf.frame.index[-1], sf.grain)}" if sf.n else ""
+    if tail.basis == "date":
+        return f"{period} is incomplete ({tail.reason}) and was set aside{ends}."
+    return f"{period} looks incomplete ({tail.reason}) and was set aside as a likely partial load{ends}."
+
+
 # ── Row parsing ───────────────────────────────────────────────────────────────
 
 
@@ -250,6 +422,7 @@ def prepare_series(
     value_key: str = "value",
     detect_seasonality: bool = True,
     extra_values: Sequence[Tuple[str, bool]] = (),
+    data_end: Optional[Any] = None,
 ) -> SeriesFrame:
     """Turn aggregate rows into a regular, complete :class:`SeriesFrame`.
 
@@ -260,6 +433,10 @@ def prepare_series(
     ``extra_values`` are ``(column, additive)`` pairs for further measures that
     ride along on the same calendar (correlation's second series); they land
     in ``frame[column]`` with the same fill rule as the primary.
+
+    ``data_end`` is the newest source timestamp (the span probe's ``max_ts``);
+    with it an incomplete trailing period is proven rather than inferred. See
+    :func:`detect_partial_tail`.
     """
     grain = request.grain
     freq = pandas_freq(grain, request.week_start)
@@ -294,28 +471,39 @@ def prepare_series(
         one = pd.tseries.frequencies.to_offset(freq)
         tail_candidate = end_excl - one if end_excl > last else last
         last = max(last, tail_candidate)
+    newest = parse_data_end(data_end)
+    if newest is not None:
+        # A requested range that runs past the newest source row would add
+        # periods with no data yet; those are not zeros and never enter the
+        # calendar. The period holding the newest row stays and is judged below.
+        newest_period = floor_to_grain(pd.Series([newest]), grain, request.week_start).iloc[0]
+        if newest_period < last:
+            last = max(newest_period, grouped.index.max())
 
     calendar = pd.date_range(start=first, end=last, freq=freq, name="ts")
     y = grouped.reindex(calendar)
     observed = y.notna()
-
     if request.is_additive:
         y = y.fillna(0.0)
-        policy = (
-            f"{request.agg.upper()} of an empty {grain} is zero: "
-            f"{int((~observed).sum())} of {len(calendar)} periods zero-filled"
-        )
-    else:
-        policy = (
-            f"{request.agg.upper()} has no value for an empty {grain}: "
-            f"{int((~observed).sum())} of {len(calendar)} periods left empty"
-        )
 
     frame = pd.DataFrame({"y": y.astype(float), "observed": observed.astype(bool)}, index=calendar)
     for (name, additive), series in zip(extra_values, extra_grouped.values()):
         col = series.reindex(calendar).astype(float)
         frame[name] = col.fillna(0.0) if additive else col
-    sf = SeriesFrame(frame=frame, grain=grain, freq=freq, request=request, missing_policy=policy)
+
+    partial = detect_partial_tail(frame, grain, freq, request, data_end)
+    if partial is not None:
+        frame = frame.iloc[:-1]
+
+    filled = int((~frame["observed"]).sum())
+    if request.is_additive:
+        policy = f"{request.agg.upper()} of an empty {grain} is zero: {filled} of {len(frame)} periods zero-filled"
+    else:
+        policy = f"{request.agg.upper()} has no value for an empty {grain}: {filled} of {len(frame)} periods left empty"
+    if partial is not None:
+        policy += f"; {format_period(partial.ts, grain)} set aside as incomplete ({partial.reason})"
+    sf = SeriesFrame(frame=frame, grain=grain, freq=freq, request=request, missing_policy=policy,
+                     partial_tail=partial)
 
     sf.candidate_periods = candidate_periods(grain, sf.n)
     if detect_seasonality and sf.candidate_periods:

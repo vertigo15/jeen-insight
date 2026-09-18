@@ -6,14 +6,22 @@ prediction interval. Every candidate's error is reported so the Model details
 tab can show winner, runner-up and baseline side by side.
 
 Method selection rules (see docs/ml_skills_handoff/README.md §3):
-* the shortlist is fixed — statsforecast Naive, SeasonalNaive, AutoETS,
-  AutoARIMA and, for long seasonal periods, MSTL with an ETS/ARIMA trend
-  forecaster (ETS/ARIMA are not fitted directly with m > 24);
+* the shortlist is fixed — statsforecast Naive, SeasonalNaive, Drift (random
+  walk with drift), AutoETS, AutoARIMA and, for long seasonal periods, MSTL
+  with an ETS/ARIMA trend forecaster (ETS/ARIMA are not fitted directly with
+  m > 24); AutoTheta only when asked for;
 * CV windows are scored at the requested horizon, never a single holdout;
 * the metric is WAPE for a non-negative series with a positive total,
   otherwise MASE (MAE in business units goes to ``extras``);
-* a method that cannot beat SeasonalNaive is a finding: the baseline is
-  returned and the note says so.
+* in ``auto`` mode a method that cannot beat the baseline is a finding: the
+  baseline is returned and the note says so. An explicitly requested method
+  is returned regardless, with its score against the baseline in the note;
+* an incomplete trailing period (see ``series.detect_partial_tail``) is not
+  history: the fit ends at the last complete period and the set-aside period
+  becomes the first forecast period, its to-date figure reported beside the
+  full-period estimate;
+* a history that never went below zero is never forecast below zero — the
+  point and the interval are floored at zero and the note says so.
 """
 
 from __future__ import annotations
@@ -52,7 +60,7 @@ from src.analysis.engines.common import (
     score,
     wape_applicable,
 )
-from src.analysis.series import SeriesFrame, format_period
+from src.analysis.series import SeriesFrame, format_period, partial_tail_sentence
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +81,12 @@ def _statsforecast_version() -> str:
 
 
 def _build_candidates(method: str, m: Optional[int]) -> Tuple[List[Any], str]:
-    """Return (models, baseline_alias). Aliases are what statsforecast names the columns."""
-    from statsforecast.models import AutoARIMA, AutoETS, AutoTheta, MSTL, Naive, SeasonalNaive
+    """Return (models, baseline_alias). Aliases are what statsforecast names the columns.
+
+    The baseline is always first; for an explicit ``method`` the requested
+    model is the (single) other entry, so ``models[-1]`` is what the user asked for.
+    """
+    from statsforecast.models import AutoARIMA, AutoETS, AutoTheta, MSTL, Naive, RandomWalkWithDrift, SeasonalNaive
 
     season = int(m) if m else 1
     baseline = SeasonalNaive(season_length=season, alias="SeasonalNaive") if m else Naive(alias="Naive")
@@ -94,8 +106,13 @@ def _build_candidates(method: str, m: Optional[int]) -> Tuple[List[Any], str]:
     def theta():
         return AutoTheta(season_length=season if season <= DIRECT_SEASONAL_MAX else 1, alias="AutoTheta")
 
+    def drift():
+        # Last value plus the average historical step: the standard trend
+        # benchmark, and what a short trending history can actually support.
+        return RandomWalkWithDrift(alias="Drift")
+
     if method == "auto":
-        models: List[Any] = [baseline, ets(), arima()]
+        models: List[Any] = [baseline, drift(), ets(), arima()]
         if m:
             models.insert(1, Naive(alias="Naive"))
     elif method == "auto_arima":
@@ -104,6 +121,8 @@ def _build_candidates(method: str, m: Optional[int]) -> Tuple[List[Any], str]:
         models = [baseline, ets()]
     elif method == "theta":
         models = [baseline, theta()]
+    elif method == "drift":
+        models = [baseline, drift()]
     else:  # seasonal_naive
         models = [baseline]
     return models, baseline_alias
@@ -195,22 +214,40 @@ def run(params: ForecastParams, sf: SeriesFrame, ctx: Optional[RunContext] = Non
             f"{n} {sf.period_label(plural=True)} of history cannot hold out {h}; no cross-validation was run."
         )
 
-    # ── Selection: beat the baseline or return it ────────────────────────
+    # ── Selection: beat the baseline or return it; an explicit choice stands ──
+    def _fmt_err(value: Optional[float]) -> str:
+        if value is None:
+            return "n/a"
+        return fmt_pct(value) if use_wape else f"{value:.2f}"
+
     baseline_err = cv_errors.get(baseline_alias)
     selected = baseline_alias
     best_err = baseline_err
+    requested = aliases[-1] if params.method not in ("auto", "seasonal_naive") else None
     scored = [(a, e) for a, e in cv_errors.items() if e is not None and a != baseline_alias]
     scored.sort(key=lambda t: t[1])
-    if scored:
+    if requested is not None:
+        # The user named the model. It is what they get; the note says how it
+        # compared to the baseline (or that it could not be compared).
+        selected, best_err = requested, cv_errors.get(requested)
+        if best_err is None:
+            notes.append(f"{requested} was requested; it could not be validated against {baseline_alias} on this history.")
+        elif baseline_err is not None and best_err >= baseline_err:
+            how = "scored better" if best_err > baseline_err else "scored the same"
+            notes.append(
+                f"{requested} was requested and is shown although {baseline_alias} {how} in cross-validation "
+                f"({metric_name} {_fmt_err(best_err)} vs {_fmt_err(baseline_err)})."
+            )
+    elif scored:
         top_alias, top_err = scored[0]
         if baseline_err is None or top_err < baseline_err:
             selected, best_err = top_alias, top_err
         else:
             notes.append(
-                f"No candidate beat {baseline_alias} ({metric_name} {fmt_pct(baseline_err) if use_wape else f'{baseline_err:.2f}'}); "
+                f"No candidate beat {baseline_alias} ({metric_name} {_fmt_err(baseline_err)}); "
                 f"returning the baseline rather than a confident wrong number."
             )
-    elif params.method != "seasonal_naive" and not windows:
+    elif params.method == "auto" and not windows:
         notes.append(f"Returning {baseline_alias} because no candidate could be validated.")
 
     for alias in aliases:
@@ -233,6 +270,23 @@ def run(params: ForecastParams, sf: SeriesFrame, ctx: Optional[RunContext] = Non
     lower = fc[lo_col].to_numpy(dtype=float) if lo_col in fc.columns else np.full(h, np.nan)
     upper = fc[hi_col].to_numpy(dtype=float) if hi_col in fc.columns else np.full(h, np.nan)
     fc_index = pd.DatetimeIndex(fc["ds"])
+
+    # A measure that never went below zero (sales, counts) cannot be forecast
+    # below zero either; the Gaussian interval does not know that. Floor the
+    # point and the band and say so, rather than chart a negative sales month.
+    floored = False
+    if use_wape:
+        with np.errstate(invalid="ignore"):
+            below = (point < 0) | (lower < 0) | (upper < 0)
+        floored = bool(np.any(below))
+        if floored:
+            point = np.maximum(point, 0.0)
+            lower = np.where(np.isfinite(lower), np.maximum(lower, 0.0), lower)
+            upper = np.where(np.isfinite(upper), np.maximum(upper, 0.0), upper)
+            notes.append(
+                f"{sf.request.measure_label} never went below zero in the history, so the forecast and its "
+                f"{level}% interval were floored at zero."
+            )
 
     # ── Rows: history then forecast, one ordinary table ──────────────────
     rows: List[Dict[str, Any]] = []
@@ -282,7 +336,21 @@ def run(params: ForecastParams, sf: SeriesFrame, ctx: Optional[RunContext] = Non
         "cv_windows": windows,
         "coverage": num(cov),
         "coverage_n": cov_n,
+        "floored_at_zero": floored,
     }
+    tail = sf.partial_tail
+    if tail is not None:
+        # The set-aside period is the first forecast period: the model's estimate
+        # for the whole of it sits next to the to-date figure it replaced.
+        tail_is_first = fc_index[0] == tail.ts
+        facts["partial_tail"] = {
+            "ts": tail.ts.date().isoformat(),
+            "period": format_period(tail.ts, sf.grain),
+            "value": num(tail.value),
+            "reason": tail.reason,
+            "basis": tail.basis,
+            "forecast": num(point[0]) if tail_is_first else None,
+        }
 
     change = facts["pct_change_vs_trailing"]
     direction = "up" if (change or 0) > 0 else "down" if (change or 0) < 0 else "flat"
@@ -293,6 +361,12 @@ def run(params: ForecastParams, sf: SeriesFrame, ctx: Optional[RunContext] = Non
     )
 
     caveats: List[str] = []
+    if tail is not None:
+        sentence = partial_tail_sentence(sf)
+        if facts["partial_tail"]["forecast"] is not None:
+            sentence += (f" The forecast for the whole of {facts['partial_tail']['period']} is "
+                         f"{fmt_value(point[0])}.")
+        caveats.append(sentence)
     stable = min(3, h)
     if h > stable:
         caveats.append(f"Treat anything past {stable} {sf.period_label(plural=stable != 1)} as a direction, not a number.")

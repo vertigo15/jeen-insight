@@ -5,6 +5,7 @@ follow the WAPE/MASE rule, and the envelope validates."""
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from src.analysis.contracts import ResultEnvelope
@@ -115,7 +116,40 @@ def test_forecast_explicit_method_is_respected():
     env = _run("forecast", {"series": series_request(grain="month"), "method": "auto_ets", "horizon": 6}, to_payload(idx, y))
     names = {c.name for c in env.details.candidates}
     assert names == {"SeasonalNaive", "AutoETS"}
-    assert env.method_used in names
+    assert env.method_used == "AutoETS"
+
+
+def test_forecast_explicit_method_is_returned_even_when_the_baseline_scores_better():
+    # A pure random walk: no model beats Naive in CV. `auto` returns Naive and says
+    # so; a user who picked ETS gets ETS, with the comparison stated in the note.
+    rng = np.random.default_rng(11)
+    idx, _ = white_noise(n=60, grain="week")
+    y = 1000 + np.cumsum(rng.normal(0, 30, 60))
+    auto = _run("forecast", {"series": series_request(), "horizon": 4}, to_payload(idx, y))
+    chosen = _run("forecast", {"series": series_request(), "method": "auto_ets", "horizon": 4}, to_payload(idx, y))
+    assert chosen.method_used == "AutoETS"
+    ets, naive = (next(c for c in chosen.details.candidates if c.name == n) for n in ("AutoETS", "Naive"))
+    assert ets.selected and naive.is_baseline and not naive.selected
+    if ets.value is not None and naive.value is not None and ets.value >= naive.value:
+        assert any(n.startswith("AutoETS was requested and is shown although Naive scored") for n in chosen.details.notes)
+        assert auto.method_used == "Naive"
+    # The strip's metric is the chosen model's own score, not the baseline's.
+    assert chosen.validation.value == ets.value
+
+
+def test_forecast_auto_shortlist_includes_drift_and_it_wins_a_trend():
+    # A near-linear climb: Naive is flat and wrong, Drift extends the slope.
+    idx = pd.date_range("2006-08-01", periods=24, freq="MS")
+    y = np.linspace(400_000, 1_900_000, 24) + np.random.default_rng(2).normal(0, 40_000, 24)
+    env = _run("forecast", {"series": series_request(grain="month"), "horizon": 8}, to_payload(idx, y))
+    names = [c.name for c in env.details.candidates]
+    assert names[:2] == ["Naive", "Drift"] and {"AutoETS", "AutoARIMA"} <= set(names)
+    drift, naive = (next(c for c in env.details.candidates if c.name == n) for n in ("Drift", "Naive"))
+    assert drift.value < naive.value
+    forecast = [r["forecast"] for r in env.rows if r["is_forecast"]]
+    assert forecast[-1] > forecast[0] > 1_800_000  # keeps climbing, not a flat line at the last value
+    explicit = _run("forecast", {"series": series_request(grain="month"), "method": "drift", "horizon": 8}, to_payload(idx, y))
+    assert explicit.method_used == "Drift" and {c.name for c in explicit.details.candidates} == {"Naive", "Drift"}
 
 
 def test_forecast_horizon_guard_refuses_and_override_marks_low_confidence():

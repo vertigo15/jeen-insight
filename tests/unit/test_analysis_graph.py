@@ -92,7 +92,7 @@ class _FakeRunner:
         return {"columns": ["ts", "value"], "rows": self.rows, "row_count": len(self.rows)}
 
 
-def _make_llm(*, route="needs_analysis", plan=_PLAN, narration=None):
+def _make_llm(*, route="needs_analysis", plan=_PLAN, narration=None, filters=None):
     llm = MagicMock()
 
     async def generate(messages, **kw):
@@ -100,7 +100,7 @@ def _make_llm(*, route="needs_analysis", plan=_PLAN, narration=None):
         if "routing classifier" in system:
             return _resp({"route": route, "reason": "test"})
         if "extract database filter intent" in system:
-            return _resp({"filters": []})
+            return _resp({"filters": filters or []})
         if "registered analysis skill" in system:
             return _resp(plan)
         if "senior data analyst writing up" in system:
@@ -155,8 +155,8 @@ def _state(question: str, **over) -> Dict[str, Any]:
         "connection_display_name": "AdventureWorksDW", "database_type": "postgres",
         "connection_database": "aw", "connection_catalog": None, "connection_schema": "dbo",
         "query_id": uuid4(), "user_id": "user-a", "start_time": 0.0, "llm_call_count": 0,
-        "llm_latency_ms": 0, "token_usage": {}, "conversation_history": [], "memory_summary": None,
-        "is_over_budget": False, "route": "needs_query", "route_reason": "", "metadata_bundle": {},
+        "llm_latency_ms": 0, "token_usage": {}, "conversation_history": [], "memory_window": 5,
+        "prior_refs": [], "history_query": None, "route": "needs_query", "route_reason": "", "metadata_bundle": {},
         "catalog_seeded": False, "dialect_rules": "", "known_tables": [], "known_columns": [],
         "table_columns": {}, "catalog_available": False, "catalog_error": None, "catalog_blocked": False,
         "filter_plan": None, "resolved_filters": [], "unresolved_filters": [], "filter_ambiguities": [],
@@ -238,10 +238,24 @@ async def test_confirmed_reentry_runs_the_skill_and_narrates(prompt_loader):
     assert fr["status"] == "completed", fr.get("error")
     assert fr["analysis"]["skill"] == "anomaly_detection"
     assert "rows" not in fr["analysis"]
+    assert "method_options" not in fr["analysis"]  # the model is changed on the setup card, not a strip selector
+    # "Edit setup": the confirm card's chips with the values that ran.
+    definition = fr["analysis"]["definition"]
+    chips = {c["key"]: c for c in definition["chips"]}
+    assert {"measure_column", "date_column", "grain", "window", "sensitivity", "method"} <= set(chips)
+    assert chips["measure_column"]["value"] == "Profit" and chips["grain"]["value"] == "week"
+    assert chips["window"]["value"] == 130 and chips["method"]["options"] == ["auto", "sigma3"]
+    assert chips["method"]["label"] == "model"
+    assert "sent to the analysis service" in definition["egress_summary"]
     assert fr["analysis"]["facts"]["n_flagged"] >= 1
     assert fr["low_confidence"] is False
     assert fr["results"]["columns"] == ["ts", "actual", "expected", "lower", "upper", "score", "is_anomaly", "observed"]
-    assert fr["results"]["row_count"] == 130
+    # The probe's newest row is a Thursday, so the 130th week is incomplete: the
+    # span's max_ts reaches the runner as ``data_end`` and that week is set aside.
+    assert fr["results"]["row_count"] == 129
+    partial = next(g for g in fr["analysis"]["guard_results"] if g["name"] == "partial_tail")
+    assert partial["passed"] and "data ends 25 Jun 2026, 4 of 7 days" in partial["detail"]
+    assert any(c.startswith("week of 22 Jun 2026 is incomplete") for c in fr["analysis"]["caveats"])
     assert fr["answer"] == "Ten weeks fall outside the expected range."  # narration summary (LLM)
     # Hybrid: findings + follow-ups come deterministically from the engine facts
     # (the LLM only writes the summary), so they mirror the narrator exactly.
@@ -319,6 +333,32 @@ async def test_override_runs_past_the_guard_and_flags_low_confidence(prompt_load
     assert any(not g["passed"] and g["name"] == "max_horizon" for g in fr["analysis"]["guard_results"])
     kwargs = history.upsert_turn_artifact.await_args.kwargs
     assert kwargs["low_confidence"] is True
+
+
+@pytest.mark.asyncio
+async def test_forecast_window_travels_from_the_card_to_the_engine_and_back(prompt_loader):
+    """A confirmed forecast with an explicit look-back: the guard sizes the history
+    from it, the sandbox-bound params carry it (contract 2 accepts the field), and
+    the finished result's setup card shows it as a number."""
+    store = InMemoryAnalysisStore()
+    runner = _FakeRunner(_weekly_rows(), span_weeks=130)
+    graph, _ = _build(_make_llm(), runner, store, prompt_loader)
+    params = {"series": {"table": "FactInternetSales", "date_column": "OrderDate", "measure_column": "Profit",
+                         "agg": "sum", "grain": "week", "filters": [], "start": None, "end": None},
+              "window": 60, "horizon": 8}
+    final = await graph.ainvoke(_state(
+        "Forecast profit", route="needs_analysis", analysis_skill="forecast", analysis_params=params,
+        analysis_confirmed=True,
+    ))
+    fr = final["formatted_response"]
+    assert fr["status"] == "completed", fr.get("error")
+    assert fr["analysis"]["params"]["window"] == 60
+    # The guard sized the history from the window: 60 weeks before the exclusive
+    # end (the Monday after the probe's newest row, 2026-06-29).
+    assert "2025-05-05" in final["generated_sql"] and "2026-06-29" in final["generated_sql"]
+    chips = {c["key"]: c for c in fr["analysis"]["definition"]["chips"]}
+    assert chips["window"]["value"] == 60 and isinstance(chips["window"]["value"], int)
+    assert chips["method"]["label"] == "model" and chips["horizon"]["value"] == 8
 
 
 @pytest.mark.asyncio
@@ -805,3 +845,65 @@ async def test_no_runner_yields_a_clear_message(prompt_loader):
     final = await graph.ainvoke(_state("Is anything weird in profit?"))
     fr = final["formatted_response"]
     assert "not available" in fr["error"] and fr.get("status") is None
+
+
+# ── A forecast's named period must reach the planner as the horizon ──────────
+
+_METADATA_DIMDATE = dict(
+    _METADATA,
+    tables=_METADATA["tables"] + "\n- DimDate - Calendar dimension",
+    columns=_METADATA["columns"] + "\n- DimDate.FullDateAlternateKey - Type: date\n- DimDate.DateKey - Type: integer",
+)
+_FORECAST_PLAN = {
+    "skill": "forecast", "table": "FactInternetSales", "date_column": "OrderDate", "measure_column": "Profit",
+    "agg": "sum", "grain": "month", "horizon": None, "start": None, "end": None, "ambiguous": None,
+    "reason": "forecast",
+}
+
+
+def _build_with_dimdate(llm, runner, store, prompt_loader):
+    metadata_loader = MagicMock()
+    metadata_loader.load_all = AsyncMock(return_value=_METADATA_DIMDATE)
+    graph = build_graph(
+        llm=llm, router_llm=llm, sql_runner=runner, metadata_loader=metadata_loader,
+        history_service=_history(), prompt_loader=prompt_loader, deployment_name="test",
+        ml_skills_enabled=True, analysis_store=store, analysis_runner_provider=lambda: InProcessRunner(),
+    )
+    return graph
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("period,expected_horizon", [
+    (["7/2008", "1/2009"], 7),   # readable month/year: Jul 2008 .. Jan 2009 = 7 months
+    (["H2 2008", "H1 2009"], 8),  # unreadable: not a reason to stop; the default horizon stands
+])
+async def test_forecast_period_bound_to_a_date_column_becomes_the_horizon(prompt_loader, period, expected_horizon):
+    """Regression: "forcast the profit for the next 6 month (7/2008 to 1/2009)" dead-ended
+    in the filter grounder with 'I could not verify ... in fulldatealternatekey'."""
+    store = InMemoryAnalysisStore()
+    dimdate_filter = {"table": "dimdate", "column": "fulldatealternatekey", "op": "between", "value": period}
+    llm = _make_llm(plan=_FORECAST_PLAN, filters=[dimdate_filter])
+    graph = _build_with_dimdate(llm, _FakeRunner(_weekly_rows()), store, prompt_loader)
+
+    final = await graph.ainvoke(_state(
+        f"forcast the profit for the next 6 month ({period[0]} to {period[1]})", filter_resolution_enabled=True,
+    ))
+    fr = final["formatted_response"]
+
+    assert final["route"] == "needs_analysis"
+    assert not final.get("filter_clarification_required"), fr.get("answer")
+    assert fr["status"] == "confirm", fr.get("answer") or fr.get("error")
+    proposal = fr["proposal"]
+    assert proposal["skill"] == "forecast"
+    params = store.proposals[proposal["proposal_id"]]["params"]
+    assert params["horizon"] == expected_horizon
+    assert params["series"]["filters"] == []  # the period is not a filter on the history
+    assert final.get("analysis_dropped_filters") == []  # ...nor reported as one that was dropped
+    # The look-back the guard filled (24 months by default) is a real parameter
+    # the card shows and can change — not an empty chip.
+    assert params["window"] == 24
+    window_chip = next(c for c in proposal["chips"] if c["key"] == "window")
+    assert window_chip["value"] == 24
+    assert next(c for c in proposal["chips"] if c["key"] == "method")["label"] == "model"
+    nodes = _nodes(final)
+    assert "filter_grounder" in nodes and "analysis_planner" in nodes and "analysis_guard" in nodes

@@ -195,6 +195,48 @@ async def test_run_resolves_a_clarification_from_the_stored_plan(client, ml_stat
     assert client.post("/api/analysis/run", json={"connection": "sales_db", "proposal_id": pid3}).status_code == 409
 
 
+_FORECAST_PARAMS = {
+    "series": {**_PARAMS["series"], "grain": "month", "start": "2006-08-01", "end": "2008-08-01"},
+    "window": 24, "horizon": 8, "interval": 0.8, "method": "auto",
+}
+
+
+@pytest.mark.asyncio
+async def test_run_window_or_grain_change_resets_the_stored_range(client, ml_state):
+    """A confirm card already carries the range the guard filled; a wider window
+    typed on it (or a grain change) must make the guard re-probe, or the range
+    would stay exactly where it was and the edit would be a no-op."""
+    pid = await _proposal(ml_state.store, skill="forecast", params=_FORECAST_PARAMS)
+    r = client.post("/api/analysis/run", json={"connection": "sales_db", "proposal_id": pid, "params_patch": {"window": 36}})
+    assert r.status_code == 200, r.text
+    call = ml_state.agent.process_confirmed_analysis.await_args.kwargs
+    assert call["params"]["window"] == 36
+    assert call["params"]["series"]["start"] is None and call["params"]["series"]["end"] is None
+    # A "Look back N months" guard exit goes through the same door.
+    pid = await _proposal(ml_state.store, kind="guard", skill="forecast", params=_FORECAST_PARAMS)
+    r = client.post("/api/analysis/run", json={"connection": "sales_db", "proposal_id": pid, "params_patch": {"window": 48}})
+    assert r.status_code == 200, r.text
+    call = ml_state.agent.process_confirmed_analysis.await_args.kwargs
+    assert call["params"]["window"] == 48 and call["params"]["series"]["start"] is None
+    # A grain change likewise; an unrelated patch keeps the range.
+    pid = await _proposal(ml_state.store, skill="forecast", params=_FORECAST_PARAMS)
+    r = client.post("/api/analysis/run", json={"connection": "sales_db", "proposal_id": pid, "params_patch": {"grain": "week"}})
+    assert r.status_code == 200 and ml_state.agent.process_confirmed_analysis.await_args.kwargs["params"]["series"]["start"] is None
+    pid = await _proposal(ml_state.store, skill="forecast", params=_FORECAST_PARAMS)
+    r = client.post("/api/analysis/run", json={"connection": "sales_db", "proposal_id": pid, "params_patch": {"horizon": 12}})
+    call = ml_state.agent.process_confirmed_analysis.await_args.kwargs
+    assert r.status_code == 200 and call["params"]["horizon"] == 12
+    assert call["params"]["series"]["start"] == "2006-08-01" and call["params"]["window"] == 24
+
+
+@pytest.mark.asyncio
+async def test_run_refuses_a_proposal_from_an_older_contract(client, ml_state):
+    pid = await _proposal(ml_state.store, contract_version="1")
+    r = client.post("/api/analysis/run", json={"connection": "sales_db", "proposal_id": pid})
+    assert r.status_code == 409 and "contract changed" in r.json()["detail"]
+    ml_state.agent.process_confirmed_analysis.assert_not_awaited()
+
+
 def test_run_disabled_is_404(client, ml_state, monkeypatch):
     from src.api.routes import analysis as routes
 
@@ -247,6 +289,21 @@ def test_rerun_with_patch_creates_a_child_turn_with_a_diff(client, ml_state):
     assert client.post("/api/analysis/rerun", json=body).status_code == 200
     assert client.post("/api/analysis/rerun", json=body).status_code == 409
     assert ml_state.agent.process_confirmed_analysis.await_count == 2
+
+
+def test_rerun_forecast_window_patch_resets_the_range(client, ml_state):
+    parent_id, session = uuid4(), uuid4()
+    ml_state.history_service.get_turn_analysis = AsyncMock(return_value={
+        "turn_id": str(parent_id), "session_id": session, "question": "Forecast sales",
+        "analysis": {"skill": "forecast", "params": _FORECAST_PARAMS}, "low_confidence": False,
+    })
+    r = client.post("/api/analysis/rerun", json={"connection": "sales_db", "parent_query_id": str(parent_id),
+                                                 "session_id": str(session), "params_patch": {"window": 36}})
+    assert r.status_code == 200, r.text
+    call = ml_state.agent.process_confirmed_analysis.await_args.kwargs
+    assert call["params"]["window"] == 36
+    assert call["params"]["series"]["start"] is None and call["params"]["series"]["end"] is None
+    assert r.json()["analysis"]["param_diff"]["window"] == {"from": 24, "to": 36}
 
 
 def test_rerun_wrong_session_is_409(client, ml_state):

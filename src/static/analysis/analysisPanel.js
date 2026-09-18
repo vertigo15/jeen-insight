@@ -83,7 +83,46 @@
         return `<span class="v3-skill-chip" title="${esc(method)}">${esc(SKILL_LABEL[analysis.skill] || analysis.skill)}</span>
           ${method ? `<span class="v3-result-meta v3-ml-method" title="${esc(method)}">${esc(shortMethod)}</span>` : ''}
           <span class="v3-result-meta v3-ml-meta">${esc(bits.join(' · '))}</span>
-          ${low ? '<span class="v3-lowconf-pill" title="A guard was overridden for this run; treat the result as indicative.">low confidence</span>' : ''}`;
+          ${low ? '<span class="v3-lowconf-pill" title="A guard was overridden for this run; treat the result as indicative.">low confidence</span>' : ''}
+          ${hasDefinition(analysis) ? '<button type="button" class="v3-text-btn v3-ml-edit" data-ml-edit aria-expanded="false">Edit setup</button>' : ''}`;
+    }
+
+    function hasDefinition(analysis) {
+        const chips = analysis && analysis.definition && analysis.definition.chips;
+        return Array.isArray(chips) && chips.length > 0;
+    }
+
+    /**
+     * The setup card for a finished result: the confirm card's chips with the
+     * values that ran (measure, grain, window, model, …), plus "Re-run" /
+     * "Cancel". Re-running appends a new child turn; the controller binds
+     * `[data-run]` and `[data-cancel]`. This is the one place to change the model.
+     */
+    function definitionHtml(analysis) {
+        if (!hasDefinition(analysis)) return '';
+        const definition = analysis.definition;
+        const chips = definition.chips.map(chipControl).join('');
+        const skillKey = String(analysis.skill || 'analysis').toUpperCase();
+        const tier = (analysis.egress || {}).tier;
+        return `<div class="v3-ml-card is-confirm is-definition">
+          <div class="v3-ml-plan">
+            <span class="v3-ml-phase">Setup</span>
+            <span class="v3-ml-reading">This is how the answer above was produced. Change anything and re-run; the current answer stays.</span>
+          </div>
+          <div class="v3-ml-panel">
+            <div class="v3-ml-chips" data-chip-row>
+              <span class="v3-skill-chip">${esc(skillKey)}</span>
+              <span class="v3-ml-on">on</span>
+              ${chips}
+            </div>
+            ${definition.egress_summary ? `<p class="v3-ml-egress">${esc(definition.egress_summary)}</p>` : ''}
+            <div class="v3-ml-actions">
+              <button type="button" class="v3-ml-run" data-run>Re-run</button>
+              <button type="button" class="v3-text-btn" data-cancel>Cancel</button>
+              ${tier ? `<span class="v3-ml-tiermeta">TIER ${esc(tier)} · ${tier === 'A' ? 'AGGREGATE' : 'ROW-LEVEL'}</span>` : ''}
+            </div>
+          </div>
+        </div>`;
     }
 
     /** True when a stored proposal can no longer be resumed. */
@@ -274,6 +313,7 @@
         stripSegments,
         proposalExpired,
         proposalHtml,
+        definitionHtml,
         collectPatch,
         modelDetailsHtml,
         chartCaption,

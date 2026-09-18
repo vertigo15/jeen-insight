@@ -146,8 +146,12 @@ def min_history(sf: SeriesFrame) -> GuardResult:
 
 def horizon_cap(sf: SeriesFrame) -> int:
     """Longest defensible horizon: a third of the history, and at most two of
-    the longest confirmed cycle."""
-    n = sf.n
+    the longest confirmed cycle.
+
+    An incomplete trailing period that was set aside still counts as history
+    the window covered: setting it aside is a data-quality step and must not
+    flip this guard for the window the user chose."""
+    n = sf.n + (1 if sf.partial_tail is not None else 0)
     cap = max(1, n // 3)
     if sf.longest_period:
         cap = min(cap, 2 * sf.longest_period)

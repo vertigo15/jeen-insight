@@ -79,7 +79,11 @@ Rules:
   Leave `start`/`end` null unless the user named explicit dates.
 - `group_by` only when the user asks for one series *per* something ("per territory", "by product line").
 - Anomaly detection: "flag fewer" means a higher sensitivity; the default is 0.95.
-- Forecast: the default horizon is 8 periods and the default interval is 0.80.
+- Forecast: the default horizon is 8 periods and the default interval is 0.80. A named target
+  period to project ("forecast for July-December 2008", "forecast through Q4", "next 6 months") is
+  the `horizon` (its length in `grain` periods) — set `horizon`, leave `start`/`end` null, and do
+  NOT treat the target's year/month as filters. Only set `start`/`end` for an explicit historical
+  training window ("based on 2019-2021 data").
 - Changepoint: "when did X change / start growing" — the level shift, not the anomalies.
 - Seasonality: "is X seasonal / when does it peak" — needs at least two cycles of history.
 - Correlation: two measures on the same table; name the second in `other_measure_column`.
