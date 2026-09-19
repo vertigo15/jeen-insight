@@ -162,7 +162,10 @@ How it works:
   (`captureRequest` aborts the request the UI would send, so a preference can
   be checked without an LLM call) and snapshot/restore.
 - Feature suites ask one question in `beforeAll` and exercise every feature on
-  that answer. Admin tests snapshot and restore what they touch.
+  that answer. Admin tests snapshot and restore what they touch, but they do
+  change shared state while running (runtime guardrails, the active model, the
+  catalog source, a prompt version, a temporary user) and prompt version
+  history only grows — run `@admin` against a stack you own, not a shared one.
 - Tests run serially on one worker (one LLM conversation at a time, the
   analytics sandbox allows two concurrent runs) but are independent: a failing
   question never skips the rest. Infrastructure failures ("Backend

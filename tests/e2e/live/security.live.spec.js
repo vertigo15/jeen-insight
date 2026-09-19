@@ -41,7 +41,8 @@ test.describe('Security', { tag: ['@security'] }, () => {
   test.afterAll(async () => { await page?.context().close(); });
 
   test('without a session every API route is 401 and the app redirects to /login', { tag: ['@smoke'] }, async () => {
-    const anon = await request.newContext({ baseURL: L.BASE, timeout: 30_000 });
+    // Explicitly empty jar: inside a test, request.newContext() would otherwise inherit the saved admin session.
+    const anon = await request.newContext({ baseURL: L.BASE, timeout: 30_000, storageState: { cookies: [], origins: [] } });
     try {
       // A POST is refused before the auth guard runs (CSRF 400) or by it (401): either way denied.
       const ask = await anon.post('/api/ask', { data: { question: 'How many customers do we have?', connection } });

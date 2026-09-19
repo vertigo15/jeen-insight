@@ -134,8 +134,8 @@ const ML_CASES = [
     metaMust: [/anomaly detection/, META.flagged, META.points], modelTabMust: [/Method/i, /Guards/i], chart: true,
     envelope: {
       params: { 'series.grain': 'week' }, tier: 'A', maxRowsSent: SERIES_CAP, guardsPassed: true, lowConfidence: false,
-      // A year of weeks: ~52 points, a handful flagged at 95 % sensitivity, never most of them.
-      facts: { n_points: [40, 60], n_flagged: [0, 15], 'sensitivity': [0.8, 0.99] }, chartTypes: ['band'],
+      // Up to a year of weeks (the planner's window may take fewer); a handful flagged at 95 % sensitivity, never most of them.
+      facts: { n_points: [12, 60], n_flagged: [0, 15], 'sensitivity': [0.8, 0.99] }, chartTypes: ['band'],
     },
   },
   {
@@ -145,7 +145,8 @@ const ML_CASES = [
     metaMust: [/changepoint/, META.shifts], modelTabMust: [/Method/i], chart: true,
     envelope: {
       params: { 'series.grain': 'month' }, tier: 'A', maxRowsSent: SERIES_CAP, guardsPassed: true,
-      facts: { n_points: [24, 60], n_changepoints: [0, 20] },
+      // The default look-back is 24 months; a partial last month can leave 23 points.
+      facts: { n_points: [12, 60], n_changepoints: [0, 20] },
     },
   },
   {

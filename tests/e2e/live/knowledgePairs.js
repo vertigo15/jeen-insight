@@ -123,7 +123,9 @@ function knowledgeSection(text) {
  * @param {{ base: string, email: string, password: string }} opts
  */
 async function loginRequestContext({ base, email, password }) {
-  const ctx = await request.newContext({ baseURL: base, timeout: 60_000 });
+  // Inside a test, request.newContext() inherits the project's storageState (the
+  // saved admin session); start from an empty jar so this login is the only identity.
+  const ctx = await request.newContext({ baseURL: base, timeout: 60_000, storageState: { cookies: [], origins: [] } });
   const page = await ctx.get('/login');
   const html = await page.text();
   const csrf = (html.match(/name="csrf_token"\s+value="([^"]+)"/) || [])[1] || '';

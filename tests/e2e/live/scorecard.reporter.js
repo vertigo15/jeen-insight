@@ -127,9 +127,13 @@ class ScorecardReporter {
       if (set.length) byType[type] = this._rate(set);
     }
     const graded = rows.filter((r) => r.kp_verdict === 'pass' || r.kp_verdict === 'fail');
+    const kpAttempted = rows.filter((r) => r.kp_verdict);
     const tiers = {};
-    for (const r of graded) tiers[r.kp_tier] = (tiers[r.kp_tier] || 0) + 1;
+    for (const r of kpAttempted) tiers[r.kp_tier] = (tiers[r.kp_tier] || 0) + 1;
     const sqlPass = graded.filter((r) => r.kp_verdict === 'pass').length;
+    // Knowledge-pair answers were asked but none could be graded (no admin, no
+    // pairs, grader broken): the dimension is inconclusive, never silently green.
+    const sqlInconclusive = kpAttempted.length > 0 && graded.length === 0;
     const walls = rows.flatMap((r) => r.latency.map((l) => Number(l.wall_ms))).filter(Number.isFinite);
     const llm = rows.flatMap((r) => r.latency.map((l) => Number(l.llm_latency_ms))).filter(Number.isFinite);
     const exec = rows.flatMap((r) => r.latency.map((l) => Number(l.execution_time_ms))).filter(Number.isFinite);
@@ -154,7 +158,13 @@ class ScorecardReporter {
       },
       by_area: byArea,
       by_type: byType,
-      sql_equivalence: { graded: graded.length, pass: sqlPass, pass_rate: graded.length ? sqlPass / graded.length : null, by_tier: tiers, strictness: this.env.strict },
+      sql_equivalence: {
+        attempted: kpAttempted.length, graded: graded.length, pass: sqlPass,
+        ungraded: kpAttempted.filter((r) => r.kp_verdict === 'ungraded').length,
+        no_gold: kpAttempted.filter((r) => r.kp_verdict === 'no_gold').length,
+        pass_rate: graded.length ? sqlPass / graded.length : null,
+        inconclusive: sqlInconclusive, by_tier: tiers, strictness: this.env.strict,
+      },
       answer_grounded: { checked: grounded.length, yes: grounded.filter((r) => String(r.answer_grounded).startsWith('yes')).length },
       latency: {
         answered_turns: walls.length,
@@ -186,11 +196,21 @@ class ScorecardReporter {
     if (g.minPassRate != null && summary.totals.pass_rate != null && summary.totals.pass_rate < g.minPassRate) {
       this.gateFailures.push(`pass rate ${pct(summary.totals.passed + summary.totals.flaky, summary.totals.tests - summary.totals.skipped - summary.totals.infra)} < required ${pct(g.minPassRate, 1)}`);
     }
-    if (g.minSqlEquiv != null && summary.sql_equivalence.pass_rate != null && summary.sql_equivalence.pass_rate < g.minSqlEquiv) {
-      this.gateFailures.push(`SQL equivalence ${pct(summary.sql_equivalence.pass, summary.sql_equivalence.graded)} < required ${pct(g.minSqlEquiv, 1)} at strictness ${this.env.strict}`);
+    if (g.minSqlEquiv != null) {
+      if (summary.sql_equivalence.inconclusive) {
+        this.gateFailures.push(`SQL equivalence is inconclusive: ${summary.sql_equivalence.attempted} knowledge-pair answer(s) but none could be graded (admin login? pairs registered? grader?)`);
+      } else if (summary.sql_equivalence.pass_rate != null && summary.sql_equivalence.pass_rate < g.minSqlEquiv) {
+        this.gateFailures.push(`SQL equivalence ${pct(summary.sql_equivalence.pass, summary.sql_equivalence.graded)} < required ${pct(g.minSqlEquiv, 1)} at strictness ${this.env.strict}`);
+      }
     }
-    if (g.maxP95Ms != null && summary.latency.wall_p95_ms != null && summary.latency.wall_p95_ms > g.maxP95Ms) {
-      this.gateFailures.push(`p95 wall time ${Math.round(summary.latency.wall_p95_ms)} ms > allowed ${g.maxP95Ms} ms`);
+    // A percentile over a handful of turns is noise; the gate needs a sample.
+    const MIN_LATENCY_SAMPLES = 10;
+    if (g.maxP95Ms != null && summary.latency.wall_p95_ms != null) {
+      if (summary.latency.answered_turns < MIN_LATENCY_SAMPLES) {
+        summary.latency.gate_note = `p95 gate not applied: ${summary.latency.answered_turns} answered turn(s) < ${MIN_LATENCY_SAMPLES}`;
+      } else if (summary.latency.wall_p95_ms > g.maxP95Ms) {
+        this.gateFailures.push(`p95 wall time ${Math.round(summary.latency.wall_p95_ms)} ms > allowed ${g.maxP95Ms} ms over ${summary.latency.answered_turns} turns`);
+      }
     }
     summary.gate_failures = this.gateFailures;
   }
@@ -226,11 +246,12 @@ class ScorecardReporter {
       lines.push(`| ${type} | ${r.tests} | ${r.passed} | ${r.failed} | ${r.infra} | ${r.skipped} | ${pct(r.passed, r.scored)} |`);
     }
     const sq = summary.sql_equivalence;
-    if (sq.graded) {
+    if (sq.attempted) {
       lines.push('');
       lines.push('## SQL vs knowledge pairs');
       lines.push('');
-      lines.push(`${sq.pass}/${sq.graded} graded answers pass at strictness **${sq.strictness}** (${pct(sq.pass, sq.graded)}). Tiers: ${Object.entries(sq.by_tier).map(([k, v]) => `${k} ${v}`).join(', ')}.`);
+      if (sq.inconclusive) lines.push(`**Inconclusive** — ${sq.attempted} knowledge-pair answer(s), none graded (${sq.no_gold} without gold, ${sq.ungraded} unparsable).`);
+      else lines.push(`${sq.pass}/${sq.graded} graded answers pass at strictness **${sq.strictness}** (${pct(sq.pass, sq.graded)})${sq.ungraded || sq.no_gold ? ` · ${sq.ungraded} ungraded, ${sq.no_gold} without gold` : ''}. Tiers: ${Object.entries(sq.by_tier).map(([k, v]) => `${k} ${v}`).join(', ')}.`);
       lines.push('');
       lines.push('| case | question | tier | verdict | overlap | rows/chart | grounded |');
       lines.push('|---|---|---|---|---:|---|---|');
@@ -257,6 +278,7 @@ class ScorecardReporter {
       lines.push('## Latency');
       lines.push('');
       lines.push(`${lat.answered_turns} answered turns — wall p50 ${(lat.wall_p50_ms / 1000).toFixed(1)}s / p95 ${(lat.wall_p95_ms / 1000).toFixed(1)}s · LLM p50 ${lat.llm_p50_ms != null ? (lat.llm_p50_ms / 1000).toFixed(1) : '–'}s / p95 ${lat.llm_p95_ms != null ? (lat.llm_p95_ms / 1000).toFixed(1) : '–'}s · SQL exec p50 ${lat.exec_p50_ms != null ? (lat.exec_p50_ms / 1000).toFixed(1) : '–'}s / p95 ${lat.exec_p95_ms != null ? (lat.exec_p95_ms / 1000).toFixed(1) : '–'}s`);
+      if (lat.gate_note) lines.push(`_${lat.gate_note}_`);
     }
     const findings = this.records.filter((r) => r.findings.length);
     if (findings.length) {

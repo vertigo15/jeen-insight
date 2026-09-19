@@ -229,7 +229,7 @@ test.describe('Conversation & history features', { tag: ['@history', '@feature']
     await page.keyboard.press('Escape');
   });
 
-  test('table browser searches tables and reveals their columns', async () => {
+  test('table browser searches tables and reveals their columns', async ({}, testInfo) => {
     await page.locator('[data-rail="tables"]').click();
     const panel = page.locator('[data-panel="tables"]');
     await expect(panel).toBeVisible();
@@ -241,9 +241,28 @@ test.describe('Conversation & history features', { tag: ['@history', '@feature']
     await search.pressSequentially('customer');
     await expect.poll(() => panel.locator('.table-item-header').count(), { timeout: 10_000 }).toBeLessThan(total);
     await expect(panel.locator('.table-item-header').first()).toContainText(/customer/i);
-    await panel.locator('.table-item-header').first().click();
-    await expect(panel.locator('.table-item.is-active')).toHaveCount(1);
-    expect((await panel.locator('.table-item.is-active').innerText()).split('\n').length).toBeGreaterThan(3);
+    // The accordion toggles the column list of the clicked table (expansion is remembered,
+    // so a first click may collapse a table left open earlier — click until it is open).
+    // Click the name, not the header centre: the hover actions (Explore / Show schema / Copy) sit there and stop propagation.
+    const item = panel.locator('.table-item').first();
+    const columnsList = item.locator('.table-columns-list');
+    // The inline handler must carry the whole table name. Under the MCP catalog names arrive as
+    // "public"."dimcustomer": the double quotes end the onclick attribute early, the item gets an
+    // empty data-table and a JS syntax error, and the accordion never opens.
+    const onclick = (await item.locator('.table-item-header').getAttribute('onclick')) || '';
+    const dataTable = (await item.getAttribute('data-table')) || '';
+    if (!/^toggleTableExpand\('.+'\)$/.test(onclick) || !dataTable) {
+      L.annotate(testInfo, 'finding', `table browser renders a broken item: data-table="${dataTable}" onclick="${onclick}" — table names with double quotes (MCP catalog quoted identifiers) are not escaped for the inline handler (script.js displayFilteredTables)`);
+    }
+    expect(onclick, `table header handler is well-formed (got onclick="${onclick}", data-table="${dataTable}")`).toMatch(/^toggleTableExpand\('.+'\)$/);
+    if (await columnsList.evaluate((el) => el.classList.contains('open'))) {
+      await item.locator('.table-name').click();
+      await expect(columnsList).not.toHaveClass(/open/);
+    }
+    await item.locator('.table-name').click();
+    await expect(columnsList).toHaveClass(/open/);
+    await expect.poll(async () => (await columnsList.innerText()).split('\n').filter(Boolean).length, { timeout: 30_000 }).toBeGreaterThan(3);
+    await expect(columnsList).not.toContainText(/Loading…|Could not load/);
     await search.fill('');
     await search.press('Backspace');
     await expect.poll(() => panel.locator('.table-item-header').count(), { timeout: 10_000 }).toBe(total);

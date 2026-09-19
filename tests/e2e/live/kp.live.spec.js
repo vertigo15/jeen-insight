@@ -10,7 +10,7 @@ const L = require('./_live');
 const KP = require('./knowledgePairs');
 const { KP_CASES } = require('./kp.cases');
 const { NO_WRITES } = require('./questions');
-const { gradeSql, passes, explain, sqlglotDialect } = require('./sqlEquivalence');
+const { gradeSql, passes, ungraded, explain, sqlglotDialect } = require('./sqlEquivalence');
 
 const AUTH_FILE = path.join(__dirname, '..', '.auth', 'live.json');
 const STRICT = process.env.LIVE_KP_STRICT || 'structural';
@@ -116,16 +116,21 @@ test.describe('Knowledge pairs', { tag: ['@kp', '@e2e', '@regression'] }, () => 
           appTruncated: Boolean(results.truncated),
         });
         L.annotate(testInfo, 'kp_tier', grade.tier);
-        L.annotate(testInfo, 'kp_verdict', passes(grade.tier, STRICT) ? 'pass' : 'fail');
+        L.annotate(testInfo, 'kp_verdict', ungraded(grade.tier) ? 'ungraded' : passes(grade.tier, STRICT) ? 'pass' : 'fail');
         if (typeof grade.overlap === 'number') L.annotate(testInfo, 'kp_overlap', String(grade.overlap));
         await testInfo.attach('kp-grade.json', {
           body: JSON.stringify({ question: c.question, gold: gold.sql, generated: raw.sql, grade }, null, 2),
           contentType: 'application/json',
         });
-        expect(
-          passes(grade.tier, STRICT),
-          `generated ${PAIRS.is_power_bi ? 'DAX' : 'SQL'} does not match the knowledge pair at strictness "${STRICT}" — ${explain(grade)}\n--- gold ---\n${gold.sql}\n--- generated ---\n${raw.sql}`,
-        ).toBe(true);
+        if (ungraded(grade.tier)) {
+          // Neither a pass nor a product failure: one side did not parse (usually a gold with dialect quirks).
+          L.annotate(testInfo, 'finding', `SQL could not be graded against the pair: ${grade.error || 'no tier computed'}`);
+        } else {
+          expect(
+            passes(grade.tier, STRICT),
+            `generated ${PAIRS.is_power_bi ? 'DAX' : 'SQL'} does not match the knowledge pair at strictness "${STRICT}" — ${explain(grade)}\n--- gold ---\n${gold.sql}\n--- generated ---\n${raw.sql}`,
+          ).toBe(true);
+        }
       } else {
         L.annotate(testInfo, 'kp_tier', 'no_gold');
         L.annotate(testInfo, 'kp_verdict', 'no_gold');

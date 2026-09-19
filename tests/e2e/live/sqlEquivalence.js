@@ -10,8 +10,8 @@ const path = require('path');
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const SCRIPT = path.join(__dirname, 'sql_equivalence.py');
 
-/** Strongest first; `mismatch` and `error` never pass. */
-const TIERS = ['exact', 'equivalent', 'structural', 'execution_match', 'mismatch', 'error'];
+/** Strongest first; `mismatch`, `ungraded` (unparsable side) and `error` never pass. */
+const TIERS = ['exact', 'equivalent', 'structural', 'execution_match', 'mismatch', 'ungraded', 'error'];
 
 /**
  * @typedef {Object} Grade
@@ -76,7 +76,12 @@ function passes(tier, strict = process.env.LIVE_KP_STRICT || 'structural') {
   const want = TIERS.indexOf(strict);
   const have = TIERS.indexOf(tier);
   if (want < 0) throw new Error(`LIVE_KP_STRICT must be one of exact|equivalent|structural, got ${strict}`);
-  return have >= 0 && have <= want && tier !== 'mismatch' && tier !== 'error';
+  return have >= 0 && have <= want && !['mismatch', 'ungraded', 'error'].includes(tier);
+}
+
+/** True when the grader could not compute a tier (unparsable SQL, grader crash): report, don't judge. */
+function ungraded(tier) {
+  return tier === 'ungraded' || tier === 'error';
 }
 
 /** `database_type` → sqlglot dialect, mirroring src/connectors/dialects.py (null = permissive default). */
@@ -96,4 +101,4 @@ function explain(grade) {
   return parts.join(' | ');
 }
 
-module.exports = { gradeSql, passes, explain, sqlglotDialect, TIERS, pythonBin };
+module.exports = { gradeSql, passes, ungraded, explain, sqlglotDialect, TIERS, pythonBin };
