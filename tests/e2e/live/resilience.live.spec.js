@@ -9,7 +9,7 @@ const L = require('./_live');
 const AUTH_FILE = path.join(__dirname, '..', '.auth', 'live.json');
 const FORECAST_Q = 'Forecast total SalesAmount by month for the next 6 months';
 
-test.describe('Resilience', { tag: '@resilience' }, () => {
+test.describe('Resilience', { tag: ['@resilience', '@e2e'] }, () => {
   /** @type {import('@playwright/test').Page} */
   let page;
   let connection = '';
@@ -36,7 +36,7 @@ test.describe('Resilience', { tag: '@resilience' }, () => {
     await page?.context().close();
   });
 
-  test('a greeting takes the greeting path and loads no data', { tag: '@sql' }, async () => {
+  test('a greeting takes the greeting path and loads no data', { tag: ['@sql', '@smoke'] }, async () => {
     test.setTimeout(240_000);
     await L.newConversation(page);
     const turn = await L.ask(page, 'hello', {}, L.WAIT.sql);

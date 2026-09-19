@@ -91,7 +91,12 @@ const SQL_CASES = [
  * @property {boolean} [rerun]              exercise Edit setup → Re-run afterwards
  * @property {'recommended'|'override'} [exit]  which guard exit to take
  * @property {Array<{chip: string, value: string}>} [edits]  fields to set on the confirm card before Run
+ * @property {import('./mlEnvelope').EnvelopeChecks} [envelope]  data-level bounds on the result envelope (raw.analysis)
  */
+
+// Sandbox caps (docker-compose.yml: ANALYSIS_MAX_SERIES_ROWS / ANALYSIS_MAX_ENTITY_ROWS).
+const SERIES_CAP = 1500;
+const ENTITY_CAP = 50_000;
 
 // Status-strip fragments as stripSegments() renders them: a number every time,
 // so a regression that drops the metric cannot pass on the word alone.
@@ -117,30 +122,49 @@ const ML_CASES = [
     q: 'Forecast total SalesAmount by month for the next 6 months',
     sections: ['Data', 'Model', 'Output'], tierMeta: /Aggregates only/,
     metaMust: [/forecast/, META.horizon(6), META.metric, META.rowsSent], modelTabMust: [/Candidates/i, /Parameters/i], chart: true, rerun: true,
+    envelope: {
+      params: { horizon: 6, 'series.grain': 'month' }, metric: /WAPE|MASE/i, tier: 'A', maxRowsSent: SERIES_CAP,
+      guardsPassed: true, lowConfidence: false, facts: { horizon: 6 }, chartTypes: ['band'],
+    },
   },
   {
     id: 'anomaly', skill: 'anomaly_detection', card: 'confirm', tier: 'A',
     q: 'Flag any abnormal spikes or drops in weekly SalesAmount during 2007',
     sections: ['Data', 'Model'], tierMeta: /Aggregates only/,
     metaMust: [/anomaly detection/, META.flagged, META.points], modelTabMust: [/Method/i, /Guards/i], chart: true,
+    envelope: {
+      params: { 'series.grain': 'week' }, tier: 'A', maxRowsSent: SERIES_CAP, guardsPassed: true, lowConfidence: false,
+      // Up to a year of weeks (the planner's window may take fewer); a handful flagged at 95 % sensitivity, never most of them.
+      facts: { n_points: [12, 60], n_flagged: [0, 15], 'sensitivity': [0.8, 0.99] }, chartTypes: ['band'],
+    },
   },
   {
     id: 'changepoint', skill: 'changepoint', card: 'confirm', tier: 'A',
     q: 'When did the trend in monthly SalesAmount shift?',
     sections: ['Data', 'Model', 'Output'],
     metaMust: [/changepoint/, META.shifts], modelTabMust: [/Method/i], chart: true,
+    envelope: {
+      params: { 'series.grain': 'month' }, tier: 'A', maxRowsSent: SERIES_CAP, guardsPassed: true,
+      // The default look-back is 24 months; a partial last month can leave 23 points.
+      facts: { n_points: [12, 60], n_changepoints: [0, 20] },
+    },
   },
   {
     id: 'seasonality', skill: 'seasonality', card: 'confirm', tier: 'A',
     q: 'Is there a seasonal pattern in monthly SalesAmount?',
     sections: ['Data', 'Model'],
     metaMust: [/seasonality/, META.strength], modelTabMust: [/Season/i], chart: true,
+    envelope: {
+      params: { 'series.grain': 'month' }, tier: 'A', maxRowsSent: SERIES_CAP, guardsPassed: true,
+      facts: { strength: [0, 1] },
+    },
   },
   {
     id: 'correlation', skill: 'correlation', card: 'confirm', tier: 'A',
     q: 'Is OrderQuantity correlated with Profit by month?',
     sections: ['Data', 'Model'],
     metaMust: [/correlation/, META.r], modelTabMust: [/Method/i], chart: true,
+    envelope: { tier: 'A', maxRowsSent: SERIES_CAP, guardsPassed: true, facts: { n_points: [12, 60] } },
   },
   {
     // No literal year range ("2008 compared to 2007" reads to the filter
@@ -154,6 +178,7 @@ const ML_CASES = [
     q: 'What drove the change in SalesAmount in the most recent quarter compared with the quarter before, by sales territory and promotion?',
     sections: ['Data', 'Comparison'], noSections: ['Model'],
     metaMust: [/contribution/, META.delta], modelTabMust: [/Parameters/i], chart: true,
+    envelope: { tier: 'A', maxRowsSent: SERIES_CAP, guardsPassed: true },
   },
   {
     // A small entity table with well-filled integer/float features (606 rows —
@@ -165,6 +190,11 @@ const ML_CASES = [
     q: 'Segment products by weight, safety stock level and reorder point',
     sections: ['Data', 'Model'], tierMeta: /Row-level, capped/,
     metaMust: [/clustering/, META.segments, /row-level/], modelTabMust: [/silhouette|Method/i], chart: true,
+    envelope: {
+      tier: 'B', maxRowsSent: ENTITY_CAP, guardsPassed: true,
+      // DimProduct has 606 rows; k is chosen by silhouette, which is bounded in [-1, 1].
+      facts: { n_entities: [100, 1000], k: [2, 10], silhouette: [-1, 1] }, chartTypes: ['scatter', 'bar', 'horizontal_bar'],
+    },
   },
   {
     // Postgres `money` measures (DimReseller.AnnualSales / AnnualRevenue, 701
@@ -174,12 +204,18 @@ const ML_CASES = [
     q: 'Segment resellers by annual sales, annual revenue and number of employees',
     sections: ['Data', 'Model'], tierMeta: /Row-level, capped/,
     metaMust: [/clustering/, META.segments, /row-level/], modelTabMust: [/silhouette|Method/i], chart: true,
+    envelope: {
+      tier: 'B', maxRowsSent: ENTITY_CAP, guardsPassed: true,
+      // DimReseller has 701 rows; the money columns must reach the engine as numbers.
+      facts: { n_entities: [500, 1000], k: [2, 10], silhouette: [-1, 1] }, chartTypes: ['scatter', 'bar', 'horizontal_bar'],
+    },
   },
   {
     id: 'driver', skill: 'driver_analysis', card: 'confirm', tier: 'B',
     q: 'What drives the days to manufacture of a product? Use weight, safety stock level and reorder point as candidates',
     sections: ['Data', 'Model'], tierMeta: /Row-level, capped/,
     metaMust: [/driver analysis/, META.fit, META.points], modelTabMust: [/Method/i], chart: false,
+    envelope: { tier: 'B', maxRowsSent: ENTITY_CAP, guardsPassed: true, facts: { n_rows: [50, 1000], r2_holdout: [-1, 1] } },
   },
   {
     // 100 is inside the contract's horizon bound (1–104) but well past what
@@ -188,6 +224,8 @@ const ML_CASES = [
     id: 'guard_horizon', skill: 'forecast', card: 'guard', exit: 'recommended',
     q: 'Forecast weekly SalesAmount for the next 100 weeks',
     metaMust: [/forecast/, META.metric], modelTabMust: [/Guards/i], chart: true,
+    // The recommended exit re-plans within the guard: a shorter horizon, no override, full confidence.
+    envelope: { params: { horizon: [1, 99], 'series.grain': 'week' }, tier: 'A', guardsPassed: true, lowConfidence: false, chartTypes: ['band'] },
   },
   {
     // The same refusal, overridden: the run happens and is flagged low confidence
@@ -195,6 +233,7 @@ const ML_CASES = [
     id: 'guard_override', skill: 'forecast', card: 'guard', exit: 'override',
     q: 'Forecast weekly SalesAmount for the next 100 weeks',
     metaMust: [/forecast/, /low confidence/], modelTabMust: [/Low confidence: a guard was overridden/], chart: true,
+    envelope: { params: { horizon: 100 }, tier: 'A', lowConfidence: true, chartTypes: ['band'] },
   },
 ];
 
@@ -204,4 +243,4 @@ const GRACEFUL_CASES = [
   { id: 'experiment', skill: 'experiment_test', q: 'Did variant B beat control in our A/B test on order quantity?' },
 ];
 
-module.exports = { NO_WRITES, META, SQL_CASES, ML_CASES, GRACEFUL_CASES };
+module.exports = { NO_WRITES, META, SERIES_CAP, ENTITY_CAP, SQL_CASES, ML_CASES, GRACEFUL_CASES };
