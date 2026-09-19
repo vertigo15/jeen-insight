@@ -108,6 +108,15 @@
         ));
     }
 
+    /**
+     * Settings > General "Auto-insights" (`autoInsights`) is the user-facing
+     * switch; the legacy `aiAnalytics` key from the old panel still counts as
+     * an off switch so an existing preference is not silently ignored.
+     */
+    function insightsEnabled(prefs) {
+        return (prefs.autoInsights || 'on') === 'on' && (prefs.aiAnalytics || 'on') === 'on';
+    }
+
     function selectionForTurn(selectedResultId, turn) {
         return {
             selectedTurnId: turn?.id || null,
@@ -115,10 +124,23 @@
         };
     }
 
+    /**
+     * The number in a cell, or NaN. Postgres `money` (and formatted numbers)
+     * reach the browser as strings like "$9,389,789.94" — they are still
+     * numbers to the grid: sortable, formattable, profilable.
+     */
+    function numericValue(value) {
+        if (typeof value === 'number') return value;
+        if (typeof value !== 'string') return NaN;
+        const text = value.trim();
+        if (!/^[-+]?[$€£¥₪]?\s*[-+]?\d[\d,]*(\.\d+)?%?$/.test(text)) return NaN;
+        return Number(text.replace(/[^0-9.\-]/g, ''));
+    }
+
     function inferColumnType(values) {
         const present = values.filter((v) => v !== null && v !== undefined && v !== '');
         if (!present.length) return 'empty';
-        if (present.every((v) => typeof v === 'number' || (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))))) return 'number';
+        if (present.every((v) => typeof v === 'number' || (typeof v === 'string' && Number.isFinite(numericValue(v))))) return 'number';
         if (present.every((v) => typeof v === 'boolean')) return 'boolean';
         if (present.every((v) => !Number.isNaN(Date.parse(v)) && /[-/:T]/.test(String(v)))) return 'datetime';
         return 'text';
@@ -134,7 +156,7 @@
             let range = 'No non-null values';
             if (present.length) {
                 if (type === 'number') {
-                    const nums = present.map(Number);
+                    const nums = present.map(numericValue);
                     range = `${formatCompact(Math.min(...nums))} – ${formatCompact(Math.max(...nums))}`;
                 } else {
                     const strings = present.map(String).sort((a, b) => a.localeCompare(b));
@@ -510,9 +532,9 @@
                 this.setConversation(true);
                 if (this.input) this.input.focus();
             } else if (action === 'tables') {
+                // setTab('tables') already refreshes the table list once.
                 this.setTab('tables');
                 this.setConversation(true);
-                if (typeof window.loadTables === 'function') window.loadTables();
             } else if (action === 'pinned') {
                 this.setTab('pinned');
                 this.setConversation(true);
@@ -648,9 +670,10 @@
                 question: q,
                 connection,
                 session_id: typeof window._jeenGetSessionId === 'function' ? window._jeenGetSessionId() : null,
-                eval_analytics: (prefs.aiAnalytics || 'on') === 'on',
+                eval_analytics: insightsEnabled(prefs),
             };
-            if (prefs.resultLimit) payload.limit = Number(prefs.resultLimit);
+            // Settings > General "Row limit" (preferences.js key `rowLimit`).
+            if (prefs.rowLimit) payload.limit = Number(prefs.rowLimit);
             if (prefs.temperature !== undefined && prefs.temperature !== null) payload.temperature = Number(prefs.temperature);
             const llmTimeout = window.JeenPreferences && window.JeenPreferences.getLlmTimeoutSeconds();
             if (llmTimeout !== null && llmTimeout !== undefined) payload.llm_timeout = llmTimeout;
@@ -1734,7 +1757,7 @@
                 override_guards: Boolean(override),
                 remember: Boolean(remember),
                 idempotency_key: `${proposal.proposal_id}:${Date.now()}`,
-                eval_analytics: (prefs.aiAnalytics || 'on') === 'on',
+                eval_analytics: insightsEnabled(prefs),
             };
             const data = await this._postJson('/api/analysis/run', body);
             this._appendServerTurn(data, { question: turn.question, parent: turn });
@@ -1859,7 +1882,7 @@
                 connection,
                 parent_query_id: turn.result.query_id,
                 session_id: sessionId,
-                eval_analytics: (prefs.aiAnalytics || 'on') === 'on',
+                eval_analytics: insightsEnabled(prefs),
                 idempotency_key: `${turn.result.query_id}:${Date.now()}`,
             };
             if (patch && Object.keys(patch).length) body.params_patch = patch;
@@ -2158,8 +2181,8 @@
                     const b = rowValue(right, column, index);
                     if (a == null) return 1;
                     if (b == null) return -1;
-                    const an = Number(a);
-                    const bn = Number(b);
+                    const an = numericValue(a);
+                    const bn = numericValue(b);
                     if (Number.isFinite(an) && Number.isFinite(bn)) return (an - bn) * direction;
                     return String(a).localeCompare(String(b), undefined, { sensitivity: 'base' }) * direction;
                 });
@@ -2181,7 +2204,7 @@
             const derivedValues = new Map();
             (presentation.derived || []).forEach((derived) => {
                 const source = columns[derived.sourceIndex];
-                const values = filtered.map((row) => Number(rowValue(row, source, derived.sourceIndex)));
+                const values = filtered.map((row) => numericValue(rowValue(row, source, derived.sourceIndex)));
                 const sum = values.reduce((total, value) => total + (Number.isFinite(value) ? value : 0), 0);
                 let running = 0;
                 derivedValues.set(derived.sourceIndex, values.map((value, rowIndex) => {

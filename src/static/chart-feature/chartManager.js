@@ -971,6 +971,17 @@ export class ChartManager {
             this.chartContainer.render(chartConfig);
             this.currentEchartsOptions = displayConfig;
             this.state.currentConfig = chartConfig;
+            // Keep the saved spec honest about what is on screen: use the spec the
+            // edit returned, else at least its chart type — restored conversations
+            // and the type selector read the spec, not the ECharts option.
+            if (edit?.chart_spec && typeof edit.chart_spec === 'object') {
+                this.currentChartSpec = edit.chart_spec;
+            } else if (chartConfig.type && this.currentChartSpec && this.currentChartSpec.chart_type !== chartConfig.type) {
+                this.currentChartSpec = { ...this.currentChartSpec, chart_type: chartConfig.type };
+            }
+            if (this.currentChartSpec) {
+                try { this.chartOptionsPanel?.syncFromSpec(this.currentChartSpec); } catch (_) { /* panel may be unmounted */ }
+            }
         } catch (error) {
             console.error('[ChartManager] Failed to apply edited config:', error);
             // Roll back to the last known-good config so the user keeps a
@@ -1021,6 +1032,14 @@ export class ChartManager {
         }
         const displayConfig = this._withWorkspaceTheme(this._withQuickToggles(baseline));
         this._renderDisplayConfig(displayConfig, 'Failed to reset chart');
+        // Reset means the original chart, spec included (the map branch above
+        // already does this).
+        this.currentChartSpec = this.originalChartSpec
+            ? JSON.parse(JSON.stringify(this.originalChartSpec))
+            : null;
+        if (this.currentChartSpec) {
+            try { this.chartOptionsPanel?.syncFromSpec(this.currentChartSpec); } catch (_) { /* panel may be unmounted */ }
+        }
     }
 
 
@@ -1034,7 +1053,18 @@ export class ChartManager {
      */
     _mountChartActionsToolbar() {
         const host = document.getElementById('chart-actions-toolbar');
-        if (!host || host.dataset.mounted === '1') return;
+        if (!host) return;
+        // The toolbar is built once, but a new ChartManager is created for every
+        // result. The buttons therefore act on whichever manager owns the chart
+        // now (`host._chartManager`), not on the instance that built them —
+        // otherwise Save PNG reports "No chart to export yet" for every chart
+        // after the first.
+        host._chartManager = this;
+        if (host.dataset.mounted === '1') {
+            this._chartSavePngBtn = host.querySelector('#chart-save-png-btn');
+            this._chartCopyPngBtn = host.querySelector('#chart-copy-png-btn');
+            return;
+        }
 
         host.classList.add('chart-actions-toolbar');
         host.innerHTML = '';
@@ -1049,7 +1079,7 @@ export class ChartManager {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             <span>Save PNG</span>
         `;
-        saveBtn.addEventListener('click', () => this._handleSavePng());
+        saveBtn.addEventListener('click', () => (host._chartManager || this)._handleSavePng());
 
         const copyBtn = document.createElement('button');
         copyBtn.type = 'button';
@@ -1061,7 +1091,7 @@ export class ChartManager {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             <span>Copy</span>
         `;
-        copyBtn.addEventListener('click', () => this._handleCopyPng(copyBtn));
+        copyBtn.addEventListener('click', () => (host._chartManager || this)._handleCopyPng(copyBtn));
 
         host.appendChild(saveBtn);
         host.appendChild(copyBtn);

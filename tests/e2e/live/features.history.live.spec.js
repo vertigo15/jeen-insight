@@ -75,9 +75,13 @@ test.describe('Conversation & history features', { tag: ['@history', '@feature']
     await expect(turns().nth(1).locator('.v3-question')).toHaveText(Q2);
     await expect(page.locator('#v3-result-title')).toHaveText(Q2);
     await expect.poll(async () => (await L.rawResult(page))?.session_id, { timeout: 30_000 }).toBe(sessionId);
-    const restored = await L.rawResult(page);
-    expect(Number(restored.results?.row_count ?? restored.results?.rows?.length)).toBe(Number(secondRaw.results.row_count ?? secondRaw.results.rows.length));
-    expect(await L.gridRows(page)).toBeGreaterThan(0);
+    // Restored turns fetch their rows after the thread renders; wait for the snapshot.
+    const expectedRows = Number(secondRaw.results.row_count ?? secondRaw.results.rows.length);
+    await expect.poll(async () => {
+      const restored = await L.rawResult(page);
+      return Number(restored?.results?.row_count ?? restored?.results?.rows?.length ?? NaN);
+    }, { timeout: 60_000 }).toBe(expectedRows);
+    await expect.poll(() => L.gridRows(page), { timeout: 30_000 }).toBe(Math.min(expectedRows, 500));
   });
 
   test('selecting an older turn restores its answer pane without a new query', async () => {
@@ -230,17 +234,26 @@ test.describe('Conversation & history features', { tag: ['@history', '@feature']
   });
 
   test('table browser searches tables and reveals their columns', async ({}, testInfo) => {
-    await page.locator('[data-rail="tables"]').click();
+    // Opening the rail refetches the table list; wait for that paint so it cannot
+    // land after the search and repaint the full list.
+    const [tablesResponse] = await Promise.all([
+      page.waitForResponse((r) => r.url().includes('/api/tables-rich'), { timeout: 60_000 }),
+      page.locator('[data-rail="tables"]').click(),
+    ]);
+    expect(tablesResponse.ok()).toBe(true);
     const panel = page.locator('[data-panel="tables"]');
     await expect(panel).toBeVisible();
     await expect(panel.locator('.table-item-header').first()).toBeVisible({ timeout: 60_000 });
     const total = await panel.locator('.table-item-header').count();
+    expect(total).toBeGreaterThan(1);
     // The search box filters on keyup, so type it (fill() sets the value without key events).
     const search = page.locator('#table-search');
     await search.click();
     await search.pressSequentially('customer');
-    await expect.poll(() => panel.locator('.table-item-header').count(), { timeout: 10_000 }).toBeLessThan(total);
-    await expect(panel.locator('.table-item-header').first()).toContainText(/customer/i);
+    await expect.poll(async () => {
+      const items = await panel.locator('.table-item').allInnerTexts();
+      return items.length > 0 && items.length < total && items.every((t) => /customer/i.test(t));
+    }, { timeout: 10_000 }).toBe(true);
     // The accordion toggles the column list of the clicked table (expansion is remembered,
     // so a first click may collapse a table left open earlier — click until it is open).
     // Click the name, not the header centre: the hover actions (Explore / Show schema / Copy) sit there and stop propagation.

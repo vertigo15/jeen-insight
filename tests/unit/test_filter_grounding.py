@@ -164,6 +164,26 @@ def test_normalizes_numeric_and_iso_date_ranges():
     assert dates["value"] == ["2026-01-01", "2026-01-31"]
 
 
+def test_a_list_of_values_on_a_typed_column_becomes_in_or_one_range():
+    # "Only for 2007 and 2008" on an integer year column: IN, not a clarification.
+    number, error = normalize_typed_filter({"op": "equals", "value": [2007, 2008]}, "integer")
+    assert error is None
+    assert number["op"] == "in" and number["value"] == ["2007", "2008"] and number["resolved"] is True
+    single, _ = normalize_typed_filter({"op": "in", "value": ["1,000.5", "1000.50"]}, "decimal")
+    assert single["op"] == "equals" and single["value"] == "1000.5"
+    _, error = normalize_typed_filter({"op": "in", "value": [2007, "twenty"]}, "integer")
+    assert "couldn't read 'twenty'" in error
+
+    # Whole years on a date column: contiguous periods collapse to one range,
+    # single days stay a set, disjoint periods are refused with a reason.
+    years, error = normalize_typed_filter({"op": "equals", "value": ["2007", "2008"]}, "date")
+    assert error is None and years["op"] == "between" and years["value"] == ["2007-01-01", "2008-12-31"]
+    days, error = normalize_typed_filter({"op": "in", "value": ["2008-07-15", "2008-07-01"]}, "date")
+    assert error is None and days["op"] == "in" and days["value"] == ["2008-07-01", "2008-07-15"]
+    _, error = normalize_typed_filter({"op": "equals", "value": ["2006", "2008"]}, "date")
+    assert error and "single period or a range" in error
+
+
 def test_rejects_ambiguous_date_format():
     _, error = normalize_typed_filter(
         {"op": "equals", "value": "03/04/2026"}, "date"
