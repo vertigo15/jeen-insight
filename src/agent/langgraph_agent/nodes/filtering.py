@@ -408,6 +408,44 @@ def normalize_typed_filter(
             ]
             out["resolved"] = True
             return out, None
+    if op in ("equals", "in") and isinstance(raw, (list, tuple)):
+        # "Only for 2007 and 2008": several values on a typed column. Each one
+        # normalizes on its own; the predicate becomes IN (one value: equals).
+        # Whole periods on a date column collapse to a single BETWEEN when they
+        # are contiguous, so "2007 and 2008" reads as 2007-01-01 .. 2008-12-31.
+        values = [v for v in raw if v is not None and str(v).strip() != ""]
+        if not values:
+            return out, f"A {kind} filter needs at least one value."
+        if kind == "date":
+            periods = [_date_period(v, today=today) for v in values]
+            if any(p is None for p in periods):
+                bad = next(v for v, p in zip(values, periods) if p is None)
+                return out, f"I couldn't read '{bad}' as a {kind} for this filter."
+            periods = sorted(set(periods))
+            contiguous = all(periods[i][0] == periods[i - 1][1] + timedelta(days=1) for i in range(1, len(periods)))
+            if len(periods) == 1 or contiguous:
+                first, last = periods[0][0], periods[-1][1]
+                if first == last:
+                    out["op"], out["value"] = "equals", first.isoformat()
+                else:
+                    out["op"], out["value"] = "between", [first.isoformat(), last.isoformat()]
+                out["resolved"] = True
+                return out, None
+            if all(first == last for first, last in periods):
+                out["op"], out["value"] = "in", [first.isoformat() for first, _ in periods]
+                out["resolved"] = True
+                return out, None
+            return out, f"I couldn't turn those {kind}s into one filter — pick a single period or a range."
+        normalized = [_normalise_number(v) for v in values]
+        if any(n is None for n in normalized):
+            bad = next(v for v, n in zip(values, normalized) if n is None)
+            return out, f"I couldn't read '{bad}' as a {kind} for this filter."
+        deduped = list(dict.fromkeys(normalized))
+        out["op"] = "equals" if len(deduped) == 1 else "in"
+        out["value"] = deduped[0] if len(deduped) == 1 else deduped
+        out["resolved"] = True
+        return out, None
+
     if op == "between":
         values = raw if isinstance(raw, (list, tuple)) else []
         if len(values) != 2:

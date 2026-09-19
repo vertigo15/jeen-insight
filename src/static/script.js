@@ -737,7 +737,7 @@ function renderTable(results, rows) {
         if (d.type === 'pct_total' && _colSums[d.sourceIndex] === undefined) {
             let sum = 0;
             rows.forEach(row => {
-                const v = Number(Array.isArray(row) ? row[d.sourceIndex] : row[results.columns[d.sourceIndex]]);
+                const v = parseCellNumber(Array.isArray(row) ? row[d.sourceIndex] : row[results.columns[d.sourceIndex]]);
                 if (Number.isFinite(v)) sum += v;
             });
             _colSums[d.sourceIndex] = sum || 1;
@@ -778,7 +778,7 @@ function renderTable(results, rows) {
             // Derived cell after source column.
             const derived = _derivedCols.find(d => d.sourceIndex === idx);
             if (derived) {
-                const numVal = Number(Array.isArray(row) ? row[idx] : row[column]);
+                const numVal = parseCellNumber(Array.isArray(row) ? row[idx] : row[column]);
                 let derivedText, derivedCls = 'derived-col';
 
                 if (derived.type === 'pct_total') {
@@ -922,8 +922,7 @@ function profileColumns(results, rows) {
             if (cell === null || cell === undefined || cell === '') continue;
             nonNullCount++;
             distinct.add(String(cell));
-            const num = Number(cell);
-            if (Number.isFinite(num) && /^[-+]?\d/.test(String(cell).trim())) numCount++;
+            if (Number.isFinite(parseCellNumber(cell))) numCount++;
         }
 
         const isNumeric = nonNullCount > 0 && numCount / nonNullCount >= 0.7;
@@ -1272,7 +1271,8 @@ async function loadTables() {
             allTablesRich = data.tables;                          // [{name, description, col_count}]
             allTables     = data.tables.map(t => t.name);        // string[] kept for autocomplete
             searchInput.style.display = 'block';
-            displayFilteredTables(allTablesRich);
+            // A refresh that lands while the user is searching must keep the filter.
+            filterTables();
             const countBadge = document.getElementById('table-count-badge');
             if (countBadge) countBadge.textContent = allTables.length;
         } else {
@@ -1338,8 +1338,12 @@ function displayFilteredTables(tables) {
         const description = tableObj && tableObj.description ? tableObj.description : null;
         const catalogColCount = (tableObj && tableObj.col_count) ? tableObj.col_count : 0;
 
-        const safe   = escapeHtml(name);
-        const safeJS = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        // Attribute values need quotes escaped too (escapeHtml only covers text
+        // nodes): a quoted identifier such as "public"."dimcustomer" would end
+        // data-table / onclick early. The onclick name additionally travels
+        // inside a JS string, so it is JS-escaped first, then attribute-escaped.
+        const safe   = escapeAttr(name);
+        const safeJS = escapeAttr(name.replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
         const isActive   = activeTable === name ? ' is-active' : '';
         const isExpanded = _tableExpandedSet.has(name);
 
@@ -1458,13 +1462,19 @@ function toggleTableExpand(table) {
         colList.innerHTML = '<div class="table-cols-loading">Loading…</div>';
         colList.classList.add('open');
         fetchKnowledgeColumns(table).then(cols => {
+            // The list may have been repainted while the columns loaded (a
+            // late tables refresh, a search keystroke): write into the node
+            // that is on screen now, not the one captured at click time.
+            const liveItem = [...document.querySelectorAll('.table-item')].find(item => item.dataset.table === table);
+            const target = (liveItem && liveItem.querySelector('.table-columns-list')) || colList;
             if (!cols) {
-                colList.innerHTML = '<div class="table-cols-loading">Could not load columns</div>';
+                target.innerHTML = '<div class="table-cols-loading">Could not load columns</div>';
                 return;
             }
             // Only update if still expanded
             if (!_tableExpandedSet.has(table)) return;
-            colList.innerHTML = renderTableColumns(cols);
+            target.innerHTML = renderTableColumns(cols);
+            target.classList.add('open');
             // Add/update col count badge
             const freshItems = document.querySelectorAll('.table-item');
             for (const item of freshItems) {
@@ -1646,6 +1656,17 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// For HTML attribute values: escapeHtml() goes through innerHTML, which leaves
+// quotes alone, so it is only safe for text content.
+function escapeAttr(text) {
+    return String(text ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
 }
 
 // Display structured prompt with collapsible sections
@@ -4355,9 +4376,21 @@ function showToast(message, type) {
 // COLUMN CONTEXT MENU
 // ======================================================
 
+/**
+ * The number in a cell, or NaN. Money and formatted numbers arrive as strings
+ * ("$9,389,789.94", "12.5%"); the column tools treat them as numbers.
+ */
+function parseCellNumber(value) {
+    if (typeof value === 'number') return value;
+    if (typeof value !== 'string') return NaN;
+    const text = value.trim();
+    if (!/^[-+]?[$€£¥₪]?\s*[-+]?\d[\d,]*(\.\d+)?%?$/.test(text)) return NaN;
+    return Number(text.replace(/[^0-9.\-]/g, ''));
+}
+
 // Apply a named format to a raw cell value. Returns formatted string or null.
 function applyColFormatValue(value, type) {
-    const n = Number(value);
+    const n = parseCellNumber(value);
     if (!Number.isFinite(n)) return null;
     switch (type) {
         case 'currency': return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -4397,7 +4430,7 @@ function showColMenu(event, colIndex) {
     if (isNumeric && _colSums[colIndex] === undefined) {
         let sum = 0;
         rows.forEach(row => {
-            const v = Number(Array.isArray(row) ? row[colIndex] : row[colName]);
+            const v = parseCellNumber(Array.isArray(row) ? row[colIndex] : row[colName]);
             if (Number.isFinite(v)) sum += v;
         });
         _colSums[colIndex] = sum || 1;

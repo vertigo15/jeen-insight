@@ -35,8 +35,8 @@ test.describe('Result & chart features', { tag: ['@features', '@feature'] }, () 
   /** Columns whose cells parse as numbers once $ and , are stripped (what a user calls numeric). */
   /** @type {number[]} */
   let numericIdx = [];
-  /** Columns the table tools treat as numeric: `Number(cell)` must parse (script.js profileColumns).
-   *  Postgres `money` arrives as "$1,234.56" strings and is NOT in this set. */
+  /** Columns the table tools treat as numeric (script.js profileColumns / parseCellNumber):
+   *  70 % of the cells parse, currency strings such as "$1,234.56" included. */
   /** @type {number[]} */
   let appNumericIdx = [];
   /** @type {number[]} */
@@ -63,8 +63,8 @@ test.describe('Result & chart features', { tag: ['@features', '@feature'] }, () 
       const values = rows.map((row) => cellOf(row, column, index)).filter((v) => v !== null && v !== undefined && v !== '');
       const numeric = values.length > 0 && values.every((v) => Number.isFinite(asNumber(v)));
       (numeric ? numericIdx : textIdx).push(index);
-      const strict = values.filter((v) => Number.isFinite(Number(v)) && /^[-+]?\d/.test(String(v).trim())).length;
-      if (values.length && strict / values.length >= 0.7) appNumericIdx.push(index);
+      const parsable = values.filter((v) => Number.isFinite(asNumber(v))).length;
+      if (values.length && parsable / values.length >= 0.7) appNumericIdx.push(index);
     });
   });
 
@@ -149,13 +149,12 @@ test.describe('Result & chart features', { tag: ['@features', '@feature'] }, () 
     await expect(menu).toContainText('Ascending');
     await expect(menu).toContainText('Filter non-null');
     await expect(menu).toContainText('Ask about this column');
+    // Money columns reach the browser as "$1,234.56" strings and must still get Format / Calculate.
+    await expect(menu, `Format/Calculate offered for ${columns[numericIdx[numericIdx.length - 1]]}`).toContainText('Add % of total');
     if (!appNumericIdx.length) {
-      // Money columns reach the browser as "$1,234.56" strings: the chart plots them but the
-      // table tools offer no Format / Calculate section for them. Recorded, not failed.
-      L.annotate(testInfo, 'finding', `no Format/Calculate menu: numeric-looking columns ${JSON.stringify(numericIdx.map((i) => columns[i]))} are strings to the table tools`);
-      await expect(menu).not.toContainText('Add % of total');
+      L.annotate(testInfo, 'finding', `no column parses as numeric in the test's own rule: ${JSON.stringify(columns)}`);
       await page.keyboard.press('Escape');
-      test.skip(true, 'no column the table tools treat as numeric (money strings)');
+      test.skip(true, 'no numeric-looking column to format');
     }
     await page.keyboard.press('Escape');
     const index = appNumericIdx[appNumericIdx.length - 1];
@@ -210,6 +209,8 @@ test.describe('Result & chart features', { tag: ['@features', '@feature'] }, () 
     const menu = page.locator('#row-ctx-menu');
     await expect(menu).toBeVisible();
     expect((await menu.innerText()).trim().length, 'the row menu lists actions').toBeGreaterThan(10);
+    // The close listeners attach on the next tick after opening; give them that tick.
+    await page.waitForTimeout(50);
     await page.keyboard.press('Escape');
     await expect(menu).toBeHidden();
   });
