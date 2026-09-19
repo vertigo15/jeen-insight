@@ -77,12 +77,13 @@ const CONVERSATIONS = [
     turns: [
       // A registered knowledge pair; the @kp suite grades its SQL, here it seeds the conversation.
       { kind: 'sql', q: 'What is internet sales amount by calendar year', rows: [3, 5], sqlMust: [/GROUP BY/i, /factinternetsales/i], chart: true },
-      // Memory: the answer must name the year with the highest amount in the previous result.
-      { kind: 'memory', q: 'Which year had the highest internet sales amount?', derive: labelOfMax },
-      // Refinement: "same but…" must inherit the measure and the grouping — either as a new
-      // query (SQL mentions both years) or by filtering the prior rows in memory. A
-      // clarification card here ("couldn't read [2007, 2008] as a number") is a product bug.
+      // Refinement right after the grouped answer: "same but…" inherits the measure and the
+      // grouping — either as a new query (SQL mentions both years) or by filtering the prior
+      // rows in memory. (Keep it directly after turn 1: after a "which year was highest?"
+      // question, "same" would legitimately mean "the highest of those two".)
       { kind: 'followup', q: 'Same but only for 2007 and 2008', rows: [2, 2], sqlMust: [/2007/, /2008/], rowsMust: onlyYears([2007, 2008]) },
+      // Memory: the answer must name the year with the higher amount in the previous result.
+      { kind: 'memory', q: 'Which of those two years had the higher sales amount?', derive: labelOfMax },
     ],
   },
   {

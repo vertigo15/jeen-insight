@@ -49,6 +49,7 @@ from src.metadata.mcp_catalog_client import (
     _fmt_knowledge_pairs,
     _fmt_business_terms,
     _normalise_list,
+    _flatten_columns,
     _normalise_connections,
     _parse_catalog_markdown,
     normalize_columns_markdown,
@@ -404,6 +405,30 @@ class TestFormatters:
 
     def test_fmt_columns_empty(self):
         assert _fmt_columns([]) == "No columns registered."
+
+    def test_flatten_columns_unwraps_the_list_columns_envelope_and_scopes_to_the_table(self):
+        # The schema-modeler tool answers with one envelope and ignores `table`.
+        envelope = [{
+            "connection_id": 6, "count": 3, "table_name": None,
+            "tables": [{"table_name": '"public"."dimcustomer"'}],
+            "columns": [
+                {"table_name": '"public"."dimcustomer"', "column_name": "customerkey", "data_type": "integer", "is_primary_key": True},
+                {"table_name": '"public"."dimcustomer"', "column_name": "firstname", "data_type": "character varying"},
+                {"table_name": '"public"."dimdate"', "column_name": "datekey", "data_type": "integer"},
+            ],
+        }]
+        everything = _flatten_columns(envelope, None)
+        assert [c["column"] for c in everything] == ["customerkey", "firstname", "datekey"]
+        assert everything[0]["table"] == '"public"."dimcustomer"' and everything[0]["data_type"] == "integer"
+
+        # Any spelling of the table scopes: quoted, schema-qualified or bare.
+        for spelling in ('"public"."dimcustomer"', "public.dimcustomer", "DimCustomer"):
+            scoped = _flatten_columns(envelope, spelling)
+            assert [c["column"] for c in scoped] == ["customerkey", "firstname"], spelling
+
+        # Flat records from other servers pass through with the same field names.
+        flat = _flatten_columns([{"table": "dimdate", "column": "datekey", "data_type": "integer"}], "dimdate")
+        assert flat == [{"table": "dimdate", "column": "datekey", "data_type": "integer"}]
 
     def test_fmt_relationships_list_literal(self):
         rows = [{"relation": "FactSales.ProductKey → DimProduct.ProductKey"}]

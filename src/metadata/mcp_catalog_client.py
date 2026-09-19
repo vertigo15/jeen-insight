@@ -415,7 +415,7 @@ class McpCatalogClient:
         items = await self._load_list_dataset(
             source_key, NEED_LIST_COLUMNS, cache_key, arguments
         )
-        return filter_columns(items)
+        return filter_columns(_flatten_columns(items, table_name))
 
     async def get_cache_status(
         self, mcp_server_id: int, source_key: str
@@ -1311,6 +1311,50 @@ def _fmt_business_terms(rows: List[Dict]) -> str:
         cat  = r.get("category") or "General"
         lines.append(f"- Term: {term} | Definition: {defn} | Category: {cat}")
     return "\n".join(lines) if lines else "No business terms registered."
+
+
+def _bare_table_name(name: Any) -> str:
+    """``"public"."dimcustomer"`` / ``public.dimcustomer`` / ``DimCustomer`` → ``dimcustomer``."""
+    text = str(name or "").replace('"', "").replace("`", "").strip().lower()
+    return text.rsplit(".", 1)[-1]
+
+
+def _flatten_columns(items: List[Any], table_name: Optional[str]) -> List[Dict[str, Any]]:
+    """Give ``load_columns`` the flat ``[{table, column, data_type, …}]`` shape
+    the UI reads, whatever the server sent.
+
+    The schema-modeler ``list_columns`` tool answers with one envelope —
+    ``{columns: [{table_name, column_name, data_type, …}], count, tables}`` —
+    and ignores its ``table`` argument, so the envelope is unwrapped, the
+    field names are mapped and the scope is applied here. Servers that already
+    return flat records pass through unchanged.
+    """
+    flat: List[Dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        nested = item.get("columns")
+        if isinstance(nested, list):
+            parent = item.get("table_name") or item.get("table")
+            for col in nested:
+                if isinstance(col, dict):
+                    flat.append(_column_record(col, parent))
+        else:
+            flat.append(_column_record(item, None))
+    if table_name:
+        want = _bare_table_name(table_name)
+        if want and any(rec.get("table") for rec in flat):
+            flat = [rec for rec in flat if _bare_table_name(rec.get("table")) == want]
+    return flat
+
+
+def _column_record(col: Dict[str, Any], parent_table: Any) -> Dict[str, Any]:
+    rec = dict(col)
+    if not rec.get("column"):
+        rec["column"] = col.get("column_name") or col.get("name") or ""
+    if not rec.get("table"):
+        rec["table"] = col.get("table_name") or parent_table or ""
+    return rec
 
 
 def _normalise_list(raw: Any) -> List[Any]:
