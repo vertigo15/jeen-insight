@@ -320,6 +320,13 @@ const forecastChips = [
     const withDiff = UI.modelDetailsHtml({ analysis: { ...analysis, param_diff: { grain: { from: 'week', to: 'month' } } } });
     assert.match(withDiff, /Changed from the previous run/);
     assert.match(withDiff, /grain: <s>week<\/s> → month/);
+    // Plain lists (features) and filter specs both render readably in Parameters.
+    const entity = UI.modelDetailsHtml({ analysis: { ...analysis, skill: 'clustering', params: {
+        entity: { table: 'dimproduct', entity_key: 'productkey', features: ['weight', 'reorderpoint'], row_cap: 50000,
+                  filters: [{ table: 'dimproduct', column: 'color', op: 'equals', value: 'Red' }] }, k: 4, method: 'kmeans' } } });
+    assert.match(entity, /<td>features<\/td><td class="v3-mono">weight, reorderpoint<\/td>/);
+    assert.match(entity, /<td>filters<\/td><td class="v3-mono">color equals Red<\/td>/);
+    assert.doesNotMatch(entity, /undefined/);
 }
 
 // ── caption + formatting ─────────────────────────────────────────────────────

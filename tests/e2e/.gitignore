@@ -5,3 +5,8 @@ playwright-report/
 blob-report/
 .playwright/
 screenshots/
+# live suite (real stack): session, artifacts, per-question screenshots
+.auth/
+test-results-live/
+playwright-report-live/
+live-screenshots/
