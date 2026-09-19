@@ -241,7 +241,7 @@ def _chips(skill: str, params: Dict[str, Any], cands) -> List[ParamChip]:
         chips.append(_chip(skill, "row_cap", "Row cap", entity.get("row_cap", 50000), group=_G_DATA,
                            options=[1000, 10000, 50000, 100000], unit="rows",
                            option_labels={str(n): f"{n:,}" for n in (1000, 10000, 50000, 100000)},
-                           help="Most rows read; the run is audited with this column list."))
+                           help="The run is refused above this many rows (add a filter or raise it); it is audited with this column list."))
         if skill == "clustering":
             chips.append(_chip(skill, "k", "Segments", params.get("k") or "auto", group=_G_MODEL,
                                options=["auto", 2, 3, 4, 5, 6, 7, 8], option_labels={"auto": SENTINEL_LABELS["auto"]},
@@ -637,14 +637,48 @@ def make_analysis_guard(
 
         if spec.family == "contribution":
             # ── Two periods: given, or the last quarter vs the one before ──
-            span_end = pd.Timestamp(max_ts).normalize() + pd.Timedelta(days=1)
-            if not (typed.after_start and typed.after_end):
+            def _day(value) -> pd.Timestamp:
+                """Calendar day as a naive timestamp (probe values may be tz-aware)."""
+                ts = pd.Timestamp(value)
+                return (ts.tz_localize(None) if ts.tzinfo is not None else ts).normalize()
+
+            span_start = _day(min_ts)
+            span_end = _day(max_ts) + pd.Timedelta(days=1)
+
+            def _within_data(start, end) -> bool:
+                """A half-open period overlaps the data span."""
+                try:
+                    s, e = _day(start), _day(end)
+                except (TypeError, ValueError):
+                    return False
+                return s < span_end and e > span_start
+
+            # The planner turns a relative phrase ("the most recent quarter")
+            # into calendar dates relative to today; on a historical dataset
+            # those land past the newest row and the comparison reads no rows.
+            # Periods that miss the data entirely are re-anchored to its end.
+            after_given = bool(typed.after_start and typed.after_end)
+            before_given = bool(typed.before_start and typed.before_end)
+            anchored = ""
+            if after_given and not _within_data(typed.after_start, typed.after_end):
+                after_given = before_given = False
+                anchored = "the requested periods fall outside the data"
+            elif before_given and not _within_data(typed.before_start, typed.before_end):
+                before_given = False
+                anchored = "the requested earlier period falls outside the data"
+            if not after_given:
                 params["after_end"] = span_end.date().isoformat()
                 params["after_start"] = (span_end - pd.DateOffset(months=3)).date().isoformat()
-            if not (typed.before_start and typed.before_end):
+            if not before_given:
                 a_start = pd.Timestamp(params["after_start"])
                 params["before_end"] = a_start.date().isoformat()
                 params["before_start"] = (a_start - pd.DateOffset(months=3)).date().isoformat()
+            if anchored:
+                results.append(GuardResult(
+                    name="periods", passed=True, overridable=False,
+                    detail=(f"{anchored} ({span_start.date()} → {(span_end - pd.Timedelta(days=1)).date()}); "
+                            f"comparing {params['before_start']} → {params['before_end']} with {params['after_start']} → {params['after_end']} instead"),
+                ))
             n_est = 2 * (typed.top_n * len(typed.dimensions))
             message = (
                 f"Reading this as {_SKILL_PHRASE[skill]} of {series.measure_label}: {params['before_start']} → {params['before_end']} "

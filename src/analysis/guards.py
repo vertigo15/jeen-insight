@@ -271,7 +271,9 @@ def cardinality(n_entities: int, row_cap: int) -> GuardResult:
                        required=float(CARDINALITY_MIN), exits=exits)
 
 
-def feature_count(usable: List[str], requested: List[str]) -> GuardResult:
+def feature_count(usable: List[str], requested: List[str], reasons: Optional[Dict[str, str]] = None) -> GuardResult:
+    """``reasons`` names why a requested feature was dropped (``"not numeric"``
+    or ``"41% filled"``); a feature with no reason is reported as not numeric."""
     n = len(usable)
     ok = FEATURE_COUNT_MIN <= n <= FEATURE_COUNT_MAX
     dropped = [f for f in requested if f not in usable]
@@ -280,7 +282,15 @@ def feature_count(usable: List[str], requested: List[str]) -> GuardResult:
         exits.append(GuardExit(kind="answer_with_sql", label="Answer with SQL instead", recommended=True))
     detail = f"{n} numeric feature{'s' if n != 1 else ''} usable of {len(requested)} requested"
     if dropped:
-        detail += f" (not numeric: {', '.join(dropped)})"
+        reasons = reasons or {}
+        not_numeric = [f for f in dropped if reasons.get(f, "not numeric") == "not numeric"]
+        sparse = [f"{f} {reasons[f]}" for f in dropped if f not in not_numeric]
+        parts = []
+        if not_numeric:
+            parts.append(f"not numeric: {', '.join(not_numeric)}")
+        if sparse:
+            parts.append(f"mostly empty: {', '.join(sparse)}")
+        detail += f" ({'; '.join(parts)})"
     return GuardResult(name="feature_count", passed=ok, detail=detail, observed=float(n),
                        required=float(FEATURE_COUNT_MIN), overridable=False, exits=exits)
 

@@ -7,7 +7,12 @@
     "fixtures": "python3 generate_fixtures.py",
     "test": "playwright test",
     "test:headed": "playwright test --headed",
-    "report": "playwright show-report"
+    "report": "playwright show-report",
+    "test:live": "playwright test -c playwright.live.config.js",
+    "test:live:sql": "playwright test -c playwright.live.config.js --grep @sql",
+    "test:live:ml": "playwright test -c playwright.live.config.js --grep @ml",
+    "test:live:headed": "playwright test -c playwright.live.config.js --headed",
+    "report:live": "playwright show-report playwright-report-live"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1"

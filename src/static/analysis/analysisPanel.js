@@ -685,10 +685,15 @@
         const candidates = (d.candidates || []).map((c) => `<tr class="${c.selected ? 'is-selected' : ''}">
             <td>${esc(c.name)}${c.is_baseline ? ' <small>baseline</small>' : ''}${c.selected ? ' <small>selected</small>' : ''}</td>
             <td>${esc(c.metric)}</td><td class="v3-mono">${c.value == null ? '—' : c.metric === 'WAPE' || c.metric === 'fit WAPE' ? fmtPct(c.value) : Number(c.value).toFixed(3)}</td></tr>`).join('');
-        const nested = params.series || params.entity || {};
-        const paramRows = Object.entries({ ...nested, ...Object.fromEntries(Object.entries(params).filter(([k]) => k !== 'series' && k !== 'entity')) })
+        const nested = params.series || params.entity || params.cohort || params.experiment || {};
+        // Arrays are either filter specs ({column, op, value}) or plain lists (features, dimensions).
+        const item0IsObject = (val) => val.length > 0 && val[0] != null && typeof val[0] === 'object';
+        const listText = (val) => val.map((item) => (item && typeof item === 'object'
+            ? `${item.column} ${item.op} ${Array.isArray(item.value) ? item.value.join(', ') : item.value}`
+            : String(item))).join(item0IsObject(val) ? '; ' : ', ');
+        const paramRows = Object.entries({ ...nested, ...Object.fromEntries(Object.entries(params).filter(([k]) => !['series', 'entity', 'cohort', 'experiment'].includes(k))) })
             .filter(([k, val]) => val != null && val !== '' && !(Array.isArray(val) && !val.length) && !['schema_name', 'catalog', 'timezone'].includes(k))
-            .map(([k, val]) => `<tr><td>${esc(k)}</td><td class="v3-mono">${esc(Array.isArray(val) ? val.map((f) => `${f.column} ${f.op} ${Array.isArray(f.value) ? f.value.join(', ') : f.value}`).join('; ') : val)}</td></tr>`).join('');
+            .map(([k, val]) => `<tr><td>${esc(k)}</td><td class="v3-mono">${esc(Array.isArray(val) ? listText(val) : val)}</td></tr>`).join('');
         const guards = guardList(analysis.guard_results, false);
         const notes = (d.notes || []).concat(analysis.caveats || []);
         const diff = analysis.param_diff && Object.keys(analysis.param_diff).length

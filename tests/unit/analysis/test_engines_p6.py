@@ -254,6 +254,13 @@ def test_clustering_returns_profiles_and_a_scatter_spec():
     assert env2.facts["features"] == ["YearlyIncome", "TotalChildren"]
     fc = next(g for g in env2.guard_results if g.name == "feature_count")
     assert "not numeric: Note" in fc.detail
+    # A numeric column that is mostly NULL is reported as sparse, not as "not numeric".
+    base = _entities()
+    sparse = {"columns": base["columns"] + ["Weight"],
+              "rows": [{**row, "Weight": (row["YearlyIncome"] / 1000 if i % 3 == 0 else None)} for i, row in enumerate(base["rows"])]}
+    env3 = _ok("clustering", {"entity": {**ENTITY, "features": ["YearlyIncome", "TotalChildren", "Weight"]}, "k": 2}, sparse)
+    fc3 = next(g for g in env3.guard_results if g.name == "feature_count")
+    assert "mostly empty: Weight 34% filled" in fc3.detail and "not numeric" not in fc3.detail  # 134 of 400 rows
 
 
 def test_clustering_auto_k_uses_silhouette():

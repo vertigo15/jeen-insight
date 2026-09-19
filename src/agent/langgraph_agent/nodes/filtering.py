@@ -244,8 +244,21 @@ def _normalise_op(value: Any) -> str:
 
 
 def _canonical_target(filter_dict: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """Lower-cased ``(table, column)`` the planner proposed, in catalog-key form.
+
+    The model echoes identifiers the way the prompt showed them, which for a
+    schema-qualified catalog is ``public.factinternetsales`` or
+    ``"public"."factinternetsales"``; the allowlist is keyed by the bare table
+    name, so the proposal is reduced the same way the catalog lines were.
+    """
     table = str(filter_dict.get("table") or "").strip()
     column = str(filter_dict.get("column") or "").strip()
+    if table:
+        parts = split_qualified_identifier(table)
+        table = parts[-1] if parts else table
+    if column:
+        parts = split_qualified_identifier(column)
+        column = parts[-1] if parts else column
     if not table or not column:
         target = str(filter_dict.get("target") or "").strip()
         if target:

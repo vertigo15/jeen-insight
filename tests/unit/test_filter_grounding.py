@@ -133,6 +133,19 @@ def _grounder(runner, store, **kwargs):
     return make_filter_grounder(runner, value_store_provider=lambda _state: store, **kwargs)
 
 
+# ── Proposed filter targets ───────────────────────────────────────────────────
+
+
+def test_canonical_target_reduces_qualified_and_quoted_identifiers():
+    # The planner echoes identifiers the way the catalog showed them; the
+    # allowlist is keyed by the bare, lower-cased table and column.
+    assert filtering._canonical_target({"table": "factinternetsales", "column": "orderdate"}) == ("factinternetsales", "orderdate")
+    assert filtering._canonical_target({"table": "public.FactInternetSales", "column": "OrderDate"}) == ("factinternetsales", "orderdate")
+    assert filtering._canonical_target({"table": '"public"."factinternetsales"', "column": '"orderdate"'}) == ("factinternetsales", "orderdate")
+    assert filtering._canonical_target({"target": '"public"."dimdate"."calendaryear"'}) == ("dimdate", "calendaryear")
+    assert filtering._canonical_target({"table": "", "column": "x"}) is None
+
+
 # ── Typed normalisation (unchanged behaviour) ─────────────────────────────────
 
 

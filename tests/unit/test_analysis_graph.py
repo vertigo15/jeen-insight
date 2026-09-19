@@ -13,7 +13,7 @@ Scenarios:
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock
@@ -705,6 +705,64 @@ async def test_contribution_flow_defaults_the_periods_and_runs(prompt_loader):
     assert fr["results"]["columns"][:2] == ["dimension", "slice"]
     assert analysis["chart_spec"]["chart_type"] == "horizontal_bar"
     assert history.upsert_turn_artifact.await_args.kwargs["analysis"]["skill"] == "contribution"
+
+
+@pytest.mark.asyncio
+async def test_contribution_periods_past_the_data_are_reanchored_to_its_end(prompt_loader):
+    """"The most recent quarter" is relative to today for the planner; on a
+    historical dataset that lands past the newest row and would read no rows.
+    Periods that miss the data are moved to its end and the move is recorded."""
+    store = InMemoryAnalysisStore()
+    await store.set_skill_pref(user_id="user-a", source_key="aw", skill="contribution", remember=True)
+    plan = {"skill": "contribution", "table": "FactInternetSales", "date_column": "OrderDate", "measure_column": "Profit",
+            "agg": "sum", "dimensions": ["SalesTerritoryKey", "ProductLine"],
+            "before_start": "2031-03-20", "before_end": "2031-06-20", "after_start": "2031-06-20", "after_end": "2031-09-20"}
+    runner = _FamilyRunner()
+    graph, _ = _build_p6(_make_llm(plan=plan), runner, store, prompt_loader)
+    final = await graph.ainvoke(_state("What drove the change in profit in the most recent quarter?"))
+    fr = final["formatted_response"]
+    assert fr["status"] == "completed", fr.get("error")
+    params = fr["analysis"]["params"]
+    # The probe says the data ends in 2026; the periods now end there, three months each.
+    assert params["after_end"].startswith("2026-") and params["before_end"] == params["after_start"]
+    assert (date.fromisoformat(params["after_end"]) - date.fromisoformat(params["after_start"])).days in range(89, 93)
+    guard = next(g for g in fr["analysis"]["guard_results"] if g["name"] == "periods")
+    assert guard["passed"] is True and "fall outside the data" in guard["detail"] and "2031" not in params["after_end"]
+    # The SQL that ran used the re-anchored dates, not the planner's.
+    union_sql = next(s for s in runner.calls if "'before'" in s)
+    assert params["after_end"] in union_sql and "2031" not in union_sql
+
+    # A tz-aware probe (timestamptz columns) is compared on calendar days, not rejected.
+    class _TzRunner(_FamilyRunner):
+        async def run_sql(self, sql, **kw):
+            out = await super().run_sql(sql, **kw)
+            if "min_ts" in sql:
+                row = dict(out["rows"][0])
+                row["min_ts"] = datetime.combine(row["min_ts"], datetime.min.time(), tzinfo=timezone.utc)
+                row["max_ts"] = datetime.combine(row["max_ts"], datetime.min.time(), tzinfo=timezone.utc)
+                out = {**out, "rows": [row]}
+            return out
+    graph, _ = _build_p6(_make_llm(plan=plan), _TzRunner(), store, prompt_loader)
+    final = await graph.ainvoke(_state("What drove the change in profit in the most recent quarter?"))
+    assert final["formatted_response"]["status"] == "completed", final["formatted_response"].get("error")
+    assert final["formatted_response"]["analysis"]["params"]["after_end"].startswith("2026-")
+
+    # Only the earlier period missing: it is recomputed from the given later one and named as such.
+    plan_before = {**plan, "before_start": "2031-01-01", "before_end": "2031-04-01", "after_start": "2025-04-01", "after_end": "2025-07-01"}
+    graph, _ = _build_p6(_make_llm(plan=plan_before), _FamilyRunner(), store, prompt_loader)
+    final = await graph.ainvoke(_state("What drove the change in profit in Q2 2025 versus the quarter before?"))
+    params = final["formatted_response"]["analysis"]["params"]
+    assert params["after_start"] == "2025-04-01" and params["before_end"] == "2025-04-01" and params["before_start"] == "2025-01-01"
+    guard = next(g for g in final["formatted_response"]["analysis"]["guard_results"] if g["name"] == "periods")
+    assert "earlier period falls outside" in guard["detail"]
+
+    # A period the planner placed inside the data is kept as given.
+    plan_ok = {**plan, "before_start": "2025-01-01", "before_end": "2025-04-01", "after_start": "2025-04-01", "after_end": "2025-07-01"}
+    graph, _ = _build_p6(_make_llm(plan=plan_ok), _FamilyRunner(), store, prompt_loader)
+    final = await graph.ainvoke(_state("What drove the change in profit between Q1 and Q2 2025?"))
+    params = final["formatted_response"]["analysis"]["params"]
+    assert params["after_start"] == "2025-04-01" and params["after_end"] == "2025-07-01"
+    assert not any(g["name"] == "periods" for g in final["formatted_response"]["analysis"]["guard_results"])
 
 
 @pytest.mark.asyncio
