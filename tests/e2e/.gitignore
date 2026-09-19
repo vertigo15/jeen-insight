@@ -10,3 +10,5 @@ screenshots/
 test-results-live/
 playwright-report-live/
 live-screenshots/
+# fetched at run time from the stack (knowledge pairs = @kp ground truth)
+live/.generated/

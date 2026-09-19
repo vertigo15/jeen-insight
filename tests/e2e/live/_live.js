@@ -110,6 +110,7 @@ async function newConversation(page) {
  */
 async function ask(page, question, options = {}, timeout = WAIT.sql) {
   const before = await page.locator('#v3-thread article.v3-turn').count();
+  const startedAt = Date.now();
   // Fire and forget: send() resolves only when the stream ends, and evaluate()
   // would await it — the wait below must own the timeout instead.
   await page.evaluate(([q, o]) => { void window.ChatController.send(q, o); }, [question, options]);
@@ -124,12 +125,13 @@ async function ask(page, question, options = {}, timeout = WAIT.sql) {
     return { failed: false, path: last.getAttribute('data-route-path') };
   }, before, { timeout });
   const outcome = await handle.jsonValue();
+  const wallMs = Date.now() - startedAt;
   // The turn renders when the `result` event lands, but send() only clears
   // `sending` once the SSE stream closes (late enrichment events). A follow-up
   // action fired in between — "Answer with SQL instead", another question — is
   // silently ignored by send(), so wait for the controller to be idle.
   await page.waitForFunction(() => window.ChatController && !window.ChatController.sending, null, { timeout: 60_000 }).catch(() => {});
-  return readTurn(page, question, outcome);
+  return { ...(await readTurn(page, question, outcome)), wallMs };
 }
 
 async function readTurn(page, question, outcome) {
@@ -317,6 +319,210 @@ async function requireMlRoute(page, question) {
   return preview;
 }
 
+// ── Raw payloads (assert on data, scrape the DOM only for "does it render") ──
+
+/**
+ * The QueryResponse the UI holds for the selected result turn
+ * (WorkspaceController stores the streamed `result` event on the turn).
+ * Falls back to the newest turn that has a result.
+ */
+async function rawResult(page) {
+  return page.evaluate(() => {
+    const c = window.WorkspaceController;
+    if (!c) return null;
+    const selected = c.turns.find((t) => t.id === c.selectedResultId);
+    if (selected && selected.result) return selected.result;
+    const withResult = [...c.turns].reverse().find((t) => t.result);
+    return withResult ? withResult.result : null;
+  });
+}
+
+/** The newest turn's result — including ML stop cards (`proposal`) that the selected-result pointer skips. */
+async function lastTurnResult(page) {
+  return page.evaluate(() => {
+    const c = window.WorkspaceController;
+    const last = c && c.turns[c.turns.length - 1];
+    return last ? { id: last.id, status: last.status, error: last.error, result: last.result, durationMs: last.durationMs } : null;
+  });
+}
+
+/** `{chart_spec, chart_config}` of the chart currently on screen (null before a chart exists). */
+async function chartState(page) {
+  return page.evaluate(() => (window.JeenLegacyBridge && window.JeenLegacyBridge.getChartState ? window.JeenLegacyBridge.getChartState() : null));
+}
+
+/** Pick a chart type from the type menu and wait for the repaint. Returns the state after. */
+async function selectChartType(page, type, timeout = 30_000) {
+  const button = page.locator('#chart-type-selector-container .ctype-btn');
+  await expect(button).toBeVisible();
+  await button.click();
+  // The menu is portaled to <body>.
+  const item = page.locator(`.ctype-menu .ctype-item[data-value="${type}"]`);
+  await expect(item).toBeVisible();
+  await item.click();
+  await page.waitForFunction((t) => document.querySelector('#chart-display-container')?.dataset.chartType === t, type, { timeout });
+  await waitForChart(page, timeout);
+  return chartState(page);
+}
+
+/** The rendered chart type (`#chart-display-container[data-chart-type]`). */
+async function renderedChartType(page) {
+  return page.evaluate(() => document.querySelector('#chart-display-container')?.dataset.chartType || '');
+}
+
+/** Public connection record (`/api/connections/{key}`), incl. `database_type`, `is_power_bi`, `metadata_summary`. */
+async function connectionInfo(page, key) {
+  const response = await page.request.get(`/api/connections/${encodeURIComponent(key)}`, { timeout: API_TIMEOUT });
+  if (!response.ok()) throw new Error(`/api/connections/${key} → ${response.status()}`);
+  return response.json();
+}
+
+/** The session user (`/api/auth/me`): id, name, email, role, flags. */
+async function me(page) {
+  const response = await page.request.get('/api/auth/me', { timeout: API_TIMEOUT });
+  if (!response.ok()) throw new Error(`/api/auth/me → ${response.status()}`);
+  return response.json();
+}
+
+// ── Answer grounding ─────────────────────────────────────────────────────────
+
+/** Numbers (2+ significant digits) mentioned in a sentence: "1,234.5" → 1234.5, "12%" → 12, "$3.2M" → 3200000. */
+function numbersIn(text) {
+  const out = [];
+  const re = /(?<![\w.])-?\$?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*(%|[kKmMbB](?![a-zA-Z]))?/g;
+  let m;
+  while ((m = re.exec(String(text || '')))) {
+    let n = Number(`${m[1].replace(/,/g, '')}${m[2] || ''}`);
+    const unit = (m[3] || '').toLowerCase();
+    if (unit === 'k') n *= 1e3;
+    if (unit === 'm') n *= 1e6;
+    if (unit === 'b') n *= 1e9;
+    if (Number.isFinite(n) && String(Math.abs(Math.trunc(n))).length + (m[2] ? m[2].length - 1 : 0) >= 2) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * Every number the answer sentence states must be derivable from the rows
+ * (a cell value, a rounded cell value, a column total or a row count).
+ * Returns { grounded, unmatched, checked }.
+ */
+function answerGrounded(answer, rows, columns) {
+  const stated = numbersIn(answer).filter((n) => !(Number.isInteger(n) && n >= 1900 && n <= 2100)); // years are labels, not facts
+  if (!stated.length) return { grounded: true, unmatched: [], checked: 0 };
+  const pool = new Set();
+  const add = (v) => { if (Number.isFinite(v)) pool.add(v); };
+  const list = Array.isArray(rows) ? rows : [];
+  const cols = columns && columns.length ? columns : (list[0] ? Object.keys(list[0]) : []);
+  add(list.length);
+  for (const col of cols) {
+    let total = 0; let numeric = 0;
+    for (const row of list) {
+      const raw = Array.isArray(row) ? row[cols.indexOf(col)] : row[col];
+      const v = typeof raw === 'number' ? raw : Number(String(raw ?? '').replace(/[$,]/g, ''));
+      if (Number.isFinite(v) && raw !== null && raw !== '') { add(v); total += v; numeric += 1; } else if (typeof raw === 'string') {
+        // Digits inside labels ("Road-150 Red, 48") are facts from the data too.
+        for (const n of numbersIn(raw)) add(n);
+      }
+    }
+    if (numeric) { add(total); add(total / numeric); }
+  }
+  const near = (a, b) => {
+    if (a === b) return true;
+    const scale = Math.max(1, Math.abs(b));
+    // Rounded to any sensible precision (2 decimals … thousands / millions).
+    return Math.abs(a - b) <= Math.max(0.5 * 10 ** Math.max(0, Math.floor(Math.log10(Math.abs(a) || 1)) - 2), scale * 0.005);
+  };
+  const unmatched = stated.filter((n) => ![...pool].some((v) => near(n, v)));
+  return { grounded: unmatched.length === 0, unmatched, checked: stated.length };
+}
+
+// ── Feature-test helpers ─────────────────────────────────────────────────────
+
+/** Trigger a download and return its bytes + suggested filename. */
+async function download(page, trigger, timeout = 30_000) {
+  const [dl] = await Promise.all([page.waitForEvent('download', { timeout }), trigger()]);
+  const file = await dl.path();
+  return { name: dl.suggestedFilename(), buffer: fs.readFileSync(file) };
+}
+
+/** Clipboard text (the context must have been created with clipboard permissions). */
+async function clipboardText(page) {
+  return page.evaluate(() => navigator.clipboard.readText());
+}
+
+/** Open Settings on a section (`general`, `ai-models`, `prompts`, `metadata-catalog`, `users`, ...). */
+async function openSettings(page, sectionId) {
+  const overlay = page.locator('.sp-overlay');
+  if (!(await overlay.count()) || (await overlay.evaluate((el) => el.hidden))) {
+    await page.locator('#v3-settings-button').click();
+  }
+  await expect(page.locator('.sp-overlay')).toBeVisible();
+  const nav = page.locator(`.sp-nav-item[data-id="${sectionId}"]`);
+  await expect(nav, `settings section "${sectionId}" is available to this user`).toBeVisible();
+  await nav.click();
+  await expect(nav).toHaveClass(/is-active/);
+  return page.locator('.sp-content');
+}
+
+async function closeSettings(page) {
+  const close = page.locator('.sp-nav-item.sp-close-btn');
+  if (await close.count()) await close.click();
+  await expect(page.locator('.sp-overlay')).toBeHidden();
+}
+
+/**
+ * Run `action` and capture the first request matching `urlPattern`, aborting
+ * it so no LLM call is spent. Returns the JSON body (or null on timeout).
+ */
+async function captureRequest(page, urlPattern, action, timeout = 15_000) {
+  let captured = null;
+  const handler = async (route) => {
+    if (captured === null) {
+      captured = route.request().postDataJSON?.() ?? route.request().postData() ?? {};
+    }
+    await route.abort('aborted');
+  };
+  await page.route(urlPattern, handler);
+  try {
+    await action();
+    const deadline = Date.now() + timeout;
+    while (captured === null && Date.now() < deadline) await page.waitForTimeout(100);
+  } finally {
+    await page.unroute(urlPattern, handler);
+  }
+  return captured;
+}
+
+/** Snapshot → mutate → restore, even when the test fails in between. */
+async function withRestore(getter, setter, body) {
+  const original = await getter();
+  try {
+    return await body(original);
+  } finally {
+    await setter(original);
+  }
+}
+
+/** Latency fields from a QueryResponse for the scorecard (`raw.metrics`). */
+function latencyOf(raw, wallMs) {
+  const m = (raw && raw.metrics) || {};
+  return {
+    wall_ms: wallMs ?? null,
+    llm_latency_ms: m.llm_latency_ms ?? null,
+    execution_time_ms: m.execution_time_ms ?? null,
+    retry_count: m.retry_count ?? null,
+    llm_call_count: m.llm_call_count ?? null,
+    total_tokens: m.total_tokens ?? null,
+    route: m.route ?? (raw && raw.routing && raw.routing.route) ?? null,
+  };
+}
+
+/** Attach a typed annotation the scorecard reporter reads (`type`, JSON description). */
+function annotate(testInfo, type, value) {
+  testInfo.annotations.push({ type, description: typeof value === 'string' ? value : JSON.stringify(value) });
+}
+
 // ── Artifacts ────────────────────────────────────────────────────────────────
 
 let shotIndex = 0;
@@ -334,5 +540,8 @@ module.exports = {
   openDock, sqlText, gridRows, gridHeaders, chartVisible, waitForChart, expandChart,
   metaRow, confirmCard, guardCard, anyCard, runCard, waitForCompleted,
   routingPreview, forgetSkill, listSkills, requireMlRoute, catalogSource, noteCatalogSource,
+  rawResult, lastTurnResult, chartState, selectChartType, renderedChartType, connectionInfo, me,
+  numbersIn, answerGrounded,
+  download, clipboardText, openSettings, closeSettings, captureRequest, withRestore, latencyOf, annotate,
   unreachable, shot,
 };

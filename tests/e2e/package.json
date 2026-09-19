@@ -2,17 +2,30 @@
   "name": "jeen-insight-e2e",
   "private": true,
   "version": "0.0.0",
-  "description": "Playwright e2e for ML skills: routing (ML vs SQL) and the confirm/guard/clarify/rerun flows.",
+  "description": "Playwright e2e: deterministic UI harness (specs/) and the live suite against the real stack (live/).",
   "scripts": {
     "fixtures": "python3 generate_fixtures.py",
     "test": "playwright test",
     "test:headed": "playwright test --headed",
     "report": "playwright show-report",
-    "test:live": "playwright test -c playwright.live.config.js",
+
+    "test:live": "playwright test -c playwright.live.config.js --grep @e2e",
+    "test:live:all": "playwright test -c playwright.live.config.js",
+    "test:live:smoke": "playwright test -c playwright.live.config.js --grep @smoke",
+    "test:live:features": "playwright test -c playwright.live.config.js --grep @feature",
+    "test:live:regression": "LIVE_MIN_PASS_RATE=${LIVE_MIN_PASS_RATE:-0.9} LIVE_MIN_SQL_EQUIV=${LIVE_MIN_SQL_EQUIV:-0.7} playwright test -c playwright.live.config.js --grep @regression",
+    "test:live:security": "playwright test -c playwright.live.config.js --grep @security",
+    "test:live:perf": "LIVE_MAX_P95_MS=${LIVE_MAX_P95_MS:-180000} playwright test -c playwright.live.config.js --grep @kp",
+
+    "test:live:kp": "playwright test -c playwright.live.config.js --grep @kp",
+    "test:live:kp:all": "LIVE_KP_ALL=1 playwright test -c playwright.live.config.js --grep @kp",
+    "test:live:conv": "playwright test -c playwright.live.config.js --grep @conv",
     "test:live:sql": "playwright test -c playwright.live.config.js --grep @sql",
     "test:live:ml": "playwright test -c playwright.live.config.js --grep @ml",
+    "test:live:admin": "playwright test -c playwright.live.config.js --grep @admin",
     "test:live:headed": "playwright test -c playwright.live.config.js --headed",
-    "report:live": "playwright show-report playwright-report-live"
+    "report:live": "playwright show-report playwright-report-live",
+    "scorecard": "cat test-results-live/scorecard.md"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1"

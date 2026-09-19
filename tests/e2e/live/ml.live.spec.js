@@ -6,6 +6,7 @@ const path = require('path');
 const { test, expect } = require('@playwright/test');
 const L = require('./_live');
 const { ML_CASES, GRACEFUL_CASES } = require('./questions');
+const { checkEnvelope, summarizeEnvelope } = require('./mlEnvelope');
 
 const AUTH_FILE = path.join(__dirname, '..', '.auth', 'live.json');
 // Budgets, not hopes: card (≤150 s) + run (≤180 s) + assertions; a re-run or a
@@ -18,7 +19,7 @@ const SKILL_LABEL = {
   regression: 'regression', classification: 'classification', cohort_retention: 'cohort retention', experiment_test: 'A/B test',
 };
 
-test.describe('ML questions', { tag: '@ml' }, () => {
+test.describe('ML questions', { tag: ['@ml', '@e2e', '@regression'] }, () => {
   /** @type {import('@playwright/test').Page} */
   let page;
   let connection = '';
@@ -71,6 +72,17 @@ test.describe('ML questions', { tag: '@ml' }, () => {
     expect(details, 'Model details states rows sent').toMatch(/Rows sent\s*\n\s*\d+/);
     for (const must of c.modelTabMust) expect(details, `Model details should match ${must}`).toMatch(must);
     if (c.chart) await L.waitForChart(page);
+
+    // Data level: the envelope behind the strip must be sane, not just rendered.
+    const raw = await L.rawResult(page);
+    expect(raw && raw.analysis, 'the completed ML turn carries an analysis envelope').toBeTruthy();
+    expect(raw.analysis.skill, 'envelope skill').toBe(c.skill);
+    const info = test.info();
+    L.annotate(info, 'ml_envelope', summarizeEnvelope(raw.analysis));
+    L.annotate(info, 'latency', L.latencyOf(raw));
+    const problems = checkEnvelope(raw.analysis, c.envelope || {}, { rows: (raw.results || {}).rows || [] });
+    await info.attach('ml-envelope.json', { body: JSON.stringify(raw.analysis, null, 2), contentType: 'application/json' });
+    expect(problems, `ML envelope violations for "${c.q}":\n- ${problems.join('\n- ')}`).toEqual([]);
   }
 
   for (const c of ML_CASES) {

@@ -1,0 +1,31 @@
+---
+description: Test types in this repo and where a new test of each type goes (unit, offline eval, integration, mocked UI e2e, live smoke/e2e/feature/regression/security)
+globs: tests/**,evals/**
+alwaysApply: false
+---
+
+# Testing conventions
+
+Full guide: `tests/README.md`. When asked for "a <type> test for X", place it as below.
+
+| Asked for | Where it goes | Run |
+|---|---|---|
+| unit test (backend logic, node, route with mocked services) | `tests/unit/` (pytest, offline; `fake_state`, `snapshot_engine` fixtures in `tests/unit/conftest.py`) | `pytest` |
+| guardrail / routing / planner golden case | `evals/datasets/*.yaml` | `python -m evals.run_eval` |
+| integration test (real Postgres, compiled graph) | `tests/integration/`, mark `@pytest.mark.integration`, gate on `JEEN_E2E_DB=1` | `JEEN_E2E_DB=1 pytest tests/integration -m integration` |
+| deterministic UI flow (no LLM) | `tests/e2e/specs/` with fixtures in `tests/e2e/harness/fixtures.js` | `cd tests/e2e && npm test` |
+| live smoke | `tests/e2e/live/smoke.live.spec.js`, or add `'@smoke'` to an existing test that runs < 30 s with no extra LLM call | `npm run test:live:smoke` |
+| live e2e question / conversation | data only: `tests/e2e/live/kp.cases.js` (knowledge-pair question), `questions.js` (SQL / ML case), `conversations.js` (multi-turn) | `npm run test:live` |
+| live feature test | a `test()` in the matching `tests/e2e/live/features.<results|history|llm|admin>.live.spec.js` | `npm run test:live:features` |
+| live security check | `tests/e2e/live/security.live.spec.js` | `npm run test:live:security` |
+
+## Live-suite rules (`tests/e2e/live/`)
+
+- Every test carries an area tag (`@kp @conv @ml @sql @resilience @features @history @extras @admin`) and a type tag (`@smoke @e2e @feature @regression @security`); set them on `test.describe`.
+- Assert on the raw `QueryResponse` (`L.rawResult(page)`: `sql`, `results.rows`, `routing`, `analysis`); use the DOM only to check that a surface renders.
+- Never assert a number from the data unless it is derived in the test from the raw rows (`answerGrounded`, `derive()` in `conversations.js`) or comes from a knowledge-pair gold (`sqlEquivalence.js`).
+- Feature tests share one answer per file (`beforeAll` asks once) and spend no further LLM calls; capture outgoing payloads with `L.captureRequest` instead of sending.
+- Admin tests snapshot what they touch and restore it in `finally`; never leave users, prompts, runtime settings or the catalog source changed.
+- Infrastructure failures (`Backend unavailable`, 502/503) go through `L.assertNoBackendError`; they are reported as `infra`, not as product failures.
+- Record diagnostics with `L.annotate(testInfo, type, value)`; the scorecard reporter reads `kp_tier`, `kp_verdict`, `chart_type`, `latency`, `ml_envelope`, `finding`, `note`.
+- Budgets: ~3 min per SQL answer, ~7 min per ML run; call `test.setTimeout` per test accordingly.

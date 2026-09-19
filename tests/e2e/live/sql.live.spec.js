@@ -12,7 +12,7 @@ const AUTH_FILE = path.join(__dirname, '..', '.auth', 'live.json');
 // One page for the whole file (login and app boot happen once); the tests run
 // in order on one worker but are independent — a failing question never skips
 // the rest, which is what you want from a live smoke run.
-test.describe('SQL questions', { tag: '@sql' }, () => {
+test.describe('SQL questions', { tag: ['@sql', '@e2e'] }, () => {
   /** @type {import('@playwright/test').Page} */
   let page;
 
