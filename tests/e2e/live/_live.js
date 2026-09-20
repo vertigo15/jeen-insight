@@ -57,8 +57,15 @@ async function dismissOnboarding(page) {
   const skip = page.locator('.jo-dialog [data-skip]');
   if (!(await skip.isVisible({ timeout: 1_500 }).catch(() => false))) return;
   await page.locator('.jo-dialog [data-dontshow]').check({ timeout: 2_000 }).catch(() => {});
+  // The opt-out PATCH is fire-and-forget in the UI; wait for it so the choice
+  // is actually persisted before the caller saves state / closes the page.
+  const persisted = page.waitForResponse(
+    (r) => r.url().includes('/api/user/onboarding') && r.request().method() === 'PATCH' && r.ok(),
+    { timeout: 5_000 },
+  ).catch(() => null);
   await skip.click({ timeout: 5_000 }).catch(() => {});
   await page.locator('.jo-backdrop').waitFor({ state: 'detached', timeout: 5_000 }).catch(() => {});
+  await persisted;
 }
 
 /** Open the workspace with the saved session and wait for the app to boot. */

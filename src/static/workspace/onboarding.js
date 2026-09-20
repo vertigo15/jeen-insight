@@ -7,10 +7,18 @@
    each session until the user opts out via "Don't show this again"), and a
    four-step guided tour.
 
-   No new dependencies, no build step. Persistence is server-side (per user) via
-   GET/PATCH /api/user/onboarding; browser mutations ride csrf.js's X-CSRFToken.
-   Checklist completion is driven by the four `jeen:onboarding:*` CustomEvents the
-   app emits (see workspaceController.js / script.js) — not by new instrumentation.
+   Suppression model:
+     * "Skip for now"  -> mutes EVERY surface for the current browser session.
+       Client-only (there is no server notion of a session): an in-memory flag
+       mirrored into a user-scoped sessionStorage key so it survives a reload.
+     * "Don't show this again" -> permanent opt-out of every surface, persisted
+       server-side as `ftue_opted_out_at`.
+
+   No new dependencies, no build step. Progress/opt-out persistence is
+   server-side (per user) via GET/PATCH /api/user/onboarding; browser mutations
+   ride csrf.js's X-CSRFToken. Checklist completion is driven by the four
+   `jeen:onboarding:*` CustomEvents the app emits (see workspaceController.js /
+   script.js) — not by new instrumentation.
    ========================================================================== */
 
 (function () {
@@ -18,6 +26,7 @@
 
   var API = '/api/user/onboarding';
   var CHECK = 'M2 6l3 3 5-6';
+  var SKIP_KEY_PREFIX = 'jeen:onboarding:skip:';
 
   // Interface strings come from the locale catalog (static/i18n/i18n.js).
   function t(key, args) {
@@ -65,6 +74,9 @@
   var checklistEl = null;
   var successCount = 0;
   var nudgeShown = false;
+  // In-memory "Skip for now" flag. Authoritative within this page even if
+  // sessionStorage is unavailable (private mode, storage disabled, quota).
+  var sessionMuted = false;
 
   // ---------------------------------------------------------------- helpers
   function el(tag, cls, html) {
@@ -77,8 +89,51 @@
   function defaults() {
     return {
       user_id: null, welcome_seen_at: null, tour_completed_at: null,
-      checklist: {}, checklist_dismissed_at: null, nudge_dismissed_at: null
+      checklist: {}, checklist_dismissed_at: null, nudge_dismissed_at: null,
+      ftue_opted_out_at: null
     };
+  }
+
+  // ---------------------------------------------------------------- suppression
+  // The session-skip key is scoped by user so a logout/login in the same tab
+  // cannot inherit another account's skip. Every identity we know about is
+  // used, because they come from different requests: `user_id` from the
+  // onboarding GET (absent on its fail-soft path) and `_currentUser` from
+  // /api/auth/me. Writing under all of them and reading any of them keeps the
+  // skip intact across a reload where only one source is available. When no
+  // identity is known at all, nothing is written — the in-memory flag covers
+  // the page and we never create a shared key another account could inherit.
+  function skipKeys() {
+    var keys = [];
+    var uid = state.data && state.data.user_id;
+    if (uid) keys.push(SKIP_KEY_PREFIX + 'id:' + uid);
+    var cu = window._currentUser;
+    if (cu && cu.id != null) keys.push(SKIP_KEY_PREFIX + 'auth:' + cu.id);
+    if (cu && cu.email) keys.push(SKIP_KEY_PREFIX + 'email:' + cu.email);
+    return keys;
+  }
+
+  function setSessionSkipped() {
+    sessionMuted = true;
+    try {
+      skipKeys().forEach(function (k) { window.sessionStorage.setItem(k, '1'); });
+    } catch (e) { /* storage unavailable: in-memory flag suffices */ }
+  }
+
+  function sessionSkipped() {
+    if (sessionMuted) return true;
+    try {
+      return skipKeys().some(function (k) { return window.sessionStorage.getItem(k) === '1'; });
+    } catch (e) { return false; }
+  }
+
+  function permanentlyOptedOut() {
+    return !!(state.data && state.data.ftue_opted_out_at);
+  }
+
+  // Single gate every FTUE surface checks before mounting.
+  function ftueMuted() {
+    return sessionSkipped() || permanentlyOptedOut();
   }
 
   function fetchState() {
@@ -95,7 +150,7 @@
   function reconcile(row) {
     if (!row) return;
     if (!state.data) { state.data = row; return; }
-    ['welcome_seen_at', 'tour_completed_at', 'checklist_dismissed_at', 'nudge_dismissed_at']
+    ['welcome_seen_at', 'tour_completed_at', 'checklist_dismissed_at', 'nudge_dismissed_at', 'ftue_opted_out_at']
       .forEach(function (k) { if (row[k]) state.data[k] = row[k]; });
     var incoming = row.checklist || {};
     state.data.checklist = state.data.checklist || {};
@@ -286,6 +341,7 @@
   }
 
   function mountChecklist() {
+    if (ftueMuted()) return;
     if (checklistEl || (state.data && state.data.checklist_dismissed_at)) return;
     var conversation = document.getElementById('v3-conversation');
     var composerWrap = conversation && conversation.querySelector('.v3-composer-wrap');
@@ -321,6 +377,7 @@
   }
 
   function mountCards() {
+    if (ftueMuted()) return;
     var ph = document.getElementById('v3-placeholder');
     if (!ph || successCount >= 3) return;
     var grid = el('div', 'jo-cards');
@@ -373,6 +430,7 @@
   }
 
   function maybeShowNudge() {
+    if (ftueMuted()) return;
     if (nudgeShown || successCount !== 1) return;
     if (state.data && state.data.nudge_dismissed_at) return;
     var scroll = document.querySelector('.v3-workspace .v3-scroll');
@@ -444,12 +502,31 @@
       var cb = dialog.querySelector('[data-dontshow]');
       return !!(cb && cb.checked);
     }
-    // Product decision: the welcome dialog + tour re-appear every session UNTIL
-    // the user explicitly opts out. Skipping / taking the tour is temporary; only
-    // ticking "Don't show this again" persists welcome_seen and suppresses it.
-    function close() { teardown(); if (optedOut()) patch({ welcome_seen: true }); }
-    function skip() { close(); }
-    function take() { close(); startTour(); }
+    // "Skip for now" mutes the whole FTUE for this browser session only.
+    // "Don't show this again" persists a permanent opt-out (ftue_opted_out_at).
+    // The session flag is ALSO set on the permanent path so a reload before the
+    // PATCH lands cannot flash the FTUE back; the server row takes over after.
+    function applyChoice() {
+      setSessionSkipped();
+      if (optedOut()) {
+        if (!state.data) state.data = defaults();
+        state.data.ftue_opted_out_at = state.data.ftue_opted_out_at || 'pending';
+        patch({ ftue_opted_out: true, welcome_seen: true });
+      }
+    }
+    function skip() {
+      teardown();
+      applyChoice();
+      hideAllSurfaces();
+    }
+    // The tour was explicitly requested, so it runs once even though everything
+    // else is muted from now on (for this session, or permanently if opted out).
+    function take() {
+      teardown();
+      applyChoice();
+      hideAllSurfaces();
+      startTour({ force: true });
+    }
     function onKey(e) {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); skip(); return; }
       if (e.key === 'Tab') {
@@ -470,8 +547,11 @@
   // ---------------------------------------------------------------- guided tour (Task 5)
   var tour = null;
 
-  function startTour() {
+  // `opts.force` lets the one tour the user explicitly asked for (welcome dialog
+  // "Take a tour") run even though the rest of the FTUE is muted.
+  function startTour(opts) {
     if (tour) return;
+    if (ftueMuted() && !(opts && opts.force)) return;
     dismissHint();
     tour = {
       index: 0,
@@ -479,6 +559,7 @@
       coach: null,
       target: null,
       ro: null,
+      prevFocus: document.activeElement,
       prevTab: window.ChatController ? window.ChatController.activeTab : 'conversation',
       prevConversationOpen: !document.getElementById('v3-conversation').hidden
     };
@@ -611,10 +692,12 @@
   var hint = null;
 
   function showHint(target, opts) {
-    if (tour || !target) return;
+    // The mute check also neutralises spotlightPin()'s delayed retries, which
+    // could otherwise recreate a hint after the FTUE was torn down.
+    if (tour || !target || ftueMuted()) return;
     dismissHint();
     opts = opts || {};
-    hint = { target: target, coach: null, placement: opts.placement || 'above', timer: null };
+    hint = { target: target, coach: null, placement: opts.placement || 'above', timer: null, prevFocus: document.activeElement };
     target.classList.add('jo-target-highlight');
     if (opts.pill) target.classList.add('jo-target-highlight--pill');
 
@@ -644,13 +727,16 @@
 
   function dismissHint() {
     if (!hint) return;
+    var hadFocus = !!(hint.coach && hint.coach.contains(document.activeElement));
     if (hint.target) hint.target.classList.remove('jo-target-highlight', 'jo-target-highlight--pill');
     if (hint.coach) hint.coach.remove();
     if (hint.timer) clearTimeout(hint.timer);
     window.removeEventListener('resize', hintReposition);
     window.removeEventListener('scroll', hintReposition, true);
     document.removeEventListener('keydown', hintKey, true);
+    var prev = hint.prevFocus;
     hint = null;
+    if (hadFocus) restoreFocus(prev);
   }
 
   function advance() {
@@ -659,8 +745,12 @@
     else finishTour();
   }
 
-  function finishTour() {
+  // Shared teardown. `persistCompletion` is true when the user finished or
+  // exited the tour themselves; false when it is being cancelled because the
+  // FTUE was muted underneath it (that is not a "completed" signal).
+  function teardownTour(persistCompletion) {
     if (!tour) return;
+    var hadFocus = !!(tour.coach && tour.coach.contains(document.activeElement));
     clearHighlight();
     if (tour.coach) tour.coach.remove();
     if (tour.scrim) tour.scrim.remove();
@@ -672,8 +762,35 @@
       if (tour.prevTab) window.ChatController.setTab(tour.prevTab);
       if (window.innerWidth <= 1100) window.ChatController.setConversation(!!tour.prevConversationOpen);
     }
+    if (hadFocus) restoreFocus(tour.prevFocus);
     tour = null;
-    patch({ tour_completed: true });
+    if (persistCompletion) patch({ tour_completed: true });
+  }
+
+  // Coach-marks take focus for keyboard users; hand it back when they go away
+  // so focus does not fall to <body>. Callers only do this when focus was still
+  // inside the coach-mark (an auto-dismiss must not yank focus the user moved).
+  // Skip if the element is gone or hidden.
+  function restoreFocus(node) {
+    if (!node || node === document.body || !node.isConnected || !node.focus) return;
+    if (node.offsetWidth === 0 && node.offsetHeight === 0) return;
+    try { node.focus(); } catch (e) {}
+  }
+
+  function finishTour() { teardownTour(true); }
+  function cancelTour() { teardownTour(false); }
+
+  // ---------------------------------------------------------------- mute everything
+  // Immediately remove every mounted FTUE surface. Mounting is separately gated
+  // by ftueMuted(), so nothing here comes back until the mute lifts.
+  function hideAllSurfaces() {
+    if (checklistEl) { checklistEl.remove(); checklistEl = null; }
+    retireCards();
+    var nudge = document.querySelector('.v3-workspace .jo-nudge');
+    if (nudge) nudge.remove();
+    nudgeShown = true;
+    dismissHint();
+    cancelTour();
   }
 
   // ---------------------------------------------------------------- signals
@@ -693,6 +810,7 @@
     successCount = 0;
     var stale = document.querySelector('.v3-workspace .jo-nudge');
     if (stale) stale.remove();
+    if (ftueMuted()) return;
     nudgeShown = false;
     mountCards();
   });
@@ -715,9 +833,15 @@
         }
       } catch (e) {}
 
-      mountChecklist();
-      mountCards();
-      if (!state.data.welcome_seen_at) showWelcome();
+      // Skipped this session or permanently opted out: mount nothing. Progress
+      // signals keep persisting server-side so a returning user resumes cleanly.
+      if (!ftueMuted()) {
+        mountChecklist();
+        mountCards();
+        if (!state.data.welcome_seen_at) showWelcome();
+      }
+      // Boot decisions are final: a readiness marker for tests / integrations.
+      document.body.classList.add('jo-ready');
     });
   });
 })();

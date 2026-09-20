@@ -38,6 +38,7 @@ def _empty_row(user_id: str = "user-a") -> dict:
         "checklist": {},
         "checklist_dismissed_at": None,
         "nudge_dismissed_at": None,
+        "ftue_opted_out_at": None,
         "updated_at": None,
     }
 
@@ -75,7 +76,35 @@ def test_patch_onboarding_merges_flags(client, onboarding_service):
         tour_completed=None,
         checklist_dismissed=None,
         nudge_dismissed=None,
+        ftue_opted_out=None,
         checklist={"pick_connection": True},
+    )
+
+
+def test_patch_onboarding_ftue_opt_out_is_its_own_flag(client, onboarding_service):
+    # "Don't show this again" persists a dedicated column; it must not be
+    # expressed by (or confused with) the individual per-surface dismissals.
+    merged = _empty_row()
+    merged["ftue_opted_out_at"] = "2026-09-20T00:00:00+00:00"
+    onboarding_service.merge.return_value = merged
+
+    resp = client.patch(
+        "/api/user/onboarding",
+        json={"user_id": "user-a", "ftue_opted_out": True},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["ftue_opted_out_at"] == "2026-09-20T00:00:00+00:00"
+    assert resp.json()["welcome_seen_at"] is None
+    assert resp.json()["checklist_dismissed_at"] is None
+    onboarding_service.merge.assert_awaited_once_with(
+        "user-a",
+        welcome_seen=None,
+        tour_completed=None,
+        checklist_dismissed=None,
+        nudge_dismissed=None,
+        ftue_opted_out=True,
+        checklist=None,
     )
 
 
