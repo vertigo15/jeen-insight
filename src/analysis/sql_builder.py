@@ -85,16 +85,26 @@ def _type_of(column_types: Optional[ColumnTypes], table: str, column: str) -> st
     return str(column_types.get((table.lower(), column.lower())) or "").lower()
 
 
+def _numeric_column(table: str, column: str, database_type: Optional[str], column_types: Optional[ColumnTypes]) -> exp.Expression:
+    """The column as a number the driver returns numerically.
+
+    Postgres ``money`` is the one numeric type that comes back as text
+    (``$90,000.00``) and casts to ``numeric`` only explicitly, so a measure,
+    feature or target of that type is cast here; everything else is untouched.
+    """
+    col: exp.Expression = _column(column)
+    mtype = _type_of(column_types, table, column)
+    if (database_type or "").lower() in ("postgres", "postgresql") and any(t in mtype for t in _MONEY_TYPES):
+        col = exp.Cast(this=col, to=exp.DataType.build("DECIMAL"))
+    return col
+
+
 def _measure(req: SeriesRequest, database_type: Optional[str], column_types: Optional[ColumnTypes]) -> exp.Expression:
     if req.measure_column.strip() == "*":
         if req.agg != "count":
             raise ValueError("only COUNT may aggregate '*'")
         return exp.Count(this=exp.Star())
-    col: exp.Expression = _column(req.measure_column)
-    mtype = _type_of(column_types, req.table, req.measure_column)
-    if (database_type or "").lower() in ("postgres", "postgresql") and any(t in mtype for t in _MONEY_TYPES):
-        # money <-> numeric casts are not implicit in Postgres expressions.
-        col = exp.Cast(this=col, to=exp.DataType.build("DECIMAL"))
+    col = _numeric_column(req.table, req.measure_column, database_type, column_types)
     agg = {
         "sum": exp.Sum, "count": exp.Count, "avg": exp.Avg, "min": exp.Min, "max": exp.Max,
     }[req.agg]
@@ -169,10 +179,7 @@ def _agg_expr(agg: str, column: str, req: SeriesRequest, database_type: Optional
         if agg != "count":
             raise ValueError("only COUNT may aggregate '*'")
         return exp.Count(this=exp.Star())
-    col: exp.Expression = _column(column)
-    mtype = _type_of(column_types, req.table, column)
-    if (database_type or "").lower() in ("postgres", "postgresql") and any(t in mtype for t in _MONEY_TYPES):
-        col = exp.Cast(this=col, to=exp.DataType.build("DECIMAL"))
+    col = _numeric_column(req.table, column, database_type, column_types)
     cls = {"sum": exp.Sum, "count": exp.Count, "avg": exp.Avg, "min": exp.Min, "max": exp.Max}[agg]
     return cls(this=col)
 
@@ -298,11 +305,15 @@ def build_entity_sql(
 ) -> str:
     """Tier B: one row per entity — key, features[, target] — under the filters,
     ordered by key so the row cap is deterministic. The runner's ``max_rows``
-    (``req.row_cap``) bounds what leaves the database."""
-    cols = [exp.alias_(_column(req.entity_key), "entity_key", quoted=True)]
-    cols += [_column(f) for f in req.features]
+    (``req.row_cap``) bounds what leaves the database. Features and the target
+    are numeric to the engine, so a Postgres ``money`` column is cast (and keeps
+    its name) rather than arriving as text and being refused as non-numeric."""
+    cols: List[exp.Expression] = [exp.alias_(_column(req.entity_key), "entity_key", quoted=True)]
+    for feature in req.features:
+        col = _numeric_column(req.table, feature, database_type, column_types)
+        cols.append(exp.alias_(col, feature, quoted=True) if isinstance(col, exp.Cast) else col)
     if req.target:
-        cols.append(exp.alias_(_column(req.target), "target", quoted=True))
+        cols.append(exp.alias_(_numeric_column(req.table, req.target, database_type, column_types), "target", quoted=True))
     table = _table(req, connection_schema=connection_schema, connection_catalog=connection_catalog, database_type=database_type)
     select = exp.select(*cols).from_(table).order_by(exp.Ordered(this=_column(req.entity_key)))
     preds: List[exp.Expression] = []

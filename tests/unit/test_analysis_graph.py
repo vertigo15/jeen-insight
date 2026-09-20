@@ -13,7 +13,7 @@ Scenarios:
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock
@@ -245,7 +245,13 @@ async def test_confirmed_reentry_runs_the_skill_and_narrates(prompt_loader):
     assert {"measure_column", "date_column", "grain", "window", "sensitivity", "method"} <= set(chips)
     assert chips["measure_column"]["value"] == "Profit" and chips["grain"]["value"] == "week"
     assert chips["window"]["value"] == 130 and chips["method"]["options"] == ["auto", "sigma3"]
-    assert chips["method"]["label"] == "model"
+    assert chips["method"]["label"] == "Model" and chips["method"]["option_labels"]["sigma3"] == "3-sigma"
+    # The card's sections and bounds come from the contract, not the browser.
+    assert chips["measure_column"]["group"] == "Data" and chips["method"]["group"] == "Model"
+    assert chips["window"]["group"] == "Model" and chips["window"]["unit_from"] == "grain"
+    assert (chips["window"]["min"], chips["window"]["max"], chips["window"]["step"]) == (12, 1500, 1)
+    assert chips["window"]["defaults_by_grain"] == {"day": 90, "week": 26, "month": 24}
+    assert chips["sensitivity"]["option_labels"]["0.95"] == "95%"
     assert "sent to the analysis service" in definition["egress_summary"]
     assert fr["analysis"]["facts"]["n_flagged"] >= 1
     assert fr["low_confidence"] is False
@@ -358,7 +364,8 @@ async def test_forecast_window_travels_from_the_card_to_the_engine_and_back(prom
     assert "2025-05-05" in final["generated_sql"] and "2026-06-29" in final["generated_sql"]
     chips = {c["key"]: c for c in fr["analysis"]["definition"]["chips"]}
     assert chips["window"]["value"] == 60 and isinstance(chips["window"]["value"], int)
-    assert chips["method"]["label"] == "model" and chips["horizon"]["value"] == 8
+    assert chips["method"]["label"] == "Model" and chips["horizon"]["value"] == 8
+    assert chips["horizon"]["group"] == "Output" and chips["horizon"]["unit_from"] == "grain"
 
 
 @pytest.mark.asyncio
@@ -701,6 +708,64 @@ async def test_contribution_flow_defaults_the_periods_and_runs(prompt_loader):
 
 
 @pytest.mark.asyncio
+async def test_contribution_periods_past_the_data_are_reanchored_to_its_end(prompt_loader):
+    """"The most recent quarter" is relative to today for the planner; on a
+    historical dataset that lands past the newest row and would read no rows.
+    Periods that miss the data are moved to its end and the move is recorded."""
+    store = InMemoryAnalysisStore()
+    await store.set_skill_pref(user_id="user-a", source_key="aw", skill="contribution", remember=True)
+    plan = {"skill": "contribution", "table": "FactInternetSales", "date_column": "OrderDate", "measure_column": "Profit",
+            "agg": "sum", "dimensions": ["SalesTerritoryKey", "ProductLine"],
+            "before_start": "2031-03-20", "before_end": "2031-06-20", "after_start": "2031-06-20", "after_end": "2031-09-20"}
+    runner = _FamilyRunner()
+    graph, _ = _build_p6(_make_llm(plan=plan), runner, store, prompt_loader)
+    final = await graph.ainvoke(_state("What drove the change in profit in the most recent quarter?"))
+    fr = final["formatted_response"]
+    assert fr["status"] == "completed", fr.get("error")
+    params = fr["analysis"]["params"]
+    # The probe says the data ends in 2026; the periods now end there, three months each.
+    assert params["after_end"].startswith("2026-") and params["before_end"] == params["after_start"]
+    assert (date.fromisoformat(params["after_end"]) - date.fromisoformat(params["after_start"])).days in range(89, 93)
+    guard = next(g for g in fr["analysis"]["guard_results"] if g["name"] == "periods")
+    assert guard["passed"] is True and "fall outside the data" in guard["detail"] and "2031" not in params["after_end"]
+    # The SQL that ran used the re-anchored dates, not the planner's.
+    union_sql = next(s for s in runner.calls if "'before'" in s)
+    assert params["after_end"] in union_sql and "2031" not in union_sql
+
+    # A tz-aware probe (timestamptz columns) is compared on calendar days, not rejected.
+    class _TzRunner(_FamilyRunner):
+        async def run_sql(self, sql, **kw):
+            out = await super().run_sql(sql, **kw)
+            if "min_ts" in sql:
+                row = dict(out["rows"][0])
+                row["min_ts"] = datetime.combine(row["min_ts"], datetime.min.time(), tzinfo=timezone.utc)
+                row["max_ts"] = datetime.combine(row["max_ts"], datetime.min.time(), tzinfo=timezone.utc)
+                out = {**out, "rows": [row]}
+            return out
+    graph, _ = _build_p6(_make_llm(plan=plan), _TzRunner(), store, prompt_loader)
+    final = await graph.ainvoke(_state("What drove the change in profit in the most recent quarter?"))
+    assert final["formatted_response"]["status"] == "completed", final["formatted_response"].get("error")
+    assert final["formatted_response"]["analysis"]["params"]["after_end"].startswith("2026-")
+
+    # Only the earlier period missing: it is recomputed from the given later one and named as such.
+    plan_before = {**plan, "before_start": "2031-01-01", "before_end": "2031-04-01", "after_start": "2025-04-01", "after_end": "2025-07-01"}
+    graph, _ = _build_p6(_make_llm(plan=plan_before), _FamilyRunner(), store, prompt_loader)
+    final = await graph.ainvoke(_state("What drove the change in profit in Q2 2025 versus the quarter before?"))
+    params = final["formatted_response"]["analysis"]["params"]
+    assert params["after_start"] == "2025-04-01" and params["before_end"] == "2025-04-01" and params["before_start"] == "2025-01-01"
+    guard = next(g for g in final["formatted_response"]["analysis"]["guard_results"] if g["name"] == "periods")
+    assert "earlier period falls outside" in guard["detail"]
+
+    # A period the planner placed inside the data is kept as given.
+    plan_ok = {**plan, "before_start": "2025-01-01", "before_end": "2025-04-01", "after_start": "2025-04-01", "after_end": "2025-07-01"}
+    graph, _ = _build_p6(_make_llm(plan=plan_ok), _FamilyRunner(), store, prompt_loader)
+    final = await graph.ainvoke(_state("What drove the change in profit between Q1 and Q2 2025?"))
+    params = final["formatted_response"]["analysis"]["params"]
+    assert params["after_start"] == "2025-04-01" and params["after_end"] == "2025-07-01"
+    assert not any(g["name"] == "periods" for g in final["formatted_response"]["analysis"]["guard_results"])
+
+
+@pytest.mark.asyncio
 async def test_tier_b_clustering_flow_confirms_with_row_level_egress_then_runs(prompt_loader):
     store = InMemoryAnalysisStore()
     plan = {"skill": "clustering", "table": "DimCustomer", "entity_key": "CustomerKey",
@@ -715,6 +780,13 @@ async def test_tier_b_clustering_flow_confirms_with_row_level_egress_then_runs(p
     proposal = fr["proposal"]
     assert proposal["tier"] == "B" and "Row-level" in proposal["egress_summary"] and "audited" in proposal["egress_summary"]
     assert {c["key"] for c in proposal["chips"]} >= {"entity_key", "features", "row_cap", "k"}
+    features_chip = next(c for c in proposal["chips"] if c["key"] == "features")
+    # Features are picked from the catalog's numeric columns, not typed as a comma list.
+    assert features_chip["kind"] == "multiselect" and isinstance(features_chip["value"], list)
+    assert (features_chip["min"], features_chip["max"]) == (2, 8)
+    # Clustering has no "Output" section and its row cap is a data-volume control.
+    assert {c["group"] for c in proposal["chips"]} == {"Data", "Model"}
+    assert next(c for c in proposal["chips"] if c["key"] == "row_cap")["group"] == "Data"
     assert runner.calls == []  # nothing read before consent
     params = store.proposals[proposal["proposal_id"]]["params"]
     assert params["entity"]["features"] == ["YearlyIncome", "TotalChildren"]  # Gender dropped by the guard
@@ -904,6 +976,6 @@ async def test_forecast_period_bound_to_a_date_column_becomes_the_horizon(prompt
     assert params["window"] == 24
     window_chip = next(c for c in proposal["chips"] if c["key"] == "window")
     assert window_chip["value"] == 24
-    assert next(c for c in proposal["chips"] if c["key"] == "method")["label"] == "model"
+    assert next(c for c in proposal["chips"] if c["key"] == "method")["label"] == "Model"
     nodes = _nodes(final)
     assert "filter_grounder" in nodes and "analysis_planner" in nodes and "analysis_guard" in nodes

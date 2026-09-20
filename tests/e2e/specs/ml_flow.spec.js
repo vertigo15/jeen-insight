@@ -15,11 +15,12 @@ test('forecast stops on a confirm card with egress notice and chips', async ({ p
   // The answer pane hosts the confirm card.
   const card = page.locator('#v3-placeholder .v3-ml-card.is-confirm');
   await expect(card).toBeVisible();
-  await expect(card.locator('.v3-ml-tier')).toContainText('tier A');
+  await expect(card.locator('.v3-ml-tiermeta')).toContainText('Aggregates only');
   await expect(card.locator('.v3-ml-egress')).toContainText('sent to the analysis service');
 
-  // Editable parameter chips, incl. the horizon.
+  // Editable parameter fields, incl. the horizon, grouped into sections.
   await expect(card.locator('[data-chip="horizon"]')).toHaveValue('8');
+  await expect(card.locator('.v3-ml-group legend')).toHaveText(['Data', 'Model', 'Output']);
   await expect(card.locator('[data-run]')).toBeEnabled();
 });
 

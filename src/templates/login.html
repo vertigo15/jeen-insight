@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="{{ locale }}" dir="{{ dir }}" data-theme="light">
 <head>
   <script>
     (function () {
@@ -9,12 +9,12 @@
   </script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sign in — Jeen Insights</title>
+  <title>{{ t('login.pageTitle') }}</title>
   <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Hebrew:wght@400;500;600&family=Urbanist:ital,wght@0,300;0,400;0,500;0,600;0,700;0,900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=83">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=103">
   <style>
     html, body { height: 100%; margin: 0; }
     body {
@@ -120,10 +120,10 @@
     .login-input::placeholder { color: var(--color-muted); }
 
     .login-pw-wrap { position: relative; }
-    .login-pw-wrap .login-input { padding-right: 40px; }
+    .login-pw-wrap .login-input { padding-inline-end: 40px; }
     .login-pw-toggle {
       position: absolute;
-      right: 10px;
+      inset-inline-end: 10px;
       top: 50%;
       transform: translateY(-50%);
       background: none;
@@ -170,7 +170,7 @@
       border-radius: 50%;
       animation: spin .6s linear infinite;
       vertical-align: middle;
-      margin-right: 6px;
+      margin-inline-end: 6px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -219,6 +219,7 @@
       height: 18px;
       flex-shrink: 0;
     }
+
   </style>
 </head>
 <body>
@@ -230,7 +231,7 @@
         <div class="login-logo">J</div>
         <div>
           <h1 class="login-title">Jeen Insights</h1>
-          <p class="login-subtitle">Sign in to your workspace</p>
+          <p class="login-subtitle">{{ t('login.subtitle') }}</p>
         </div>
       </div>
 
@@ -259,10 +260,10 @@
           <rect x="1" y="11" width="9" height="9" fill="#00a4ef"/>
           <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
         </svg>
-        Sign in with Microsoft
+        {{ t('login.microsoft') }}
       </a>
 
-      <div class="login-divider" aria-hidden="true">or</div>
+      <div class="login-divider" aria-hidden="true">{{ t('login.or') }}</div>
       {% endif %}
 
       <form class="login-form" method="POST" action="/login" id="login-form">
@@ -272,13 +273,14 @@
         <input type="hidden" name="next" value="{{ request.args.get('next', '/') }}">
 
         <div class="login-field">
-          <label class="login-label" for="email">Email / username</label>
+          <label class="login-label" for="email">{{ t('login.emailLabel') }}</label>
           <input
             id="email"
             name="email"
             type="text"
             class="login-input"
-            placeholder="admin"
+            placeholder="{{ t('login.emailPlaceholder') }}"
+            dir="ltr"
             autocomplete="username"
             autofocus
             required
@@ -287,7 +289,7 @@
         </div>
 
         <div class="login-field">
-          <label class="login-label" for="password">Password</label>
+          <label class="login-label" for="password">{{ t('login.passwordLabel') }}</label>
           <div class="login-pw-wrap">
             <input
               id="password"
@@ -295,11 +297,12 @@
               type="password"
               class="login-input"
               placeholder="••••••"
+              dir="ltr"
               autocomplete="current-password"
               required
             >
             <button type="button" class="login-pw-toggle" id="pw-toggle"
-                    aria-label="Toggle password visibility" tabindex="-1">
+                    aria-label="{{ t('login.togglePassword') }}" tabindex="-1">
               <svg id="pw-icon-show" width="16" height="16" viewBox="0 0 24 24" fill="none"
                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
@@ -316,8 +319,9 @@
           </div>
         </div>
 
-        <button type="submit" class="login-btn" id="login-btn">Sign in with password</button>
+        <button type="submit" class="login-btn" id="login-btn">{{ t('login.submit') }}</button>
       </form>
+
     </div>
   </div>
 
@@ -338,8 +342,13 @@
     document.getElementById('login-form').addEventListener('submit', () => {
       const btn = document.getElementById('login-btn');
       btn.disabled = true;
-      btn.innerHTML = '<span class="btn-spinner"></span>Signing in…';
+      btn.textContent = '';
+      const spinner = document.createElement('span');
+      spinner.className = 'btn-spinner';
+      btn.appendChild(spinner);
+      btn.appendChild(document.createTextNode({{ t('login.submitting')|tojson }}));
     });
+
   </script>
 </body>
 </html>

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="{{ locale }}" dir="{{ dir }}" data-theme="light">
 <head>
     <!-- Anti-FOUC: read theme preference before any render.
          Default is light; respect a previously toggled choice from localStorage. -->
@@ -13,15 +13,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <title>Jeen Insights — Data Analytics</title>
+    <title>{{ t('app.title') }}</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
     <!-- Jeen fonts: Urbanist + Noto Sans Hebrew -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Hebrew:wght@400;500;600&family=Urbanist:ital,wght@0,300;0,400;0,500;0,600;0,700;0,900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=102">
-    <link rel="stylesheet" href="{{ url_for('static', filename='workspace/workspace.css') }}?v=13">
-    <link rel="stylesheet" href="{{ url_for('static', filename='workspace/onboarding.css') }}?v=4">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=104">
+    <link rel="stylesheet" href="{{ url_for('static', filename='workspace/workspace.css') }}?v=15">
+    <link rel="stylesheet" href="{{ url_for('static', filename='workspace/onboarding.css') }}?v=6">
     <!-- CodeMirror 6 via ESM — exposes window.CodeMirrorService -->
     <script type="module">
       import { EditorView, lineNumbers } from 'https://esm.sh/@codemirror/view@6';
@@ -38,7 +38,7 @@
     <!-- ── Topbar ─────────────────────────────────────────── -->
     <header class="topbar">
         <div class="topbar-brand">
-            <button class="sidebar-toggle-btn" id="sidebar-toggle" aria-label="Toggle sidebar">
+            <button class="sidebar-toggle-btn" id="sidebar-toggle" aria-label="{{ t('shell.legacy.toggleSidebar') }}">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="18" y2="18"/></svg>
             </button>
             <span class="topbar-title-wrap">
@@ -55,20 +55,20 @@
             </div>
         </div>
         <div class="topbar-actions">
-            <button class="topbar-icon-btn" id="dev-panel-btn" aria-label="Run Details" title="Run Details">
+            <button class="topbar-icon-btn" id="dev-panel-btn" aria-label="{{ t('devPanel.title') }}" title="{{ t('devPanel.title') }}">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
                 <span class="dev-panel-badge" id="dev-panel-badge" hidden></span>
             </button>
-            <button class="topbar-icon-btn" id="history-btn" aria-label="History" title="History">
+            <button class="topbar-icon-btn" id="history-btn" aria-label="{{ t('historyDrawer.title') }}" title="{{ t('historyDrawer.title') }}">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
             </button>
-            <button class="topbar-icon-btn" id="settings-btn" aria-label="Settings" title="Settings">
+            <button class="topbar-icon-btn" id="settings-btn" aria-label="{{ t('shell.rail.settings') }}" title="{{ t('shell.rail.settings') }}">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             </button>
             <!-- User avatar + logout dropdown -->
             <div class="user-menu-wrap" id="user-menu-wrap">
                 <button class="user-avatar-btn" id="user-avatar-btn"
-                        aria-label="Account" aria-haspopup="true" aria-expanded="false"
+                        aria-label="{{ t('shell.user.account') }}" aria-haspopup="true" aria-expanded="false"
                         style="display:none">
                     <span class="user-avatar" id="user-avatar">?</span>
                 </button>
@@ -79,6 +79,17 @@
                         <span class="user-role-badge" id="user-role-badge"></span>
                     </div>
                     <div class="user-dropdown-divider"></div>
+                    <div class="user-dropdown-lang">
+                        <span class="user-dropdown-lang-label" id="user-lang-label">{{ t('shell.user.language') }}</span>
+                        <div class="user-lang-picker" id="user-lang-picker" role="radiogroup" aria-labelledby="user-lang-label">
+                            {% for l in ui_locales %}
+                            <button type="button" class="user-lang-option" role="radio" lang="{{ l.tag }}" dir="{{ l.dir }}"
+                                    data-locale="{{ l.tag }}" aria-checked="{{ 'true' if l.tag == locale else 'false' }}"
+                                    tabindex="{{ 0 if l.tag == locale else -1 }}"><bdi>{{ l.name }}</bdi></button>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    <div class="user-dropdown-divider"></div>
                     <a href="/logout" class="user-dropdown-item user-dropdown-logout">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -86,12 +97,12 @@
                             <polyline points="16 17 21 12 16 7"/>
                             <line x1="21" y1="12" x2="9" y2="12"/>
                         </svg>
-                        Sign out
+                        {{ t('shell.user.signOut') }}
                     </a>
                 </div>
             </div>
 
-            <button class="theme-toggle btn-icon" id="theme-toggle" aria-label="Switch to dark mode">
+            <button class="theme-toggle btn-icon" id="theme-toggle" aria-label="{{ t('shell.theme.switchToDark') }}">
                 <span class="theme-icon" id="theme-icon">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
                 </span>
@@ -106,20 +117,20 @@
     <div class="layout-body">
 
         <!-- Left Sidebar -->
-        <aside class="sidebar" id="sidebar" aria-label="Navigation panel">
+        <aside class="sidebar" id="sidebar" aria-label="{{ t('shell.legacy.navigationPanel') }}">
 
             <!-- Sidebar header: connection pill -->
             <div class="sidebar-header">
                 <div class="connection-switcher">
                     <div class="connection-pill-wrap" id="connection-pill" tabindex="0" role="button"
                          aria-haspopup="listbox" aria-expanded="false" aria-controls="connection-panel"
-                         aria-label="Switch active connection">
+                         aria-label="{{ t('connection.switchActive') }}">
                         <span class="connection-status-dot" id="connection-status-dot" data-status="connecting" aria-hidden="true"></span>
-                        <span class="connection-pill-name" id="connection-pill-name">Loading…</span>
+                        <span class="connection-pill-name" id="connection-pill-name">{{ t('common.loading') }}</span>
                         <span class="connection-mcp-badge" id="connection-mcp-badge" hidden>MCP</span>
                         <svg class="connection-pill-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
                     </div>
-                    <div id="connection-panel" class="connection-panel" role="listbox" aria-label="Connections" hidden></div>
+                    <div id="connection-panel" class="connection-panel" role="listbox" aria-label="{{ t('connection.connections') }}" hidden></div>
                 </div>
             </div>
 
@@ -145,12 +156,12 @@
                         type="text"
                         id="table-search"
                         class="table-search-input"
-                        placeholder="Search tables…"
+                        placeholder="{{ t('shell.panels.searchTables') }}"
                         onkeyup="filterTables()"
-                        aria-label="Search tables"
+                        aria-label="{{ t('shell.panels.searchTables') }}"
                         style="display: none;"
                     />
-                    <button class="refresh-btn" onclick="loadTables()" aria-label="Refresh tables" title="Refresh">
+                    <button class="refresh-btn" onclick="loadTables()" aria-label="{{ t('shell.panels.refreshTables') }}" title="{{ t('common.refresh') }}">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><polyline points="21 3 21 8 16 8"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><polyline points="3 21 3 16 8 16"/></svg>
                     </button>
                 </div>
@@ -165,15 +176,15 @@
                     type="text"
                     id="question-search"
                     class="table-search-input question-search-input"
-                    placeholder="Search questions…"
+                    placeholder="{{ t('shell.panels.searchQuestions') }}"
                     oninput="filterQuestionHistory()"
-                    aria-label="Search recent questions"
+                    aria-label="{{ t('shell.panels.searchQuestions') }}"
                     style="display: none;"
                 />
                 <div class="saved-analyses-block">
                     <div class="saved-analyses-head">
-                        <span>Saved analyses</span>
-                        <button class="refresh-btn" onclick="loadSavedAnalyses()" aria-label="Refresh saved analyses" title="Refresh saved analyses">
+                        <span>{{ t('shell.panels.savedAnalyses') }}</span>
+                        <button class="refresh-btn" onclick="loadSavedAnalyses()" aria-label="{{ t('shell.panels.refreshSavedAnalyses') }}" title="{{ t('shell.panels.refreshSavedAnalyses') }}">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><polyline points="21 3 21 8 16 8"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><polyline points="3 21 3 16 8 16"/></svg>
                         </button>
                     </div>
@@ -181,7 +192,7 @@
                 </div>
                 <div id="question-history" class="question-history" role="list"></div>
                 <button onclick="clearHistory()" class="clear-history-btn" style="display: none;"
-                        id="clear-history-btn" aria-label="Clear question history">Clear</button>
+                        id="clear-history-btn" aria-label="{{ t('shell.panels.clearHistory') }}">{{ t('common.clear') }}</button>
             </div>
 
         </aside>
@@ -205,16 +216,16 @@
                     <div class="query-input-wrap">
                         <textarea
                             id="question-input"
-                            placeholder="show sales per month"
+                            placeholder="{{ t('shell.composer.placeholder') }}"
                             rows="2"
-                            aria-label="Enter your question"
+                            aria-label="{{ t('shell.composer.inputLabel') }}"
                             aria-autocomplete="list"
                             aria-controls="question-suggestions"
                             aria-expanded="false"
                             autocomplete="off"
                         ></textarea>
-                        <button id="ask-button" class="ask-btn" onclick="askQuestion()" aria-label="Submit question">
-                            Ask <span class="ask-btn-kbd">↵</span>
+                        <button id="ask-button" class="ask-btn" onclick="askQuestion()" aria-label="{{ t('shell.composer.submit') }}">
+                            {{ t('shell.composer.ask') }} <span class="ask-btn-kbd">↵</span>
                         </button>
                         <div id="question-suggestions" class="question-suggestions" role="listbox" hidden></div>
                     </div>
@@ -256,11 +267,11 @@
                         <div class="results-toolbar" id="results-toolbar" style="display: none;">
                             <input type="text" id="result-filter" class="result-filter-input" placeholder="Filter results…" onkeyup="filterResults()" />
                             <div class="toolbar-actions">
-                                <button class="toolbar-btn" onclick="exportToExcel()" style="display: none;" id="export-btn" aria-label="Export results to Excel">Export</button>
-                                <button class="toolbar-btn" onclick="copyResults()" style="display: none;" id="copy-results-btn" aria-label="Copy results to clipboard">Copy</button>
-                                <button class="toolbar-btn" onclick="toggleDescribe()" style="display: none;" id="describe-btn" aria-label="Show statistical description">Describe</button>
-                                <button class="toolbar-btn" onclick="rerunFreshFromSaved()" style="display: none;" id="rerun-fresh-btn" aria-label="Rerun saved analysis fresh">Rerun fresh</button>
-                                <button class="toolbar-btn" onclick="openSendResult()" style="display: none;" id="send-result-btn" aria-label="Send or share this result">Send</button>
+                                <button class="toolbar-btn" onclick="exportToExcel()" style="display: none;" id="export-btn" aria-label="{{ t('results.actions.exportLabel') }}">{{ t('common.export') }}</button>
+                                <button class="toolbar-btn" onclick="copyResults()" style="display: none;" id="copy-results-btn" aria-label="{{ t('results.actions.copyLabel') }}">{{ t('common.copy') }}</button>
+                                <button class="toolbar-btn" onclick="toggleDescribe()" style="display: none;" id="describe-btn" aria-label="{{ t('results.actions.describeLabel') }}">{{ t('results.actions.describe') }}</button>
+                                <button class="toolbar-btn" onclick="rerunFreshFromSaved()" style="display: none;" id="rerun-fresh-btn" aria-label="{{ t('results.actions.rerunFreshLabel') }}">{{ t('results.actions.rerunFresh') }}</button>
+                                <button class="toolbar-btn" onclick="openSendResult()" style="display: none;" id="send-result-btn" aria-label="{{ t('results.actions.sendLabel') }}">{{ t('common.send') }}</button>
                             </div>
                         </div>
 
@@ -293,7 +304,7 @@
                         <div id="profiling-header" class="profiling-header" onclick="profilingManager.toggle()" role="button" aria-expanded="false">
                             <h2>
                                 <span id="profiling-arrow">▶</span>
-                                Data Profiling Report
+                                {{ t('profiling.reportTitle') }}
                             </h2>
                         </div>
                         <div id="profiling-content" class="profiling-content" style="display: none;"></div>
@@ -331,34 +342,34 @@
 
 <!-- ── History Drawer ───────────────────────────────────────────── -->
 <div id="history-drawer-overlay" class="history-drawer-overlay" aria-hidden="true"></div>
-<aside id="history-drawer" class="history-drawer" aria-label="Query history" aria-hidden="true">
+<aside id="history-drawer" class="history-drawer" aria-label="{{ t('historyDrawer.ariaLabel') }}" aria-hidden="true">
     <div class="history-drawer-header">
         <div class="history-drawer-header-top">
-            <h2 class="history-drawer-title">History</h2>
-            <button class="dev-drawer-close-btn" id="history-drawer-close" aria-label="Close history">×</button>
+            <h2 class="history-drawer-title">{{ t('historyDrawer.title') }}</h2>
+            <button class="dev-drawer-close-btn" id="history-drawer-close" aria-label="{{ t('historyDrawer.close') }}">×</button>
         </div>
         <input
             type="text"
             id="history-log-search"
             class="table-search-input"
-            placeholder="Search history…"
+            placeholder="{{ t('historyDrawer.search') }}"
             oninput="filterHistoryLog()"
-            aria-label="Search history"
+            aria-label="{{ t('historyDrawer.search') }}"
             style="margin-bottom: 0; margin-top: 8px;"
         />
     </div>
     <div class="history-drawer-body" id="history-drawer-body">
-        <p class="history-empty">Loading…</p>
+        <p class="history-empty">{{ t('common.loading') }}</p>
     </div>
 </aside>
 
 <!-- ── Run Details Drawer ───────────────────────────────── -->
 <div id="dev-drawer-overlay" class="dev-drawer-overlay" aria-hidden="true"></div>
-<aside id="dev-drawer" class="dev-drawer" aria-label="Run details" aria-hidden="true">
-    <div id="dev-drawer-resize" class="dev-drawer-resize" role="separator" aria-orientation="vertical" aria-label="Resize developer panel" title="Drag to resize"></div>
+<aside id="dev-drawer" class="dev-drawer" aria-label="{{ t('devPanel.title') }}" aria-hidden="true">
+    <div id="dev-drawer-resize" class="dev-drawer-resize" role="separator" aria-orientation="vertical" aria-label="{{ t('devPanel.resize') }}" title="{{ t('devPanel.dragToResize') }}"></div>
     <div class="dev-drawer-header">
-        <h2 class="dev-drawer-title">Run Details</h2>
-        <button class="dev-drawer-close-btn" id="dev-drawer-close" aria-label="Close developer panel">×</button>
+        <h2 class="dev-drawer-title">{{ t('devPanel.title') }}</h2>
+        <button class="dev-drawer-close-btn" id="dev-drawer-close" aria-label="{{ t('devPanel.close') }}">×</button>
     </div>
     <div class="dev-drawer-body">
         <!-- Run header: question + status + meta chips; populated after each query -->
@@ -368,38 +379,38 @@
         </div>
         <div class="prompt-tabs" role="tablist">
             <button class="prompt-tab active" onclick="switchPromptTab('sql')" id="tab-sql" role="tab" aria-selected="true" aria-controls="content-sql">SQL</button>
-            <button class="prompt-tab" onclick="switchPromptTab('prompts')" id="tab-prompts" role="tab" aria-selected="false" aria-controls="content-prompts">Prompts</button>
-            <button class="prompt-tab" onclick="switchPromptTab('trace')" id="tab-trace" role="tab" aria-selected="false" aria-controls="content-trace">Execution</button>
+            <button class="prompt-tab" onclick="switchPromptTab('prompts')" id="tab-prompts" role="tab" aria-selected="false" aria-controls="content-prompts">{{ t('devPanel.tabs.prompts') }}</button>
+            <button class="prompt-tab" onclick="switchPromptTab('trace')" id="tab-trace" role="tab" aria-selected="false" aria-controls="content-trace">{{ t('devPanel.tabs.execution') }}</button>
         </div>
         <div class="prompt-tab-content" style="display: none;">
             <div id="content-sql" class="tab-pane active" role="tabpanel" aria-labelledby="tab-sql">
                 <!-- SQL execution stats: rows · exec · LLM time -->
                 <div id="dp-sql-stats" class="dp-sql-stats" hidden></div>
                 <div class="sql-editor-wrapper">
-                    <div id="sql-editor" aria-label="Generated SQL"></div>
-                    <button class="sql-copy-btn" onclick="copySql()" aria-label="Copy SQL to clipboard">
+                    <div id="sql-editor" aria-label="{{ t('devPanel.generatedSql') }}" dir="ltr"></div>
+                    <button class="sql-copy-btn" onclick="copySql()" aria-label="{{ t('devPanel.copySql') }}">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
-                        Copy
+                        {{ t('common.copy') }}
                     </button>
                 </div>
             </div>
             <div id="content-prompts" class="tab-pane" style="display: none;" role="tabpanel" aria-labelledby="tab-prompts">
-                <div class="prompt-subtabs" role="tablist" aria-label="Prompt type">
-                    <button class="prompt-subtab active" onclick="switchPromptSubTab('query')" id="tab-query" role="tab" aria-selected="true" aria-controls="content-query">Query</button>
-                    <button class="prompt-subtab" onclick="switchPromptSubTab('insights')" id="tab-insights" role="tab" aria-selected="false" aria-controls="content-insights">Insights</button>
-                    <button class="prompt-subtab" onclick="switchPromptSubTab('chart')" id="tab-chart" role="tab" aria-selected="false" aria-controls="content-chart">Chart</button>
+                <div class="prompt-subtabs" role="tablist" aria-label="{{ t('devPanel.promptType') }}">
+                    <button class="prompt-subtab active" onclick="switchPromptSubTab('query')" id="tab-query" role="tab" aria-selected="true" aria-controls="content-query">{{ t('devPanel.tabs.query') }}</button>
+                    <button class="prompt-subtab" onclick="switchPromptSubTab('insights')" id="tab-insights" role="tab" aria-selected="false" aria-controls="content-insights">{{ t('devPanel.tabs.insights') }}</button>
+                    <button class="prompt-subtab" onclick="switchPromptSubTab('chart')" id="tab-chart" role="tab" aria-selected="false" aria-controls="content-chart">{{ t('devPanel.tabs.chart') }}</button>
                 </div>
                 <div id="content-query" class="prompt-subpane active" role="tabpanel" aria-labelledby="tab-query">
                     <div id="prompt-content" class="prompt-content"></div>
                 </div>
                 <div id="content-insights" class="prompt-subpane" style="display: none;" role="tabpanel" aria-labelledby="tab-insights">
                     <div id="insights-prompt-content" class="prompt-content">
-                        <p style="color: var(--color-faint);">Insights prompt will appear here after insights are generated.</p>
+                        <p style="color: var(--color-faint);">{{ t('devPanel.insightsPromptEmpty') }}</p>
                     </div>
                 </div>
                 <div id="content-chart" class="prompt-subpane" style="display: none;" role="tabpanel" aria-labelledby="tab-chart">
                     <div id="chart-prompt-content" class="prompt-content">
-                        <p style="color: var(--color-faint);">Chart prompt will appear here after a chart is generated.</p>
+                        <p style="color: var(--color-faint);">{{ t('devPanel.chartPromptEmpty') }}</p>
                     </div>
                 </div>
             </div>
@@ -407,28 +418,35 @@
                 <!-- Log filter toolbar: level chips + search; built by JS after trace renders -->
                 <div id="dp-log-toolbar" class="dp-log-toolbar" hidden></div>
                 <div id="trace-panel" class="trace-panel">
-                    <p class="trace-empty">Run a query to see the execution trace.</p>
+                    <p class="trace-empty">{{ t('devPanel.traceEmpty') }}</p>
                 </div>
             </div>
         </div>
     </div>
 </aside>
 
-<!-- csrf.js MUST load first: it wraps window.fetch to attach the CSRF token. -->
+<!-- Interface language: the effective locale's catalog (merged over English) as a
+     non-executable JSON block, the vendored ICU formatter, then the I18n runtime.
+     These load BEFORE every app script so I18n.t() is available synchronously
+     when the v3 shell is built. -->
+<script type="application/json" id="i18n-bootstrap">{{ i18n_bootstrap|tojson }}</script>
+<script src="{{ url_for('static', filename='vendor/intl-messageformat/intl-messageformat.iife.js') }}?v=10.7.18"></script>
+<script src="{{ url_for('static', filename='i18n/i18n.js') }}?v=1"></script>
+<!-- csrf.js MUST load before app scripts: it wraps window.fetch to attach the CSRF token. -->
 <script src="{{ url_for('static', filename='csrf.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='auth.js') }}?v=51"></script>
-<script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=55"></script>
+<script src="{{ url_for('static', filename='auth.js') }}?v=53"></script>
+<script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=56"></script>
 <script src="{{ url_for('static', filename='profiling/profilingManager.js') }}?v=68"></script>
-<script src="{{ url_for('static', filename='script.js') }}?v=105"></script>
+<script src="{{ url_for('static', filename='script.js') }}?v=107"></script>
 <script src="{{ url_for('static', filename='chat/chatController.js') }}?v=19"></script>
 <!-- ML skills answer-pane helpers (pure rendering); loads BEFORE the workspace controller. -->
-<script src="{{ url_for('static', filename='analysis/analysisPanel.js') }}?v=2"></script>
-<script src="{{ url_for('static', filename='workspace/workspaceController.js') }}?v=14"></script>
+<script src="{{ url_for('static', filename='analysis/analysisPanel.js') }}?v=3"></script>
+<script src="{{ url_for('static', filename='workspace/workspaceController.js') }}?v=15"></script>
 <!-- FTUE overlay: loads AFTER workspaceController.js so window.ChatController exists. -->
-<script src="{{ url_for('static', filename='workspace/onboarding.js') }}?v=6"></script>
+<script src="{{ url_for('static', filename='workspace/onboarding.js') }}?v=7"></script>
 <!-- Settings page (full-screen) -->
 <script type="module">
-  import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=59';
+  import { SettingsPage } from '{{ url_for("static", filename="settings/settingsPage.js") }}?v=62';
   const _sp = new SettingsPage();
   _sp.mount({
       onApplyTheme: (t) => {

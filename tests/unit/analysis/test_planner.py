@@ -280,6 +280,33 @@ def test_detect_analysis_intent_p6(question, expected):
     assert detect_analysis_intent(question) == expected
 
 
+def test_entity_key_prefers_the_catalogs_primary_key_over_guessing():
+    # Two *key columns would be ambiguous by name alone; the catalog flags one as the PK.
+    columns = (
+        "- DimProduct.ProductKey - Type: integer, PK: true\n"
+        "- DimProduct.ProductSubcategoryKey - Type: integer\n"
+        "- DimProduct.Weight - Type: real\n"
+        "- DimProduct.SafetyStockLevel - Type: smallint\n"
+        "- DimProduct.ReorderPoint - Type: smallint\n"
+    )
+    cands = catalog_candidates(columns)
+    tc = cands["dimproduct"]
+    assert tc.primary_keys == ["ProductKey"]
+    assert tc.entity_key_guess() == "ProductKey"
+    plan = {"skill": "clustering", "table": "DimProduct", "features": ["Weight", "SafetyStockLevel", "ReorderPoint"]}
+    out = build_params_from_plan(plan, cands, resolved_filters=[], connection_schema=None, connection_catalog=None)
+    assert out.kind == "params", out.reason
+    assert out.params["entity"]["entity_key"] == "ProductKey"
+    # Without a PK flag the same two *key columns are the user's call.
+    cands2 = catalog_candidates(columns.replace(", PK: true", ""))
+    assert cands2["dimproduct"].entity_key_guess() is None
+    out2 = build_params_from_plan(plan, cands2, resolved_filters=[], connection_schema=None, connection_catalog=None)
+    assert out2.kind == "clarify" and "identifies one entity" in out2.message
+    # A sole *key column needs no flag.
+    cands3 = catalog_candidates("- T.CustomerKey - Type: integer\n- T.Income - Type: money\n- T.Kids - Type: integer\n")
+    assert cands3["t"].entity_key_guess() == "CustomerKey"
+
+
 def test_catalog_candidates_keep_text_columns_and_render_them():
     cands = catalog_candidates(_COLUMNS_P6)
     assert cands["factinternetsales"].text_columns == ["SalesReason", "ProductLine"]

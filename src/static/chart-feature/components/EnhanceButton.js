@@ -5,6 +5,10 @@
  * @module EnhanceButton
  */
 
+// Interface strings come from the locale catalog (static/i18n/i18n.js, loaded first).
+const t = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
+const th = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.h === 'function' ? window.I18n.h(key, args) : String(key));
+
 /// <reference path="../types/chart.types.js" />
 
 /**
@@ -37,9 +41,9 @@ export class EnhanceButton {
             <button 
                 id="enhance-chart-btn" 
                 class="enhance-chart-btn"
-                title="Use AI to enhance chart with better styling and formatting"
+                title="${th('charts.enhance.title')}"
             >
-                ✨ Enhance with AI
+                ✨ ${th('charts.enhance.label')}
             </button>
         `;
         
@@ -73,7 +77,7 @@ export class EnhanceButton {
             button.disabled = true;
             button.innerHTML = `
                 <span class="button-spinner"></span>
-                Enhancing...
+                ${th('charts.enhance.loading')}
             `;
             console.log('[EnhanceButton] Loading state shown');
         }
@@ -87,7 +91,7 @@ export class EnhanceButton {
         const button = document.getElementById('enhance-chart-btn');
         if (button) {
             button.disabled = false;
-            button.innerHTML = '✨ Enhance with AI';
+            button.innerHTML = `✨ ${th('charts.enhance.label')}`;
             console.log('[EnhanceButton] Loading state hidden');
         }
     }
@@ -99,7 +103,7 @@ export class EnhanceButton {
         const button = document.getElementById('enhance-chart-btn');
         if (button) {
             const originalHtml = button.innerHTML;
-            button.innerHTML = '✓ Enhanced!';
+            button.innerHTML = `✓ ${th('charts.enhance.done')}`;
             button.style.background = '#28a745';
             
             setTimeout(() => {

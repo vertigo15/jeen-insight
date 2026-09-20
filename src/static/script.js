@@ -1,6 +1,23 @@
 // Chart manager will be dynamically imported when needed
 let ChartManager = null;
 
+// ── Interface language ──────────────────────────────────────────────────────
+// Strings come from the locale catalog (static/i18n/i18n.js, loaded first).
+// `_t` is plain text, `_th` is HTML-escaped for templates; `_fmtLocale()` is the
+// Intl tag for numbers/dates (e.g. "he-IL"); `_iso` bidi-isolates user data.
+function _t(key, args) {
+    return window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key);
+}
+function _th(key, args) {
+    return window.I18n && typeof window.I18n.h === 'function' ? window.I18n.h(key, args) : String(key);
+}
+function _fmtLocale() {
+    return (window.I18n && window.I18n.formatLocale) || undefined;
+}
+function _iso(value) {
+    return window.I18n && typeof window.I18n.isolate === 'function' ? window.I18n.isolate(value) : String(value == null ? '' : value);
+}
+
 // Global state
 let currentQuestion = '';
 let currentSql = '';
@@ -133,7 +150,7 @@ async function _updateMcpBadge(sourceKey) {
 
 async function loadConnections() {
     setConnectionStatus('connecting');
-    setConnectionPillName('Loading\u2026');
+    setConnectionPillName(_t('common.loading'));
     try {
         const response = await fetch('/api/connections');
         const data = await response.json();
@@ -141,7 +158,7 @@ async function loadConnections() {
         if (availableConnections.length === 0) {
             setActiveConnection('');
             setConnectionStatus('error');
-            setConnectionPillName('No connections');
+            setConnectionPillName(_t('connection.noneShort'));
             return;
         }
         const stored = getActiveConnection();
@@ -162,7 +179,7 @@ async function loadConnections() {
     } catch (e) {
         console.error('Failed to load connections', e);
         setConnectionStatus('error');
-        setConnectionPillName('Failed to load');
+        setConnectionPillName(_t('connection.loadFailed'));
     }
 }
 
@@ -663,7 +680,7 @@ function displayResults(data) {
         }
         setResultMeta(null, lastQueryDurationMs);
     } else {
-        resultsDisplay.innerHTML = '<div class="no-results">No results to display</div>';
+        resultsDisplay.innerHTML = `<div class="no-results">${_th('results.noResults')}</div>`;
         showResultsToolbar(false);
         exportBtn.style.display = 'none';
         copyResultsBtn.style.display = 'none';
@@ -737,7 +754,7 @@ function renderTable(results, rows) {
         if (d.type === 'pct_total' && _colSums[d.sourceIndex] === undefined) {
             let sum = 0;
             rows.forEach(row => {
-                const v = Number(Array.isArray(row) ? row[d.sourceIndex] : row[results.columns[d.sourceIndex]]);
+                const v = parseCellNumber(Array.isArray(row) ? row[d.sourceIndex] : row[results.columns[d.sourceIndex]]);
                 if (Number.isFinite(v)) sum += v;
             });
             _colSums[d.sourceIndex] = sum || 1;
@@ -778,7 +795,7 @@ function renderTable(results, rows) {
             // Derived cell after source column.
             const derived = _derivedCols.find(d => d.sourceIndex === idx);
             if (derived) {
-                const numVal = Number(Array.isArray(row) ? row[idx] : row[column]);
+                const numVal = parseCellNumber(Array.isArray(row) ? row[idx] : row[column]);
                 let derivedText, derivedCls = 'derived-col';
 
                 if (derived.type === 'pct_total') {
@@ -835,7 +852,7 @@ function formatNumeric(value) {
     // Big numbers drop noise decimals (1,309,863 not 1,309,863.4); thousands are
     // grouped; small values keep precision. Mirrors the chart formatter.
     const maxFrac = abs >= 1000 ? 0 : 4;
-    const body = abs.toLocaleString('en-US', { maximumFractionDigits: maxFrac });
+    const body = abs.toLocaleString(_fmtLocale(), { maximumFractionDigits: maxFrac });
     return n < 0 ? _MINUS + body : body;
 }
 
@@ -849,7 +866,7 @@ function _fmtSigned(value) {
     const sign = n > 0 ? '+' : n < 0 ? _MINUS : '';
     const abs  = Math.abs(n);
     const maxFrac = abs >= 1000 ? 0 : 4;
-    return sign + abs.toLocaleString('en-US', { maximumFractionDigits: maxFrac });
+    return sign + abs.toLocaleString(_fmtLocale(), { maximumFractionDigits: maxFrac });
 }
 
 function renderCellHtml(value, colIndex, profile) {
@@ -922,8 +939,7 @@ function profileColumns(results, rows) {
             if (cell === null || cell === undefined || cell === '') continue;
             nonNullCount++;
             distinct.add(String(cell));
-            const num = Number(cell);
-            if (Number.isFinite(num) && /^[-+]?\d/.test(String(cell).trim())) numCount++;
+            if (Number.isFinite(parseCellNumber(cell))) numCount++;
         }
 
         const isNumeric = nonNullCount > 0 && numCount / nonNullCount >= 0.7;
@@ -1241,7 +1257,7 @@ function togglePrompt() {
                 }
             }
         } else {
-            promptContent.innerHTML = '<p>No prompt information available</p>';
+            promptContent.innerHTML = `<p>${_th('devPanel.noPromptInfo')}</p>`;
         }
     } else {
         promptContent.style.display = 'none';
@@ -1254,11 +1270,11 @@ function togglePrompt() {
 async function loadTables() {
     const tablesList = document.getElementById('tables-list');
     const searchInput = document.getElementById('table-search');
-    tablesList.innerHTML = '<p style="color: var(--color-faint); font-size: var(--text-xs); padding: 4px 0;">Loading\u2026</p>';
+    tablesList.innerHTML = `<p style="color: var(--color-faint); font-size: var(--text-xs); padding: 4px 0;">${_th('common.loading')}</p>`;
 
     const connection = requireConnection();
     if (!connection) {
-        tablesList.innerHTML = '<p style="color: var(--color-faint); font-size: var(--text-xs); padding: 4px 0;">Pick a connection first</p>';
+        tablesList.innerHTML = `<p style="color: var(--color-faint); font-size: var(--text-xs); padding: 4px 0;">${_th('tables.pickConnection')}</p>`;
         setConnectionStatus('error');
         return;
     }
@@ -1272,15 +1288,16 @@ async function loadTables() {
             allTablesRich = data.tables;                          // [{name, description, col_count}]
             allTables     = data.tables.map(t => t.name);        // string[] kept for autocomplete
             searchInput.style.display = 'block';
-            displayFilteredTables(allTablesRich);
+            // A refresh that lands while the user is searching must keep the filter.
+            filterTables();
             const countBadge = document.getElementById('table-count-badge');
             if (countBadge) countBadge.textContent = allTables.length;
         } else {
             allTablesRich = [];
             allTables     = [];
             const msg = data.tables && data.tables.length === 0
-                ? 'No tables in catalog \u2014 refresh metadata first'
-                : 'No tables found';
+                ? _th('tables.emptyCatalog')
+                : _th('tables.none');
             tablesList.innerHTML = `<p style="color: var(--color-faint); font-size: var(--text-xs); padding: 4px 0;">${msg}</p>`;
             const countBadge = document.getElementById('table-count-badge');
             if (countBadge) countBadge.textContent = '';
@@ -1288,7 +1305,7 @@ async function loadTables() {
         setConnectionStatus('ok');
         refreshHeroEmptyState();
     } catch (error) {
-        tablesList.innerHTML = '<p style="color: var(--color-error); font-size: var(--text-xs); padding: 4px 0;">Failed to load tables</p>';
+        tablesList.innerHTML = `<p style="color: var(--color-error); font-size: var(--text-xs); padding: 4px 0;">${_th('tables.loadFailed')}</p>`;
         console.error('Error loading tables:', error);
         setConnectionStatus('error');
     }
@@ -1324,7 +1341,7 @@ function _highlightTableSearch(text, term) {
 function displayFilteredTables(tables) {
     const tablesList = document.getElementById('tables-list');
     if (tables.length === 0) {
-        tablesList.innerHTML = '<p style="color: var(--color-muted); font-size: var(--text-xs); padding: 4px 0;">No matching tables</p>';
+        tablesList.innerHTML = `<p style="color: var(--color-muted); font-size: var(--text-xs); padding: 4px 0;">${_th('tables.noMatch')}</p>`;
         return;
     }
     const conn = getActiveConnection();
@@ -1338,8 +1355,12 @@ function displayFilteredTables(tables) {
         const description = tableObj && tableObj.description ? tableObj.description : null;
         const catalogColCount = (tableObj && tableObj.col_count) ? tableObj.col_count : 0;
 
-        const safe   = escapeHtml(name);
-        const safeJS = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        // Attribute values need quotes escaped too (escapeHtml only covers text
+        // nodes): a quoted identifier such as "public"."dimcustomer" would end
+        // data-table / onclick early. The onclick name additionally travels
+        // inside a JS string, so it is JS-escaped first, then attribute-escaped.
+        const safe   = escapeAttr(name);
+        const safeJS = escapeAttr(name.replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
         const isActive   = activeTable === name ? ' is-active' : '';
         const isExpanded = _tableExpandedSet.has(name);
 
@@ -1352,7 +1373,7 @@ function displayFilteredTables(tables) {
         const arrowClass = 'table-expand-arrow' + (isExpanded ? ' open' : '');
         const colsHtml = isExpanded && cached
             ? renderTableColumns(cached)
-            : (isExpanded ? '<div class="table-cols-loading">Loading\u2026</div>' : '');
+            : (isExpanded ? `<div class="table-cols-loading">${_th('common.loading')}</div>` : '');
 
         // Description subtitle with search-term highlighting
         const descHtml = description
@@ -1368,9 +1389,9 @@ function displayFilteredTables(tables) {
     <span class="table-name" title="${safe}">${highlightedName}</span>
     ${colCountBadge}
     <div class="table-item-actions">
-      <button class="table-action-btn" onclick="event.stopPropagation();selectTableExplore('${safeJS}')" title="Explore data">→</button>
-      <button class="table-action-btn" onclick="event.stopPropagation();selectTableSchema('${safeJS}')" title="Show schema">≡</button>
-      <button class="table-action-btn" onclick="event.stopPropagation();copyTableName('${safeJS}')" title="Copy name">⧉</button>
+      <button class="table-action-btn" onclick="event.stopPropagation();selectTableExplore('${safeJS}')" title="${_th('tables.explore')}">→</button>
+      <button class="table-action-btn" onclick="event.stopPropagation();selectTableSchema('${safeJS}')" title="${_th('tables.showSchema')}">≡</button>
+      <button class="table-action-btn" onclick="event.stopPropagation();copyTableName('${safeJS}')" title="${_th('tables.copyName')}">⧉</button>
     </div>
     <span class="${arrowClass}">&#9656;</span>
   </div>
@@ -1455,16 +1476,22 @@ function toggleTableExpand(table) {
             }
         }
     } else {
-        colList.innerHTML = '<div class="table-cols-loading">Loading…</div>';
+        colList.innerHTML = `<div class="table-cols-loading">${_th('common.loading')}</div>`;
         colList.classList.add('open');
         fetchKnowledgeColumns(table).then(cols => {
+            // The list may have been repainted while the columns loaded (a
+            // late tables refresh, a search keystroke): write into the node
+            // that is on screen now, not the one captured at click time.
+            const liveItem = [...document.querySelectorAll('.table-item')].find(item => item.dataset.table === table);
+            const target = (liveItem && liveItem.querySelector('.table-columns-list')) || colList;
             if (!cols) {
-                colList.innerHTML = '<div class="table-cols-loading">Could not load columns</div>';
+                target.innerHTML = `<div class="table-cols-loading">${_th('tables.columnsFailed')}</div>`;
                 return;
             }
             // Only update if still expanded
             if (!_tableExpandedSet.has(table)) return;
-            colList.innerHTML = renderTableColumns(cols);
+            target.innerHTML = renderTableColumns(cols);
+            target.classList.add('open');
             // Add/update col count badge
             const freshItems = document.querySelectorAll('.table-item');
             for (const item of freshItems) {
@@ -1646,6 +1673,17 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// For HTML attribute values: escapeHtml() goes through innerHTML, which leaves
+// quotes alone, so it is only safe for text content.
+function escapeAttr(text) {
+    return String(text ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
 }
 
 // Display structured prompt with collapsible sections
@@ -1865,17 +1903,17 @@ async function loadSavedAnalyses() {
     if (!list) return;
     const connection = getActiveConnection();
     if (!connection) {
-        list.innerHTML = '<p class="history-empty">Pick a connection to see saved analyses.</p>';
+        list.innerHTML = `<p class="history-empty">${_th('saved.pickConnection')}</p>`;
         return;
     }
-    list.innerHTML = '<p class="history-empty">Loading saved analyses…</p>';
+    list.innerHTML = `<p class="history-empty">${_th('saved.loading')}</p>`;
     try {
         const res = await fetch(`/api/saved-analyses?connection=${encodeURIComponent(connection)}&limit=50`);
         if (!res.ok) throw new Error('Failed to fetch saved analyses');
         const data = await res.json();
         const items = data.items || [];
         if (!items.length) {
-            list.innerHTML = '<p class="history-empty">No saved analyses yet.</p>';
+            list.innerHTML = `<p class="history-empty">${_th('saved.empty')}</p>`;
             return;
         }
         list.innerHTML = items.map(item => {
@@ -1892,7 +1930,7 @@ async function loadSavedAnalyses() {
         }).join('');
     } catch (err) {
         console.error('[SavedAnalyses]', err);
-        list.innerHTML = '<p class="history-empty">Unable to load saved analyses.</p>';
+        list.innerHTML = `<p class="history-empty">${_th('saved.loadFailed')}</p>`;
     }
 }
 window.loadSavedAnalyses = loadSavedAnalyses;
@@ -1910,7 +1948,7 @@ async function saveCurrentAnalysis() {
     const oldText = btn ? btn.textContent : '';
     if (btn) {
         btn.disabled = true;
-        btn.textContent = 'Saving…';
+        btn.textContent = _t('common.saving');
     }
     let succeeded = false;
     try {
@@ -1947,18 +1985,18 @@ async function saveCurrentAnalysis() {
         succeeded = true;
         if (btn) {
             btn.dataset.state = 'success';
-            btn.textContent = 'Saved ✓';
+            btn.textContent = `${_t('common.saved')} ✓`;
         }
-        showToast('Analysis saved', 'success');
+        showToast(_t('saved.saved'), 'success');
         await loadSavedAnalyses();
     } catch (err) {
         console.error('[SavedAnalyses] save failed', err);
         if (btn) {
             btn.dataset.state = 'error';
-            btn.textContent = 'Retry save';
-            btn.title = 'Save failed. Click to retry.';
+            btn.textContent = _t('saved.retrySave');
+            btn.title = _t('saved.retrySaveTitle');
         }
-        showToast('Save failed', 'error');
+        showToast(_t('saved.saveFailed'), 'error');
     } finally {
         if (btn) {
             btn.disabled = false;
@@ -1966,7 +2004,7 @@ async function saveCurrentAnalysis() {
                 setTimeout(() => {
                     btn.dataset.state = 'idle';
                     btn.textContent = oldText || 'Save';
-                    btn.title = 'Save';
+                    btn.title = _t('common.save');
                 }, 3000);
             }
         }
@@ -2015,7 +2053,7 @@ window._appendConnectPrompt = _appendConnectPrompt;
 
 async function openSendResult() {
     if (!window._resultHandle) {
-        showToast('This result cannot be sent (no server snapshot).', 'error');
+        showToast(_t('send.noSnapshot'), 'error');
         return;
     }
     let connections = [];
@@ -2024,7 +2062,7 @@ async function openSendResult() {
         if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
         connections = (await r.json()).connections || [];
     } catch (e) {
-        showToast('Could not load your connections — ' + e.message, 'error');
+        showToast(_t('send.loadConnectionsFailed', { detail: _iso(e.message) }), 'error');
         return;
     }
 
@@ -2033,7 +2071,7 @@ async function openSendResult() {
     const connected = emailConns.filter(c => c.connected);
 
     if (!emailConns.length) {
-        showToast('No email connector is available to you. Ask an admin to grant access.', 'info');
+        showToast(_t('send.noEmailConnector'), 'info');
         return;
     }
     if (!connected.length) {
@@ -2057,13 +2095,13 @@ function _sendResultModal(opts) {
     if (opts.needsConnect) {
         overlay.innerHTML = `
             <div class="sr-modal" role="dialog" aria-modal="true" aria-labelledby="sr-title">
-                <div class="sr-head"><h3 id="sr-title">Connect ${escapeHtml(opts.connector.display_name)}</h3></div>
+                <div class="sr-head"><h3 id="sr-title">${_th('send.connectTitle', { name: _iso(opts.connector.display_name) })}</h3></div>
                 <div class="sr-body">
-                    <p class="sr-note">To email results as yourself, first connect your ${escapeHtml(opts.connector.display_name)} account. You'll be redirected to sign in and grant permission.</p>
+                    <p class="sr-note">${_th('send.connectNote', { name: _iso(opts.connector.display_name) })}</p>
                 </div>
                 <div class="sr-foot">
-                    <button class="sp-btn-ghost-sm" id="sr-cancel">Cancel</button>
-                    <button class="sp-btn-primary-sm" id="sr-connect">Connect</button>
+                    <button class="sp-btn-ghost-sm" id="sr-cancel">${_th('common.cancel')}</button>
+                    <button class="sp-btn-primary-sm" id="sr-connect">${_th('settings.myConnections.connect')}</button>
                 </div>
             </div>`;
         document.body.appendChild(overlay);
@@ -2078,39 +2116,39 @@ function _sendResultModal(opts) {
     const conns = opts.connectors;
     const selHtml = conns.length > 1
         ? `<select class="sp-conn-input" id="sr-conn">${conns.map(c => `<option value="${escapeHtml(c.connector_id)}">${escapeHtml(c.display_name)} — ${escapeHtml(c.external_account || '')}</option>`).join('')}</select>`
-        : `<div class="sr-note">Sending from <strong>${escapeHtml(conns[0].external_account || conns[0].display_name)}</strong></div>`;
+        : `<div class="sr-note">${_th('send.sendingFrom')} <strong><bdi>${escapeHtml(conns[0].external_account || conns[0].display_name)}</bdi></strong></div>`;
 
-    const defaultSubject = (window.currentQuestion || 'Query results').slice(0, 120);
+    const defaultSubject = (window.currentQuestion || _t('send.defaultSubject')).slice(0, 120);
 
     overlay.innerHTML = `
         <div class="sr-modal" role="dialog" aria-modal="true" aria-labelledby="sr-title">
-            <div class="sr-head"><h3 id="sr-title">Email this result</h3></div>
+            <div class="sr-head"><h3 id="sr-title">${_th('send.title')}</h3></div>
             <div class="sr-body">
                 <div class="sr-field">
-                    <label>From</label>
+                    <label>${_th('send.from')}</label>
                     ${selHtml}
                 </div>
                 <div class="sr-field">
-                    <label>Recipients</label>
-                    <input class="sp-conn-input" id="sr-recipients" placeholder="name@example.com, other@example.com">
-                    <div class="sr-hint">Comma-separated. Recipients are validated against your organization's policy.</div>
+                    <label>${_th('send.recipients')}</label>
+                    <input class="sp-conn-input" id="sr-recipients" dir="ltr" placeholder="name@example.com, other@example.com">
+                    <div class="sr-hint">${_th('send.recipientsHint')}</div>
                 </div>
                 <div class="sr-field">
-                    <label>Subject</label>
-                    <input class="sp-conn-input" id="sr-subject" value="${escapeHtml(defaultSubject)}">
+                    <label>${_th('send.subject')}</label>
+                    <input class="sp-conn-input" id="sr-subject" dir="auto" value="${escapeHtml(defaultSubject)}">
                 </div>
                 <div class="sr-field">
-                    <label>Note (optional)</label>
-                    <textarea class="sp-conn-input" id="sr-note" rows="3" placeholder="Add a short message…"></textarea>
+                    <label>${_th('send.note')}</label>
+                    <textarea class="sp-conn-input" id="sr-note" rows="3" dir="auto" placeholder="${_th('send.notePlaceholder')}"></textarea>
                 </div>
                 <div class="sr-summary">
-                    A server-rendered summary of <strong>${rowCount.toLocaleString()}</strong> row${rowCount === 1 ? '' : 's'} will be sent from your mailbox. No attachments or raw data links are included.
+                    ${_th('send.summary', { count: rowCount })}
                 </div>
                 <div class="sr-error" id="sr-error"></div>
             </div>
             <div class="sr-foot">
-                <button class="sp-btn-ghost-sm" id="sr-cancel">Cancel</button>
-                <button class="sp-btn-primary-sm" id="sr-send">Send email</button>
+                <button class="sp-btn-ghost-sm" id="sr-cancel">${_th('common.cancel')}</button>
+                <button class="sp-btn-primary-sm" id="sr-send">${_th('send.sendEmail')}</button>
             </div>
         </div>`;
     document.body.appendChild(overlay);
@@ -2130,12 +2168,12 @@ function _sendResultModal(opts) {
             .split(',').map(s => s.trim()).filter(Boolean);
         const subject = (overlay.querySelector('#sr-subject').value || '').trim();
         const note = (overlay.querySelector('#sr-note').value || '').trim();
-        if (!recipients.length) { err.textContent = 'Enter at least one recipient.'; return; }
-        if (!subject) { err.textContent = 'Enter a subject.'; return; }
+        if (!recipients.length) { err.textContent = _t('send.enterRecipient'); return; }
+        if (!subject) { err.textContent = _t('send.enterSubject'); return; }
 
         const btn = overlay.querySelector('#sr-send');
         btn.disabled = true;
-        btn.textContent = 'Checking…';
+        btn.textContent = _t('send.checking');
         try {
             // 1) Propose the named action against the opaque result handle.
             const pRes = await fetch('/api/actions/propose', {
@@ -2163,7 +2201,7 @@ function _sendResultModal(opts) {
         } catch (e) {
             err.textContent = e.message;
             btn.disabled = false;
-            btn.textContent = 'Send email';
+            btn.textContent = _t('send.sendEmail');
         }
     });
 }
@@ -2173,34 +2211,32 @@ function _renderSendConfirm(overlay, { proposal, preview, note }) {
     const external = new Set(preview.external_recipients || []);
     const recipHtml = recips.map(r =>
         external.has(r)
-            ? `<span class="sr-recip sr-recip-ext" title="External recipient">${escapeHtml(r)} ⚠</span>`
-            : `<span class="sr-recip">${escapeHtml(r)}</span>`
+            ? `<span class="sr-recip sr-recip-ext" title="${_th('send.externalRecipient')}"><bdi dir="ltr">${escapeHtml(r)}</bdi> ⚠</span>`
+            : `<span class="sr-recip"><bdi dir="ltr">${escapeHtml(r)}</bdi></span>`
     ).join(' ');
     const extWarn = preview.has_external
-        ? `<div class="sr-warn" role="alert">⚠ This email includes <strong>external</strong> recipient(s) outside your organization. Review carefully before sending.</div>`
+        ? `<div class="sr-warn" role="alert">⚠ ${_th('send.externalWarning')}</div>`
         : '';
     const snap = preview.snapshot || {};
 
     overlay.innerHTML = `
         <div class="sr-modal" role="dialog" aria-modal="true" aria-labelledby="sr-title">
-            <div class="sr-head"><h3 id="sr-title">Confirm send</h3></div>
+            <div class="sr-head"><h3 id="sr-title">${_th('send.confirmTitle')}</h3></div>
             <div class="sr-body">
                 ${extWarn}
-                <div class="sr-field"><label>From</label>
-                    <div class="sr-note"><strong>${escapeHtml(preview.sender || '')}</strong></div></div>
-                <div class="sr-field"><label>To</label><div class="sr-recips">${recipHtml}</div></div>
-                <div class="sr-field"><label>Subject</label>
-                    <div class="sr-note">${escapeHtml(preview.subject || '')}</div></div>
+                <div class="sr-field"><label>${_th('send.from')}</label>
+                    <div class="sr-note"><strong><bdi dir="ltr">${escapeHtml(preview.sender || '')}</bdi></strong></div></div>
+                <div class="sr-field"><label>${_th('send.to')}</label><div class="sr-recips">${recipHtml}</div></div>
+                <div class="sr-field"><label>${_th('send.subject')}</label>
+                    <div class="sr-note" dir="auto">${escapeHtml(preview.subject || '')}</div></div>
                 <div class="sr-summary">
-                    A server-rendered summary of <strong>${(snap.row_count || 0).toLocaleString()}</strong>
-                    row${snap.row_count === 1 ? '' : 's'} will be sent from your mailbox.
-                    No attachments or raw data links are included.
+                    ${_th('send.summary', { count: Number(snap.row_count) || 0 })}
                 </div>
                 <div class="sr-error" id="sr-error"></div>
             </div>
             <div class="sr-foot">
-                <button class="sp-btn-ghost-sm" id="sr-back">Back</button>
-                <button class="sp-btn-primary-sm" id="sr-confirm">Confirm &amp; send</button>
+                <button class="sp-btn-ghost-sm" id="sr-back">${_th('common.back')}</button>
+                <button class="sp-btn-primary-sm" id="sr-confirm">${_th('send.confirmSend')}</button>
             </div>
         </div>`;
 
@@ -2211,7 +2247,7 @@ function _renderSendConfirm(overlay, { proposal, preview, note }) {
         err.textContent = '';
         const btn = overlay.querySelector('#sr-confirm');
         btn.disabled = true;
-        btn.textContent = 'Sending…';
+        btn.textContent = _t('send.sending');
         try {
             // 4) Execute: single-use nonce, server re-validates and sends once.
             const eRes = await fetch(`/api/actions/${encodeURIComponent(proposal.proposal_id)}/execute`, {
@@ -2228,14 +2264,14 @@ function _renderSendConfirm(overlay, { proposal, preview, note }) {
             const result = await eRes.json();
             overlay.remove();
             if (result.accepted) {
-                showToast('Email accepted for delivery.', 'success');
+                showToast(_t('send.accepted'), 'success');
             } else {
-                showToast('Send failed: ' + (result.message || 'unknown outcome'), 'error');
+                showToast(_t('send.failed', { detail: _iso(result.message || _t('common.unknownError')) }), 'error');
             }
         } catch (e) {
             err.textContent = e.message;
             btn.disabled = false;
-            btn.textContent = 'Confirm & send';
+            btn.textContent = _t('send.confirmSend');
         }
     });
 }
@@ -2296,11 +2332,11 @@ async function restoreSavedAnalysis(savedId) {
         } else {
             await initializeChartFeature(results);
         }
-        showToast('Saved analysis restored', 'success');
+        showToast(_t('saved.restored'), 'success');
     } catch (err) {
         _isRestoringSavedAnalysis = false;
         console.error('[SavedAnalyses] restore failed', err);
-        showToast('Restore failed', 'error');
+        showToast(_t('saved.restoreFailed'), 'error');
     }
 }
 window.restoreSavedAnalysis = restoreSavedAnalysis;
@@ -2318,7 +2354,7 @@ async function displayHistory() {
 
     const connection = getActiveConnection();
     if (!connection) {
-        historyDiv.innerHTML = '<p class="history-empty">Pick a connection to see your recent questions.</p>';
+        historyDiv.innerHTML = `<p class="history-empty">${_th('pinned.pickConnection')}</p>`;
         if (clearBtn) clearBtn.style.display = 'none';
         loadSavedAnalyses();
         return;
@@ -2356,7 +2392,7 @@ async function displayHistory() {
             const date = new Date(raw);
             return Number.isNaN(date.getTime())
                 ? ''
-                : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+                : date.toLocaleDateString(_fmtLocale(), { month: 'short', day: 'numeric' });
         };
 
         // Mirror into autocomplete caches so Tier 1 (Recent) is instant.
@@ -2369,7 +2405,7 @@ async function displayHistory() {
         // Show/hide the sidebar search input depending on whether there are items.
         const questionSearchInput = document.getElementById('question-search');
         if (pinnedQuestions.length === 0 && recentQuestions.length === 0) {
-            historyDiv.innerHTML = '<p class="history-empty">No questions yet — ask one above and it\'ll show up here.</p>';
+            historyDiv.innerHTML = `<p class="history-empty">${_th('pinned.empty')}</p>`;
             clearBtn.style.display = 'none';
             if (questionSearchInput) { questionSearchInput.style.display = 'none'; questionSearchInput.value = ''; }
             return;
@@ -2382,24 +2418,24 @@ async function displayHistory() {
 
         // Show pinned questions first with pin icon
         if (pinnedQuestions.length > 0) {
-            html += `<div class="v3-history-group-head"><span class="v3-star filled">★</span><span>Pinned questions</span><span>${pinnedQuestions.length} pinned</span></div>`;
+            html += `<div class="v3-history-group-head"><span class="v3-star filled">★</span><span>${_th('pinned.pinnedQuestions')}</span><span>${_th('pinned.pinnedCount', { count: pinnedQuestions.length })}</span></div>`;
             html += pinnedQuestions.map(q => {
                 const safe = escapeHtml(q).replace(/'/g, "\\'");
                 return `<div class="history-item pinned-item" onclick="_jeenQuestionClick('${safe}')">
-                    <span class="question-text" title="${escapeHtml(q)}">${escapeHtml(q)}<small>${when(q)}</small></span>
-                    <button class="pin-icon" aria-label="Unpin question" onclick="unpinQuestion(event, '${safe}')">★</button>
+                    <span class="question-text" dir="auto" title="${escapeHtml(q)}">${escapeHtml(q)}<small>${when(q)}</small></span>
+                    <button class="pin-icon" data-pin-action="unpin" aria-label="${_th('pinned.unpin')}" onclick="unpinQuestion(event, '${safe}')">★</button>
                 </div>`;
             }).join('');
         }
 
         // Show recent questions below pinned ones with unpin icon
         if (recentQuestions.length > 0) {
-            html += '<div class="v3-history-group-head"><span>Recent questions</span></div>';
+            html += `<div class="v3-history-group-head"><span>${_th('pinned.recentQuestions')}</span></div>`;
             html += recentQuestions.map(q => {
                 const safe = escapeHtml(q).replace(/'/g, "\\'");
                 return `<div class="history-item" onclick="_jeenQuestionClick('${safe}')">
-                    <span class="question-text" title="${escapeHtml(q)}">${escapeHtml(q)}<small>${when(q)}</small></span>
-                    <button class="pin-icon" aria-label="Pin question" onclick="pinQuestion(event, '${safe}')">☆</button>
+                    <span class="question-text" dir="auto" title="${escapeHtml(q)}">${escapeHtml(q)}<small>${when(q)}</small></span>
+                    <button class="pin-icon" data-pin-action="pin" aria-label="${_th('pinned.pin')}" onclick="pinQuestion(event, '${safe}')">☆</button>
                 </div>`;
             }).join('');
         }
@@ -2407,7 +2443,7 @@ async function displayHistory() {
         historyDiv.innerHTML = html;
     } catch (error) {
         console.error('Error loading history:', error);
-        historyDiv.innerHTML = '<p class="history-empty">Unable to load history right now.</p>';
+        historyDiv.innerHTML = `<p class="history-empty">${_th('pinned.loadFailed')}</p>`;
         clearBtn.style.display = 'none';
     }
 }
@@ -2500,7 +2536,7 @@ function filterQuestionHistory() {
         noMsg = document.createElement('p');
         noMsg.id = 'question-search-empty';
         noMsg.className = 'history-empty';
-        noMsg.textContent = 'No matching questions.';
+        noMsg.textContent = _t('pinned.noMatch');
         document.getElementById('question-history')?.after(noMsg);
     }
     noMsg.style.display = (q && shown === 0) ? '' : 'none';
@@ -2532,7 +2568,7 @@ function _renderHistoryEntries(entries) {
     const body = document.getElementById('history-drawer-body');
     if (!body) return;
     if (!entries.length) {
-        body.innerHTML = '<p class="history-log-empty">No queries yet for this connection.</p>';
+        body.innerHTML = `<p class="history-log-empty">${_th('historyDrawer.empty')}</p>`;
         return;
     }
     body.innerHTML = entries.map(e => {
@@ -2570,10 +2606,10 @@ async function loadHistoryLog() {
     const connection = getActiveConnection();
     const body = document.getElementById('history-drawer-body');
     if (!connection) {
-        if (body) body.innerHTML = '<p class="history-log-empty">Pick a connection first.</p>';
+        if (body) body.innerHTML = `<p class="history-log-empty">${_th('tables.pickConnection')}</p>`;
         return;
     }
-    if (body) body.innerHTML = '<p class="history-log-empty">Loading…</p>';
+    if (body) body.innerHTML = `<p class="history-log-empty">${_th('common.loading')}</p>`;
     try {
         const res = await fetch(`/api/user/history-log?connection=${encodeURIComponent(connection)}&limit=100`);
         const data = await res.json();
@@ -2581,7 +2617,7 @@ async function loadHistoryLog() {
         _renderHistoryEntries(_historyLogEntries);
     } catch (err) {
         console.error('[HistoryLog]', err);
-        if (body) body.innerHTML = '<p class="history-log-empty">Failed to load history.</p>';
+        if (body) body.innerHTML = `<p class="history-log-empty">${_th('historyDrawer.loadFailed')}</p>`;
     }
 }
 
@@ -2619,7 +2655,7 @@ function renderTrace(traceEvents, metrics) {
     _traceSearchQ    = '';
 
     if (!traceEvents || traceEvents.length === 0) {
-        panel.innerHTML = '<p class="trace-empty">No trace data for this query.</p>';
+        panel.innerHTML = `<p class="trace-empty">${_th('devPanel.noTrace')}</p>`;
         if (toolbar) toolbar.hidden = true;
         return;
     }
@@ -3864,7 +3900,7 @@ window._toggleTraceEvent = _toggleTraceEvent;
 async function initializeChartFeature(results, options = {}) {
     // Dynamically import ChartManager if not already loaded
     if (!ChartManager) {
-        const module = await import('./chart-feature/chartManager.js?v=111');
+        const module = await import('./chart-feature/chartManager.js?v=113');
         ChartManager = module.ChartManager;
     }
 
@@ -4355,19 +4391,31 @@ function showToast(message, type) {
 // COLUMN CONTEXT MENU
 // ======================================================
 
+/**
+ * The number in a cell, or NaN. Money and formatted numbers arrive as strings
+ * ("$9,389,789.94", "12.5%"); the column tools treat them as numbers.
+ */
+function parseCellNumber(value) {
+    if (typeof value === 'number') return value;
+    if (typeof value !== 'string') return NaN;
+    const text = value.trim();
+    if (!/^[-+]?[$€£¥₪]?\s*[-+]?\d[\d,]*(\.\d+)?%?$/.test(text)) return NaN;
+    return Number(text.replace(/[^0-9.\-]/g, ''));
+}
+
 // Apply a named format to a raw cell value. Returns formatted string or null.
 function applyColFormatValue(value, type) {
-    const n = Number(value);
+    const n = parseCellNumber(value);
     if (!Number.isFinite(n)) return null;
     switch (type) {
-        case 'currency': return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        case 'percent':  return n.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%';
+        case 'currency': return '$' + n.toLocaleString(_fmtLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        case 'percent':  return n.toLocaleString(_fmtLocale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%';
         case 'compact':  return compactNumber(n);
-        case 'integer':  return Math.round(n).toLocaleString('en-US');
-        case 'dec0':     return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
-        case 'dec1':     return n.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-        case 'dec2':     return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        case 'dec4':     return n.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+        case 'integer':  return Math.round(n).toLocaleString(_fmtLocale());
+        case 'dec0':     return n.toLocaleString(_fmtLocale(), { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+        case 'dec1':     return n.toLocaleString(_fmtLocale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+        case 'dec2':     return n.toLocaleString(_fmtLocale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        case 'dec4':     return n.toLocaleString(_fmtLocale(), { minimumFractionDigits: 4, maximumFractionDigits: 4 });
         default: return null;
     }
 }
@@ -4377,7 +4425,7 @@ function compactNumber(n) {
     if (abs >= 1e9) return (n / 1e9).toFixed(1) + 'B';
     if (abs >= 1e6) return (n / 1e6).toFixed(1) + 'M';
     if (abs >= 1e3) return (n / 1e3).toFixed(1) + 'K';
-    return n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    return n.toLocaleString(_fmtLocale(), { maximumFractionDigits: 2 });
 }
 
 // Show the column context menu at the cursor position.
@@ -4397,7 +4445,7 @@ function showColMenu(event, colIndex) {
     if (isNumeric && _colSums[colIndex] === undefined) {
         let sum = 0;
         rows.forEach(row => {
-            const v = Number(Array.isArray(row) ? row[colIndex] : row[colName]);
+            const v = parseCellNumber(Array.isArray(row) ? row[colIndex] : row[colName]);
             if (Number.isFinite(v)) sum += v;
         });
         _colSums[colIndex] = sum || 1;
@@ -4405,53 +4453,53 @@ function showColMenu(event, colIndex) {
 
     // ── Build menu HTML ──────────────────────────────────────────
     const FORMATS = [
-        { type: 'dec2',     icon: '1,23',  label: 'Number (2 dec)'   },
-        { type: 'currency', icon: '$',     label: 'Currency ($)'     },
-        { type: 'percent',  icon: '%',     label: 'Percentage (%)'   },
-        { type: 'compact',  icon: '1K',    label: 'Compact (1.2K)'   },
-        { type: 'integer',  icon: '123',   label: 'Integer'           },
-        { type: 'dec0',     icon: '.0',    label: '0 decimals'        },
-        { type: 'dec1',     icon: '.0',    label: '1 decimal'         },
-        { type: 'dec4',     icon: '.0000', label: '4 decimals'        },
+        { type: 'dec2',     icon: '1,23',  label: _t('results.menu.formats.dec2') },
+        { type: 'currency', icon: '$',     label: _t('results.menu.formats.currency') },
+        { type: 'percent',  icon: '%',     label: _t('results.menu.formats.percent') },
+        { type: 'compact',  icon: '1K',    label: _t('results.menu.formats.compact') },
+        { type: 'integer',  icon: '123',   label: _t('results.menu.formats.integer') },
+        { type: 'dec0',     icon: '.0',    label: _t('results.menu.formats.dec0') },
+        { type: 'dec1',     icon: '.0',    label: _t('results.menu.formats.dec1') },
+        { type: 'dec4',     icon: '.0000', label: _t('results.menu.formats.dec4') },
     ];
 
     let html = '';
 
     // Sort
-    html += '<div class="col-ctx-header">Sort</div>';
-    html += `<div class="col-ctx-item" onclick="sortTableDir(${colIndex},'asc');closeColMenu()"><span class="col-ctx-icon">▲</span>Ascending</div>`;
-    html += `<div class="col-ctx-item" onclick="sortTableDir(${colIndex},'desc');closeColMenu()"><span class="col-ctx-icon">▼</span>Descending</div>`;
+    html += `<div class="col-ctx-header">${_th('results.menu.sort')}</div>`;
+    html += `<div class="col-ctx-item" onclick="sortTableDir(${colIndex},'asc');closeColMenu()"><span class="col-ctx-icon">▲</span>${_th('results.menu.ascending')}</div>`;
+    html += `<div class="col-ctx-item" onclick="sortTableDir(${colIndex},'desc');closeColMenu()"><span class="col-ctx-icon">▼</span>${_th('results.menu.descending')}</div>`;
 
     // Format (numeric only)
     if (isNumeric) {
-        html += '<div class="col-ctx-sep"></div><div class="col-ctx-header">Format</div>';
+        html += `<div class="col-ctx-sep"></div><div class="col-ctx-header">${_th('results.menu.format')}</div>`;
         FORMATS.forEach(f => {
             const tick = currentFmt && currentFmt.type === f.type ? ' \u2713' : '';
-            html += `<div class="col-ctx-item" onclick="setColFormat(${colIndex},'${f.type}','${f.label}','${f.icon}');closeColMenu()">`
+            html += `<div class="col-ctx-item" onclick="setColFormat(${colIndex},'${f.type}',${escapeAttr(JSON.stringify(f.label))},'${f.icon}');closeColMenu()">`
                   + `<span class="col-ctx-icon col-ctx-icon-mono">${f.icon}</span>${escapeHtml(f.label)}${tick}</div>`;
         });
         if (currentFmt) {
-            html += `<div class="col-ctx-item col-ctx-item-danger" onclick="clearColFormat(${colIndex});closeColMenu()"><span class="col-ctx-icon">×</span>Reset format</div>`;
+            html += `<div class="col-ctx-item col-ctx-item-danger" onclick="clearColFormat(${colIndex});closeColMenu()"><span class="col-ctx-icon">×</span>${_th('results.menu.resetFormat')}</div>`;
         }
 
         // Calculate
-        html += '<div class="col-ctx-sep"></div><div class="col-ctx-header">Calculate</div>';
-        html += `<div class="col-ctx-item" onclick="addDerivedCol(${colIndex},'pct_total');closeColMenu()"><span class="col-ctx-icon">%</span>Add % of total</div>`;
-        html += `<div class="col-ctx-item" onclick="addDerivedCol(${colIndex},'running_total');closeColMenu()"><span class="col-ctx-icon">Σ</span>Add running total</div>`;
-        html += `<div class="col-ctx-item" onclick="addDerivedCol(${colIndex},'delta');closeColMenu()"><span class="col-ctx-icon">Δ</span>Add change (Δ)</div>`;
+        html += `<div class="col-ctx-sep"></div><div class="col-ctx-header">${_th('results.menu.calculate')}</div>`;
+        html += `<div class="col-ctx-item" onclick="addDerivedCol(${colIndex},'pct_total');closeColMenu()"><span class="col-ctx-icon">%</span>${_th('results.menu.addPctTotal')}</div>`;
+        html += `<div class="col-ctx-item" onclick="addDerivedCol(${colIndex},'running_total');closeColMenu()"><span class="col-ctx-icon">Σ</span>${_th('results.menu.addRunningTotal')}</div>`;
+        html += `<div class="col-ctx-item" onclick="addDerivedCol(${colIndex},'delta');closeColMenu()"><span class="col-ctx-icon">Δ</span>${_th('results.menu.addChange')}</div>`;
         if (hasDerived) {
-            html += `<div class="col-ctx-item col-ctx-item-danger" onclick="removeDerivedCol(${colIndex});closeColMenu()"><span class="col-ctx-icon">×</span>Remove derived column</div>`;
+            html += `<div class="col-ctx-item col-ctx-item-danger" onclick="removeDerivedCol(${colIndex});closeColMenu()"><span class="col-ctx-icon">×</span>${_th('results.menu.removeDerived')}</div>`;
         }
     }
 
     // Filter / Copy
-    html += '<div class="col-ctx-sep"></div><div class="col-ctx-header">Filter · Copy</div>';
-    html += `<div class="col-ctx-item" onclick="filterColNonNull(${colIndex});closeColMenu()"><span class="col-ctx-icon">≠∅</span>Filter non-null</div>`;
-    html += `<div class="col-ctx-item" onclick="copyColValues(${colIndex});closeColMenu()"><span class="col-ctx-icon">⧉</span>Copy column values</div>`;
+    html += `<div class="col-ctx-sep"></div><div class="col-ctx-header">${_th('results.menu.filterCopy')}</div>`;
+    html += `<div class="col-ctx-item" onclick="filterColNonNull(${colIndex});closeColMenu()"><span class="col-ctx-icon">≠∅</span>${_th('results.menu.filterNonNull')}</div>`;
+    html += `<div class="col-ctx-item" onclick="copyColValues(${colIndex});closeColMenu()"><span class="col-ctx-icon">⧉</span>${_th('results.menu.copyColumn')}</div>`;
 
     // Analyze
-    html += '<div class="col-ctx-sep"></div><div class="col-ctx-header">Analyze</div>';
-    html += `<div class="col-ctx-item" onclick="askAboutCol(${colIndex});closeColMenu()"><span class="col-ctx-icon">→</span>Ask about this column</div>`;
+    html += `<div class="col-ctx-sep"></div><div class="col-ctx-header">${_th('results.menu.analyze')}</div>`;
+    html += `<div class="col-ctx-item" onclick="askAboutCol(${colIndex});closeColMenu()"><span class="col-ctx-icon">→</span>${_th('results.menu.askColumn')}</div>`;
 
     // ── Build / position menu element ─────────────────────────
     let menu = document.getElementById('col-ctx-menu');
@@ -4542,7 +4590,7 @@ function copyColValues(colIndex) {
         return (v === null || v === undefined) ? '' : String(v);
     }).join('\n');
     navigator.clipboard.writeText(text).then(() => {
-        showToast(colName + ' copied (' + rows.length + ' values)', 'info');
+        showToast(_t('results.menu.columnCopied', { column: _iso(colName), count: rows.length }), 'info');
     });
 }
 
@@ -4550,8 +4598,8 @@ function askAboutCol(colIndex) {
     if (!currentResults) return;
     const colName = currentResults.columns[colIndex];
     const q = currentQuestion
-        ? 'Analyze the "' + colName + '" column from: ' + currentQuestion
-        : 'Analyze the "' + colName + '" column';
+        ? _t('results.menu.questions.columnInContext', { column: colName, question: currentQuestion })
+        : _t('results.menu.questions.column', { column: colName });
     fillQuestion(q);
 }
 
@@ -4613,7 +4661,7 @@ function reRenderTable() {
 // Build a short human-readable label for a row (used in question templates).
 // Uses the first 1–3 non-null columns: "month = Jan, revenue = 100"
 function _rowLabel(rowIdx) {
-    if (!currentResults || rowIdx >= _currentVisibleRows.length) return 'this row';
+    if (!currentResults || rowIdx >= _currentVisibleRows.length) return _t('results.menu.questions.thisRow');
     const row  = _currentVisibleRows[rowIdx];
     const cols = currentResults.columns;
     const parts = [];
@@ -4623,7 +4671,7 @@ function _rowLabel(rowIdx) {
             parts.push(cols[i] + ' = ' + String(v));
         }
     }
-    return parts.length ? parts.join(', ') : 'this row';
+    return parts.length ? parts.join(', ') : _t('results.menu.questions.thisRow');
 }
 
 // Show the row context menu at the cursor position.
@@ -4652,19 +4700,19 @@ function showRowMenu(event, rowIdx) {
     let html = '';
 
     // Explore
-    html += '<div class="col-ctx-header">Explore</div>';
-    html += `<div class="col-ctx-item" onclick="askAboutRow(${rowIdx});closeRowMenu()"><span class="col-ctx-icon">→</span>Ask about this row</div>`;
-    html += `<div class="col-ctx-item" onclick="explainRow(${rowIdx});closeRowMenu()"><span class="col-ctx-icon">❓</span>Explain this row</div>`;
-    html += `<div class="col-ctx-item" onclick="compareRowToAvg(${rowIdx});closeRowMenu()"><span class="col-ctx-icon">~</span>Compare to average</div>`;
-    html += `<div class="col-ctx-item" onclick="findSimilarRows(${rowIdx});closeRowMenu()"><span class="col-ctx-icon">≡</span>Find similar rows</div>`;
+    html += `<div class="col-ctx-header">${_th('results.menu.explore')}</div>`;
+    html += `<div class="col-ctx-item" onclick="askAboutRow(${rowIdx});closeRowMenu()"><span class="col-ctx-icon">→</span>${_th('results.menu.askRow')}</div>`;
+    html += `<div class="col-ctx-item" onclick="explainRow(${rowIdx});closeRowMenu()"><span class="col-ctx-icon">❓</span>${_th('results.menu.explainRow')}</div>`;
+    html += `<div class="col-ctx-item" onclick="compareRowToAvg(${rowIdx});closeRowMenu()"><span class="col-ctx-icon">~</span>${_th('results.menu.compareAverage')}</div>`;
+    html += `<div class="col-ctx-item" onclick="findSimilarRows(${rowIdx});closeRowMenu()"><span class="col-ctx-icon">≡</span>${_th('results.menu.findSimilar')}</div>`;
 
     // Filter / Copy
-    html += '<div class="col-ctx-sep"></div><div class="col-ctx-header">Filter \u00b7 Copy</div>';
+    html += `<div class="col-ctx-sep"></div><div class="col-ctx-header">${_th('results.menu.filterCopy')}</div>`;
     if (hasCellValue && clickedColIdx >= 0 && clickedColIdx < currentResults.columns.length) {
         const safeVal = escapeHtml(cellText);
-        html += `<div class="col-ctx-item" onclick="filterByRowCell(${rowIdx},${clickedColIdx});closeRowMenu()"><span class="col-ctx-icon">⋄</span>Filter by <em>&ldquo;${safeVal}&rdquo;</em></div>`;
+        html += `<div class="col-ctx-item" onclick="filterByRowCell(${rowIdx},${clickedColIdx});closeRowMenu()"><span class="col-ctx-icon">⋄</span>${_th('results.menu.filterBy')} <em><bdi>&ldquo;${safeVal}&rdquo;</bdi></em></div>`;
     }
-    html += `<div class="col-ctx-item" onclick="copyRowData(${rowIdx});closeRowMenu()"><span class="col-ctx-icon">⧉</span>Copy row</div>`;
+    html += `<div class="col-ctx-item" onclick="copyRowData(${rowIdx});closeRowMenu()"><span class="col-ctx-icon">⧉</span>${_th('results.menu.copyRow')}</div>`;
 
     // ── Position menu ─────────────────────────────────────────────
     let menu = document.getElementById('row-ctx-menu');
@@ -4707,32 +4755,32 @@ function closeRowMenu() {
 function askAboutRow(rowIdx) {
     const label = _rowLabel(rowIdx);
     const q = currentQuestion
-        ? `Tell me about the row where ${label}, in the context of: ${currentQuestion}`
-        : `Tell me about the row where ${label}`;
+        ? _t('results.menu.questions.rowInContext', { label, question: currentQuestion })
+        : _t('results.menu.questions.row', { label });
     fillQuestion(q);
 }
 
 function explainRow(rowIdx) {
     const label = _rowLabel(rowIdx);
     const q = currentQuestion
-        ? `Explain why the row (${label}) has these values, in the context of: ${currentQuestion}`
-        : `Explain the values in the row where ${label}`;
+        ? _t('results.menu.questions.explainInContext', { label, question: currentQuestion })
+        : _t('results.menu.questions.explain', { label });
     fillQuestion(q);
 }
 
 function compareRowToAvg(rowIdx) {
     const label = _rowLabel(rowIdx);
     const q = currentQuestion
-        ? `How does the row (${label}) compare to the average across all results? Context: ${currentQuestion}`
-        : `Compare the row (${label}) to the average across all results`;
+        ? _t('results.menu.questions.compareInContext', { label, question: currentQuestion })
+        : _t('results.menu.questions.compare', { label });
     fillQuestion(q);
 }
 
 function findSimilarRows(rowIdx) {
     const label = _rowLabel(rowIdx);
     const q = currentQuestion
-        ? `Find other rows similar to (${label}) in the data. Context: ${currentQuestion}`
-        : `Find rows similar to the row where ${label}`;
+        ? _t('results.menu.questions.similarInContext', { label, question: currentQuestion })
+        : _t('results.menu.questions.similar', { label });
     fillQuestion(q);
 }
 
@@ -4757,7 +4805,7 @@ function filterByRowCell(rowIdx, colIdx) {
         );
     }
     const rc = document.getElementById('row-count');
-    if (rc) rc.textContent = filtered.length + ' of ' + allRows.length + ' rows \u2014 ' + escapeHtml(col) + ' = ' + escapeHtml(String(val));
+    if (rc) rc.textContent = `${_t('results.grid.filteredOf', { shown: filtered.length, total: allRows.length })} \u2014 ${col} = ${String(val)}`;
 }
 
 function copyRowData(rowIdx) {
@@ -4770,7 +4818,7 @@ function copyRowData(rowIdx) {
         return col + '\t' + (v === null || v === undefined ? '' : String(v));
     }).join('\n');
     navigator.clipboard.writeText(text).then(() => {
-        showToast('Row copied', 'info');
+        showToast(_t('results.menu.rowCopied'), 'info');
     });
 }
 
@@ -4780,10 +4828,10 @@ function copyRowData(rowIdx) {
  */
 function _copyAllPrompt() {
     const text = window._lastPromptRawText || '';
-    if (!text) { showToast('No prompt to copy', 'info'); return; }
+    if (!text) { showToast(_t('devPanel.noPromptToCopy'), 'info'); return; }
     navigator.clipboard.writeText(text).then(() => {
-        showToast('Prompt copied', 'info');
-    }).catch(() => showToast('Copy failed', 'error'));
+        showToast(_t('devPanel.promptCopied'), 'info');
+    }).catch(() => showToast(_t('common.copyFailed'), 'error'));
 }
 window._copyAllPrompt = _copyAllPrompt;
 
@@ -4956,10 +5004,10 @@ function updateThemeIcon(theme) {
     if (!iconEl || !btn) return;
     if (theme === 'dark') {
         iconEl.innerHTML = ICON_SUN;
-        btn.setAttribute('aria-label', 'Switch to light mode');
+        btn.setAttribute('aria-label', _t('shell.theme.switchToLight'));
     } else {
         iconEl.innerHTML = ICON_MOON;
-        btn.setAttribute('aria-label', 'Switch to dark mode');
+        btn.setAttribute('aria-label', _t('shell.theme.switchToDark'));
     }
 }
 
@@ -5092,10 +5140,10 @@ const ConnectionPanel = (function () {
 
         let html = '';
         if (showSearch) {
-            html += `<input type="text" class="connection-panel-search" placeholder="Search connections\u2026" value="${escapeHtml(searchTerm)}" aria-label="Search connections" />`;
+            html += `<input type="text" class="connection-panel-search" dir="auto" placeholder="${_th('connection.search')}" value="${escapeHtml(searchTerm)}" aria-label="${_th('connection.search')}" />`;
         }
         if (filtered.length === 0) {
-            const msg = term ? `No connections match "${escapeHtml(term)}"` : 'No connections available';
+            const msg = term ? _th('connection.noMatch', { term: _iso(term) }) : _th('connection.none');
             html += `<div class="connection-panel-empty">${msg}</div>`;
         } else {
             html += filtered.map(c => {
@@ -5114,7 +5162,7 @@ const ConnectionPanel = (function () {
         if (active) {
             const activeRow = all.find(c => c.source_key === active);
             if (activeRow) {
-                html += `<div class="connection-panel-footer"><button type="button" class="connection-panel-footer-btn" data-action="refresh">\u21bb Refresh metadata for ${escapeHtml(activeRow.display_name || active)}</button></div>`;
+                html += `<div class="connection-panel-footer"><button type="button" class="connection-panel-footer-btn" data-action="refresh">\u21bb ${_th('connection.refreshMetadata', { name: _iso(activeRow.display_name || active) })}</button></div>`;
             }
         }
         pan.innerHTML = html;

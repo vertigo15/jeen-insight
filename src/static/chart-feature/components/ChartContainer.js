@@ -5,6 +5,10 @@
  * @module ChartContainer
  */
 
+// Interface strings come from the locale catalog (static/i18n/i18n.js, loaded first).
+const t = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
+const th = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.h === 'function' ? window.I18n.h(key, args) : String(key));
+
 /// <reference path="../types/chart.types.js" />
 
 /**
@@ -32,7 +36,7 @@ export class ChartContainer {
         
         // Ensure ECharts is loaded
         if (typeof echarts === 'undefined') {
-            throw new Error('ECharts library not loaded');
+            throw new Error(t('charts.errors.libraryNotLoaded'));
         }
         
         // Dispose existing instance if any
@@ -158,11 +162,12 @@ export class ChartContainer {
     showError(message) {
         const container = document.getElementById(this.containerId);
         if (container) {
-            container.innerHTML = `
-                <div class="chart-error">
-                    <p>⚠️ ${message}</p>
-                </div>
-            `;
+            // Error text is data (often raw backend/exception text): build it as a
+            // text node rather than markup.
+            container.innerHTML = '<div class="chart-error"><p></p></div>';
+            const p = container.querySelector('p');
+            p.setAttribute('dir', 'auto');
+            p.textContent = `⚠️ ${message == null ? '' : String(message)}`;
         }
     }
     
@@ -175,7 +180,7 @@ export class ChartContainer {
             container.innerHTML = `
                 <div class="chart-loading">
                     <div class="spinner"></div>
-                    <p>Loading chart...</p>
+                    <p>${th('charts.loading')}</p>
                 </div>
             `;
         }

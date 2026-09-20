@@ -49,8 +49,11 @@ from src.metadata.mcp_catalog_client import (
     _fmt_knowledge_pairs,
     _fmt_business_terms,
     _normalise_list,
+    _flatten_columns,
     _normalise_connections,
     _parse_catalog_markdown,
+    normalize_columns_markdown,
+    restore_date_columns,
     _map_tool_to_need,
     _empty_bundle,
     _normalise_value_search,
@@ -403,6 +406,30 @@ class TestFormatters:
     def test_fmt_columns_empty(self):
         assert _fmt_columns([]) == "No columns registered."
 
+    def test_flatten_columns_unwraps_the_list_columns_envelope_and_scopes_to_the_table(self):
+        # The schema-modeler tool answers with one envelope and ignores `table`.
+        envelope = [{
+            "connection_id": 6, "count": 3, "table_name": None,
+            "tables": [{"table_name": '"public"."dimcustomer"'}],
+            "columns": [
+                {"table_name": '"public"."dimcustomer"', "column_name": "customerkey", "data_type": "integer", "is_primary_key": True},
+                {"table_name": '"public"."dimcustomer"', "column_name": "firstname", "data_type": "character varying"},
+                {"table_name": '"public"."dimdate"', "column_name": "datekey", "data_type": "integer"},
+            ],
+        }]
+        everything = _flatten_columns(envelope, None)
+        assert [c["column"] for c in everything] == ["customerkey", "firstname", "datekey"]
+        assert everything[0]["table"] == '"public"."dimcustomer"' and everything[0]["data_type"] == "integer"
+
+        # Any spelling of the table scopes: quoted, schema-qualified or bare.
+        for spelling in ('"public"."dimcustomer"', "public.dimcustomer", "DimCustomer"):
+            scoped = _flatten_columns(envelope, spelling)
+            assert [c["column"] for c in scoped] == ["customerkey", "firstname"], spelling
+
+        # Flat records from other servers pass through with the same field names.
+        flat = _flatten_columns([{"table": "dimdate", "column": "datekey", "data_type": "integer"}], "dimdate")
+        assert flat == [{"table": "dimdate", "column": "datekey", "data_type": "integer"}]
+
     def test_fmt_relationships_list_literal(self):
         rows = [{"relation": "FactSales.ProductKey → DimProduct.ProductKey"}]
         out = _fmt_relationships(rows)
@@ -646,6 +673,114 @@ class TestParseCatalogMarkdown:
         sections = _parse_catalog_markdown(_SAMPLE_MARKDOWN)
         assert "factinternetsales.productkey" in sections["relationships"]
 
+
+# The schema-modeler MCP groups columns under a table header. Downstream
+# parsers (ML planner, filter grounder, SQL column allowlist) expect one flat
+# typed line per column, so the adapter rewrites the grouped shape.
+_GROUPED_COLUMNS = """Column definitions grouped by table (includes data type, PK flag, and description):
+
+"public"."dimdate": Contains date dimension data for time-based analysis.
+  - "calendaryear" (smallint) [distinct_count=6, distinct_is_approximate=false]
+  - "datekey" (integer) [PK] [distinct_count=2191, distinct_is_approximate=false]: PK - surrogate
+  - "fulldatealternatekey" (date) [NOT NULL]
+
+"public"."factinternetsales": Internet sales facts.
+  - "orderdate" (timestamp without time zone) [distinct_count=1124, distinct_is_approximate=false]
+  - "salesamount" (numeric(19,4)) [distinct_count=130, distinct_is_approximate=false]: Sales amount in USD
+  - "salesordernumber" (character varying) [distinct_count=27659, distinct_is_approximate=false]
+"""
+
+
+class TestNormalizeColumnsMarkdown:
+
+    def test_grouped_shape_becomes_flat_typed_lines(self):
+        text = normalize_columns_markdown(_GROUPED_COLUMNS)
+        lines = text.splitlines()
+        assert lines[0] == '- "public"."dimdate"."calendaryear" - Type: smallint, Distinct: 6'
+        assert lines[1] == '- "public"."dimdate"."datekey" - Type: integer, PK: true, Distinct: 2191, Description: PK - surrogate'
+        assert lines[2] == '- "public"."dimdate"."fulldatealternatekey" - Type: date, NOT NULL'
+        assert '- "public"."factinternetsales"."salesamount" - Type: numeric(19,4), Distinct: 130, Description: Sales amount in USD' in lines
+        # The intro sentence is prose, not a column.
+        assert not any("Column definitions" in line for line in lines)
+
+    def test_planner_and_grounder_see_dates_and_measures(self):
+        from src.agent.analysis_planner import catalog_candidates
+        from src.agent.langgraph_agent.nodes.filtering import column_types
+
+        cands = catalog_candidates(normalize_columns_markdown(_GROUPED_COLUMNS))
+        fis = cands["factinternetsales"]
+        assert fis.schema == "public"
+        assert fis.date_columns == ["orderdate"]
+        assert fis.numeric_columns == ["salesamount"]
+        assert fis.text_columns == ["salesordernumber"]
+        assert cands["dimdate"].date_columns == ["fulldatealternatekey"]
+        assert cands["dimdate"].numeric_columns == ["calendaryear", "datekey"]
+        # Passed through raw, the same text yields no usable table at all.
+        raw = catalog_candidates(_GROUPED_COLUMNS)
+        assert "factinternetsales" not in raw
+        types = column_types(normalize_columns_markdown(_GROUPED_COLUMNS))
+        assert types[("factinternetsales", "orderdate")] == "timestamp without time zone"
+
+    def test_flat_db_shape_is_untouched(self):
+        flat = "- factinternetsales.orderdate - Type: timestamp, Description: Order date\n- dimproduct.productkey - Type: integer, PK: true"
+        assert normalize_columns_markdown(flat) == flat
+        assert normalize_columns_markdown("") == ""
+
+    def test_idempotent(self):
+        once = normalize_columns_markdown(_GROUPED_COLUMNS)
+        assert normalize_columns_markdown(once) == once
+
+    def test_parse_catalog_markdown_normalises_columns(self):
+        md = "## Tables\n- \"public\".\"factinternetsales\": facts\n\n## Columns\n" + _GROUPED_COLUMNS
+        sections = _parse_catalog_markdown(md)
+        assert '"public"."factinternetsales"."orderdate" - Type: timestamp without time zone' in sections["columns"]
+
+
+class TestRestoreDateColumns:
+    FULL = "\n".join([
+        '- "public"."factinternetsales"."orderdatekey" - Type: integer',
+        '- "public"."factinternetsales"."orderdate" - Type: timestamp without time zone',
+        '- "public"."factinternetsales"."shipdate" - Type: timestamp without time zone',
+        '- "public"."factinternetsales"."salesamount" - Type: money',
+        '- "public"."factinternetsales"."unitprice" - Type: money',
+        '- "public"."dimcustomer"."customerkey" - Type: integer, PK: true',
+        '- "public"."dimcustomer"."datefirstpurchase" - Type: date',
+        '- "public"."dimproduct"."productkey" - Type: integer, PK: true',
+        '- "public"."dimproduct"."startdate" - Type: timestamp without time zone',
+    ])
+
+    def test_adds_only_the_date_columns_of_tables_the_filter_kept(self):
+        filtered = "\n".join([
+            '- "public"."factinternetsales"."orderdatekey" - Type: integer',
+            '- "public"."factinternetsales"."salesamount" - Type: money',
+            '- "public"."dimcustomer"."customerkey" - Type: integer, PK: true',
+        ])
+        out = restore_date_columns(filtered, self.FULL).splitlines()
+        assert out[:3] == filtered.splitlines()
+        assert '- "public"."factinternetsales"."orderdate" - Type: timestamp without time zone' in out
+        assert '- "public"."factinternetsales"."shipdate" - Type: timestamp without time zone' in out
+        assert '- "public"."dimcustomer"."datefirstpurchase" - Type: date' in out
+        # Measures the filter dropped stay dropped; tables it did not pick stay out.
+        assert not any("unitprice" in line for line in out)
+        assert not any("dimproduct" in line for line in out)
+
+    def test_noop_when_a_date_column_is_already_present_or_inputs_are_empty(self):
+        filtered = '- "public"."factinternetsales"."orderdate" - Type: timestamp without time zone\n- "public"."factinternetsales"."salesamount" - Type: money'
+        assert restore_date_columns(filtered, self.FULL) == filtered
+        assert restore_date_columns("", self.FULL) == ""
+        assert restore_date_columns(filtered, "") == filtered
+        # A bare "time" column is not a time axis.
+        assert restore_date_columns('- t.k - Type: integer', '- t.opens_at - Type: time') == '- t.k - Type: integer'
+
+    def test_idempotent(self):
+        filtered = '- "public"."factinternetsales"."salesamount" - Type: money'
+        once = restore_date_columns(filtered, self.FULL)
+        assert restore_date_columns(once, self.FULL) == once
+
+
+class TestParseCatalogMarkdownSections:
+    """The remaining sections of the sample prompt (continues TestParseCatalogMarkdown)."""
+
     def test_knowledge_pairs_extracted(self):
         sections = _parse_catalog_markdown(_SAMPLE_MARKDOWN)
         assert "Total sales" in sections["knowledge_pairs"]
@@ -792,7 +927,9 @@ class TestMcpCatalogClientLoadAll:
             "AdventureWorks", "sales by month"
         )
 
-        client._call_tool.assert_awaited_once_with(
+        # The question-aware tool shapes the bundle; the full catalog is read
+        # (from cache when warm) only to restore dropped date columns.
+        client._call_tool.assert_any_await(
             server,
             "get_filtered_prompt",
             {
@@ -803,6 +940,45 @@ class TestMcpCatalogClientLoadAll:
         assert "DimDate" in bundle["tables"]
         assert "DimDate.DateKey" in bundle["columns"]
         assert "AdventureWorks" in bundle["sources"]
+
+    @pytest.mark.asyncio
+    async def test_load_filtered_restores_only_the_kept_tables_date_columns(self):
+        """The filtered prompt kept a fact table's keys and measure but dropped its
+        timestamp; the (cached) full catalog puts the date back and nothing else."""
+        health = _health_with_tools({
+            NEED_LIST_SOURCES: "list_connections",
+            NEED_LIST_TABLES: "get_catalog_prompt",
+            NEED_DESCRIBE_TABLE: "get_filtered_prompt",
+        })
+        server = _make_server(health=health)
+        client = self._make_client(server)
+        client._resolve_connection_id = AsyncMock(return_value=42)
+        client._call_tool = AsyncMock(return_value={"prompt": (
+            "## Tables\n- FactInternetSales\n"
+            "## Columns\n- FactInternetSales.OrderDateKey - Type: integer\n- FactInternetSales.SalesAmount - Type: money\n"
+            "## Source\nAdventureWorks | postgres"
+        )})
+        client.load_all = AsyncMock(return_value={**_empty_bundle(), "columns": (
+            "- FactInternetSales.OrderDateKey - Type: integer\n"
+            "- FactInternetSales.OrderDate - Type: timestamp\n"
+            "- FactInternetSales.UnitPrice - Type: money\n"
+            "- DimCustomer.DateFirstPurchase - Type: date\n"
+        )})
+
+        bundle = await client.load_filtered("AdventureWorks", "what drove the change last quarter")
+
+        lines = bundle["columns"].splitlines()
+        assert "- FactInternetSales.OrderDate - Type: timestamp" in lines
+        assert not any("UnitPrice" in line for line in lines), "measures the filter dropped stay dropped"
+        assert not any("DimCustomer" in line for line in lines), "tables the filter did not pick stay out"
+        client.load_all.assert_awaited_once_with("AdventureWorks")
+
+        # A full-catalog failure leaves the filtered bundle as it came.
+        client.load_all = AsyncMock(side_effect=RuntimeError("mcp down"))
+        bundle = await client.load_filtered("AdventureWorks", "what drove the change last quarter")
+        assert bundle["columns"].splitlines() == [
+            "- FactInternetSales.OrderDateKey - Type: integer", "- FactInternetSales.SalesAmount - Type: money",
+        ]
 
 
 class TestMcpColumnValueSearch:

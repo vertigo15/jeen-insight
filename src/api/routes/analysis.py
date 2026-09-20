@@ -57,6 +57,20 @@ def _strip_private(params: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in (params or {}).items() if not str(k).startswith("_")}
 
 
+def _param_error(exc: ValidationError) -> Dict[str, Any]:
+    """A 422 body the setup card can place on the offending field.
+
+    ``field`` is the chip key — the last element of the pydantic location, so a
+    nested ``('series', 'grain')`` becomes ``grain``. Cross-field validators
+    have no usable location and leave ``field`` null; the card then shows the
+    message at card level.
+    """
+    first = exc.errors()[0] if exc.errors() else {}
+    loc = [str(part) for part in (first.get("loc") or ())]
+    field = loc[-1] if loc and not loc[-1].isdigit() else (loc[-2] if len(loc) > 1 else None)
+    return {"message": f"Invalid parameter: {first.get('msg')}", "field": field, "loc": loc}
+
+
 def _reset_range_if_window_changed(params: Dict[str, Any], patch: Dict[str, Any]) -> None:
     """A changed window or grain needs a fresh history range from the span probe.
 
@@ -197,8 +211,7 @@ async def run_analysis(request: AnalysisRunRequest, principal: Principal = Depen
         try:
             typed = merge_params_patch(skill, base_params, request.params_patch or {})
         except ValidationError as exc:
-            first = exc.errors()[0] if exc.errors() else {}
-            raise HTTPException(status_code=422, detail=f"Invalid parameter: {first.get('loc')} — {first.get('msg')}")
+            raise HTTPException(status_code=422, detail=_param_error(exc))
         params = typed.model_dump(mode="json")
         _reset_range_if_window_changed(params, request.params_patch or {})
         # A guard exit re-runs the guard and then still asks for consent on a
@@ -275,8 +288,7 @@ async def rerun_analysis(request: AnalysisRerunRequest, principal: Principal = D
     try:
         typed = merge_params_patch(skill, base_params, patch)
     except ValidationError as exc:
-        first = exc.errors()[0] if exc.errors() else {}
-        raise HTTPException(status_code=422, detail=f"Invalid parameter: {first.get('loc')} — {first.get('msg')}")
+        raise HTTPException(status_code=422, detail=_param_error(exc))
     params = typed.model_dump(mode="json")
     _reset_range_if_window_changed(params, patch)
 

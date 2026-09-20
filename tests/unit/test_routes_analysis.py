@@ -150,6 +150,16 @@ async def test_run_rejects_invalid_patch(client, ml_state):
                                                "params_patch": {"sensitivity": 5}})
     assert r.status_code == 422
     assert not ml_state.store.proposals[pid]["consumed_at"]
+    # The body names the chip so the setup card can mark that field.
+    detail = r.json()["detail"]
+    assert detail["field"] == "sensitivity" and detail["loc"] == ["sensitivity"]
+    assert detail["message"].startswith("Invalid parameter:")
+    # A nested location resolves to the chip key, not the container.
+    r = client.post("/api/analysis/run", json={"connection": "sales_db", "proposal_id": pid,
+                                               "params_patch": {"grain": "fortnight"}})
+    assert r.status_code == 422
+    assert r.json()["detail"]["field"] == "grain"
+    assert r.json()["detail"]["loc"] == ["series", "grain"]
 
 
 @pytest.mark.asyncio

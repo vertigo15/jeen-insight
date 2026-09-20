@@ -8,18 +8,22 @@
 /// <reference path="./types/chart.types.js" />
 
 import { analyzeData } from './utils/dataAnalyzer.js';
-import { collectNumericValues, makeLabelFormatter, makeValueFormatter } from './utils/valueFormat.js?v=74';
-import { ChartContainer } from './components/ChartContainer.js?v=78';
-import { ChartToggle } from './components/ChartToggle.js';
-import { ChartTypeSelector } from './components/ChartTypeSelector.js?v=78';
-import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=73';
-import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v=1';
+import { collectNumericValues, makeLabelFormatter, makeValueFormatter } from './utils/valueFormat.js?v=75';
+import { ChartContainer } from './components/ChartContainer.js?v=80';
+import { ChartToggle } from './components/ChartToggle.js?v=3';
+import { ChartTypeSelector } from './components/ChartTypeSelector.js?v=79';
+import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=75';
+import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v=2';
 import { DEFAULT_PALETTE_ID, applyPalette, getPalette, isKnownPalette } from './utils/chartPalettes.js?v=1';
-import { ChartChat } from './components/ChartChat.js?v=103';
+import { ChartChat } from './components/ChartChat.js?v=105';
 import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js';
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
 import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=8';
 import { CHART_TYPE_VALUES } from './chartTypes.js?v=79';
+
+// Interface strings come from the locale catalog (static/i18n/i18n.js, loaded first).
+const t = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
+const th = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.h === 'function' ? window.I18n.h(key, args) : String(key));
 
 /**
  * Main chart manager class
@@ -245,7 +249,7 @@ export class ChartManager {
                 onAnalysisRerun: (instruction) => (
                     window.WorkspaceController && typeof window.WorkspaceController.rerunAnalysis === 'function'
                         ? window.WorkspaceController.rerunAnalysis(instruction)
-                        : Promise.reject(new Error('Analysis re-run is unavailable here'))
+                        : Promise.reject(new Error(t('charts.errors.rerunUnavailable')))
                 ),
             });
             this.chartChat.mount();
@@ -338,7 +342,7 @@ export class ChartManager {
         console.log('[ChartManager] Cleared cache for:', chartType);
 
         // Show visual feedback
-        this.showToast(`Generating ${chartType === 'auto' ? 'LLM-recommended' : chartType} chart...`, 'info');
+        this.showToast(chartType === 'auto' ? t('charts.generatingAuto') : t('charts.generating', { type: chartType }), 'info');
         this.chartOptionsPanel?.setChartType(chartType);
         this._syncMapControls(chartType);
 
@@ -471,7 +475,7 @@ export class ChartManager {
             // dataset. Just render it.
             const chartConfig = data.chart_config;
             if (!chartConfig || (!chartConfig.series && !chartConfig.jeenOsmMap)) {
-                throw new Error('Could not build a chart for this data');
+                throw new Error(t('charts.errors.cannotBuild'));
             }
 
             // Store LLM recommendation (when chart_type is auto)
@@ -971,6 +975,17 @@ export class ChartManager {
             this.chartContainer.render(chartConfig);
             this.currentEchartsOptions = displayConfig;
             this.state.currentConfig = chartConfig;
+            // Keep the saved spec honest about what is on screen: use the spec the
+            // edit returned, else at least its chart type — restored conversations
+            // and the type selector read the spec, not the ECharts option.
+            if (edit?.chart_spec && typeof edit.chart_spec === 'object') {
+                this.currentChartSpec = edit.chart_spec;
+            } else if (chartConfig.type && this.currentChartSpec && this.currentChartSpec.chart_type !== chartConfig.type) {
+                this.currentChartSpec = { ...this.currentChartSpec, chart_type: chartConfig.type };
+            }
+            if (this.currentChartSpec) {
+                try { this.chartOptionsPanel?.syncFromSpec(this.currentChartSpec); } catch (_) { /* panel may be unmounted */ }
+            }
         } catch (error) {
             console.error('[ChartManager] Failed to apply edited config:', error);
             // Roll back to the last known-good config so the user keeps a
@@ -1021,6 +1036,14 @@ export class ChartManager {
         }
         const displayConfig = this._withWorkspaceTheme(this._withQuickToggles(baseline));
         this._renderDisplayConfig(displayConfig, 'Failed to reset chart');
+        // Reset means the original chart, spec included (the map branch above
+        // already does this).
+        this.currentChartSpec = this.originalChartSpec
+            ? JSON.parse(JSON.stringify(this.originalChartSpec))
+            : null;
+        if (this.currentChartSpec) {
+            try { this.chartOptionsPanel?.syncFromSpec(this.currentChartSpec); } catch (_) { /* panel may be unmounted */ }
+        }
     }
 
 
@@ -1034,7 +1057,18 @@ export class ChartManager {
      */
     _mountChartActionsToolbar() {
         const host = document.getElementById('chart-actions-toolbar');
-        if (!host || host.dataset.mounted === '1') return;
+        if (!host) return;
+        // The toolbar is built once, but a new ChartManager is created for every
+        // result. The buttons therefore act on whichever manager owns the chart
+        // now (`host._chartManager`), not on the instance that built them —
+        // otherwise Save PNG reports "No chart to export yet" for every chart
+        // after the first.
+        host._chartManager = this;
+        if (host.dataset.mounted === '1') {
+            this._chartSavePngBtn = host.querySelector('#chart-save-png-btn');
+            this._chartCopyPngBtn = host.querySelector('#chart-copy-png-btn');
+            return;
+        }
 
         host.classList.add('chart-actions-toolbar');
         host.innerHTML = '';
@@ -1043,25 +1077,25 @@ export class ChartManager {
         saveBtn.type = 'button';
         saveBtn.className = 'chart-action-btn';
         saveBtn.id = 'chart-save-png-btn';
-        saveBtn.title = 'Download chart as PNG';
+        saveBtn.title = t('charts.actions.savePngTitle');
         saveBtn.disabled = true;
         saveBtn.innerHTML = `
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            <span>Save PNG</span>
+            <span>${th('charts.actions.savePng')}</span>
         `;
-        saveBtn.addEventListener('click', () => this._handleSavePng());
+        saveBtn.addEventListener('click', () => (host._chartManager || this)._handleSavePng());
 
         const copyBtn = document.createElement('button');
         copyBtn.type = 'button';
         copyBtn.className = 'chart-action-btn';
         copyBtn.id = 'chart-copy-png-btn';
-        copyBtn.title = 'Copy chart image to clipboard';
+        copyBtn.title = t('charts.actions.copyTitle');
         copyBtn.disabled = true;
         copyBtn.innerHTML = `
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-            <span>Copy</span>
+            <span>${th('common.copy')}</span>
         `;
-        copyBtn.addEventListener('click', () => this._handleCopyPng(copyBtn));
+        copyBtn.addEventListener('click', () => (host._chartManager || this)._handleCopyPng(copyBtn));
 
         host.appendChild(saveBtn);
         host.appendChild(copyBtn);
@@ -1094,12 +1128,12 @@ export class ChartManager {
 
     _handleSavePng() {
         if (!this.chartContainer || !this.chartContainer.hasChart()) {
-            this.showToast('No chart to export yet.', 'error');
+            this.showToast(t('charts.actions.noChartExport'), 'error');
             return;
         }
         const dataUrl = this.chartContainer.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#ffffff' });
         if (!dataUrl) {
-            this.showToast('Could not generate chart image.', 'error');
+            this.showToast(t('charts.actions.imageFailed'), 'error');
             return;
         }
         const link = document.createElement('a');
@@ -1109,18 +1143,18 @@ export class ChartManager {
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        this.showToast('Chart saved as PNG.', 'success');
+        this.showToast(t('charts.actions.saved'), 'success');
     }
 
     async _handleCopyPng(btn) {
         if (!this.chartContainer || !this.chartContainer.hasChart()) {
-            this.showToast('No chart to copy yet.', 'error');
+            this.showToast(t('charts.actions.noChartCopy'), 'error');
             return;
         }
         // Clipboard image API requires a secure context (HTTPS or localhost).
         const canCopyImage = !!(navigator.clipboard && window.ClipboardItem);
         if (!canCopyImage) {
-            this.showToast('Clipboard image copy is not supported in this browser/context.', 'error');
+            this.showToast(t('charts.actions.clipboardUnsupported'), 'error');
             return;
         }
         const originalLabel = btn ? btn.querySelector('span')?.textContent : null;
@@ -1128,15 +1162,15 @@ export class ChartManager {
             if (btn) {
                 btn.disabled = true;
                 const span = btn.querySelector('span');
-                if (span) span.textContent = 'Copying…';
+                if (span) span.textContent = t('charts.actions.copying');
             }
             const blob = await this.chartContainer.getBlob({ type: 'png', pixelRatio: 2, backgroundColor: '#ffffff' });
-            if (!blob) throw new Error('No image data');
+            if (!blob) throw new Error(t('charts.errors.noImageData'));
             await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-            this.showToast('Chart copied to clipboard.', 'success');
+            this.showToast(t('charts.actions.copied'), 'success');
         } catch (e) {
             console.error('[ChartManager] Copy chart failed:', e);
-            this.showToast('Could not copy chart: ' + (e && e.message ? e.message : 'unknown'), 'error');
+            this.showToast(t('charts.actions.copyFailed', { detail: e && e.message ? e.message : t('common.unknownError') }), 'error');
         } finally {
             if (btn) {
                 btn.disabled = false;
@@ -1165,7 +1199,7 @@ export class ChartManager {
             };
             script.onerror = () => {
                 console.error('[ChartManager] Failed to load ECharts');
-                reject(new Error('Failed to load ECharts library'));
+                reject(new Error(t('charts.errors.libraryLoadFailed')));
             };
             document.head.appendChild(script);
         });
@@ -1181,8 +1215,8 @@ export class ChartManager {
         if (container) {
             container.innerHTML = `
                 <div class="chart-not-available">
-                    <p>📊 Chart view not available</p>
-                    <p class="reason">${reason}</p>
+                    <p>📊 ${th('charts.toggle.unavailable')}</p>
+                    <p class="reason" dir="auto">${this.escapeHtml(String(reason ?? ''))}</p>
                 </div>
             `;
         }
@@ -1222,7 +1256,7 @@ export class ChartManager {
         }
 
         if (!chartData.prompt) {
-            promptContent.innerHTML = '<p style="color: #999;">No prompt available</p>';
+            promptContent.innerHTML = `<p style="color: #999;">${th('insights.noPrompt')}</p>`;
             return;
         }
 

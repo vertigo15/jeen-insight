@@ -39,6 +39,10 @@ from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
 from src.agent.token_usage import merge_usage
 from src.analysis.contracts import (
+    AGG_LABELS,
+    DEFAULT_WINDOW_PERIODS,
+    METHOD_LABELS,
+    SENTINEL_LABELS,
     AnalysisProposal,
     CohortRequest,
     EntityRequest,
@@ -48,6 +52,7 @@ from src.analysis.contracts import (
     GuardResult,
     ParamChip,
     SeriesRequest,
+    field_bounds,
     get_skill,
     method_options,
     parse_params,
@@ -187,100 +192,174 @@ def _estimated_frame(req: SeriesRequest, n: int) -> SeriesFrame:
     return SeriesFrame(frame=frame, grain=req.grain, freq=pandas_freq(req.grain), request=req)
 
 
+# Setup-card sections. ``group`` is the label the card displays; the card groups
+# chips by first occurrence, so each family emits its data fields first.
+_G_DATA, _G_MODEL, _G_OUTPUT, _G_COMPARE, _G_COHORT, _G_TEST = "Data", "Model", "Output", "Comparison", "Cohort", "Test"
+_GRAIN_LABELS = {"day": "Day", "week": "Week", "month": "Month"}
+_METHOD_HELP = {
+    "forecast": "Auto cross-validates the shortlist and keeps the baseline unless a model beats it.",
+    "anomaly_detection": "Auto is a robust seasonal band; 3-sigma is mean ± 3 standard deviations.",
+    "clustering": "K-means needs a segment count; HDBSCAN finds it from density.",
+    "driver_analysis": "Auto fits every available engine and keeps the best held-out R².",
+}
+
+
+def _pct_labels(values: List[float]) -> Dict[str, str]:
+    return {str(v): f"{round(float(v) * 100)}%" for v in values}
+
+
+def _chip(skill: str, key: str, label: str, value: Any, *, group: str, options: Optional[List[Any]] = None,
+          kind: Optional[str] = None, unit: Optional[str] = None, unit_from: Optional[str] = None,
+          help: Optional[str] = None, required: bool = False, option_labels: Optional[Dict[str, str]] = None,
+          step: Optional[int] = None, defaults_by_grain: Optional[Dict[str, int]] = None) -> ParamChip:
+    """One setup-card field with its bounds read from the skill's contract."""
+    lo, hi = field_bounds(skill, key)
+    return ParamChip(
+        key=key, label=label, value=value, options=list(options or []), group=group, kind=kind, unit=unit,
+        unit_from=unit_from, help=help, min=lo, max=hi, step=step, required=required,
+        option_labels=dict(option_labels or {}), defaults_by_grain=defaults_by_grain,
+    )
+
+
 def _chips(skill: str, params: Dict[str, Any], cands) -> List[ParamChip]:
     spec = get_skill(skill)
     if spec.family == "entity":
         entity = params.get("entity") or {}
         tc = cands.get(str(entity.get("table", "")).lower())
+        numeric = tc.numeric_columns[:12] if tc else []
         chips = [
-            ParamChip(key="entity_key", label="entity", value=entity.get("entity_key"),
-                      options=((tc.text_columns + tc.numeric_columns)[:12] if tc else [])),
-            ParamChip(key="features", label="features", value=", ".join(entity.get("features") or []), options=[]),
-            ParamChip(key="row_cap", label="row cap", value=entity.get("row_cap", 50000), options=[1000, 10000, 50000, 100000]),
+            _chip(skill, "entity_key", "Entity", entity.get("entity_key"), group=_G_DATA, required=True,
+                  options=((tc.text_columns + tc.numeric_columns)[:12] if tc else []),
+                  help="One row per value of this column."),
+            _chip(skill, "features", "Features", list(entity.get("features") or []), group=_G_DATA, kind="multiselect",
+                  options=(tc.numeric_columns[:24] if tc else []), required=True,
+                  help="Numeric columns the model learns from."),
         ]
+        if skill != "clustering":
+            chips.append(_chip(skill, "target", "Target", entity.get("target"), group=_G_DATA, options=numeric,
+                               required=True, help="What the model predicts."))
+        chips.append(_chip(skill, "row_cap", "Row cap", entity.get("row_cap", 50000), group=_G_DATA,
+                           options=[1000, 10000, 50000, 100000], unit="rows",
+                           option_labels={str(n): f"{n:,}" for n in (1000, 10000, 50000, 100000)},
+                           help="The run is refused above this many rows (add a filter or raise it); it is audited with this column list."))
         if skill == "clustering":
-            chips.append(ParamChip(key="k", label="segments", value=params.get("k") or "auto", options=["auto", 2, 3, 4, 5, 6, 7, 8]))
-            chips.append(ParamChip(key="method", label="model", value=params.get("method", "kmeans"), options=method_options(skill)))
+            chips.append(_chip(skill, "k", "Segments", params.get("k") or "auto", group=_G_MODEL,
+                               options=["auto", 2, 3, 4, 5, 6, 7, 8], option_labels={"auto": SENTINEL_LABELS["auto"]},
+                               help="Auto picks the count by silhouette."))
+            chips.append(_chip(skill, "method", "Model", params.get("method", "kmeans"), group=_G_MODEL,
+                               options=method_options(skill), option_labels=METHOD_LABELS, help=_METHOD_HELP.get(skill)))
         else:
-            chips.append(ParamChip(key="target", label="target", value=entity.get("target"),
-                                   options=(tc.numeric_columns[:12] if tc else [])))
-            chips.append(ParamChip(key="holdout", label="holdout", value=params.get("holdout", 0.2), options=[0.1, 0.2, 0.3]))
+            chips.append(_chip(skill, "holdout", "Holdout", params.get("holdout", 0.2), group=_G_MODEL,
+                               options=[0.1, 0.2, 0.3], option_labels=_pct_labels([0.1, 0.2, 0.3]),
+                               help="Share of rows kept aside to score the fit."))
             if skill == "driver_analysis":
-                chips.append(ParamChip(key="method", label="model", value=params.get("method", "hgb"),
-                                       options=method_options(skill)))
+                chips.append(_chip(skill, "method", "Model", params.get("method", "hgb"), group=_G_MODEL,
+                                   options=method_options(skill), option_labels=METHOD_LABELS,
+                                   help=_METHOD_HELP.get(skill)))
         return chips
 
     if spec.family == "cohort":
         cohort = params.get("cohort") or {}
         tc = cands.get(str(cohort.get("table", "")).lower())
+        dates = tc.date_columns if tc else []
         return [
-            ParamChip(key="entity_key", label="entity", value=cohort.get("entity_key"),
-                      options=((tc.text_columns + tc.numeric_columns)[:12] if tc else [])),
-            ParamChip(key="cohort_date", label="signup date", value=cohort.get("cohort_date"),
-                      options=(tc.date_columns if tc else [])),
-            ParamChip(key="activity_date", label="activity date", value=cohort.get("activity_date"),
-                      options=(tc.date_columns if tc else [])),
-            ParamChip(key="grain", label="grain", value=cohort.get("grain", "month"), options=["day", "week", "month"]),
-            ParamChip(key="max_periods", label="periods", value=cohort.get("max_periods", 12), options=[6, 12, 18, 24]),
+            _chip(skill, "entity_key", "Entity", cohort.get("entity_key"), group=_G_DATA, required=True,
+                  options=((tc.text_columns + tc.numeric_columns)[:12] if tc else []),
+                  help="What is counted in each cohort."),
+            _chip(skill, "cohort_date", "Signup date", cohort.get("cohort_date"), group=_G_DATA, options=dates,
+                  required=True, help="When the entity first appeared; defines its cohort."),
+            _chip(skill, "activity_date", "Activity date", cohort.get("activity_date"), group=_G_DATA, options=dates,
+                  required=True, help="When the entity was seen active."),
+            _chip(skill, "grain", "Grain", cohort.get("grain", "month"), group=_G_COHORT,
+                  options=["day", "week", "month"], option_labels=_GRAIN_LABELS, help="The size of one period."),
+            _chip(skill, "max_periods", "Periods", cohort.get("max_periods", 12), group=_G_COHORT,
+                  options=[6, 12, 18, 24], unit_from="grain", help="How many periods after signup to follow."),
         ]
 
     if spec.family == "experiment":
         experiment = params.get("experiment") or {}
         tc = cands.get(str(experiment.get("table", "")).lower())
         return [
-            ParamChip(key="group_column", label="arm", value=experiment.get("group_column"),
-                      options=(tc.text_columns[:12] if tc else [])),
-            ParamChip(key="outcome_column", label="outcome", value=experiment.get("outcome_column"),
-                      options=(tc.numeric_columns[:12] if tc else [])),
-            ParamChip(key="outcome_type", label="type", value=experiment.get("outcome_type", "binary"),
-                      options=["binary", "continuous"]),
-            ParamChip(key="control", label="control", value=experiment.get("control") or "auto", options=[]),
-            ParamChip(key="confidence", label="confidence", value=params.get("confidence", 0.95),
-                      options=[0.90, 0.95, 0.99]),
+            _chip(skill, "group_column", "Arm", experiment.get("group_column"), group=_G_DATA, required=True,
+                  options=(tc.text_columns[:12] if tc else []), help="Column naming the variant each row saw."),
+            _chip(skill, "outcome_column", "Outcome", experiment.get("outcome_column"), group=_G_DATA, required=True,
+                  options=(tc.numeric_columns[:12] if tc else []), help="The metric compared between arms."),
+            _chip(skill, "outcome_type", "Outcome type", experiment.get("outcome_type", "binary"), group=_G_TEST,
+                  options=["binary", "continuous"],
+                  option_labels={"binary": "Binary (conversion)", "continuous": "Continuous (numeric)"},
+                  help="Binary is a 0/1 conversion per row; continuous is a numeric metric."),
+            _chip(skill, "control", "Control arm", experiment.get("control") or "auto", group=_G_TEST, kind="text",
+                  help="The baseline arm. Auto looks for control / baseline / A, else the first arm by label."),
+            _chip(skill, "confidence", "Confidence", params.get("confidence", 0.95), group=_G_TEST,
+                  options=[0.90, 0.95, 0.99], option_labels=_pct_labels([0.90, 0.95, 0.99]),
+                  help="Confidence level of the reported interval."),
         ]
 
     series = params.get("series") or {}
     tc = cands.get(str(series.get("table", "")).lower())
+    numeric = tc.numeric_columns[:12] if tc else []
     chips = [
-        ParamChip(key="measure_column", label="measure", value=series.get("measure_column"),
-                  options=(tc.numeric_columns[:12] if tc else [])),
-        ParamChip(key="agg", label="aggregate", value=series.get("agg"), options=["sum", "count", "avg", "min", "max"]),
-        ParamChip(key="date_column", label="date", value=series.get("date_column"),
-                  options=(tc.date_columns if tc else [])),
+        _chip(skill, "measure_column", "Measure", series.get("measure_column"), group=_G_DATA, options=numeric,
+              required=True, help="The numeric column to analyse."),
+        _chip(skill, "agg", "Aggregate", series.get("agg"), group=_G_DATA, options=["sum", "count", "avg", "min", "max"],
+              option_labels=AGG_LABELS, help="How rows are rolled up per period."),
+        _chip(skill, "date_column", "Date column", series.get("date_column"), group=_G_DATA,
+              options=(tc.date_columns if tc else []), required=True, help="The date that defines the timeline."),
     ]
     if spec.family == "contribution":
         chips += [
-            ParamChip(key="dimensions", label="dimensions", value=", ".join(params.get("dimensions") or []),
-                      options=(tc.text_columns[:12] if tc else [])),
-            ParamChip(key="before_start", label="before from", value=params.get("before_start"), options=[]),
-            ParamChip(key="before_end", label="before to", value=params.get("before_end"), options=[]),
-            ParamChip(key="after_start", label="after from", value=params.get("after_start"), options=[]),
-            ParamChip(key="after_end", label="after to", value=params.get("after_end"), options=[]),
-            ParamChip(key="top_n", label="top slices", value=params.get("top_n", 10), options=[5, 10, 20]),
+            _chip(skill, "dimensions", "Dimensions", list(params.get("dimensions") or []), group=_G_DATA,
+                  kind="multiselect", options=(tc.text_columns[:24] if tc else []), required=True,
+                  help="Columns whose slices explain the change."),
+            _chip(skill, "before_start", "Before from", params.get("before_start"), group=_G_COMPARE, kind="date",
+                  help="Start of the earlier period."),
+            _chip(skill, "before_end", "Before to", params.get("before_end"), group=_G_COMPARE, kind="date",
+                  help="End of the earlier period (excluded)."),
+            _chip(skill, "after_start", "After from", params.get("after_start"), group=_G_COMPARE, kind="date",
+                  help="Start of the later period."),
+            _chip(skill, "after_end", "After to", params.get("after_end"), group=_G_COMPARE, kind="date",
+                  help="End of the later period (excluded)."),
+            _chip(skill, "top_n", "Top slices", params.get("top_n", 10), group=_G_COMPARE, options=[5, 10, 20],
+                  help="How many slices per dimension to report."),
         ]
         return chips
+    if skill == "correlation":
+        chips.append(_chip(skill, "other_measure_column", "Compare with", params.get("other_measure_column"),
+                           group=_G_DATA, options=numeric, required=True,
+                           help="The second measure, rolled up on the same date column."))
+    if series.get("group_by") is not None or (tc and tc.text_columns):
+        chips.append(_chip(skill, "group_by", "Split by", series.get("group_by") or "none", group=_G_DATA,
+                           options=["none"] + (tc.text_columns[:10] if tc else []),
+                           option_labels={"none": SENTINEL_LABELS["none"]},
+                           help="One series per value of this column."))
+    grain = series.get("grain") or "week"
     chips += [
-        ParamChip(key="grain", label="grain", value=series.get("grain"), options=["day", "week", "month"]),
-        ParamChip(key="window", label="window", value=params.get("window"), options=[]),
+        _chip(skill, "grain", "Grain", grain, group=_G_MODEL, options=["day", "week", "month"],
+              option_labels=_GRAIN_LABELS, help="The size of one period."),
+        _chip(skill, "window", "Look-back window", params.get("window") or default_window_periods(grain),
+              group=_G_MODEL, kind="number", step=1, unit_from="grain", defaults_by_grain=dict(DEFAULT_WINDOW_PERIODS),
+              help="How much history the model learns from."),
     ]
     if skill == "anomaly_detection":
-        chips.append(ParamChip(key="sensitivity", label="sensitivity", value=params.get("sensitivity", 0.95),
-                               options=[0.8, 0.9, 0.95, 0.99]))
-        chips.append(ParamChip(key="method", label="model", value=params.get("method", "auto"), options=method_options(skill)))
+        chips.append(_chip(skill, "sensitivity", "Sensitivity", params.get("sensitivity", 0.95), group=_G_MODEL,
+                           options=[0.8, 0.9, 0.95, 0.99], option_labels=_pct_labels([0.8, 0.9, 0.95, 0.99]),
+                           help="Share of history expected inside the band; higher flags fewer points."))
+        chips.append(_chip(skill, "method", "Model", params.get("method", "auto"), group=_G_MODEL,
+                           options=method_options(skill), option_labels=METHOD_LABELS, help=_METHOD_HELP.get(skill)))
     elif skill == "forecast":
-        chips.append(ParamChip(key="horizon", label="horizon", value=params.get("horizon", 8), options=[]))
-        chips.append(ParamChip(key="interval", label="interval", value=params.get("interval", 0.8),
-                               options=[0.5, 0.8, 0.9, 0.95]))
-        chips.append(ParamChip(key="method", label="model", value=params.get("method", "auto"), options=method_options(skill)))
+        chips.append(_chip(skill, "method", "Model", params.get("method", "auto"), group=_G_MODEL,
+                           options=method_options(skill), option_labels=METHOD_LABELS, help=_METHOD_HELP.get(skill)))
+        chips.append(_chip(skill, "horizon", "Horizon", params.get("horizon", 8), group=_G_OUTPUT, kind="number",
+                           step=1, unit_from="grain", help="How far ahead to project."))
+        chips.append(_chip(skill, "interval", "Interval", params.get("interval", 0.8), group=_G_OUTPUT,
+                           options=[0.5, 0.8, 0.9, 0.95], option_labels=_pct_labels([0.5, 0.8, 0.9, 0.95]),
+                           help="Width of the prediction band: 80% means the true value should fall inside it 4 times in 5."))
     elif skill == "changepoint":
-        chips.append(ParamChip(key="max_changepoints", label="max breaks", value=params.get("max_changepoints", 5), options=[1, 3, 5, 10]))
+        chips.append(_chip(skill, "max_changepoints", "Max breaks", params.get("max_changepoints", 5), group=_G_OUTPUT,
+                           options=[1, 3, 5, 10], help="Upper bound on the number of level shifts reported."))
     elif skill == "correlation":
-        chips.append(ParamChip(key="other_measure_column", label="with", value=params.get("other_measure_column"),
-                               options=(tc.numeric_columns[:12] if tc else [])))
-        chips.append(ParamChip(key="max_lag", label="max lag", value=params.get("max_lag", 8), options=[0, 4, 8, 13, 26]))
-    if series.get("group_by") is not None or (tc and tc.text_columns):
-        chips.append(ParamChip(key="group_by", label="split by", value=series.get("group_by") or "none",
-                               options=["none"] + (tc.text_columns[:10] if tc else [])))
+        chips.append(_chip(skill, "max_lag", "Max lag", params.get("max_lag", 8), group=_G_MODEL,
+                           options=[0, 4, 8, 13, 26], unit_from="grain", help="Largest shift between the two series to test."))
     return chips
 
 
@@ -558,14 +637,48 @@ def make_analysis_guard(
 
         if spec.family == "contribution":
             # ── Two periods: given, or the last quarter vs the one before ──
-            span_end = pd.Timestamp(max_ts).normalize() + pd.Timedelta(days=1)
-            if not (typed.after_start and typed.after_end):
+            def _day(value) -> pd.Timestamp:
+                """Calendar day as a naive timestamp (probe values may be tz-aware)."""
+                ts = pd.Timestamp(value)
+                return (ts.tz_localize(None) if ts.tzinfo is not None else ts).normalize()
+
+            span_start = _day(min_ts)
+            span_end = _day(max_ts) + pd.Timedelta(days=1)
+
+            def _within_data(start, end) -> bool:
+                """A half-open period overlaps the data span."""
+                try:
+                    s, e = _day(start), _day(end)
+                except (TypeError, ValueError):
+                    return False
+                return s < span_end and e > span_start
+
+            # The planner turns a relative phrase ("the most recent quarter")
+            # into calendar dates relative to today; on a historical dataset
+            # those land past the newest row and the comparison reads no rows.
+            # Periods that miss the data entirely are re-anchored to its end.
+            after_given = bool(typed.after_start and typed.after_end)
+            before_given = bool(typed.before_start and typed.before_end)
+            anchored = ""
+            if after_given and not _within_data(typed.after_start, typed.after_end):
+                after_given = before_given = False
+                anchored = "the requested periods fall outside the data"
+            elif before_given and not _within_data(typed.before_start, typed.before_end):
+                before_given = False
+                anchored = "the requested earlier period falls outside the data"
+            if not after_given:
                 params["after_end"] = span_end.date().isoformat()
                 params["after_start"] = (span_end - pd.DateOffset(months=3)).date().isoformat()
-            if not (typed.before_start and typed.before_end):
+            if not before_given:
                 a_start = pd.Timestamp(params["after_start"])
                 params["before_end"] = a_start.date().isoformat()
                 params["before_start"] = (a_start - pd.DateOffset(months=3)).date().isoformat()
+            if anchored:
+                results.append(GuardResult(
+                    name="periods", passed=True, overridable=False,
+                    detail=(f"{anchored} ({span_start.date()} → {(span_end - pd.Timedelta(days=1)).date()}); "
+                            f"comparing {params['before_start']} → {params['before_end']} with {params['after_start']} → {params['after_end']} instead"),
+                ))
             n_est = 2 * (typed.top_n * len(typed.dimensions))
             message = (
                 f"Reading this as {_SKILL_PHRASE[skill]} of {series.measure_label}: {params['before_start']} → {params['before_end']} "

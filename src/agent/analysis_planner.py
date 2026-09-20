@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 _NUMERIC_TYPES = ("int", "decimal", "numeric", "float", "double", "real", "money", "number", "bigint", "smallint")
 _DATE_TYPES = ("date", "timestamp", "datetime")
 _TYPE_RE = re.compile(r"\btype\s*:\s*([^,|]+)", re.IGNORECASE)
+_PK_RE = re.compile(r"\bPK\s*:\s*true\b", re.IGNORECASE)
 _MAX_OPTIONS = 6
 
 # Cues strong enough to upgrade a router's needs_query on their own. Weak cues
@@ -129,6 +130,15 @@ class TableCandidates:
     text_columns: List[str] = field(default_factory=list)  # dimensions / entity keys
     types: Dict[str, str] = field(default_factory=dict)  # lower column -> type
     schema: Optional[str] = None  # catalog spelling when the metadata qualifies the table
+    primary_keys: List[str] = field(default_factory=list)  # columns the catalog flags "PK: true"
+
+    def entity_key_guess(self) -> Optional[str]:
+        """The one column that identifies an entity, when the catalog makes it
+        unambiguous: a single primary key, else a single ``*key``/``*id`` column."""
+        if len(self.primary_keys) == 1:
+            return self.primary_keys[0]
+        keys = [c for c in self.text_columns + self.numeric_columns if c.lower().endswith(("key", "id"))]
+        return keys[0] if len(keys) == 1 else None
 
     def canonical_column(self, name: Optional[str]) -> Optional[str]:
         """The catalog's exact spelling of ``name`` (case-insensitive lookup), or None."""
@@ -163,6 +173,8 @@ def catalog_candidates(columns_text: str) -> Dict[str, TableCandidates]:
         if len(parts) >= 3 and not tc.schema:
             tc.schema = parts[-3]
         tc.types[column.lower()] = dtype
+        if _PK_RE.search(stripped) and column not in tc.primary_keys:
+            tc.primary_keys.append(column)
         if any(t in dtype for t in _DATE_TYPES) and "time" != dtype:
             if column not in tc.date_columns:
                 tc.date_columns.append(column)
@@ -624,16 +636,16 @@ def _build_entity_params(skill, plan, tc, cands, *, resolved_filters, connection
             return PlanOutcome(kind="fallback", reason="no table with two or more numeric columns")
     key = _pick(plan.get("entity_key"), tc.text_columns + tc.numeric_columns)
     if key is None:
+        # A sole primary key settles it (the catalog flags it); otherwise a sole
+        # *key/*id column; several candidates are the user's call.
+        key = tc.entity_key_guess()
+    if key is None:
         keys = [c for c in tc.text_columns + tc.numeric_columns if c.lower().endswith(("key", "id"))]
-        if len(keys) == 1:
-            key = keys[0]
-        elif keys:
+        if keys:
             return PlanOutcome(kind="clarify", skill=skill, message=f"Which column identifies one entity in {tc.name}?",
-                               options=_option_exits("entity_key", keys[:_MAX_OPTIONS]) and
-                               [GuardExit(kind="patch", label=c, params_patch={"entity": {"entity_key": c}}, recommended=(i == 0)) for i, c in enumerate(keys[:_MAX_OPTIONS])],
+                               options=[GuardExit(kind="patch", label=c, params_patch={"entity": {"entity_key": c}}, recommended=(i == 0)) for i, c in enumerate(keys[:_MAX_OPTIONS])],
                                reason="entity key ambiguous")
-        else:
-            return PlanOutcome(kind="fallback", reason=f"{tc.name} has no identifying column")
+        return PlanOutcome(kind="fallback", reason=f"{tc.name} has no identifying column")
     raw_features = plan.get("features") if isinstance(plan.get("features"), list) else []
     features = [f for f in (_pick(x, tc.numeric_columns) for x in raw_features) if f and f.lower() != key.lower()]
     needs_target = skill in ("driver_analysis", "regression", "classification")
@@ -691,15 +703,14 @@ def _build_cohort_params(skill, plan, tc, cands, *, resolved_filters, connection
 
     key = _pick(plan.get("entity_key"), tc.text_columns + tc.numeric_columns)
     if key is None:
+        key = tc.entity_key_guess()
+    if key is None:
         keys = [c for c in tc.text_columns + tc.numeric_columns if c.lower().endswith(("key", "id"))]
-        if len(keys) == 1:
-            key = keys[0]
-        elif keys:
+        if keys:
             return PlanOutcome(kind="clarify", skill=skill, message=f"Which column identifies one entity in {tc.name}?",
                                options=[GuardExit(kind="patch", label=c, params_patch={"cohort": {"entity_key": c}}, recommended=(i == 0))
                                         for i, c in enumerate(keys[:_MAX_OPTIONS])], reason="entity key ambiguous")
-        else:
-            return PlanOutcome(kind="fallback", reason=f"{tc.name} has no identifying column")
+        return PlanOutcome(kind="fallback", reason=f"{tc.name} has no identifying column")
 
     cohort_date = _pick(plan.get("cohort_date"), tc.date_columns)
     activity_date = _pick(plan.get("activity_date"), tc.date_columns)

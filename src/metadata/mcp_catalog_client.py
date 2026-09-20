@@ -197,6 +197,13 @@ class McpCatalogClient:
                 f"No table section in response from {tool} "
                 f"for connection_id={conn_id}"
             )
+        # Interim: the question filter drops native date columns it deems
+        # unnecessary; the time-series skills need them — see restore_date_columns.
+        try:
+            full = await self.load_all(source_key)
+            bundle["columns"] = restore_date_columns(bundle.get("columns", ""), full.get("columns", ""))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mcp: could not restore date columns for %s: %s", source_key, exc)
         if not bundle.get("sources"):
             bundle["sources"] = await self._build_sources(server, source_key)
         logger.info(
@@ -408,7 +415,7 @@ class McpCatalogClient:
         items = await self._load_list_dataset(
             source_key, NEED_LIST_COLUMNS, cache_key, arguments
         )
-        return filter_columns(items)
+        return filter_columns(_flatten_columns(items, table_name))
 
     async def get_cache_status(
         self, mcp_server_id: int, source_key: str
@@ -691,7 +698,9 @@ class McpCatalogClient:
 
         return {
             "tables":          bundle[KEY_TABLES],
-            "columns":         bundle[KEY_COLUMNS],
+            # A cache filled before the normaliser existed still holds the
+            # grouped shape; normalising is idempotent, so always do it.
+            "columns":         normalize_columns_markdown(bundle[KEY_COLUMNS]),
             "relationships":   bundle[KEY_RELATIONSHIPS],
             "sources":         bundle["sources"],
             "knowledge_pairs": bundle[KEY_KNOWLEDGE_PAIRS],
@@ -1016,6 +1025,141 @@ _SECTION_MAP: Dict[str, str] = {
 }
 
 
+# ── Column-section normalisation ──────────────────────────────────────────────
+#
+# Everything downstream of the catalog (the ML planner's catalog_candidates, the
+# filter grounder's column_types, the SQL node's column allowlist) parses one
+# flat line per column in the shape MetadataLoader emits from the metadata DB:
+#
+#     table.column - Type: data_type[, Description: …][, PK: true][, NOT NULL]
+#
+# The schema-modeler MCP groups columns under a table header instead:
+#
+#     "public"."dimdate": Contains date dimension data.
+#       - "datekey" (integer) [PK] [distinct_count=2191, …]: description
+#
+# Passed through verbatim, that reads as table "public" / column "dimdate" with
+# no type at all — so no date or numeric column is ever found and every ML
+# skill falls back to SQL. The adapter is the one place that knows both shapes,
+# so it rewrites the grouped form into the flat one here. Idempotent: flat
+# lines pass through untouched.
+
+_IDENT = r'(?:"[^"]+"|`[^`]+`|\[[^\]]+\]|[\w$]+)'
+_GROUPED_TABLE_RE = re.compile(rf"^\s*(?P<table>{_IDENT}(?:\.{_IDENT})*)\s*:\s*(?P<desc>.*)$")
+_GROUPED_COLUMN_RE = re.compile(
+    rf"^\s*[-*]\s*(?P<col>{_IDENT})\s*\((?P<type>[^()]*(?:\([^()]*\)[^()]*)*)\)\s*(?P<rest>.*)$"
+)
+_BRACKET_RE = re.compile(r"\[([^\]]*)\]")
+_FLAT_COLUMN_RE = re.compile(r"^\s*-?\s*\S+\s+-\s+Type\s*:", re.IGNORECASE)
+
+
+def _grouped_column_line(table: str, match: "re.Match[str]") -> str:
+    """One flat line for a grouped column entry."""
+    column = match.group("col")
+    dtype = " ".join(match.group("type").split())
+    rest = match.group("rest") or ""
+    flags = [flag.strip() for flag in _BRACKET_RE.findall(rest)]
+    # The description follows the last bracket group (or the whole tail), after a colon.
+    tail = _BRACKET_RE.sub("", rest).strip()
+    description = tail[1:].strip() if tail.startswith(":") else tail.strip()
+    parts = [f"{table}.{column} - Type: {dtype}"]
+    if any(flag.upper() == "PK" for flag in flags):
+        parts.append("PK: true")
+    if any(flag.upper() in ("NOT NULL", "NN") for flag in flags):
+        parts.append("NOT NULL")
+    for flag in flags:
+        distinct = re.match(r"distinct_count\s*=\s*(\d+)", flag)
+        if distinct:
+            parts.append(f"Distinct: {distinct.group(1)}")
+    if description:
+        parts.append(f"Description: {description}")
+    return "- " + ", ".join(parts)
+
+
+_LINE_TYPE_RE = re.compile(r"\btype\s*:\s*([^,|]+)", re.IGNORECASE)
+_DATE_TYPE_TOKENS = ("date", "timestamp", "datetime")
+
+
+def _flat_line_parts(line: str) -> "tuple[str, str, str]":
+    """``(table, column, dtype)`` of one flat column line, lower-cased; empty when it is not one."""
+    from .identifiers import table_column_from_identifier  # noqa: PLC0415  (leaf module)
+    stripped = line.lstrip("- ").strip()
+    table, column = table_column_from_identifier(stripped.split(" - ", 1)[0].strip())
+    match = _LINE_TYPE_RE.search(stripped)
+    return table, column, (match.group(1).strip().lower() if match else "")
+
+
+def _is_date_type(dtype: str) -> bool:
+    return dtype != "time" and any(token in dtype for token in _DATE_TYPE_TOKENS)
+
+
+def restore_date_columns(filtered_columns: str, full_columns: str) -> str:
+    """Give each table in a question-filtered bundle its native date columns back.
+
+    The schema-modeler MCP's question filter keeps a fact table's ``*datekey``
+    surrogates but drops its ``date``/``timestamp`` column when a question only
+    implies time ("the most recent quarter…"). Every time-series and
+    contribution skill needs that column on the table itself, so the (cached)
+    full catalog supplies it. Only date columns are added, so the filter's
+    choice of measures and dimensions is untouched, and nothing changes once
+    the modeler keeps them itself.
+    """
+    if not (filtered_columns or "").strip() or not (full_columns or "").strip():
+        return filtered_columns
+    tables: set[str] = set()
+    present: set[tuple[str, str]] = set()
+    has_date: set[str] = set()
+    for line in filtered_columns.splitlines():
+        table, column, dtype = _flat_line_parts(line)
+        if not table:
+            continue
+        tables.add(table)
+        present.add((table, column))
+        if _is_date_type(dtype):
+            has_date.add(table)
+    additions: List[str] = []
+    for line in full_columns.splitlines():
+        table, column, dtype = _flat_line_parts(line)
+        if table in tables and table not in has_date and _is_date_type(dtype) and (table, column) not in present:
+            additions.append(line.strip() if line.lstrip().startswith("-") else f"- {line.strip()}")
+    if not additions:
+        return filtered_columns
+    return filtered_columns.rstrip("\n") + "\n" + "\n".join(additions)
+
+
+def normalize_columns_markdown(text: str) -> str:
+    """Rewrite a grouped-by-table columns section into flat typed lines.
+
+    Lines already in the flat ``table.column - Type: …`` shape are kept as they
+    are, so applying this to cached (already normalised) content is a no-op.
+    Prose that is neither a table header nor a column entry (an intro line) is
+    dropped, since every consumer treats each line as one column.
+    """
+    if not text:
+        return text
+    lines = text.splitlines()
+    if not any(_GROUPED_COLUMN_RE.match(line) for line in lines):
+        return text  # nothing grouped here (flat DB shape, or empty)
+    out: List[str] = []
+    table: Optional[str] = None
+    for line in lines:
+        if not line.strip():
+            continue
+        if _FLAT_COLUMN_RE.match(line):
+            out.append(line)
+            continue
+        column = _GROUPED_COLUMN_RE.match(line)
+        if column and table:
+            out.append(_grouped_column_line(table, column))
+            continue
+        header = _GROUPED_TABLE_RE.match(line)
+        if header and not line.lstrip().startswith(("-", "*")):
+            table = header.group("table").strip()
+            continue
+        # Anything else (an intro sentence, a stray note) has no column in it.
+    return "\n".join(out)
+
+
 def _parse_catalog_markdown(text: str) -> Dict[str, str]:
     """
     Split the pre-formatted catalog prompt into MetadataLoader bundle keys.
@@ -1052,6 +1196,7 @@ def _parse_catalog_markdown(text: str) -> Dict[str, str]:
     if sources_parts:
         bundle["sources"] = "\n\n".join(sources_parts)
 
+    bundle["columns"] = normalize_columns_markdown(bundle["columns"])
     return bundle
 
 
@@ -1166,6 +1311,50 @@ def _fmt_business_terms(rows: List[Dict]) -> str:
         cat  = r.get("category") or "General"
         lines.append(f"- Term: {term} | Definition: {defn} | Category: {cat}")
     return "\n".join(lines) if lines else "No business terms registered."
+
+
+def _bare_table_name(name: Any) -> str:
+    """``"public"."dimcustomer"`` / ``public.dimcustomer`` / ``DimCustomer`` → ``dimcustomer``."""
+    text = str(name or "").replace('"', "").replace("`", "").strip().lower()
+    return text.rsplit(".", 1)[-1]
+
+
+def _flatten_columns(items: List[Any], table_name: Optional[str]) -> List[Dict[str, Any]]:
+    """Give ``load_columns`` the flat ``[{table, column, data_type, …}]`` shape
+    the UI reads, whatever the server sent.
+
+    The schema-modeler ``list_columns`` tool answers with one envelope —
+    ``{columns: [{table_name, column_name, data_type, …}], count, tables}`` —
+    and ignores its ``table`` argument, so the envelope is unwrapped, the
+    field names are mapped and the scope is applied here. Servers that already
+    return flat records pass through unchanged.
+    """
+    flat: List[Dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        nested = item.get("columns")
+        if isinstance(nested, list):
+            parent = item.get("table_name") or item.get("table")
+            for col in nested:
+                if isinstance(col, dict):
+                    flat.append(_column_record(col, parent))
+        else:
+            flat.append(_column_record(item, None))
+    if table_name:
+        want = _bare_table_name(table_name)
+        if want and any(rec.get("table") for rec in flat):
+            flat = [rec for rec in flat if _bare_table_name(rec.get("table")) == want]
+    return flat
+
+
+def _column_record(col: Dict[str, Any], parent_table: Any) -> Dict[str, Any]:
+    rec = dict(col)
+    if not rec.get("column"):
+        rec["column"] = col.get("column_name") or col.get("name") or ""
+    if not rec.get("table"):
+        rec["table"] = col.get("table_name") or parent_table or ""
+    return rec
 
 
 def _normalise_list(raw: Any) -> List[Any]:

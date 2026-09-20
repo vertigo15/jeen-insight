@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="{{ locale }}" dir="{{ dir }}" data-theme="light">
 <head>
   <script>
     (function () {
@@ -9,12 +9,12 @@
   </script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>First-run setup — Jeen Insights</title>
+  <title>{{ t('setup.pageTitle') }}</title>
   <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Hebrew:wght@400;500;600&family=Urbanist:ital,wght@0,300;0,400;0,500;0,600;0,700;0,900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=83">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=103">
   <style>
     html, body { height: 100%; margin: 0; }
     body {
@@ -63,8 +63,8 @@
       <div class="login-brand">
         <div class="login-logo">J</div>
         <div>
-          <h1 class="login-title">Welcome to Jeen Insights</h1>
-          <p class="login-subtitle">Create the first administrator account</p>
+          <h1 class="login-title">{{ t('setup.heading') }}</h1>
+          <p class="login-subtitle">{{ t('setup.subtitle') }}</p>
         </div>
       </div>
 
@@ -72,38 +72,36 @@
       <div class="login-error" role="alert">{{ error }}</div>
       {% endif %}
 
-      <p class="hint">No admin account exists yet. This one-time screen creates it.
-         Enter the setup token printed in the server logs (or your
-         <code>SETUP_BOOTSTRAP_TOKEN</code>) to continue.</p>
+      <p class="hint">{{ t('setup.hint') }}</p>
 
       <form class="login-form" method="POST" action="/setup">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="login-field">
-          <label class="login-label" for="setup_token">Setup token</label>
+          <label class="login-label" for="setup_token">{{ t('setup.tokenLabel') }}</label>
           <input id="setup_token" name="setup_token" type="password" class="login-input" required autofocus
-                 autocomplete="off">
+                 autocomplete="off" dir="ltr">
         </div>
         <div class="login-field">
-          <label class="login-label" for="name">Full name</label>
-          <input id="name" name="name" type="text" class="login-input" required
+          <label class="login-label" for="name">{{ t('setup.nameLabel') }}</label>
+          <input id="name" name="name" type="text" class="login-input" required dir="auto"
                  value="{{ request.form.get('name', '') }}">
         </div>
         <div class="login-field">
-          <label class="login-label" for="email">Email</label>
-          <input id="email" name="email" type="email" class="login-input" required
+          <label class="login-label" for="email">{{ t('setup.emailLabel') }}</label>
+          <input id="email" name="email" type="email" class="login-input" required dir="ltr"
                  autocomplete="username" value="{{ request.form.get('email', '') }}">
         </div>
         <div class="login-field">
-          <label class="login-label" for="password">Password (min 12 characters)</label>
-          <input id="password" name="password" type="password" class="login-input" required
+          <label class="login-label" for="password">{{ t('setup.passwordLabel') }}</label>
+          <input id="password" name="password" type="password" class="login-input" required dir="ltr"
                  autocomplete="new-password" minlength="12">
         </div>
         <div class="login-field">
-          <label class="login-label" for="confirm">Confirm password</label>
-          <input id="confirm" name="confirm" type="password" class="login-input" required
+          <label class="login-label" for="confirm">{{ t('setup.confirmLabel') }}</label>
+          <input id="confirm" name="confirm" type="password" class="login-input" required dir="ltr"
                  autocomplete="new-password" minlength="12">
         </div>
-        <button type="submit" class="login-btn">Create admin & continue</button>
+        <button type="submit" class="login-btn">{{ t('setup.submit') }}</button>
       </form>
     </div>
   </div>

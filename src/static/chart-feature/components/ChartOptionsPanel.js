@@ -6,11 +6,18 @@
 import { applyQuickOptions, defaultLegendVisible, detectToggles } from '../utils/chartQuickOptions.js?v=71';
 import { CHART_PALETTES, DEFAULT_PALETTE_ID, isKnownPalette, paletteSwatches } from '../utils/chartPalettes.js?v=1';
 
+// Interface strings come from the locale catalog (static/i18n/i18n.js, loaded first).
+const t = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
+const hasKey = (key) => Boolean(typeof window !== 'undefined' && window.I18n && typeof window.I18n.has === 'function' && window.I18n.has(key));
+const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[c]));
+
 const TOGGLE_DEFS = [
-    { key: 'dataLabels', label: 'Labels', title: 'Show data labels on series' },
-    { key: 'legend', label: 'Legend', title: 'Show chart legend' },
-    { key: 'dataZoom', label: 'Zoom', title: 'Enable slider + scroll zoom' },
-    { key: 'sortDesc', label: 'Sort ↓', title: 'Sort categories high to low' },
+    { key: 'dataLabels', label: 'charts.options.labels', title: 'charts.options.labelsTitle' },
+    { key: 'legend', label: 'charts.options.legend', title: 'charts.options.legendTitle' },
+    { key: 'dataZoom', label: 'charts.options.zoom', title: 'charts.options.zoomTitle' },
+    { key: 'sortDesc', label: 'charts.options.sortDesc', title: 'charts.options.sortDescTitle' },
 ];
 
 // Numeric columns whose NAME ends in an identifier/ordinal token are dimensions
@@ -231,29 +238,29 @@ export class ChartOptionsPanel {
         container.innerHTML = `
             <button type="button" class="chart-cols-btn${this._columnsOpen ? ' is-open' : ''}" id="chart-cols-btn"
                     aria-expanded="${this._columnsOpen ? 'true' : 'false'}" aria-controls="chart-cols-expand"
-                    title="Choose X / Y / Series columns">
-                <span>Columns</span>${caret}
+                    title="${esc(t('charts.options.columnsTitle'))}">
+                <span>${esc(t('charts.options.columns'))}</span>${caret}
             </button>
             <button type="button" class="chart-cols-btn chart-palette-btn${this._paletteOpen ? ' is-open' : ''}" id="chart-palette-btn"
                     aria-expanded="${this._paletteOpen ? 'true' : 'false'}" aria-controls="chart-palette-expand"
-                    title="Choose the chart colour palette">
-                <span class="chart-palette-dots" id="chart-palette-dots" aria-hidden="true"></span><span>Colors</span>${caret}
+                    title="${esc(t('charts.options.paletteTitle'))}">
+                <span class="chart-palette-dots" id="chart-palette-dots" aria-hidden="true"></span><span>${esc(t('charts.options.colors'))}</span>${caret}
             </button>
             <div class="chart-opts-divider" aria-hidden="true"></div>
             <div class="chart-opts-toggles" id="chart-opt-toggles"></div>
             <div class="chart-cols-expand chart-palette-expand" id="chart-palette-expand" role="radiogroup"
-                 aria-label="Chart colour palette"${this._paletteOpen ? '' : ' hidden'}></div>
+                 aria-label="${esc(t('charts.options.paletteTitle'))}"${this._paletteOpen ? '' : ' hidden'}></div>
             <div class="chart-cols-expand" id="chart-cols-expand"${this._columnsOpen ? '' : ' hidden'}>
                 <label class="chart-col-field">
-                    <span>X / Category</span>
+                    <span>${esc(t('charts.options.xCategory'))}</span>
                     <select id="chart-opt-x" class="chart-options-select"></select>
                 </label>
                 <label class="chart-col-field">
-                    <span>Y / Value</span>
+                    <span>${esc(t('charts.options.yValue'))}</span>
                     <select id="chart-opt-y" class="chart-options-select"></select>
                 </label>
                 <label class="chart-col-field">
-                    <span>Series (optional)</span>
+                    <span>${esc(t('charts.options.seriesOptional'))}</span>
                     <select id="chart-opt-series" class="chart-options-select"></select>
                 </label>
             </div>
@@ -267,9 +274,9 @@ export class ChartOptionsPanel {
 
         const togglesHost = document.getElementById('chart-opt-toggles');
         if (togglesHost) {
-            togglesHost.innerHTML = TOGGLE_DEFS.map((t) =>
-                `<button type="button" class="chart-opt-toggle${this.toggles[t.key] ? ' is-on' : ''}"
-                    data-key="${t.key}" title="${t.title}">${t.label}</button>`
+            togglesHost.innerHTML = TOGGLE_DEFS.map((def) =>
+                `<button type="button" class="chart-opt-toggle${this.toggles[def.key] ? ' is-on' : ''}"
+                    data-key="${def.key}" title="${esc(t(def.title))}">${esc(t(def.label))}</button>`
             ).join('');
         }
 
@@ -368,9 +375,10 @@ export class ChartOptionsPanel {
         const sel = document.getElementById(id);
         if (!sel) return;
         const list = cols.filter((c) => filterFn(c));
-        let html = allowEmpty ? '<option value="">— none —</option>' : '';
+        let html = allowEmpty ? `<option value="">${esc(t('charts.options.none'))}</option>` : '';
+        // Column names come from query results / schemas — never trust them as markup.
         html += list.map((c) =>
-            `<option value="${c.name}"${c.name === selected ? ' selected' : ''}>${c.name}${numericOnly && c.type === 'numeric' ? ' (#)' : ''}</option>`
+            `<option value="${esc(c.name)}"${c.name === selected ? ' selected' : ''}>${esc(c.name)}${numericOnly && c.type === 'numeric' ? ' (#)' : ''}</option>`
         ).join('');
         sel.innerHTML = html || '<option value="">—</option>';
     }
@@ -401,20 +409,20 @@ export class ChartOptionsPanel {
         container.innerHTML = `
             <button type="button" class="chart-cols-btn${this._columnsOpen ? ' is-open' : ''}" id="chart-cols-btn"
                     aria-expanded="${this._columnsOpen ? 'true' : 'false'}" aria-controls="chart-cols-expand"
-                    title="Choose map location and values">
-                <span>Map bindings</span>${caret}
+                    title="${esc(t('charts.options.mapBindingsTitle'))}">
+                <span>${esc(t('charts.options.mapBindings'))}</span>${caret}
             </button>
             <div class="chart-cols-expand chart-map-bindings" id="chart-cols-expand"${this._columnsOpen ? '' : ' hidden'}>
-                <label class="chart-col-field"><span>Location label</span><select id="map-opt-location" class="chart-options-select"></select></label>
-                <label class="chart-col-field"><span>City / place</span><select id="map-opt-place" class="chart-options-select"></select></label>
-                <label class="chart-col-field"><span>State / province</span><select id="map-opt-admin1" class="chart-options-select"></select></label>
-                <label class="chart-col-field"><span>Country</span><select id="map-opt-country" class="chart-options-select"></select></label>
-                <label class="chart-col-field"><span>Postal code</span><select id="map-opt-postal" class="chart-options-select"></select></label>
-                <label class="chart-col-field"><span>Latitude</span><select id="map-opt-latitude" class="chart-options-select"></select></label>
-                <label class="chart-col-field"><span>Longitude</span><select id="map-opt-longitude" class="chart-options-select"></select></label>
-                <label class="chart-col-field"><span>Color / value</span><select id="map-opt-value" class="chart-options-select"></select></label>
-                <label class="chart-col-field"><span>Size (optional)</span><select id="map-opt-value2" class="chart-options-select"></select></label>
-                <label class="chart-col-field"><span>Aggregate</span>
+                <label class="chart-col-field"><span>${esc(t('charts.options.locationLabel'))}</span><select id="map-opt-location" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>${esc(t('charts.options.cityPlace'))}</span><select id="map-opt-place" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>${esc(t('charts.options.stateProvince'))}</span><select id="map-opt-admin1" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>${esc(t('charts.options.country'))}</span><select id="map-opt-country" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>${esc(t('charts.options.postalCode'))}</span><select id="map-opt-postal" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>${esc(t('charts.options.latitude'))}</span><select id="map-opt-latitude" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>${esc(t('charts.options.longitude'))}</span><select id="map-opt-longitude" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>${esc(t('charts.options.colorValue'))}</span><select id="map-opt-value" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>${esc(t('charts.options.sizeOptional'))}</span><select id="map-opt-value2" class="chart-options-select"></select></label>
+                <label class="chart-col-field"><span>${esc(t('charts.options.aggregate'))}</span>
                     <select id="map-opt-aggregate" class="chart-options-select">
                         ${['sum', 'avg', 'count', 'min', 'max', 'none'].map((value) =>
                             `<option value="${value}"${value === this.mapMapping.aggregate ? ' selected' : ''}>${value}</option>`
@@ -458,12 +466,12 @@ export class ChartOptionsPanel {
         const fill = (id, columns, selected, empty = true, virtualCount = false) => {
             const select = document.getElementById(id);
             if (!select) return;
-            let html = empty ? '<option value="">— none —</option>' : '';
+            let html = empty ? `<option value="">${esc(t('charts.options.none'))}</option>` : '';
             if (virtualCount) {
-                html += `<option value="__row_count__"${selected === '__row_count__' ? ' selected' : ''}>Row count</option>`;
+                html += `<option value="__row_count__"${selected === '__row_count__' ? ' selected' : ''}>${esc(t('charts.options.rowCount'))}</option>`;
             }
             html += columns.map((column) =>
-                `<option value="${column.name}"${column.name === selected ? ' selected' : ''}>${column.name}</option>`
+                `<option value="${esc(column.name)}"${column.name === selected ? ' selected' : ''}>${esc(column.name)}</option>`
             ).join('');
             select.innerHTML = html || '<option value="">—</option>';
         };

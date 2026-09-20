@@ -5,6 +5,10 @@
  * the normal chart options pipeline, which would reset user pan/zoom state.
  */
 
+
+// Interface strings come from the locale catalog (static/i18n/i18n.js, loaded first).
+const t = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
+const th = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.h === 'function' ? window.I18n.h(key, args) : String(key));
 export const MAP_PALETTES = {
     blue: ['#f7fbff', '#c6dbef', '#6baed6', '#2171b5', '#08306b'],
     green: ['#f7fcf5', '#c7e9c0', '#74c476', '#238b45', '#00441b'],
@@ -32,20 +36,20 @@ export class MapOptionsPanel {
         el.innerHTML = `
             <div class="map-options-panel">
                 <div class="map-options-section">
-                    <span class="chart-options-heading">Map controls</span>
+                    <span class="chart-options-heading">${th('charts.map.controls')}</span>
                     <div class="map-options-row">
-                        <button type="button" class="chart-opt-toggle" data-map-action="reset">Reset view</button>
-                        <button type="button" class="chart-opt-toggle" data-map-action="fit">Fit</button>
-                        <button type="button" class="chart-opt-toggle" data-map-action="zoom-in">Zoom +</button>
-                        <button type="button" class="chart-opt-toggle" data-map-action="zoom-out">Zoom -</button>
-                        <button type="button" class="chart-opt-toggle" data-map-toggle="labels">Labels</button>
-                        <button type="button" class="chart-opt-toggle is-on" data-map-toggle="roam">Pan/zoom</button>
-                        <button type="button" class="chart-opt-toggle is-on" data-map-toggle="noData">No-data areas</button>
+                        <button type="button" class="chart-opt-toggle" data-map-action="reset">${th('charts.map.resetView')}</button>
+                        <button type="button" class="chart-opt-toggle" data-map-action="fit">${th('charts.map.fit')}</button>
+                        <button type="button" class="chart-opt-toggle" data-map-action="zoom-in">${th('charts.map.zoomIn')}</button>
+                        <button type="button" class="chart-opt-toggle" data-map-action="zoom-out">${th('charts.map.zoomOut')}</button>
+                        <button type="button" class="chart-opt-toggle" data-map-toggle="labels">${th('charts.options.labels')}</button>
+                        <button type="button" class="chart-opt-toggle is-on" data-map-toggle="roam">${th('charts.map.panZoom')}</button>
+                        <button type="button" class="chart-opt-toggle is-on" data-map-toggle="noData">${th('charts.map.noDataAreas')}</button>
                     </div>
                 </div>
                 <div class="map-options-section">
                     <label class="chart-options-field map-palette-field">
-                        <span>Palette</span>
+                        <span>${th('charts.map.palette')}</span>
                         <select class="chart-options-select" id="map-opt-palette">
                             ${Object.keys(MAP_PALETTES).map((name) =>
                                 `<option value="${name}">${name}</option>`

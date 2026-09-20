@@ -227,6 +227,22 @@ def test_entity_sql_reads_key_features_target_under_filters(database_type):
     assert is_read_only_sql(sql) and _validate_p6(sql, database_type) is None, sql
     assert "entity_key" in sql and "target" in sql and "'M'" in sql
     assert "ORDER BY" in sql.upper()  # deterministic row cap
+    # Postgres money reaches the driver as text; the feature is cast and keeps its name.
+    if database_type in ("postgres", "postgresql"):
+        assert 'CAST("YearlyIncome" AS DECIMAL) AS "YearlyIncome"' in sql, sql
+    else:
+        assert "CAST(" not in sql.upper() or "YearlyIncome" not in sql.split("CAST")[1][:40]
+    assert 'CAST("TotalChildren"' not in sql  # integers are left alone
+
+
+def test_entity_sql_casts_a_money_target_on_postgres():
+    req = EntityRequest(table="DimCustomer", entity_key="CustomerKey", features=["TotalChildren", "NumberCarsOwned"], target="YearlyIncome")
+    types = {**_TYPES_P6, ("dimcustomer", "numbercarsowned"): "integer"}
+    sql = build_entity_sql(req, database_type="postgres", connection_schema="dbo", column_types=types)
+    assert 'CAST("YearlyIncome" AS DECIMAL) AS "target"' in sql, sql
+    # Without type information nothing is cast (the catalog decides, not the name).
+    plain = build_entity_sql(req, database_type="postgres", connection_schema="dbo", column_types=None)
+    assert "CAST(" not in plain
 
 
 from src.analysis.contracts import CohortRequest, ExperimentRequest  # noqa: E402

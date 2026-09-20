@@ -364,12 +364,20 @@ def _run_entity(spec, typed, rows, columns, *, override_guards, base_low_confide
         return RunOutcome(status="error", error="entity rows lack the 'entity_key' column", elapsed_ms=_elapsed(t0))
     requested = list(typed.entity.features)
     usable: List[str] = []
+    reasons: Dict[str, str] = {}  # why a feature was dropped: "not numeric" or "N% filled"
     for f in requested:
-        if f in df.columns:
-            numeric = pd.to_numeric(df[f], errors="coerce")
-            if numeric.notna().mean() >= 0.8:
-                usable.append(f)
-    guards = [cardinality(int(len(df)), int(typed.entity.row_cap)), feature_count(usable, requested)]
+        if f not in df.columns:
+            reasons[f] = "not numeric"
+            continue
+        numeric = pd.to_numeric(df[f], errors="coerce")
+        filled = float(numeric.notna().mean()) if len(df) else 0.0
+        if filled >= 0.8:
+            usable.append(f)
+        elif df[f].notna().any() and numeric.notna().sum() == 0:
+            reasons[f] = "not numeric"   # values present, none of them a number
+        else:
+            reasons[f] = f"{round(filled * 100)}% filled"  # numeric where present, but too sparse
+    guards = [cardinality(int(len(df)), int(typed.entity.row_cap)), feature_count(usable, requested, reasons)]
     if spec.name in ("driver_analysis", "regression", "classification"):
         target_numeric = "target" in df.columns and pd.to_numeric(df["target"], errors="coerce").notna().mean() >= 0.8
         if not target_numeric:

@@ -62,7 +62,9 @@
   --color-accent-2: var(--rose);
   --color-success: var(--ok);
   --color-error: var(--err);
-  --font-sans: "Outfit", system-ui, sans-serif;
+  /* Urbanist carries Latin; Noto Sans Hebrew (unicode-range subset, fonts.css)
+     supplies Hebrew glyphs so RTL chrome and Hebrew answers get the designed face. */
+  --font-sans: "Urbanist", "Noto Sans Hebrew", "Outfit", system-ui, -apple-system, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, monospace;
 }
 

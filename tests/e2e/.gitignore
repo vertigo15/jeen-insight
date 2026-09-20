@@ -5,3 +5,10 @@ playwright-report/
 blob-report/
 .playwright/
 screenshots/
+# live suite (real stack): session, artifacts, per-question screenshots
+.auth/
+test-results-live/
+playwright-report-live/
+live-screenshots/
+# fetched at run time from the stack (knowledge pairs = @kp ground truth)
+live/.generated/
