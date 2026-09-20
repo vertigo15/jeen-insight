@@ -19,36 +19,45 @@
   var API = '/api/user/onboarding';
   var CHECK = 'M2 6l3 3 5-6';
 
+  // Interface strings come from the locale catalog (static/i18n/i18n.js).
+  function t(key, args) {
+    return window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key);
+  }
+  function h(key, args) {
+    return window.I18n && typeof window.I18n.h === 'function' ? window.I18n.h(key, args) : String(key);
+  }
+  function isRtl() { return !!(window.I18n && window.I18n.isRtl); }
+
   var CHECK_ITEMS = [
-    { key: 'pick_connection',    label: 'Pick a connection' },
-    { key: 'ask_first_question', label: 'Ask your first question',       action: 'Start' },
-    { key: 'open_sql',           label: 'Open the SQL behind an answer' },
-    { key: 'pin_question',       label: 'Pin a question you will reuse',  action: 'Show me' }
+    { key: 'pick_connection',    label: 'onboarding.checklist.pickConnection' },
+    { key: 'ask_first_question', label: 'onboarding.checklist.askFirst',   action: 'onboarding.checklist.start' },
+    { key: 'open_sql',           label: 'onboarding.checklist.openSql' },
+    { key: 'pin_question',       label: 'onboarding.checklist.pinQuestion', action: 'onboarding.checklist.showMe' }
   ];
 
   var TOUR_STEPS = [
     {
       id: 'connection', selector: '#v3-connection-slot', placement: 'below-left', pill: true, inPanel: false,
-      title: 'Select your active database or project.',
-      body: 'Every question, suggestion and saved answer belongs to the connection shown here.'
+      title: 'onboarding.tour.connection.title',
+      body: 'onboarding.tour.connection.body'
     },
     {
       id: 'suggestions', selector: '.v3-suggestions', placement: 'right', inPanel: true, tab: 'conversation',
-      title: 'Click any suggested question to auto-fill a query.',
-      body: "Suggestions are generated from this connection's curated metadata, so they always run."
+      title: 'onboarding.tour.suggestions.title',
+      body: 'onboarding.tour.suggestions.body'
     },
     {
       id: 'composer', selector: '.v3-composer', placement: 'above', inPanel: true,
-      title: 'Or type your own question in plain English or Hebrew.',
-      body: 'Type @ for tables, # for columns, / for saved templates.'
+      title: 'onboarding.tour.composer.title',
+      body: 'onboarding.tour.composer.body'
     },
     {
       // The tab bar is hidden by default (Settings > General), so fall back to
       // the always-visible rail icon for the same section.
       id: 'tables', selector: '#v3-tab-tables', placement: 'below-left', inPanel: true, finish: true,
       fallbackSelector: '[data-rail="tables"]', fallbackPlacement: 'right',
-      title: 'Not sure what is in there? Browse tables and columns.',
-      body: 'Curated business terms sit next to the physical column names, so you can see what the agent sees.'
+      title: 'onboarding.tour.tables.title',
+      body: 'onboarding.tour.tables.body'
     }
   ];
 
@@ -129,8 +138,8 @@
       var composer = document.querySelector('.v3-composer');
       if (composer) showHint(composer, {
         placement: 'above',
-        title: 'Ask here',
-        body: 'Type a question in plain English or Hebrew — or click a suggestion to auto-fill one.'
+        title: t('onboarding.hints.askHere.title'),
+        body: t('onboarding.hints.askHere.body')
       });
     } else if (key === 'pin_question') {
       // Reveal the Pinned / recent-questions panel, where each question has a
@@ -146,12 +155,12 @@
   // list is still empty (no questions asked yet).
   function spotlightPin(attempt) {
     var panel = document.getElementById('v3-panel-pinned');
-    var star = panel && panel.querySelector('.pin-icon[aria-label="Pin question"]');
+    var star = panel && panel.querySelector('.pin-icon[data-pin-action="pin"]');
     if (star) {
       showHint(star, {
         placement: 'right',
-        title: 'Pin a question',
-        body: 'Tap the star on any question to pin it. Pinned questions stay here for this connection.'
+        title: t('onboarding.hints.pin.title'),
+        body: t('onboarding.hints.pin.body')
       });
       return;
     }
@@ -161,8 +170,8 @@
     if (!isVisible(tab)) { tab = document.querySelector('[data-rail="pinned"]'); placement = 'right'; }
     if (tab) showHint(tab, {
       placement: placement,
-      title: 'Pinned lives here',
-      body: 'Ask a question, then tap its star to pin it — it will show up in this list to reuse.'
+      title: t('onboarding.hints.pinnedHere.title'),
+      body: t('onboarding.hints.pinnedHere.body')
     });
   }
 
@@ -188,7 +197,7 @@
 
   function buildChecklist() {
     var card = el('section', 'jo-checklist');
-    card.setAttribute('aria-label', 'Getting started');
+    card.setAttribute('aria-label', t('onboarding.checklist.title'));
 
     var header = el('button', 'jo-checklist-header');
     header.type = 'button';
@@ -198,7 +207,7 @@
       '<svg class="jo-ring-check" viewBox="0 0 12 12" fill="none" aria-hidden="true">' +
       '<path d="' + CHECK + '" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
       '</span>' +
-      '<span class="jo-checklist-title">Getting started</span>' +
+      '<span class="jo-checklist-title">' + h('onboarding.checklist.title') + '</span>' +
       '<span class="jo-checklist-spacer"></span>' +
       '<span class="jo-checklist-count"></span>' +
       '<svg class="jo-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">' +
@@ -206,7 +215,7 @@
 
     var dismiss = el('button', 'jo-checklist-dismiss', '&times;');
     dismiss.type = 'button';
-    dismiss.setAttribute('aria-label', 'Dismiss getting started');
+    dismiss.setAttribute('aria-label', t('onboarding.checklist.dismiss'));
     header.appendChild(dismiss);
 
     var list = el('ul', 'jo-checklist-items');
@@ -217,11 +226,11 @@
         '<span class="jo-item-circle"><svg viewBox="0 0 12 12" fill="none" aria-hidden="true">' +
         '<path d="' + CHECK + '" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>' +
         '<span class="jo-item-label"></span>';
-      li.querySelector('.jo-item-label').textContent = item.label;
+      li.querySelector('.jo-item-label').textContent = t(item.label);
       if (item.action) {
         var act = el('button', 'jo-item-action');
         act.type = 'button';
-        act.textContent = item.action;
+        act.textContent = t(item.action);
         act.addEventListener('click', function (e) {
           e.stopPropagation();
           runItemAction(item.key);
@@ -261,8 +270,8 @@
 
     var complete = isComplete();
     var title = checklistEl.querySelector('.jo-checklist-title');
-    if (title) title.textContent = complete ? 'You\u2019re all set' : 'Getting started';
-    checklistEl.setAttribute('aria-label', complete ? 'Getting started — complete' : 'Getting started');
+    if (title) title.textContent = complete ? t('onboarding.checklist.allSet') : t('onboarding.checklist.title');
+    checklistEl.setAttribute('aria-label', complete ? t('onboarding.checklist.titleComplete') : t('onboarding.checklist.title'));
 
     var firstIncomplete = CHECK_ITEMS.find(function (i) { return !checklist()[i.key]; });
     checklistEl.querySelectorAll('.jo-item').forEach(function (li) {
@@ -299,20 +308,17 @@
   }
 
   // ---------------------------------------------------------------- quick-start cards
+  // Keys into the `onboarding.cards.*` catalog namespace; `run` is the question
+  // sent to the assistant (translated too, so the answer comes back in kind).
   var CARDS = [
-    { primary: true, eyebrow: 'TRY A QUESTION', title: 'Show total sales for 2006',
-      body: 'One measure, one year. Returns a single figure and the SQL behind it.',
-      cta: 'Run it \u2192', run: 'Show total sales for 2006' },
-    { eyebrow: 'SEE A CHART', title: 'Compare sales by month, 2006 vs 2007',
-      body: 'A grouped bar chart you can refine by asking for a different view.',
-      cta: 'Run it \u2192', run: 'Compare sales by month, 2006 vs 2007' },
-    { eyebrow: 'LOOK AROUND FIRST', title: 'Explore tables & schema',
-      body: 'Browse what this connection exposes before you ask anything.',
-      cta: 'Open Tables \u2192', tables: true }
+    { primary: true, id: 'trySales', run: true },
+    { id: 'seeChart', run: true },
+    { id: 'explore', tables: true }
   ];
-  var PLACEHOLDER_HTML =
-    '<strong>No result yet</strong>' +
-    '<span>Ask a question on the left. The chart, rows, SQL and profiling for that answer appear here.</span>';
+  function placeholderHtml() {
+    return '<strong>' + h('shell.result.noResultYet') + '</strong>' +
+      '<span>' + h('shell.result.placeholderCopy') + '</span>';
+  }
 
   function mountCards() {
     var ph = document.getElementById('v3-placeholder');
@@ -326,10 +332,11 @@
         '<span class="jo-card-title"></span>' +
         '<span class="jo-card-body"></span>' +
         '<span class="jo-card-cta"></span>';
-      btn.querySelector('.jo-card-eyebrow').textContent = card.eyebrow;
-      btn.querySelector('.jo-card-title').textContent = card.title;
-      btn.querySelector('.jo-card-body').textContent = card.body;
-      btn.querySelector('.jo-card-cta').textContent = card.cta;
+      var base = 'onboarding.cards.' + card.id + '.';
+      btn.querySelector('.jo-card-eyebrow').textContent = t(base + 'eyebrow');
+      btn.querySelector('.jo-card-title').textContent = t(base + 'title');
+      btn.querySelector('.jo-card-body').textContent = t(base + 'body');
+      btn.querySelector('.jo-card-cta').textContent = t(base + 'cta');
       btn.addEventListener('click', function () {
         if (card.tables) {
           if (window.ChatController) {
@@ -338,13 +345,13 @@
           }
           if (typeof window.loadTables === 'function') window.loadTables();
         } else if (window.ChatController && typeof window.ChatController.send === 'function') {
-          window.ChatController.send(card.run);
+          window.ChatController.send(t(base + 'run'));
         }
       });
       grid.appendChild(btn);
     });
     var note = el('div', 'jo-cards-note');
-    note.textContent = 'Answers land here: the chart, the rows behind it, the SQL, and per-column profiling.';
+    note.textContent = t('onboarding.cards.note');
 
     ph.classList.add('v3-placeholder--cards');
     ph.innerHTML = '';
@@ -356,7 +363,7 @@
     var ph = document.getElementById('v3-placeholder');
     if (!ph) return;
     ph.classList.remove('v3-placeholder--cards');
-    ph.innerHTML = PLACEHOLDER_HTML;
+    ph.innerHTML = placeholderHtml();
   }
 
   // ---------------------------------------------------------------- nudge (State 06)
@@ -375,11 +382,11 @@
     var nudge = el('div', 'jo-nudge');
     nudge.setAttribute('role', 'status');
     nudge.innerHTML =
-      '<div class="jo-nudge-title">Your answer is saved to this conversation.</div>' +
-      '<div class="jo-nudge-body">Pin it to reuse the question on this connection later, or open SQL &amp; run details to see how it was produced.</div>' +
+      '<div class="jo-nudge-title">' + h('onboarding.nudge.title') + '</div>' +
+      '<div class="jo-nudge-body">' + h('onboarding.nudge.body') + '</div>' +
       '<div class="jo-nudge-actions">' +
-      '<button type="button" class="jo-btn-primary" data-pin>Pin it</button>' +
-      '<button type="button" class="jo-btn-ghost" data-dismiss>Dismiss</button>' +
+      '<button type="button" class="jo-btn-primary" data-pin>' + h('onboarding.nudge.pin') + '</button>' +
+      '<button type="button" class="jo-btn-ghost" data-dismiss>' + h('onboarding.nudge.dismiss') + '</button>' +
       '</div>';
 
     function close() { nudge.remove(); patch({ nudge_dismissed: true }); }
@@ -408,20 +415,20 @@
     dialog.setAttribute('aria-labelledby', 'jo-welcome-title');
     dialog.innerHTML =
       '<div class="jo-dialog-eyebrow"><img class="jo-dialog-mark" src="' + mark + '" alt="">' +
-      '<span>Jeen Insights</span></div>' +
-      '<h2 class="jo-dialog-title" id="jo-welcome-title">Welcome to Jeen Insights</h2>' +
-      '<p class="jo-dialog-body">Ask questions about your data in plain language. Every answer comes back with the chart, the rows, and the SQL that produced them.</p>' +
+      '<span>' + h('app.name') + '</span></div>' +
+      '<h2 class="jo-dialog-title" id="jo-welcome-title">' + h('onboarding.welcome.title') + '</h2>' +
+      '<p class="jo-dialog-body">' + h('onboarding.welcome.body') + '</p>' +
       '<div class="jo-steps">' +
-      '<div class="jo-step"><div class="jo-step-num">01</div><div class="jo-step-title">Pick a connection</div><div class="jo-step-body">Your active database sits in the top bar.</div></div>' +
-      '<div class="jo-step"><div class="jo-step-num">02</div><div class="jo-step-title">Ask in plain language</div><div class="jo-step-body">Start from a suggestion or type your own.</div></div>' +
-      '<div class="jo-step"><div class="jo-step-num">03</div><div class="jo-step-title">Check the work</div><div class="jo-step-body">Chart, rows and SQL open side by side.</div></div>' +
+      '<div class="jo-step"><div class="jo-step-num">01</div><div class="jo-step-title">' + h('onboarding.welcome.step1.title') + '</div><div class="jo-step-body">' + h('onboarding.welcome.step1.body') + '</div></div>' +
+      '<div class="jo-step"><div class="jo-step-num">02</div><div class="jo-step-title">' + h('onboarding.welcome.step2.title') + '</div><div class="jo-step-body">' + h('onboarding.welcome.step2.body') + '</div></div>' +
+      '<div class="jo-step"><div class="jo-step-num">03</div><div class="jo-step-title">' + h('onboarding.welcome.step3.title') + '</div><div class="jo-step-body">' + h('onboarding.welcome.step3.body') + '</div></div>' +
       '</div>' +
       '<div class="jo-dialog-footer">' +
-      '<button type="button" class="jo-pill-primary" data-tour>Take a 30-second tour</button>' +
-      '<button type="button" class="jo-pill-ghost" data-skip>Skip for now</button>' +
+      '<button type="button" class="jo-pill-primary" data-tour>' + h('onboarding.welcome.takeTour') + '</button>' +
+      '<button type="button" class="jo-pill-ghost" data-skip>' + h('onboarding.welcome.skip') + '</button>' +
       '<label class="jo-dialog-dontshow"><input type="checkbox" data-dontshow>' +
-      '<span>Don\u2019t show this again</span></label>' +
-      '<span class="jo-dialog-meta">4 steps &middot; 30s</span>' +
+      '<span>' + h('onboarding.welcome.dontShow') + '</span></label>' +
+      '<span class="jo-dialog-meta">' + h('onboarding.welcome.meta', { steps: TOUR_STEPS.length }) + '</span>' +
       '</div>';
     backdrop.appendChild(dialog);
     document.body.appendChild(backdrop);
@@ -546,7 +553,7 @@
       '<div class="jo-coach-body" data-body></div>' +
       '<div class="jo-coach-actions">' +
       '<button type="button" class="jo-btn-primary" data-next></button>' +
-      '<button type="button" class="jo-btn-ghost" data-skip>Skip tour</button>' +
+      '<button type="button" class="jo-btn-ghost" data-skip>' + h('onboarding.tour.skip') + '</button>' +
       '<span class="jo-dots" data-dots></span>' +
       '</div>';
     coach.querySelector('[data-next]').addEventListener('click', advance);
@@ -557,10 +564,10 @@
 
   function fillCoach(step) {
     var c = tour.coach;
-    c.querySelector('[data-step]').textContent = 'Step ' + (tour.index + 1) + ' / ' + TOUR_STEPS.length;
-    c.querySelector('[data-title]').textContent = step.title;
-    c.querySelector('[data-body]').textContent = step.body;
-    c.querySelector('[data-next]').textContent = step.finish ? 'Finish' : 'Next';
+    c.querySelector('[data-step]').textContent = t('onboarding.tour.step', { current: tour.index + 1, total: TOUR_STEPS.length });
+    c.querySelector('[data-title]').textContent = t(step.title);
+    c.querySelector('[data-body]').textContent = t(step.body);
+    c.querySelector('[data-next]').textContent = step.finish ? t('onboarding.tour.finish') : t('common.next');
     var dots = TOUR_STEPS.map(function (_, i) {
       return '<span class="jo-dot' + (i === tour.index ? ' is-active' : '') + '"></span>';
     }).join('');
@@ -574,11 +581,14 @@
     var ch = coach.offsetHeight;
     var gap = 12;
     var top, left;
+    // Placements are logical: "right" means the trailing side, "below-left"
+    // aligns to the leading edge — both mirror when the document is RTL.
+    var rtl = isRtl();
     switch (placement) {
-      case 'right':      left = r.right + gap;      top = r.top; break;
-      case 'above':      left = r.left;             top = r.top - ch - gap; break;
+      case 'right':      left = rtl ? r.left - cw - gap : r.right + gap; top = r.top; break;
+      case 'above':      left = rtl ? r.right - cw : r.left;            top = r.top - ch - gap; break;
       case 'below-left':
-      default:           left = r.left;             top = r.bottom + gap; break;
+      default:           left = rtl ? r.right - cw : r.left;            top = r.bottom + gap; break;
     }
     var vw = window.innerWidth, vh = window.innerHeight;
     left = Math.max(12, Math.min(left, vw - cw - 12));
@@ -614,7 +624,7 @@
     coach.innerHTML =
       '<div class="jo-coach-title" data-title></div>' +
       '<div class="jo-coach-body" data-body></div>' +
-      '<div class="jo-coach-actions"><button type="button" class="jo-btn-primary" data-got>Got it</button></div>';
+      '<div class="jo-coach-actions"><button type="button" class="jo-btn-primary" data-got>' + h('onboarding.hints.gotIt') + '</button></div>';
     coach.querySelector('[data-title]').textContent = opts.title || '';
     coach.querySelector('[data-body]').textContent = opts.body || '';
     coach.querySelector('[data-got]').addEventListener('click', dismissHint);

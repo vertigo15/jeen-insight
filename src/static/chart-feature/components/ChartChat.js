@@ -31,9 +31,13 @@
 const MAX_INSTRUCTION_LEN = 500;
 const MAX_TRANSCRIPT_MESSAGES = 30;
 
-const CHART_PLACEHOLDER = 'Edit this chart in words — “stack by channel, log scale”';
+// Interface strings come from the locale catalog (static/i18n/i18n.js, loaded first).
+const t = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
+const th = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.h === 'function' ? window.I18n.h(key, args) : String(key));
+
+const CHART_PLACEHOLDER = () => t('charts.chat.placeholder');
 // ML results: the same bar re-runs the *analysis* (a new child turn), not the chart.
-const ANALYSIS_PLACEHOLDER = 'Adjust this analysis — “weekly instead of daily”, “flag fewer”';
+const ANALYSIS_PLACEHOLDER = () => t('charts.chat.analysisPlaceholder');
 
 const SPARKLE_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3zM19 16l.9 2.1L22 19l-2.1.9L19 22l-.9-2.1L16 19l2.1-.9L19 16z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
 const ARROW_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -88,10 +92,11 @@ export class ChartChat {
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'chart-refine-input';
-        input.placeholder = CHART_PLACEHOLDER;
+        input.placeholder = CHART_PLACEHOLDER();
+        input.setAttribute('dir', 'auto');
         input.maxLength = MAX_INSTRUCTION_LEN;
         input.disabled = true;
-        input.setAttribute('aria-label', 'Refine this chart');
+        input.setAttribute('aria-label', t('charts.chat.refine'));
         input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
@@ -102,7 +107,7 @@ export class ChartChat {
         const applyBtn = document.createElement('button');
         applyBtn.type = 'button';
         applyBtn.className = 'chart-refine-apply';
-        applyBtn.innerHTML = `<span>Enhance</span>${ARROW_SVG}`;
+        applyBtn.innerHTML = `<span>${th('charts.chat.enhance')}</span>${ARROW_SVG}`;
         applyBtn.disabled = true;
         applyBtn.addEventListener('click', () => this._handleSend());
 
@@ -124,8 +129,8 @@ export class ChartChat {
         const resetBtn = document.createElement('button');
         resetBtn.type = 'button';
         resetBtn.className = 'chart-refine-reset';
-        resetBtn.textContent = 'Reset chart';
-        resetBtn.title = 'Revert to the original chart. Edits are session-only — your data is never changed.';
+        resetBtn.textContent = t('charts.chat.reset');
+        resetBtn.title = t('charts.chat.resetTitle');
         resetBtn.addEventListener('click', () => this._handleReset());
 
         applied.appendChild(appliedLabel);
@@ -195,7 +200,7 @@ export class ChartChat {
 
     _showApplied(label) {
         if (!this.mounted) return;
-        this._appliedLabelEl.textContent = `Applied: ${label}`;
+        this._appliedLabelEl.textContent = t('charts.chat.applied', { label });
         // Keep the edit box available after a successful change. Chart chat is
         // conversational: users commonly follow an edit with "open layers" or
         // another styling adjustment before deciding whether to reset.
@@ -238,7 +243,7 @@ export class ChartChat {
         this._applyBtnEl.disabled = busy || !this.enabled;
         this._applyBtnEl.classList.toggle('is-busy', !!busy);
         const label = this._applyBtnEl.querySelector('span');
-        if (label) label.textContent = busy ? 'Applying…' : 'Apply';
+        if (label) label.textContent = busy ? t('charts.chat.applying') : (this._analysisMode ? t('charts.chat.rerun') : t('charts.chat.apply'));
     }
 
     /**
@@ -250,10 +255,10 @@ export class ChartChat {
         this._analysisMode = Boolean(on);
         if (!this.mounted) return;
         this._inputEl.placeholder = this._analysisMode ? ANALYSIS_PLACEHOLDER : CHART_PLACEHOLDER;
-        this._inputEl.setAttribute('aria-label', this._analysisMode ? 'Adjust this analysis' : 'Refine this chart');
+        this._inputEl.setAttribute('aria-label', this._analysisMode ? t('charts.chat.adjustAnalysis') : t('charts.chat.refine'));
         const label = this._applyBtnEl.querySelector('span');
         if (label && !this._applyBtnEl.classList.contains('is-busy')) {
-            label.textContent = this._analysisMode ? 'Re-run' : 'Apply';
+            label.textContent = this._analysisMode ? t('charts.chat.rerun') : t('charts.chat.apply');
         }
     }
 
@@ -263,14 +268,14 @@ export class ChartChat {
         if (!instruction) return;
 
         if (this._analysisMode && typeof this.hooks.onAnalysisRerun === 'function') {
-            this._setStatus('Re-running the analysis…', 'progress');
+            this._setStatus(t('charts.chat.rerunning'), 'progress');
             this._setBusy(true);
             try {
                 await this.hooks.onAnalysisRerun(instruction);
                 this._inputEl.value = '';
                 this._setStatus('', null);
             } catch (error) {
-                this._setStatus(`Couldn't re-run: ${error && error.message ? error.message : error}`, 'error');
+                this._setStatus(t('charts.chat.rerunFailed', { detail: String(error && error.message ? error.message : error) }), 'error');
             } finally {
                 this._setBusy(false);
                 this.setAnalysisMode(this._analysisMode);
@@ -283,16 +288,16 @@ export class ChartChat {
         const connection = this.hooks.getConnection ? this.hooks.getConnection() : '';
 
         if (!config) {
-            this._setStatus('Generate a chart first, then I can refine it.', 'warn');
+            this._setStatus(t('charts.chat.needChart'), 'warn');
             return;
         }
         if (!connection) {
-            this._setStatus('Pick a connection first.', 'warn');
+            this._setStatus(t('errors.selectConnectionFirst'), 'warn');
             return;
         }
 
         this._appendMessage('user', instruction);
-        this._setStatus('Working on it…', 'progress');
+        this._setStatus(t('charts.chat.working'), 'progress');
         this._setBusy(true);
 
         // Cancel any in-flight request before starting a new one.
@@ -328,7 +333,7 @@ export class ChartChat {
 
             if (!resp.ok) {
                 const detail = (data && (data.detail || data.error)) || `HTTP ${resp.status}`;
-                this._setStatus(`Couldn't apply that change: ${detail}`, 'error');
+                this._setStatus(t('charts.chat.applyFailed', { detail: window.I18n ? window.I18n.isolate(detail) : detail }), 'error');
                 return;
             }
 
@@ -340,7 +345,7 @@ export class ChartChat {
             const outOfScope = !!data.out_of_scope;
 
             if (outOfScope || !newConfig) {
-                const fallback = note || 'That request needs a new query — please ask it in the main question box.';
+                const fallback = note || t('charts.chat.outOfScope');
                 this._setStatus(fallback, 'warn');
                 return;
             }
@@ -351,19 +356,19 @@ export class ChartChat {
                     this.hooks.onApply(newConfig, derived, note || null, data);
                 } catch (e) {
                     console.error('[ChartChat] onApply threw', e);
-                    this._setStatus('Got a config back but failed to render it. The chart was not changed.', 'error');
+                    this._setStatus(t('charts.chat.renderFailed'), 'error');
                     return;
                 }
             }
 
-            this._appendMessage('assistant', note || 'Updated the chart.');
+            this._appendMessage('assistant', note || t('charts.chat.updated'));
             this._clearStatus();
             this._inputEl.value = '';
             this._showApplied(instruction);
         } catch (e) {
             if (e && e.name === 'AbortError') return; // silent — superseded or reset
             console.error('[ChartChat] send failed', e);
-            this._setStatus(`Network error: ${e && e.message ? e.message : 'unknown'}.`, 'error');
+            this._setStatus(t('charts.chat.networkError', { detail: e && e.message ? e.message : t('common.unknownError') }), 'error');
         } finally {
             if (myRequestId === this.idCounter) {
                 this._setBusy(false);

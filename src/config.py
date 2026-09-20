@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000
     LOG_LEVEL: str = "INFO"
+    # Interface language for users without a saved choice (BCP 47 tag from the
+    # registry in src/i18n). The Flask UI reads this from the environment
+    # directly (see src.i18n.default_locale); mirrored here for discoverability.
+    DEFAULT_LOCALE: str = "en"
     # Log output format: "json" (structured, for log aggregators), "console"
     # (human-readable), or "auto" (console in dev mode, json in production).
     LOG_FORMAT: str = "auto"

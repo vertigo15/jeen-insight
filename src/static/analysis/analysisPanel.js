@@ -17,28 +17,32 @@
     const esc = (value) => String(value == null ? '' : value)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-    const SKILL_LABEL = {
-        anomaly_detection: 'anomaly detection', forecast: 'forecast', changepoint: 'changepoint', seasonality: 'seasonality',
-        correlation: 'correlation', contribution: 'contribution', clustering: 'clustering', driver_analysis: 'driver analysis',
-        regression: 'regression', classification: 'classification', cohort_retention: 'cohort retention',
-        experiment_test: 'A/B test',
-    };
-    const GRAIN_ADJ = { day: 'daily', week: 'weekly', month: 'monthly' };
-    const GRAIN_UNIT = { day: 'days', week: 'weeks', month: 'months' };
+    // Interface strings come from the locale catalog (static/i18n/i18n.js).
+    const t = (key, args) => (window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
+    const h = (key, args) => esc(t(key, args));
+    const has = (key) => Boolean(window.I18n && typeof window.I18n.has === 'function' && window.I18n.has(key));
+
+    const SKILL_KEYS = ['anomaly_detection', 'forecast', 'changepoint', 'seasonality', 'correlation', 'contribution',
+        'clustering', 'driver_analysis', 'regression', 'classification', 'cohort_retention', 'experiment_test'];
+    // Skill labels resolve lazily through the catalog; the object shape is kept
+    // for callers that index it (`SKILL_LABEL[skill]`).
+    const SKILL_LABEL = new Proxy({}, {
+        get: (_target, skill) => (typeof skill === 'string' && SKILL_KEYS.includes(skill) ? t(`analysis.skills.${skill}`) : undefined),
+        has: (_target, skill) => SKILL_KEYS.includes(skill),
+        ownKeys: () => SKILL_KEYS.slice(),
+        getOwnPropertyDescriptor: (_target, skill) => (SKILL_KEYS.includes(skill)
+            ? { enumerable: true, configurable: true, value: t(`analysis.skills.${skill}`) } : undefined),
+    });
+    const grainAdj = (grain) => (has(`analysis.grain.adj.${grain}`) ? t(`analysis.grain.adj.${grain}`) : undefined);
+    const grainUnit = (grain) => (has(`analysis.grain.unit.${grain}`) ? t(`analysis.grain.unit.${grain}`) : undefined);
     const SERIES_SKILLS = ['anomaly_detection', 'forecast', 'changepoint', 'seasonality', 'correlation'];
     // Plain-language egress tier. The letter stays on hover (and in Model details).
-    const TIER_META = { A: 'Aggregates only', B: 'Row-level, capped' };
-    const TIER_TITLE = {
-        A: 'Tier A: SQL rolls the data up first; only per-period totals reach the analysis service.',
-        B: 'Tier B: entity rows are sent to the analysis service, capped and audited with the column list.',
-    };
+    const tierMeta = (tier) => (has(`analysis.tier.meta.${tier}`) ? t(`analysis.tier.meta.${tier}`) : undefined);
+    const tierTitle = (tier) => (has(`analysis.tier.title.${tier}`) ? t(`analysis.tier.title.${tier}`) : '');
     // Shown in place of the server's egress sentence while a field is changed:
     // its numbers ("about 24 monthly totals") belong to the values that were
     // planned, and are recomputed by the run.
-    const TIER_NEUTRAL_EGRESS = {
-        A: 'Only aggregated totals are sent to the analysis service; no row-level data leaves the database. The exact count is recomputed when you run.',
-        B: 'Entity rows are sent to the analysis service, capped and audited with the column list. The exact count is recomputed when you run.',
-    };
+    const tierNeutralEgress = (tier) => t(`analysis.tier.neutralEgress.${has(`analysis.tier.neutralEgress.${tier}`) ? tier : 'A'}`);
 
     function fmtNum(value, digits) {
         if (value == null || Number.isNaN(Number(value))) return '—';
@@ -60,14 +64,14 @@
         if (!validation) return '';
         const metric = validation.metric;
         if (validation.value == null) {
-            return validation.coverage != null ? `coverage ${fmtPct(validation.coverage, 0)}` : '';
+            return validation.coverage != null ? t('analysis.metric.coverage', { value: fmtPct(validation.coverage, 0) }) : '';
         }
         if (metric === 'WAPE') return `WAPE ${fmtPct(validation.value)}`;
         if (metric === 'MASE') return `MASE ${Number(validation.value).toFixed(2)}`;
         if (metric === 'r') return `r ${Number(validation.value).toFixed(2)}`;
         if (metric === 'R2') return `R² ${Number(validation.value).toFixed(2)}`;
         if (metric === 'silhouette') return `silhouette ${Number(validation.value).toFixed(2)}`;
-        if (metric === 'explained') return `explains ${fmtPct(validation.value, 0)}`;
+        if (metric === 'explained') return t('analysis.metric.explains', { value: fmtPct(validation.value, 0) });
         return `${metric} ${fmtNum(validation.value)}`;
     }
 
@@ -79,19 +83,19 @@
         const bits = [];
         const points = facts.n_points != null ? facts.n_points : facts.n_entities != null ? facts.n_entities
             : facts.n_rows != null ? facts.n_rows : (analysis.egress || {}).rows_sent_to_model;
-        if (points != null) bits.push(`${points} ${facts.n_entities != null || facts.n_rows != null ? 'rows' : 'pts'}`);
-        if (facts.series_count != null) bits.push(`${facts.series_count} series`);
-        if (analysis.skill === 'anomaly_detection' && facts.n_flagged != null) bits.push(`${facts.n_flagged} flagged`);
-        if (analysis.skill === 'forecast' && facts.horizon != null) bits.push(`horizon ${facts.horizon}`);
-        if (analysis.skill === 'changepoint' && facts.n_changepoints != null) bits.push(`${facts.n_changepoints} shift${facts.n_changepoints === 1 ? '' : 's'}`);
-        if (analysis.skill === 'seasonality' && facts.strength != null) bits.push(`strength ${Number(facts.strength).toFixed(2)}`);
-        if (analysis.skill === 'clustering' && facts.k != null) bits.push(`${facts.k} segments`);
+        if (points != null) bits.push(facts.n_entities != null || facts.n_rows != null ? t('analysis.strip.rows', { count: Number(points) }) : t('analysis.strip.points', { count: Number(points) }));
+        if (facts.series_count != null) bits.push(t('analysis.strip.series', { count: Number(facts.series_count) }));
+        if (analysis.skill === 'anomaly_detection' && facts.n_flagged != null) bits.push(t('analysis.strip.flagged', { count: Number(facts.n_flagged) }));
+        if (analysis.skill === 'forecast' && facts.horizon != null) bits.push(t('analysis.strip.horizon', { value: facts.horizon }));
+        if (analysis.skill === 'changepoint' && facts.n_changepoints != null) bits.push(t('analysis.strip.shifts', { count: Number(facts.n_changepoints) }));
+        if (analysis.skill === 'seasonality' && facts.strength != null) bits.push(t('analysis.strip.strength', { value: Number(facts.strength).toFixed(2) }));
+        if (analysis.skill === 'clustering' && facts.k != null) bits.push(t('analysis.strip.segments', { count: Number(facts.k) }));
         if (analysis.skill === 'contribution' && facts.delta_pct != null) bits.push(`Δ ${fmtPct(facts.delta_pct)}`);
-        if ((analysis.egress || {}).tier === 'B') bits.push('row-level');
+        if ((analysis.egress || {}).tier === 'B') bits.push(t('analysis.tier.rowLevel'));
         const metric = metricText(analysis.validation);
         if (metric) bits.push(metric);
         const sent = analysis.egress && analysis.egress.rows_sent_to_model;
-        if (sent != null) bits.push(`${sent} rows sent to model`);
+        if (sent != null) bits.push(t('analysis.strip.rowsSent', { count: Number(sent) }));
         const low = Boolean(result.low_confidence || analysis.low_confidence);
         // The method is named in the strip (never in the headline), kept short;
         // the full label is on hover and in Model details.
@@ -100,8 +104,8 @@
         return `<span class="v3-skill-chip" title="${esc(method)}">${esc(SKILL_LABEL[analysis.skill] || analysis.skill)}</span>
           ${method ? `<span class="v3-result-meta v3-ml-method" title="${esc(method)}">${esc(shortMethod)}</span>` : ''}
           <span class="v3-result-meta v3-ml-meta">${esc(bits.join(' · '))}</span>
-          ${low ? '<span class="v3-lowconf-pill" title="A guard was overridden for this run; treat the result as indicative.">low confidence</span>' : ''}
-          ${hasDefinition(analysis) ? '<button type="button" class="v3-text-btn v3-ml-edit" data-ml-edit aria-expanded="false">Edit setup</button>' : ''}`;
+          ${low ? `<span class="v3-lowconf-pill" title="${h('analysis.strip.lowConfidenceTitle')}">${h('analysis.strip.lowConfidence')}</span>` : ''}
+          ${hasDefinition(analysis) ? `<button type="button" class="v3-text-btn v3-ml-edit" data-ml-edit aria-expanded="false">${h('analysis.strip.editSetup')}</button>` : ''}`;
     }
 
     function hasDefinition(analysis) {
@@ -126,7 +130,7 @@
         c.label = c.label == null ? c.key : String(c.label);
         c.options = Array.isArray(c.options) ? c.options : [];
         c.option_labels = c.option_labels && typeof c.option_labels === 'object' ? c.option_labels : {};
-        c.group = c.group ? String(c.group) : 'Setup';
+        c.group = c.group ? String(c.group) : t('analysis.form.setupGroup');
         c.editable = c.editable !== false;
         if (!c.kind) {
             if (Array.isArray(c.value)) c.kind = 'multiselect';
@@ -148,7 +152,7 @@
         if (chip.unit) return String(chip.unit);
         if (chip.unit_from) {
             const source = values ? values[chip.unit_from] : null;
-            return GRAIN_UNIT[source] || (source ? String(source) : '');
+            return grainUnit(source) || (source ? String(source) : '');
         }
         return '';
     }
@@ -171,7 +175,7 @@
     function boundsHint(c) {
         if (c.min == null && c.max == null) return '';
         if (c.min != null && c.max != null) return `${c.min}–${c.max}`;
-        return c.min != null ? `at least ${c.min}` : `at most ${c.max}`;
+        return c.min != null ? t('analysis.form.atLeast', { value: c.min }) : t('analysis.form.atMost', { value: c.max });
     }
 
     function fieldControl(chip, idPrefix, values) {
@@ -196,13 +200,13 @@
             control = `<div class="v3-ml-multi" id="${id}" role="group" aria-labelledby="${id}-label">
                 <input type="hidden" ${common} data-original="${esc(joined)}" value="${esc(joined)}">
                 ${pills}
-                <span class="v3-ml-count" data-count>${chosen.length}${boundsHint(c) ? ` of ${esc(boundsHint(c))}` : ''}</span>
+                <span class="v3-ml-count" data-count>${chosen.length}${boundsHint(c) ? ` ${h('analysis.form.of')} ${esc(boundsHint(c))}` : ''}</span>
               </div>`;
         } else if (isSelect(c)) {
             const opts = c.options.map((o) => `<option value="${esc(o)}"${String(o) === String(value) ? ' selected' : ''}>${esc(optionLabel(c, o))}</option>`).join('');
             const extra = c.options.some((o) => String(o) === String(value)) || value === ''
                 ? '' : `<option value="${esc(value)}" selected>${esc(optionLabel(c, value))}</option>`;
-            const placeholder = value === '' ? '<option value="" selected disabled>Choose…</option>' : '';
+            const placeholder = value === '' ? `<option value="" selected disabled>${h('analysis.form.choose')}</option>` : '';
             control = `<select id="${id}" ${common} data-original="${esc(value)}" title="${esc(displayValue(c, value))}" dir="auto">${placeholder}${extra}${opts}</select>`;
         } else if (isNumber(c)) {
             const attrs = [
@@ -218,7 +222,7 @@
         const help = c.help ? esc(c.help) : '';
         const hint = isNumber(c) && boundsHint(c) ? `<span class="v3-ml-bounds">(${esc(boundsHint(c))})</span>` : '';
         return `<div class="v3-ml-field${c.required ? ' is-required' : ''}${c.editable ? '' : ' is-static'}" data-field="${key}">
-          <label class="v3-ml-label" id="${id}-label" for="${id}">${esc(c.label)}<span class="v3-ml-badge" data-badge hidden>changed</span></label>
+          <label class="v3-ml-label" id="${id}-label" for="${id}">${esc(c.label)}<span class="v3-ml-badge" data-badge hidden>${h('analysis.form.changed')}</span></label>
           <div class="v3-ml-input">${control}${unit ? `<span class="v3-ml-unit" data-unit>${esc(unit)}</span>` : ''}</div>
           ${help || hint ? `<small class="v3-ml-help" id="${helpId}">${help}${help && hint ? ' ' : ''}${hint}</small>` : ''}
           <small class="v3-ml-fielderr" id="${errId}" hidden></small>
@@ -258,21 +262,21 @@
         if (SERIES_SKILLS.includes(skill)) {
             const agg = String(v.agg || 'sum').toUpperCase();
             const grain = v.grain || '';
-            const unit = GRAIN_UNIT[grain] || (grain ? `${grain}s` : 'periods');
+            const unit = grainUnit(grain) || (grain ? `${grain}s` : t('analysis.grain.periods'));
             let head = `${esc(agg)}(<bdi>${esc(v.measure_column || '…')}</bdi>)`;
-            if (skill === 'correlation' && filled('other_measure_column')) head += ` vs <bdi>${esc(v.other_measure_column)}</bdi>`;
+            if (skill === 'correlation' && filled('other_measure_column')) head += ` ${h('analysis.summary.vs')} <bdi>${esc(v.other_measure_column)}</bdi>`;
             parts.push(head);
-            if (grain) parts.push(`per ${esc(grain)}`);
-            if (filled('window')) parts.push(`last ${esc(v.window)} ${esc(unit)}`);
+            if (grain) parts.push(t('analysis.summary.per', { grain: esc(grain) }));
+            if (filled('window')) parts.push(t('analysis.summary.last', { count: esc(v.window), unit: esc(unit) }));
             if (skill === 'forecast') {
-                if (filled('horizon')) parts.push(`${esc(v.horizon)} ${esc(unit)} ahead`);
-                if (filled('interval')) parts.push(`${esc(show('interval'))} interval`);
+                if (filled('horizon')) parts.push(t('analysis.summary.ahead', { count: esc(v.horizon), unit: esc(unit) }));
+                if (filled('interval')) parts.push(t('analysis.summary.interval', { value: esc(show('interval')) }));
             }
-            if (skill === 'anomaly_detection' && filled('sensitivity')) parts.push(`${esc(show('sensitivity'))} sensitivity`);
-            if (skill === 'changepoint' && filled('max_changepoints')) parts.push(`up to ${esc(v.max_changepoints)} breaks`);
-            if (skill === 'correlation' && filled('max_lag')) parts.push(`lag up to ${esc(v.max_lag)} ${esc(unit)}`);
-            if (filled('method')) parts.push(`${esc(show('method'))} model`);
-            if (filled('group_by') && String(v.group_by).toLowerCase() !== 'none') parts.push(`per <bdi>${esc(v.group_by)}</bdi>`);
+            if (skill === 'anomaly_detection' && filled('sensitivity')) parts.push(t('analysis.summary.sensitivity', { value: esc(show('sensitivity')) }));
+            if (skill === 'changepoint' && filled('max_changepoints')) parts.push(t('analysis.summary.breaks', { count: esc(v.max_changepoints) }));
+            if (skill === 'correlation' && filled('max_lag')) parts.push(t('analysis.summary.lag', { count: esc(v.max_lag), unit: esc(unit) }));
+            if (filled('method')) parts.push(t('analysis.summary.model', { value: esc(show('method')) }));
+            if (filled('group_by') && String(v.group_by).toLowerCase() !== 'none') parts.push(t('analysis.summary.split', { column: `<bdi>${esc(v.group_by)}</bdi>` }));
             return parts.join(' · ');
         }
         list.forEach((c) => {
@@ -298,35 +302,35 @@
             const value = v[c.key];
             const empty = value == null || value === '' || (Array.isArray(value) && !value.length);
             if (empty) {
-                if (c.required) errors[c.key] = 'Required.';
+                if (c.required) errors[c.key] = t('analysis.validation.required');
                 return;
             }
             const unit = unitText(c, v);
             const withUnit = (n) => `${n}${unit ? ` ${unit}` : ''}`;
             if (c.kind === 'multiselect') {
                 const n = listOf(value).length;
-                if (c.min != null && n < c.min) errors[c.key] = `Pick at least ${c.min}.`;
-                else if (c.max != null && n > c.max) errors[c.key] = `Pick at most ${c.max}.`;
+                if (c.min != null && n < c.min) errors[c.key] = t('analysis.validation.pickAtLeast', { count: c.min });
+                else if (c.max != null && n > c.max) errors[c.key] = t('analysis.validation.pickAtMost', { count: c.max });
                 return;
             }
             if (isNumber(c)) {
                 const n = Number(value);
-                if (!Number.isFinite(n)) { errors[c.key] = 'Enter a number.'; return; }
-                if (c.min != null && n < c.min) errors[c.key] = `At least ${withUnit(c.min)}.`;
-                else if (c.max != null && n > c.max) errors[c.key] = `At most ${withUnit(c.max)}.`;
+                if (!Number.isFinite(n)) { errors[c.key] = t('analysis.validation.enterNumber'); return; }
+                if (c.min != null && n < c.min) errors[c.key] = t('analysis.validation.atLeast', { value: withUnit(c.min) });
+                else if (c.max != null && n > c.max) errors[c.key] = t('analysis.validation.atMost', { value: withUnit(c.max) });
                 return;
             }
-            if (c.kind === 'date' && Number.isNaN(Date.parse(String(value)))) errors[c.key] = 'Enter a date.';
+            if (c.kind === 'date' && Number.isNaN(Date.parse(String(value)))) errors[c.key] = t('analysis.validation.enterDate');
         });
         return { ok: Object.keys(errors).length === 0, errors };
     }
 
     function tierMetaHtml(tier, seconds) {
         const bits = [];
-        if (tier) bits.push(TIER_META[tier] || `tier ${tier}`);
+        if (tier) bits.push(tierMeta(tier) || t('analysis.tier.label', { tier }));
         if (seconds) bits.push(`~${seconds}s`);
         if (!bits.length) return '';
-        return `<span class="v3-ml-tiermeta" title="${esc(TIER_TITLE[tier] || '')}">${esc(bits.join(' · '))}</span>`;
+        return `<span class="v3-ml-tiermeta" title="${esc(tierTitle(tier))}">${esc(bits.join(' · '))}</span>`;
     }
 
     /**
@@ -343,21 +347,21 @@
         const tier = (analysis.egress || {}).tier || '';
         return `<div class="v3-ml-card is-confirm is-definition" data-skill="${esc(skill)}" data-tier="${esc(tier)}">
           <div class="v3-ml-plan">
-            <span class="v3-ml-phase">Setup</span>
-            <span class="v3-skill-chip">${esc(SKILL_LABEL[skill] || skill || 'analysis')}</span>
+            <span class="v3-ml-phase">${h('analysis.definition.setup')}</span>
+            <span class="v3-skill-chip">${esc(SKILL_LABEL[skill] || skill || t('conversation.empty.analysis'))}</span>
             <span class="v3-ml-summary" data-summary>${summarySentence(skill, valuesOf(chips), chips)}</span>
           </div>
           <div class="v3-ml-panel">
-            <p class="v3-ml-reading">This is how the answer above was produced. Change anything and re-run; the current answer stays.</p>
+            <p class="v3-ml-reading">${h('analysis.definition.reading')}</p>
             ${setupFormHtml(chips, 'ml-setup')}
             ${definition.egress_summary ? `<p class="v3-ml-egress" data-egress data-egress-original="${esc(definition.egress_summary)}">${esc(definition.egress_summary)}</p>` : ''}
             <div class="v3-ml-actions">
-              <button type="button" class="v3-ml-run" data-run>Re-run</button>
-              <button type="button" class="v3-text-btn" data-cancel>Cancel</button>
-              <span class="v3-ml-note" data-note aria-live="polite">Change a value to re-run.</span>
+              <button type="button" class="v3-ml-run" data-run>${h('analysis.definition.rerun')}</button>
+              <button type="button" class="v3-text-btn" data-cancel>${h('common.cancel')}</button>
+              <span class="v3-ml-note" data-note aria-live="polite">${h('analysis.definition.changeToRerun')}</span>
               <span class="v3-ml-errsum" data-errsum aria-live="polite"></span>
               <span class="v3-ml-footmeta">
-                <button type="button" class="v3-text-btn v3-ml-resetall" data-reset-all hidden>Reset all</button>
+                <button type="button" class="v3-text-btn v3-ml-resetall" data-reset-all hidden>${h('analysis.definition.resetAll')}</button>
                 ${tierMetaHtml(tier)}
               </span>
             </div>
@@ -385,7 +389,7 @@
         return (options || []).map((o, i) => {
             const kind = o.kind || 'patch';
             const cls = kind === 'override' ? 'v3-ml-exit is-override' : o.recommended ? 'v3-ml-exit is-recommended' : 'v3-ml-exit';
-            return `<button type="button" class="${cls}" data-exit="${i}" data-exit-kind="${esc(kind)}" title="${esc(o.description || '')}">${esc(o.label)}${o.recommended ? ' <small>recommended</small>' : ''}</button>`;
+            return `<button type="button" class="${cls}" data-exit="${i}" data-exit-kind="${esc(kind)}" title="${esc(o.description || '')}">${esc(o.label)}${o.recommended ? ` <small>${h('analysis.proposal.recommended')}</small>` : ''}</button>`;
         }).join('');
     }
 
@@ -397,20 +401,20 @@
     function proposalHtml(proposal) {
         const kind = proposal.kind;
         const series = (proposal.params || {}).series || {};
-        const skill = esc(SKILL_LABEL[proposal.skill] || proposal.skill || 'analysis');
+        const skill = esc(SKILL_LABEL[proposal.skill] || proposal.skill || t('conversation.empty.analysis'));
         const head = `<div class="v3-ml-card-head">
             <span class="v3-skill-chip">${skill}</span>
-            <span class="v3-ml-kind">${kind === 'confirm' ? 'confirm before running' : kind === 'clarify' ? 'one thing to clarify' : 'guard'}</span>
-            ${proposal.tier ? `<span class="v3-ml-tier">tier ${esc(proposal.tier)} · ${proposal.tier === 'A' ? 'aggregate' : 'row-level'}</span>` : ''}
+            <span class="v3-ml-kind">${kind === 'confirm' ? h('analysis.proposal.confirmKind') : kind === 'clarify' ? h('analysis.proposal.clarifyKind') : h('analysis.proposal.guardKind')}</span>
+            ${proposal.tier ? `<span class="v3-ml-tier">${h('analysis.proposal.tier', { tier: proposal.tier, mode: proposal.tier === 'A' ? t('analysis.tier.aggregate') : t('analysis.tier.rowLevel') })}</span>` : ''}
           </div>`;
         if (kind === 'confirm') {
             const chips = (proposal.chips || []).map(normalizeChip);
-            const grain = GRAIN_ADJ[series.grain] || series.grain || '';
+            const grain = grainAdj(series.grain) || series.grain || '';
             const summary = summarySentence(proposal.skill, valuesOf(chips), chips);
-            const egress = proposal.egress_summary || `SQL rolls the measure up to ${grain} totals; only those rows are sent to the analysis service.`;
+            const egress = proposal.egress_summary || t('analysis.proposal.egressDefault', { grain });
             return `<div class="v3-ml-card is-confirm" data-skill="${esc(proposal.skill || '')}" data-tier="${esc(proposal.tier || '')}">
               <div class="v3-ml-plan" title="${esc(proposal.message)}">
-                <span class="v3-ml-phase">Planning</span>
+                <span class="v3-ml-phase">${h('analysis.proposal.planning')}</span>
                 <span class="v3-skill-chip">${skill}</span>
                 <span class="v3-ml-summary" data-summary>${summary || esc(proposal.message)}</span>
               </div>
@@ -418,31 +422,31 @@
                 ${setupFormHtml(chips, 'ml-confirm')}
                 <p class="v3-ml-egress" data-egress data-egress-original="${esc(egress)}">${esc(egress)}</p>
                 <div class="v3-ml-actions">
-                  <button type="button" class="v3-ml-run" data-run>Run</button>
-                  <button type="button" class="v3-ml-alt" data-switch-skill title="Return to the composer and ask in other words">Rephrase the question</button>
-                  <button type="button" class="v3-text-btn v3-ml-sql" data-sql-instead>Answer with SQL instead</button>
+                  <button type="button" class="v3-ml-run" data-run>${h('analysis.proposal.run')}</button>
+                  <button type="button" class="v3-ml-alt" data-switch-skill title="${h('analysis.proposal.rephraseTitle')}">${h('analysis.proposal.rephrase')}</button>
+                  <button type="button" class="v3-text-btn v3-ml-sql" data-sql-instead>${h('analysis.proposal.sqlInstead')}</button>
                   <span class="v3-ml-errsum" data-errsum aria-live="polite"></span>
                   <span class="v3-ml-footmeta">
-                    <button type="button" class="v3-text-btn v3-ml-resetall" data-reset-all hidden>Reset all</button>
+                    <button type="button" class="v3-text-btn v3-ml-resetall" data-reset-all hidden>${h('analysis.definition.resetAll')}</button>
                     ${tierMetaHtml(proposal.tier, proposal.estimated_seconds)}
                   </span>
                 </div>
-                <label class="v3-ml-remember"><input type="checkbox" data-remember> Don't ask again for ${skill} on this connection</label>
+                <label class="v3-ml-remember"><input type="checkbox" data-remember> ${t('analysis.proposal.dontAsk', { skill })}</label>
               </div>
             </div>`;
         }
         if (kind === 'clarify') {
             return `<div class="v3-ml-card is-clarify">${head}
-              <p class="v3-ml-message">${esc(proposal.message)}</p>
+              <p class="v3-ml-message" dir="auto">${esc(proposal.message)}</p>
               <div class="v3-ml-exits">${exitButtons(proposal.options)}</div>
-              <div class="v3-ml-actions"><button type="button" class="v3-text-btn" data-sql-instead>Answer with SQL instead</button></div>
+              <div class="v3-ml-actions"><button type="button" class="v3-text-btn" data-sql-instead>${h('analysis.proposal.sqlInstead')}</button></div>
             </div>`;
         }
         return `<div class="v3-ml-card is-guard">${head}
-          <p class="v3-ml-message v3-ml-refusal">${esc(proposal.message)}</p>
+          <p class="v3-ml-message v3-ml-refusal" dir="auto">${esc(proposal.message)}</p>
           ${guardList(proposal.guard_results, true)}
           <div class="v3-ml-exits">${exitButtons(proposal.options)}</div>
-          <p class="v3-ml-egress">0 rows sent to the model — a blocked run reads no series.</p>
+          <p class="v3-ml-egress">${h('analysis.proposal.guardEgress')}</p>
         </div>`;
     }
 
@@ -565,7 +569,7 @@
                 if (text) summaryEl.innerHTML = text;
             }
             if (egressEl && egressEl.dataset.egressOriginal) {
-                egressEl.textContent = dirty ? (TIER_NEUTRAL_EGRESS[tier] || TIER_NEUTRAL_EGRESS.A) : egressEl.dataset.egressOriginal;
+                egressEl.textContent = dirty ? tierNeutralEgress(tier) : egressEl.dataset.egressOriginal;
             }
             if (resetAll) resetAll.hidden = !dirty;
             const { errors } = validateValues(list, values);
@@ -639,7 +643,7 @@
             reportInvalid(errors) {
                 const keys = Object.keys(errors || {});
                 keys.forEach((key) => setFieldError(cardEl, key, errors[key]));
-                if (errsum) errsum.textContent = keys.length ? `${keys.length} field${keys.length === 1 ? '' : 's'} need${keys.length === 1 ? 's' : ''} a look.` : '';
+                if (errsum) errsum.textContent = keys.length ? t('analysis.validation.fieldsNeedLook', { count: keys.length }) : '';
                 const first = list.find((c) => keys.includes(c.key));
                 if (first) focusField(fieldOf(cardEl, first.key));
                 return keys.length > 0;
@@ -648,7 +652,7 @@
             showServerError(detail) {
                 const field = detail && typeof detail === 'object' ? detail.field : null;
                 const message = detail && typeof detail === 'object' ? detail.message : String(detail || '');
-                if (field && setFieldError(cardEl, field, message || 'Invalid value.')) {
+                if (field && setFieldError(cardEl, field, message || t('analysis.validation.invalidValue'))) {
                     focusField(fieldOf(cardEl, field));
                     return true;
                 }
@@ -666,7 +670,7 @@
     function modelDetailsHtml(result) {
         const analysis = result && result.analysis;
         if (!analysis || !analysis.skill) {
-            return '<div class="v3-dock-empty">Model details appear here for anomaly detection and forecast answers.</div>';
+            return `<div class="v3-dock-empty">${h('analysis.details.empty')}</div>`;
         }
         const v = analysis.validation || {};
         const d = analysis.details || {};
@@ -675,15 +679,15 @@
         const params = analysis.params || {};
         const series = params.series || {};
         const stats = [
-            kv('Method', analysis.method_used || d.method_used || '—'),
-            kv(v.metric || 'Metric', v.value == null ? '—' : (v.metric === 'WAPE' ? fmtPct(v.value) : Number(v.value).toFixed(3))),
-            kv('Coverage', v.coverage == null ? '—' : `${fmtPct(v.coverage, 0)} of ${v.coverage_n || 0}`),
-            kv('Season', (d.seasonal_periods || []).length ? `m=${d.seasonal_periods.join(',')}` : 'none confirmed'),
-            kv('Rows sent', (analysis.egress || {}).rows_sent_to_model == null ? '—' : analysis.egress.rows_sent_to_model),
-            kv('Engine', `${e.name || '—'} ${e.version || ''}`.trim()),
+            kv(t('analysis.details.method'), analysis.method_used || d.method_used || '—'),
+            kv(v.metric || t('analysis.details.metric'), v.value == null ? '—' : (v.metric === 'WAPE' ? fmtPct(v.value) : Number(v.value).toFixed(3))),
+            kv(t('analysis.details.coverage'), v.coverage == null ? '—' : t('analysis.details.coverageOf', { value: fmtPct(v.coverage, 0), total: v.coverage_n || 0 })),
+            kv(t('analysis.details.season'), (d.seasonal_periods || []).length ? `m=${d.seasonal_periods.join(',')}` : t('analysis.details.noneConfirmed')),
+            kv(t('analysis.details.rowsSent'), (analysis.egress || {}).rows_sent_to_model == null ? '—' : analysis.egress.rows_sent_to_model),
+            kv(t('analysis.details.engine'), `${e.name || '—'} ${e.version || ''}`.trim()),
         ].join('');
         const candidates = (d.candidates || []).map((c) => `<tr class="${c.selected ? 'is-selected' : ''}">
-            <td>${esc(c.name)}${c.is_baseline ? ' <small>baseline</small>' : ''}${c.selected ? ' <small>selected</small>' : ''}</td>
+            <td>${esc(c.name)}${c.is_baseline ? ` <small>${h('analysis.details.baseline')}</small>` : ''}${c.selected ? ` <small>${h('analysis.details.selected')}</small>` : ''}</td>
             <td>${esc(c.metric)}</td><td class="v3-mono">${c.value == null ? '—' : c.metric === 'WAPE' || c.metric === 'fit WAPE' ? fmtPct(c.value) : Number(c.value).toFixed(3)}</td></tr>`).join('');
         const nested = params.series || params.entity || params.cohort || params.experiment || {};
         // Arrays are either filter specs ({column, op, value}) or plain lists (features, dimensions).
@@ -697,21 +701,21 @@
         const guards = guardList(analysis.guard_results, false);
         const notes = (d.notes || []).concat(analysis.caveats || []);
         const diff = analysis.param_diff && Object.keys(analysis.param_diff).length
-            ? `<div class="v3-ml-section"><div class="v3-ml-section-title">Changed from the previous run</div><div class="v3-ml-diff">${Object.entries(analysis.param_diff).map(([k, c]) => `<span class="v3-ml-diff-chip">${esc(k)}: <s>${esc(c.from == null ? '—' : c.from)}</s> → ${esc(c.to == null ? '—' : c.to)}</span>`).join('')}</div></div>`
+            ? `<div class="v3-ml-section"><div class="v3-ml-section-title">${h('analysis.details.changedFrom')}</div><div class="v3-ml-diff">${Object.entries(analysis.param_diff).map(([k, c]) => `<span class="v3-ml-diff-chip" dir="ltr">${esc(k)}: <s>${esc(c.from == null ? '—' : c.from)}</s> → ${esc(c.to == null ? '—' : c.to)}</span>`).join('')}</div></div>`
             : '';
         return `<div class="v3-stats">${stats}</div>
-          ${result.low_confidence || analysis.low_confidence ? '<div class="v3-ml-lowconf-note">Low confidence: a guard was overridden for this run. The flag travels with pins, exports and history.</div>' : ''}
+          ${result.low_confidence || analysis.low_confidence ? `<div class="v3-ml-lowconf-note">${h('analysis.details.lowConfidenceNote')}</div>` : ''}
           ${diff}
           <div class="v3-ml-grid">
-            <div class="v3-ml-section"><div class="v3-ml-section-title">Candidates${v.basis ? ` · ${esc(v.basis)}` : ''}</div>
-              <table class="v3-ml-table"><thead><tr><th>model</th><th>metric</th><th>value</th></tr></thead><tbody>${candidates || '<tr><td colspan="3">—</td></tr>'}</tbody></table></div>
-            <div class="v3-ml-section"><div class="v3-ml-section-title">Parameters</div>
+            <div class="v3-ml-section"><div class="v3-ml-section-title">${h('analysis.details.candidates')}${v.basis ? ` · ${esc(v.basis)}` : ''}</div>
+              <table class="v3-ml-table"><thead><tr><th>${h('analysis.details.model')}</th><th>${h('analysis.details.metricCol')}</th><th>${h('analysis.details.value')}</th></tr></thead><tbody>${candidates || '<tr><td colspan="3">—</td></tr>'}</tbody></table></div>
+            <div class="v3-ml-section"><div class="v3-ml-section-title">${h('analysis.details.parameters')}</div>
               <table class="v3-ml-table"><tbody>${paramRows}</tbody></table></div>
           </div>
-          <div class="v3-ml-section"><div class="v3-ml-section-title">Guards</div>${guards || '<div class="v3-dock-empty">none recorded</div>'}</div>
-          <div class="v3-ml-section"><div class="v3-ml-section-title">Data</div>
-            <div class="v3-ml-prov">${esc(p.missing_policy || '')}${p.filters_summary ? ` · filters: ${esc(p.filters_summary)}` : ''}${p.span_start ? ` · span ${esc(p.span_start)} → ${esc(p.span_end)}` : ''}${p.query_ts ? ` · queried ${esc(p.query_ts)}` : ''}</div></div>
-          ${notes.length ? `<div class="v3-ml-section"><div class="v3-ml-section-title">Notes</div><ul class="v3-ml-notes">${notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></div>` : ''}`;
+          <div class="v3-ml-section"><div class="v3-ml-section-title">${h('analysis.details.guards')}</div>${guards || `<div class="v3-dock-empty">${h('analysis.details.noneRecorded')}</div>`}</div>
+          <div class="v3-ml-section"><div class="v3-ml-section-title">${h('analysis.details.data')}</div>
+            <div class="v3-ml-prov">${esc(p.missing_policy || '')}${p.filters_summary ? ` · ${h('analysis.details.filters', { value: esc(p.filters_summary) })}` : ''}${p.span_start ? ` · ${h('analysis.details.span', { start: esc(p.span_start), end: esc(p.span_end) })}` : ''}${p.query_ts ? ` · ${h('analysis.details.queried', { value: esc(p.query_ts) })}` : ''}</div></div>
+          ${notes.length ? `<div class="v3-ml-section"><div class="v3-ml-section-title">${h('analysis.details.notes')}</div><ul class="v3-ml-notes">${notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></div>` : ''}`;
     }
 
     /** Short caption under the chart for an ML result. */
@@ -721,15 +725,15 @@
         const params = analysis.params || {};
         if (params.entity) {
             const e = params.entity;
-            return `${e.table} by ${e.entity_key} · ${(e.features || []).join(', ')} · ${analysis.method_used || ''}`;
+            return `${t('analysis.caption.by', { table: e.table, key: e.entity_key })} · ${(e.features || []).join(', ')} · ${analysis.method_used || ''}`;
         }
         const series = params.series || {};
         const label = `${String(series.agg || 'sum').toUpperCase()}(${series.measure_column || ''})`;
         if (analysis.skill === 'contribution') {
-            return `Δ ${label} by ${(params.dimensions || []).join(', ')} · ${analysis.method_used || ''}`;
+            return `Δ ${t('analysis.caption.by', { table: label, key: (params.dimensions || []).join(', ') })} · ${analysis.method_used || ''}`;
         }
-        const grain = GRAIN_ADJ[series.grain] || series.grain || '';
-        const split = series.group_by ? ` · per ${series.group_by}` : '';
+        const grain = grainAdj(series.grain) || series.grain || '';
+        const split = series.group_by ? ` · ${t('analysis.summary.split', { column: series.group_by })}` : '';
         return `${label} · ${grain}${split} · ${analysis.method_used || ''}`;
     }
 

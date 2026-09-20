@@ -1,0 +1,1505 @@
+{
+  "app": {
+    "name": "Jeen Insights",
+    "title": "Jeen Insights — ניתוח נתונים"
+  },
+  "common": {
+    "ok": "אישור",
+    "cancel": "ביטול",
+    "close": "סגירה",
+    "save": "שמירה",
+    "saving": "שומר…",
+    "saved": "נשמר",
+    "delete": "מחיקה",
+    "rename": "שינוי שם",
+    "retry": "ניסיון חוזר",
+    "refresh": "רענון",
+    "reload": "טעינה מחדש",
+    "loading": "טוען…",
+    "never": "מעולם לא",
+    "justNow": "הרגע",
+    "copy": "העתקה",
+    "copied": "הועתק",
+    "export": "ייצוא",
+    "send": "שליחה",
+    "show": "הצגה",
+    "hide": "הסתרה",
+    "expand": "הרחבה",
+    "collapse": "צמצום",
+    "yes": "כן",
+    "no": "לא",
+    "on": "פועל",
+    "off": "כבוי",
+    "none": "ללא",
+    "clear": "ניקוי",
+    "search": "חיפוש",
+    "edit": "עריכה",
+    "remove": "הסרה",
+    "add": "הוספה",
+    "apply": "החלה",
+    "reset": "איפוס",
+    "all": "הכול",
+    "back": "חזרה",
+    "next": "הבא",
+    "done": "סיום",
+    "skip": "דילוג",
+    "you": "את/ה",
+    "unknownError": "משהו השתבש",
+    "notAvailable": "—",
+    "copyFailed": "ההעתקה נכשלה"
+  },
+  "errors": {
+    "requestFailed": "הבקשה נכשלה",
+    "network": "לא ניתן להתחבר לשרת. בדקו את החיבור ונסו שוב.",
+    "badRequest": "הבקשה נדחתה",
+    "unauthenticated": "ההתחברות הסתיימה. יש להתחבר מחדש כדי להמשיך.",
+    "forbidden": "אין לכם הרשאה לבצע פעולה זו",
+    "notFound": "לא נמצא",
+    "conflict": "הפעולה מתנגשת עם המצב הנוכחי",
+    "rateLimited": "יותר מדי בקשות. המתינו רגע ונסו שוב.",
+    "serverError": "השרת נתקל בשגיאה",
+    "backendUnavailable": "שירות הניתוח אינו זמין כרגע",
+    "csrf": "אסימון ההתחברות פג. טענו את הדף מחדש ונסו שוב.",
+    "setupRequired": "נדרשת הגדרה ראשונית",
+    "queryFailed": "השאילתה נכשלה",
+    "queryFailedStatus": "השאילתה נכשלה ({status})",
+    "streamEnded": "זרם השאילתה הסתיים לפני שהתקבלה תוצאה",
+    "streamingUnavailable": "הזרמה אינה נתמכת בדפדפן זה",
+    "selectConnectionFirst": "בחרו חיבור תחילה"
+  },
+  "login": {
+    "pageTitle": "התחברות — Jeen Insights",
+    "subtitle": "התחברו לסביבת העבודה שלכם",
+    "microsoft": "התחברות עם Microsoft",
+    "or": "או",
+    "emailLabel": "אימייל / שם משתמש",
+    "emailPlaceholder": "admin",
+    "passwordLabel": "סיסמה",
+    "togglePassword": "הצגה/הסתרה של הסיסמה",
+    "submit": "התחברות עם סיסמה",
+    "submitting": "מתחבר…",
+    "errors": {
+      "required": "יש להזין אימייל וסיסמה.",
+      "invalidCredentials": "אימייל או סיסמה שגויים.",
+      "disabled": "חשבון זה מושבת. פנו למנהל המערכת.",
+      "tooManyAttempts": "יותר מדי ניסיונות התחברות. המתינו דקה ונסו שוב.",
+      "microsoftFailed": "ההתחברות עם Microsoft נכשלה: {reason}",
+      "unknownReason": "שגיאה לא ידועה",
+      "invalidState": "מצב ההתחברות אינו תקין. נסו שוב.",
+      "microsoftCancelled": "ההתחברות עם Microsoft בוטלה.",
+      "noEmail": "לחשבון Microsoft שלכם אין כתובת אימייל.",
+      "dbUnavailable": "ההתחברות אינה זמינה כרגע (שגיאת מסד נתונים).",
+      "dbUnreachable": "לא ניתן להגיע למסד הנתונים של המטא-דאטה. בדקו את הרשת או ה-VPN, וודאו שכתובת ה-IP שלכם מורשית בחומת האש של Azure Postgres.",
+      "dbAuthFailed": "אימות מול מסד הנתונים נכשל. בדקו את METADATA_DB_USER / METADATA_DB_PASSWORD.",
+      "dbTablesMissing": "טבלאות ההתחברות חסרות. הריצו: python scripts/run_insights_migrations.py"
+    }
+  },
+  "setup": {
+    "pageTitle": "הגדרה ראשונית — Jeen Insights",
+    "heading": "ברוכים הבאים ל-Jeen Insights",
+    "subtitle": "יצירת חשבון המנהל הראשון",
+    "hint": "עדיין לא קיים חשבון מנהל. מסך חד-פעמי זה יוצר אותו. הזינו את אסימון ההגדרה שהודפס ביומני השרת (או את משתנה הסביבה SETUP_BOOTSTRAP_TOKEN) כדי להמשיך.",
+    "tokenLabel": "אסימון הגדרה",
+    "nameLabel": "שם מלא",
+    "emailLabel": "אימייל",
+    "passwordLabel": "סיסמה (12 תווים לפחות)",
+    "confirmLabel": "אימות סיסמה",
+    "submit": "יצירת מנהל והמשך",
+    "errors": {
+      "invalidToken": "אסימון הגדרה שגוי. בדקו את יומני השרת (או הגדירו SETUP_BOOTSTRAP_TOKEN).",
+      "allRequired": "כל השדות נדרשים.",
+      "passwordTooShort": "הסיסמה חייבת להכיל 12 תווים לפחות.",
+      "passwordsMismatch": "הסיסמאות אינן תואמות."
+    }
+  },
+  "connection": {
+    "switchActive": "החלפת החיבור הפעיל",
+    "connections": "חיבורים",
+    "thisDataset": "מערך הנתונים הזה",
+    "established": "החיבור נוצר",
+    "connectFailed": "לא ניתן להתחבר",
+    "connectFailedDetail": "לא ניתן להתחבר — {detail}",
+    "search": "חיפוש חיבורים…",
+    "noMatch": "אין חיבורים התואמים ל-“{term}”",
+    "none": "אין חיבורים זמינים",
+    "refreshMetadata": "רענון מטא-דאטה עבור {name}",
+    "noneShort": "אין חיבורים",
+    "loadFailed": "הטעינה נכשלה"
+  },
+  "shell": {
+    "rail": {
+      "navigation": "ניווט ראשי",
+      "conversation": "שיחה",
+      "tables": "טבלאות",
+      "pinned": "נעוצות",
+      "pinnedLabel": "שאלות נעוצות",
+      "history": "היסטוריה",
+      "historyLabel": "היסטוריית שיחות",
+      "settings": "הגדרות"
+    },
+    "topbar": {
+      "hideConversation": "הסתרת השיחה",
+      "showConversation": "שיחה",
+      "notifications": "התראות"
+    },
+    "tabs": {
+      "sections": "מקטעי השיחה",
+      "conversation": "שיחה",
+      "tables": "טבלאות",
+      "pinned": "נעוצות",
+      "history": "היסטוריה"
+    },
+    "panels": {
+      "workspaceLabel": "סביבת עבודה של השיחה",
+      "previousConversations": "שיחות קודמות",
+      "questionLog": "יומן שאלות",
+      "questionLogTitle": "רשימה שטוחה של כל השאלות שנשאלו",
+      "pinnedRecent": "שאלות נעוצות ואחרונות",
+      "searchTables": "חיפוש טבלאות…",
+      "refreshTables": "רענון טבלאות",
+      "searchQuestions": "חיפוש בשאלות שלכם…",
+      "savedAnalyses": "ניתוחים שמורים",
+      "refreshSavedAnalyses": "רענון ניתוחים שמורים",
+      "clearHistory": "ניקוי היסטוריית השאלות"
+    },
+    "composer": {
+      "placeholder": "הצג מכירות לפי חודש",
+      "followupPlaceholder": "שאלו שאלת המשך על הנתונים שלכם…",
+      "inputLabel": "הזינו את השאלה שלכם",
+      "submit": "שליחת השאלה",
+      "ask": "שאלו",
+      "hintTables": "טבלאות",
+      "hintColumns": "עמודות",
+      "hintTemplates": "תבניות"
+    },
+    "result": {
+      "getStarted": "שאלו שאלה כדי להתחיל",
+      "restoring": "משחזר את השיחה האחרונה שלכם…",
+      "noResultYet": "אין תוצאה עדיין",
+      "placeholderCopy": "שאלו שאלה בחלונית הצד. התרשים, השורות, ה-SQL והפרופיל של התשובה יופיעו כאן.",
+      "chart": "תרשים",
+      "filterRows": "סינון שורות…",
+      "filterRowsLabel": "סינון שורות התוצאה"
+    },
+    "dock": {
+      "label": "פרטי התוצאה",
+      "sqlTab": "SQL ופרטי ריצה",
+      "profilingTab": "פרופיל נתונים",
+      "modelTab": "פרטי המודל",
+      "noRunYet": "עדיין לא הייתה ריצה",
+      "empty": "עדיין לא הייתה ריצה — SQL, זמנים ופרופיל עמודות יופיעו כאן לאחר שתתקבל תשובה."
+    },
+    "user": {
+      "account": "חשבון",
+      "signOut": "התנתקות"
+    },
+    "theme": {
+      "switchToDark": "מעבר למצב כהה",
+      "switchToLight": "מעבר למצב בהיר"
+    },
+    "legacy": {
+      "toggleSidebar": "הצגה/הסתרה של סרגל הצד",
+      "navigationPanel": "חלונית ניווט"
+    }
+  },
+  "phases": {
+    "memory": "זיכרון",
+    "router": "ניתוב השאלה",
+    "catalog": "טעינת קטלוג",
+    "generation": "יצירת שאילתה",
+    "validation": "אימות",
+    "execution": "הרצה",
+    "analytics": "ניתוח",
+    "format": "עיצוב התשובה",
+    "save": "שמירה בזיכרון"
+  },
+  "conversation": {
+    "empty": {
+      "title": "מה תרצו לדעת על הנתונים שלכם?",
+      "copy": "שאלו בשפה חופשית. התשובות מגיעות עם תרשים, השורות שמאחוריו וה-SQL שיצר אותן.",
+      "suggestedFor": "הצעות עבור {connection}",
+      "analysis": "ניתוח"
+    },
+    "readOnlyNote": "קריאה בלבד: החיבור “{connection}” אינו זמין עוד.",
+    "readOnlySend": "שיחה זו שייכת לחיבור שאינו זמין עוד. פתחו שיחה חדשה כדי לשאול שאלות.",
+    "newConversation": "שיחה חדשה",
+    "list": {
+      "loading": "טוען שיחות…",
+      "loadFailed": "לא ניתן לטעון את השיחות.",
+      "empty": "אין עדיין שיחות קודמות.",
+      "thisConnection": "החיבור הנוכחי",
+      "otherConnections": "חיבורים אחרים",
+      "unavailableConnections": "חיבורים שאינם זמינים",
+      "readOnly": "קריאה בלבד",
+      "questionCount": "{count, plural, one {שאלה אחת} two {# שאלות} other {# שאלות}}",
+      "gone": "השיחה הזו כבר לא קיימת"
+    },
+    "rename": {
+      "prompt": "שינוי שם השיחה",
+      "failed": "שינוי השם נכשל"
+    },
+    "delete": {
+      "confirm": "למחוק את “{title}”? השאלות והתוצאות שלה יימחקו.",
+      "done": "השיחה נמחקה",
+      "failed": "המחיקה נכשלה"
+    },
+    "turn": {
+      "showAnswer": "הצגת התשובה: {question}",
+      "showCard": "הצגת הכרטיס: {question}",
+      "statusOk": "בוצע",
+      "statusRunning": "פועל…",
+      "statusFailed": "נכשל",
+      "restoredFromHistory": "שוחזר מההיסטוריה",
+      "failedAt": "השאילתה נכשלה · נכשל בשלב {node} · {duration}",
+      "error": "שגיאה",
+      "query": "שאילתה",
+      "newestFailed": "השאלה האחרונה נכשלה. התוצאה המוצלחת האחרונה שלכם נשארת בסביבת העבודה.",
+      "editSql": "עריכת SQL",
+      "editSqlTitle": "עריכת SQL דורשת חוזה הרצה מאומת",
+      "reportGap": "דיווח על פער בקטלוג",
+      "reported": "דווח ✓",
+      "retryReport": "ניסיון דיווח חוזר",
+      "waitingGuard": "נחסם על ידי בקרה · 0 שורות נשלחו",
+      "waitingChoice": "ממתין לבחירה",
+      "waitingConfirm": "ממתין לאישור",
+      "lowConfidence": "ביטחון נמוך",
+      "notRun": "לא רץ",
+      "runMeta": "{duration} · {count, plural, one {צומת אחד} two {# צמתים} other {# צמתים}}",
+      "hideRun": "הסתרת הריצה",
+      "runDetails": "פרטי הריצה",
+      "keyInsights": "תובנות מרכזיות",
+      "routeMl": "מיומנות ML",
+      "routeSql": "SQL",
+      "showAnswerBadge": "הצגת התשובה",
+      "showCardBadge": "הצגת הכרטיס"
+    },
+    "trace": {
+      "modelStep": "שלב המודל הושלם",
+      "contextPrepared": "ההקשר הוכן",
+      "analysisCompleted": "הניתוח הושלם",
+      "readOnlyQuery": "שאילתת קריאה בלבד הושלמה"
+    },
+    "restored": {
+      "textAnswer": "שוחזר · תשובת טקסט",
+      "reloading": "טוען נתונים מחדש…",
+      "snapshotFrom": "תמונת מצב מ-{when}",
+      "freshTooLarge": "תוצאה טרייה · גדולה מדי לשמירה",
+      "snapshot": "תמונת מצב משוחזרת",
+      "chart": "תרשים",
+      "loadingRows": "טוען שורות…",
+      "tooLarge": "התוצאה גדולה מדי לשמירה; הריצו מחדש כדי לצפות",
+      "loadFailed": "לא ניתן היה לטעון את השורות",
+      "notKept": "השורות לא נשמרו; הריצו מחדש כדי לצפות",
+      "loadData": "טעינת נתונים",
+      "restored": "שוחזר"
+    },
+    "pending": {
+      "loadingTitle": "טוען שורות…",
+      "loadingCopy": "מאחזר את התוצאה השמורה של תשובה זו.",
+      "tooLargeTitle": "התוצאה גדולה מדי לשמירה",
+      "tooLargeCopy": "תשובה זו החזירה יותר שורות ממה שהאפליקציה שומרת. הריצו את השאילתה מחדש כדי לצפות בהן.",
+      "failedTitle": "לא ניתן היה לטעון את השורות",
+      "failedCopy": "נסו שוב, או הריצו את השאילתה מחדש כדי לקבל נתונים טריים.",
+      "notKeptTitle": "השורות של תשובה זו לא נשמרו",
+      "notKeptCopy": "תוצאות ישנות נגזמות כדי לחסוך מקום. הריצו את השאילתה מחדש כדי לצפות בהן.",
+      "loading": "טוען",
+      "noRowsLoaded": "לא נטענו שורות",
+      "storedQuery": "שאילתה שמורה",
+      "noQueryText": "אין טקסט שאילתה"
+    },
+    "rerun": {
+      "connectionGone": "החיבור הזה אינו זמין עוד.",
+      "refreshed": "הנתונים רועננו",
+      "reconnectPowerBi": "חברו מחדש את חשבון Power BI שלכם כדי לטעון נתונים אלה.",
+      "noQuery": "לתשובה זו אין שאילתה להרצה מחדש.",
+      "timedOut": "השאילתה חרגה מהזמן המוקצב. נסו שוב או צמצמו את השאלה.",
+      "sourceError": "מקור הנתונים החזיר שגיאה.",
+      "failedStatus": "לא ניתן היה לטעון את הנתונים מחדש ({status})."
+    },
+    "proposal": {
+      "blocked": "נחסם",
+      "clarify": "הבהרה",
+      "planning": "תכנון",
+      "guardMeta": "בקרה: {names} · 0 שורות נשלחו",
+      "refused": "נדחה",
+      "clarifyMeta": "שאלה אחת לפני ההרצה",
+      "confirmMeta": "אישור לפני ההרצה",
+      "blockedBeforeSql": "נחסם לפני SQL",
+      "waitingForYou": "ממתין לכם",
+      "expiredTitle": "לא ניתן לחדש הצעה זו; שאלו את השאלה שוב.",
+      "expiredNote": "כרטיס זה פג תוקף. שאלו את השאלה שוב כדי לקבל כרטיס חדש.",
+      "running": "מריץ…",
+      "rerun": "הרצה מחדש",
+      "editSetup": "עריכת ההגדרות",
+      "hideSetup": "הסתרת ההגדרות",
+      "selectAnalysis": "בחרו תוצאת ניתוח להרצה מחדש",
+      "requestFailed": "הבקשה נכשלה ({status})"
+    },
+    "text": {
+      "needsChoice": "נדרשת בחירה",
+      "whichField": "איזה שדה?",
+      "whichValue": "איזה ערך?",
+      "directOrAnalysis": "תשובה ישירה או ניתוח?",
+      "percentSure": "ביטחון של {percent}%",
+      "runAnalysis": "הרצת הניתוח",
+      "answerWithSql": "תשובה ישירה עם SQL",
+      "answered": "נענה",
+      "textAnswer": "תשובת טקסט",
+      "answer": "תשובה",
+      "noDataNeeded": "לא נדרשו נתונים לתשובה זו.",
+      "anyOfFields": "כל אחד מהשדות האלה",
+      "somethingElse": "משהו אחר…"
+    },
+    "filters": {
+      "title": "סונן לפי",
+      "from": "מתוך “{raw}”",
+      "verifiedVia": "אומת באמצעות {evidence}",
+      "useInstead": "סינון לפי {field} במקום",
+      "use": "שימוש ב-{field}",
+      "or": "או",
+      "opIn": "בתוך",
+      "opContains": "מכיל",
+      "notVerified": "לא אומת",
+      "unverified": "לא מאומת"
+    }
+  },
+  "results": {
+    "actions": {
+      "exportLabel": "ייצוא התוצאות ל-Excel",
+      "copyLabel": "העתקת התוצאות ללוח",
+      "describe": "תיאור סטטיסטי",
+      "describeLabel": "הצגת תיאור סטטיסטי",
+      "rerunFresh": "הרצה טרייה",
+      "rerunFreshLabel": "הרצה טרייה של ניתוח שמור",
+      "sendLabel": "שליחה או שיתוף של התוצאה",
+      "sendResult": "שליחת התוצאה",
+      "sendDisabled": "חברו Microsoft Entra ומחבר שליחה כדי לשלוח תוצאה זו"
+    },
+    "status": {
+      "completed": "הושלם",
+      "completedCapped": "הושלם · מוגבל",
+      "meta": "{rows, plural, one {שורה אחת} two {# שורות} other {# שורות}} · הרצה {exec} · מודל {llm}",
+      "staleNote": "התשובה המוצלחת האחרונה — השאלה החדשה נכשלה",
+      "snapshotFrom": "תמונת מצב מ-{when}"
+    },
+    "chart": {
+      "caption": "{columns} · {count, plural, one {נקודה אחת} two {# נקודות} other {# נקודות}}",
+      "captionBy": "{first} לפי {second}",
+      "result": "תוצאה"
+    },
+    "cap": {
+      "banner": "התוצאה מוגבלת ל-{cap} שורות שנטענו.",
+      "matched": "{total} שורות תאמו את השאילתה.",
+      "totalUnavailable": "המספר הכולל של השורות התואמות אינו זמין.",
+      "exportsNote": "הייצוא כולל רק את התוצאה שנטענה."
+    },
+    "dockMeta": "{input} / {output} אסימונים · {retries} ניסיונות חוזרים · {validation}",
+    "validation": {
+      "validated": "שאילתה מאומתת",
+      "generated": "שאילתה שנוצרה",
+      "none": "אין טקסט שאילתה"
+    },
+    "grid": {
+      "filteredOf": "{shown} מתוך {total} שנטענו",
+      "loadedMatched": "{loaded} נטענו · {total} תאמו",
+      "rowsLoaded": "{count, plural, one {שורה אחת נטענה} two {# שורות נטענו} other {# שורות נטענו}}",
+      "focusMap": "מיקוד המפה במיקום זה"
+    },
+    "sql": {
+      "sqlglotValidated": "אומת על ידי sqlglot",
+      "daxValidated": "DAX אומת",
+      "validationUnavailable": "אימות אינו זמין",
+      "rows": "שורות",
+      "exec": "הרצה",
+      "llm": "מודל",
+      "tokens": "אסימונים",
+      "retries": "ניסיונות חוזרים",
+      "provenance": "נוצר · {validation} · קריאה בלבד",
+      "developerDetails": "פרטי מפתחים",
+      "noSql": "-- לא נוצר SQL או DAX עבור תשובה זו."
+    },
+    "profile": {
+      "empty": "אין עמודות תוצאה זמינות לפרופיל.",
+      "noValues": "אין ערכים שאינם ריקים",
+      "distinct": "{count} ייחודיים",
+      "nulls": "ריקים {percent}%",
+      "footQuestion": "צריכים התפלגויות ומתאמים?",
+      "openFull": "פתיחת דוח הפרופיל המלא",
+      "close": "סגירת הפרופיל",
+      "type": {
+        "number": "מספר",
+        "text": "טקסט",
+        "datetime": "תאריך/שעה",
+        "boolean": "בוליאני",
+        "empty": "ריק"
+      }
+    },
+    "noResults": "אין תוצאות להצגה",
+    "menu": {
+      "sort": "מיון",
+      "ascending": "עולה",
+      "descending": "יורד",
+      "format": "עיצוב",
+      "resetFormat": "איפוס העיצוב",
+      "formats": {
+        "dec2": "מספר (2 ספרות)",
+        "currency": "מטבע ($)",
+        "percent": "אחוזים (%)",
+        "compact": "מקוצר (1.2K)",
+        "integer": "מספר שלם",
+        "dec0": "0 ספרות עשרוניות",
+        "dec1": "ספרה עשרונית אחת",
+        "dec4": "4 ספרות עשרוניות"
+      },
+      "calculate": "חישוב",
+      "addPctTotal": "הוספת % מהסך",
+      "addRunningTotal": "הוספת סכום מצטבר",
+      "addChange": "הוספת שינוי (Δ)",
+      "removeDerived": "הסרת העמודה המחושבת",
+      "filterCopy": "סינון · העתקה",
+      "filterNonNull": "סינון ערכים לא ריקים",
+      "copyColumn": "העתקת ערכי העמודה",
+      "analyze": "ניתוח",
+      "askColumn": "שאלה על עמודה זו",
+      "explore": "חקירה",
+      "askRow": "שאלה על שורה זו",
+      "explainRow": "הסבר על שורה זו",
+      "compareAverage": "השוואה לממוצע",
+      "findSimilar": "מציאת שורות דומות",
+      "filterBy": "סינון לפי",
+      "copyRow": "העתקת השורה",
+      "rowCopied": "השורה הועתקה",
+      "columnCopied": "{column} הועתקה ({count, plural, one {ערך אחד} two {# ערכים} other {# ערכים}})",
+      "questions": {
+        "thisRow": "השורה הזו",
+        "column": "נתח את העמודה “{column}”",
+        "columnInContext": "נתח את העמודה “{column}” מתוך: {question}",
+        "row": "ספר לי על השורה שבה {label}",
+        "rowInContext": "ספר לי על השורה שבה {label}, בהקשר של: {question}",
+        "explain": "הסבר את הערכים בשורה שבה {label}",
+        "explainInContext": "הסבר מדוע לשורה ({label}) יש ערכים אלה, בהקשר של: {question}",
+        "compare": "השווה את השורה ({label}) לממוצע של כל התוצאות",
+        "compareInContext": "כיצד השורה ({label}) משתווה לממוצע של כל התוצאות? הקשר: {question}",
+        "similar": "מצא שורות דומות לשורה שבה {label}",
+        "similarInContext": "מצא שורות אחרות הדומות ל-({label}) בנתונים. הקשר: {question}"
+      }
+    }
+  },
+  "devPanel": {
+    "title": "פרטי הריצה",
+    "close": "סגירת חלונית המפתחים",
+    "resize": "שינוי גודל חלונית המפתחים",
+    "dragToResize": "גררו לשינוי הגודל",
+    "generatedSql": "SQL שנוצר",
+    "copySql": "העתקת ה-SQL ללוח",
+    "promptType": "סוג הפרומפט",
+    "tabs": {
+      "sql": "SQL",
+      "prompts": "פרומפטים",
+      "execution": "ביצוע",
+      "query": "שאילתה",
+      "insights": "תובנות",
+      "chart": "תרשים"
+    },
+    "insightsPromptEmpty": "פרומפט התובנות יופיע כאן לאחר שייווצרו תובנות.",
+    "chartPromptEmpty": "פרומפט התרשים יופיע כאן לאחר שייווצר תרשים.",
+    "traceEmpty": "הריצו שאילתה כדי לראות את מעקב הביצוע.",
+    "noTrace": "אין נתוני מעקב לשאילתה זו.",
+    "noPromptInfo": "אין מידע על פרומפט",
+    "noPromptToCopy": "אין פרומפט להעתקה",
+    "promptCopied": "הפרומפט הועתק"
+  },
+  "historyDrawer": {
+    "title": "היסטוריה",
+    "ariaLabel": "היסטוריית שאילתות",
+    "close": "סגירת ההיסטוריה",
+    "search": "חיפוש בהיסטוריה…",
+    "empty": "עדיין אין שאילתות לחיבור זה.",
+    "loadFailed": "טעינת ההיסטוריה נכשלה."
+  },
+  "profiling": {
+    "reportTitle": "דוח פרופיל נתונים"
+  },
+  "settings": {
+    "shell": {
+      "title": "הגדרות",
+      "close": "סגירת ההגדרות",
+      "logout": "התנתקות"
+    },
+    "saveFailed": "לא ניתן היה לשמור — {detail}",
+    "nav": {
+      "groupUser": "משתמש",
+      "groupAgent": "סוכן AI",
+      "groupOther": "אחר",
+      "general": "כללי",
+      "metadataCatalog": "מטא-דאטה וקטלוג",
+      "aiModels": "מודלי AI",
+      "querySafety": "שאילתות ובטיחות",
+      "myConnections": "החיבורים שלי",
+      "integrations": "אינטגרציות",
+      "users": "משתמשים",
+      "prompts": "פרומפטים",
+      "about": "אודות"
+    },
+    "general": {
+      "title": "כללי",
+      "desc": "העדפות האפליקציה והתנהגות בזמן ריצה.",
+      "appearanceCard": "מראה ותצוגה",
+      "chartCard": "תרשימים ותובנות",
+      "modelCard": "מודל AI",
+      "language": {
+        "label": "שפת הממשק",
+        "help": "התפריטים, הכפתורים וההודעות מוצגים בשפה זו. התשובות ניתנות בשפת השאלה שלכם.",
+        "saveFailed": "לא ניתן היה לשמור את השפה. נסו שוב."
+      },
+      "theme": {
+        "label": "ערכת נושא",
+        "help": "בהיר הוא ברירת המחדל; מערכת עוקב אחר העדפת מערכת ההפעלה.",
+        "light": "בהיר",
+        "dark": "כהה",
+        "system": "מערכת"
+      },
+      "rowLimit": {
+        "label": "מגבלת שורות",
+        "help": "מספר השורות המרבי לכל שאילתה. נאכף בשרת.",
+        "option": "{count, plural, one {שורה אחת} two {# שורות} other {# שורות}}"
+      },
+      "conversationTabs": {
+        "label": "לשוניות השיחה",
+        "help": "הצגת שורת הלשוניות שיחה / טבלאות / נעוצות / היסטוריה מעל הצ'אט. כל אלה זמינים תמיד גם מסרגל הצד.",
+        "hidden": "מוסתרות (ברירת מחדל)",
+        "shown": "מוצגות"
+      },
+      "chartType": {
+        "label": "סוג תרשים ברירת מחדל",
+        "help": "בשימוש במעבר לתצוגת תרשים. אוטומטי מאפשר למודל לבחור."
+      },
+      "autoInsights": {
+        "label": "תובנות אוטומטיות",
+        "help": "יצירת תובנות AI באופן אוטומטי לאחר כל תוצאה."
+      },
+      "temperature": {
+        "label": "טמפרטורת המודל",
+        "help": "גבוה יותר = SQL יצירתי יותר (ומסוכן יותר). 0.2–0.4 הוא הטווח המיטבי לדיוק.",
+        "auto": "אוטומטי (ברירות מחדל)",
+        "deterministic": "{value} (דטרמיניסטי)",
+        "recommended": "{value} (מומלץ)",
+        "creative": "{value} (הכי יצירתי)"
+      },
+      "resetAll": "איפוס הכול לברירות המחדל",
+      "resetConfirm": "לאפס את כל ההעדפות לברירות המחדל?"
+    },
+    "models": {
+      "title": "מודלי AI",
+      "desc": "בחרו את מודל השפה המשמש לכל יצירת ה-SQL והניתוחים. הבחירה חלה מיידית ונשמרת בין הפעלות.",
+      "recheck": "בדיקת תקינות מחדש",
+      "checking": "בודק…",
+      "probing": "בודק כל מודל…",
+      "loadFailed": "לא ניתן היה לטעון את המודלים:",
+      "checkedAgo": "נבדק {when}",
+      "working": "{count} פועלים",
+      "failing": "{count} נכשלים",
+      "notApplicable": "{count} לא רלוונטיים",
+      "healthUnavailable": "בדיקת התקינות אינה זמינה",
+      "available": "זמינים עם האישורים הנוכחיים",
+      "notConfigured": "לא מוגדר",
+      "defaultBadge": "ברירת מחדל",
+      "healthOk": "פועל — בדיקת התקינות האחרונה עברה",
+      "healthFail": "נכשל — {detail}",
+      "healthFailDefault": "בדיקת התקינות האחרונה נכשלה",
+      "healthUnknown": "עדיין לא נבדק — לחצו על “בדיקת תקינות מחדש”",
+      "switched": "המודל הוחלף ל-{name}",
+      "switchFailed": "לא ניתן היה להחליף מודל — {detail}"
+    },
+    "catalog": {
+      "title": "מטא-דאטה וקטלוג",
+      "desc": "המקום שממנו סוכן ה-text-to-SQL טוען את הקטלוג המאוצר של כל חיבור — טבלאות, עמודות, קשרים ומונחים עסקיים — כהקשר לפרומפט. מקור אחד לכל האפליקציה.",
+      "showingStats": "מוצגים נתונים עבור {connection}.",
+      "source": "מקור הקטלוג",
+      "sourceHelp": "חל על כל האפליקציה. ההחלפה נכנסת לתוקף בשאילתה הבאה.",
+      "deleteServerConfirm": "למחוק שרת זה? לא ניתן לבטל פעולה זו.",
+      "serverDeleted": "השרת נמחק",
+      "serverAdded": "השרת נוסף",
+      "serverUpdated": "השרת עודכן",
+      "cacheCleared": "המטמון נוקה",
+      "noCache": "ללא מטמון",
+      "minutes": "{count} דק׳",
+      "hours": "{count} שע׳",
+      "refreshing": "מרענן…",
+      "refreshMetadata": "רענון מטא-דאטה",
+      "db": {
+        "synced": "מסונכרן · פגיעה במטמון",
+        "remaining": "נותרו {time}",
+        "miss": "החטאת מטמון — ייטען בשאילתה הבאה",
+        "provider": "ספק",
+        "database": "מסד המטא-דאטה",
+        "tablesColumns": "טבלאות · עמודות",
+        "termsPairs": "מונחים עסקיים · זוגות"
+      },
+      "mcp": {
+        "notChecked": "לא נבדק",
+        "active": "פעיל",
+        "empty": "אין עדיין שרתי MCP. הוסיפו אחד כמקור לקטלוג זה.",
+        "servers": "שרתי MCP",
+        "addServer": "הוספת שרת",
+        "callout": "MCP מספק מטא-דאטה חי ומאוחד — אך מדלג על שכבת האוצרות של Schema Modeler. סריקת DLP / ממשל והרצת SELECT בלבד עדיין חלות. התוצאות נשמרות במטמון לפי ה-TTL שלמטה."
+      },
+      "form": {
+        "addTitle": "הוספת שרת MCP",
+        "editTitle": "עריכת שרת MCP",
+        "serverName": "שם השרת",
+        "endpoint": "נקודת קצה",
+        "endpointHelp": "עבור תעבורת stdio, ציינו את פקודת ההפעלה, למשל",
+        "transport": "תעבורה",
+        "auth": "אימות",
+        "bearer": "אסימון Bearer",
+        "tokenReplace": "הזינו אסימון חדש כדי להחליף את השמור",
+        "tokenPaste": "הדביקו אסימון Bearer",
+        "tokenSavedHelp": "לא ניתן לאחזר את האסימון השמור. הזינו ערך חדש כדי להחליפו, או השאירו ריק כדי לשמור אותו.",
+        "tokenHelp": "נשמר בצד השרת ולעולם לא נשלח למודל השפה.",
+        "saveChanges": "שמירת השינויים"
+      },
+      "health": {
+        "rerun": "הרצה מחדש של בדיקת התקינות",
+        "test": "בדיקה ותקינות",
+        "healthy": "תקין",
+        "degraded": "פגום",
+        "unreachable": "לא נגיש",
+        "checked": "נבדק {when}",
+        "handshaking": "מבצע לחיצת יד עם {name}…",
+        "serverNotChecked": "{name} לא נבדק",
+        "pending": "מריץ לחיצת יד וגילוי כלים. התוצאות הקודמות מוסתרות עד להשלמת הבדיקה.",
+        "protocol": "פרוטוקול",
+        "handshake": "לחיצת יד",
+        "uptime": "זמן פעילות",
+        "resources": "{count} משאבים",
+        "prompts": "{count} פרומפטים",
+        "unmapped": "לא ממופה",
+        "capabilities": "יכולות",
+        "toolsExposed": "כלים חשופים",
+        "noTools": "לא התגלו כלים.",
+        "failed": "בדיקת התקינות נכשלה"
+      },
+      "mapping": {
+        "awaiting": "ממתין לבדיקת תקינות",
+        "requiredUnmapped": "נדרש אך אינו ממופה. שרת זה לא יכול להיות מקור הקטלוג הפעיל עד שהדרישה תתמלא.",
+        "title": "מיפוי כלי הקטלוג",
+        "help": "הכלים מתגלים אוטומטית מהשרת וממופים לכל צורך בקטלוג באמצעות"
+      },
+      "inspector": {
+        "sourceLive": "tools/list חי",
+        "sourceHealth": "תמונת מצב של התקינות",
+        "loading": "טוען כלים…",
+        "refreshSchemas": "רענון סכמות הכלים",
+        "loadSchemas": "טעינת סכמות הכלים",
+        "title": "בוחן פונקציות MCP",
+        "help": "צפייה בסכמות הקלט/פלט של הכלים והרצת קריאת בדיקה מול שרת זה.",
+        "function": "פונקציה",
+        "noDescription": "לא סופק תיאור.",
+        "inputSchema": "סכמת קלט",
+        "outputSchema": "סכמת פלט",
+        "testArguments": "ארגומנטי בדיקה",
+        "editorMode": "מצב עורך הארגומנטים",
+        "guided": "שדות מונחים",
+        "advancedJson": "JSON מתקדם",
+        "optionalHelp": "שדות אופציונליים ריקים מושמטים. שרת ה-MCP מבצע את האימות הסופי.",
+        "useSample": "שימוש בדוגמה מהסכמה",
+        "copyInput": "העתקת הקלט",
+        "run": "הרצת הפונקציה",
+        "empty": "הריצו בדיקת תקינות או טענו סכמות כדי לגלות את הפונקציות של שרת זה.",
+        "notSet": "לא מוגדר",
+        "editInJson": "ערכו ערך {type} זה ב-JSON מתקדם.",
+        "argsMustBeObject": "הארגומנטים חייבים להיות אובייקט JSON.",
+        "required": "{key} הוא שדה חובה.",
+        "mustBeString": "{key} חייב להיות מחרוזת.",
+        "mustBeNumber": "{key} חייב להיות מספר.",
+        "mustBeInteger": "{key} חייב להיות מספר שלם.",
+        "mustBeBoolean": "{key} חייב להיות true או false.",
+        "mustBeAllowed": "{key} חייב להיות אחד מהערכים המותרים.",
+        "minLength": "{key} חייב להכיל לפחות {min} תווים.",
+        "riskDestructive": "כלי זה עלול לשנות או למחוק נתונים לצמיתות.",
+        "riskExternal": "כלי זה עלול לפנות למערכות חיצוניות.",
+        "riskReadOnly": "השרת מסמן כלי זה כקריאה בלבד.",
+        "riskUnknown": "כלי זה אינו מסומן במפורש כקריאה בלבד.",
+        "badgeReadOnly": "קריאה בלבד",
+        "badgeDestructive": "הרסני",
+        "badgeExternal": "גישה חיצונית",
+        "badgeIdempotent": "אידמפוטנטי",
+        "badgeConfirm": "נדרש אישור",
+        "toolError": "שגיאת כלי",
+        "result": "תוצאה",
+        "structured": "תוכן מובנה",
+        "viewContent": "תוכן",
+        "viewTree": "עץ",
+        "viewFormatted": "מעוצב",
+        "viewRaw": "MCP גולמי",
+        "copyView": "העתקת התצוגה",
+        "aiAnalyzing": "ה-AI מנתח…",
+        "aiHelp": "עזרת AI בשגיאה",
+        "runDetails": "פרטי הריצה",
+        "requestErrorDetails": "פרטי שגיאת הבקשה",
+        "aiAnalyzingNote": "ה-AI מנתח את כשל הבדיקה. הוא יציע שינויים בלבד ולא יריץ את הכלי מחדש.",
+        "aiAssistance": "סיוע AI בשגיאה",
+        "aiSummary": "סיכום:",
+        "aiNoSummary": "לא סופק סיכום.",
+        "aiLikelyCause": "סיבה סבירה:",
+        "aiNextSteps": "צעדים בטוחים להמשך:",
+        "aiSuggestedArgs": "ארגומנטים מוצעים",
+        "useSuggestion": "שימוש בהצעה",
+        "noContentBlocks": "שרת ה-MCP לא החזיר בלוקי תוכן.",
+        "block": "בלוק {type}",
+        "outputValid": "התוכן המובנה תואם לסכמת הפלט המוצהרת.",
+        "outputInvalid": "התוכן המובנה אינו תואם לסכמת הפלט המוצהרת.",
+        "emptyArray": "מערך ריק",
+        "emptyObject": "אובייקט ריק"
+      },
+      "cache": {
+        "live": "ללא מטמון (חי)",
+        "nextRun": "הריצה הבאה",
+        "liveFetch": "טעינה חיה",
+        "refetchNote": "נטען מחדש בכל שאילתה · הטרי ביותר, איטי יותר",
+        "hit": "פגיעה במטמון",
+        "miss": "החטאת מטמון",
+        "invalidate": "ביטול תוקף",
+        "title": "TTL של מטמון הקטלוג",
+        "help": "כמה זמן הקטלוג נשמר לפני טעינה מחדש. פגיעה/החטאה מדווחת בכל ריצה על ידי שלב הצינור",
+        "mcpOnly": "המטמון חל על מקורות MCP · הפעילו שרת כדי להגדיר"
+      },
+      "toasts": {
+        "switchFailed": "לא ניתן היה להחליף מקור — {detail}",
+        "refreshFailed": "הרענון נכשל — {detail}",
+        "selectFailed": "לא ניתן היה לבחור שרת — {detail}",
+        "deleteFailed": "המחיקה נכשלה — {detail}",
+        "loadedFunctions": "{count, plural, one {נטענה פונקציית MCP אחת} two {נטענו # פונקציות MCP} other {נטענו # פונקציות MCP}}",
+        "loadFunctionsFailed": "לא ניתן היה לטעון את פונקציות ה-MCP — {detail}",
+        "inputCopied": "קלט הבדיקה הועתק ללוח",
+        "inputCopyFailed": "לא ניתן היה להעתיק את קלט הבדיקה",
+        "invalidJson": "ארגומנטי JSON לא תקינים — {detail}",
+        "runConfirm": "להריץ את “{name}” עם הארגומנטים האלה?",
+        "callComplete": "קריאת פונקציית MCP הושלמה",
+        "callFailed": "קריאת פונקציית MCP נכשלה",
+        "callFailedDetail": "קריאת פונקציית MCP נכשלה — {detail}",
+        "resultCopied": "התוצאה הועתקה ללוח",
+        "resultCopyFailed": "לא ניתן היה להעתיק את התוצאה",
+        "aiSuggestionLoaded": "הצעת ה-AI נטענה. בדקו אותה ואז הריצו את הכלי ידנית.",
+        "ttlFailed": "לא ניתן היה לשמור את ה-TTL — {detail}"
+      },
+      "sourceDb": "מסד מטא-דאטה",
+      "sourceMcp": "שרת MCP"
+    },
+    "querySafety": {
+      "title": "שאילתות ובטיחות",
+      "descShort": "מעקות בטיחות גלובליים להרצת SQL ולזיכרון השיחה. חלים מיידית על כל האפליקציה ונשמרים בין הפעלות.",
+      "desc": "מעקות בטיחות גלובליים להרצת SQL, לזיכרון השיחה ולהתאמת ערכים ב-Power BI. חלים מיידית על כל האפליקציה ונשמרים בין הפעלות.",
+      "loadFailed": "לא ניתן היה לטעון את ההגדרות —",
+      "range": "טווח {min}–{max}.",
+      "sqlExecution": "הרצת SQL",
+      "memory": "זיכרון השיחה",
+      "pbiResolution": "זיהוי ישויות ב-Power BI",
+      "sqlGrounding": "עיגון מסנני SQL",
+      "evidence": "ראיות מטא-דאטה ובדיקות במקור",
+      "timeout": {
+        "label": "זמן קצוב לפקודת DB (מ״ש)",
+        "help": "זמן קצוב ל-Postgres לכל שאילתה. מונע משאילתה תקועה למצות את מאגר החיבורים. 0 = ללא זמן קצוב."
+      },
+      "maxRows": {
+        "label": "מספר שורות מרבי בתוצאה",
+        "help": "תקרה קשיחה למספר השורות המוחזרות, ללא קשר למגבלה שהתבקשה."
+      },
+      "contextTurns": {
+        "label": "סבבי הקשר",
+        "help": "מספר סבבי השאלה-תשובה הקודמים שנטענים כזיכרון קצר-טווח לשאלות המשך."
+      },
+      "pbiResolve": {
+        "label": "זיהוי ערכי סינון",
+        "help": "בדיקת הערכים שהסוכן מסנן לפיהם מול הערכים האמיתיים במודל, תיקון שגיאות כתיב ושאלה כשהשם אינו חד-משמעי. כיבוי שולח את ערכי הסינון ל-DAX בדיוק כפי שנכתבו."
+      },
+      "pbiThreshold": {
+        "label": "סף התאמה",
+        "help": "כמה קרוב ערך צריך להיות כדי להיחשב לאותו ערך, 0–100. נמוך יותר מקבל יותר שגיאות כתיב אך מבקש אישור לעתים רחוקות יותר."
+      },
+      "pbiDomain": {
+        "label": "ערכים שנקראים לכל עמודה",
+        "help": "תקרה למספר הערכים הייחודיים שנקראים מעמודה בעת בדיקה. גבוה יותר מדויק יותר במימדים גדולים אך איטי יותר."
+      },
+      "pbiCross": {
+        "label": "חיפוש בעמודות קשורות",
+        "help": "כשערך אינו נמצא בעמודה שהסוכן בחר, חפשו אותו בעמודות אחיות באותה טבלה (למשל שם דגם שניתן כשם מוצר)."
+      },
+      "sqlResolve": {
+        "label": "זיהוי ערכי סינון",
+        "help": "בדיקת ערכי סינון SQL מול ערכי מקור מורשים לפני יצירת השאילתה. מתקן שגיאת כתיב חד-משמעית אחת ושואל לפני בחירה בין חלופות."
+      },
+      "sqlThreshold": {
+        "label": "סף התאמה",
+        "help": "כמה קרוב ערך מקור צריך להיות כדי להיחשב לתיקון שגיאת כתיב."
+      },
+      "sqlDomain": {
+        "label": "ערכים שנקראים לכל עמודה",
+        "help": "מספר ערכי המקור המרבי שנבדקים עבור מסנן SQL אחד. גבוה יותר משפר כיסוי אך יכול להוסיף זמן תגובה."
+      },
+      "sqlTimeout": {
+        "label": "זמן קצוב לחיפוש (מ״ש)",
+        "help": "עצירת חיפוש ערך יחיד ב-MCP או במסד הנתונים לאחר זמן זה, והשארת הערך כלא מאומת."
+      },
+      "sqlCache": {
+        "label": "מטמון ערכים מאומתים (שניות)",
+        "help": "כמה זמן ניתן לעשות שימוש חוזר בתחומי ערכים מלאים ברמת המשתמש."
+      },
+      "metaEvidence": {
+        "label": "שימוש בפרופילים ובערכים שנלכדו מ-Schema Modeler",
+        "help": "קריאת פרופילי עמודות וערכים ייחודיים שנלכדו (מסד המטא-דאטה או כלי פרופיל MCP) לפני גישה למקור. מתקן שגיאות כתיב מתוך תמונת מצב מלאה ומוצא אילו עמודות מכילות ערך."
+      },
+      "visibility": {
+        "label": "נראות ערכים",
+        "help": "מי רשאי לראות ערכים שנלכדו בהבהרות ובמטמון. השתמשו ב״ברמת המשתמש״ בכל מקור עם אבטחה ברמת שורה.",
+        "none": "ללא — לעולם לא למנות ערכים מהמטא-דאטה",
+        "sourceWide": "ברמת המקור — כל משתמשי המקור רואים את אותם ערכים",
+        "userScoped": "ברמת המשתמש — הערכים שונים לכל משתמש (אבטחה ברמת שורה)"
+      },
+      "unverified": {
+        "label": "ערכי סינון שלא ניתן לאמת",
+        "help": "מה קורה כשאין ראיה שיכולה לאשר ערך: לשאול (ברירת מחדל) או להריץ את השאילתה עם הערך כפי שנכתב ולציין שלא אומת.",
+        "ask": "לשאול את המשתמש לערך המדויק",
+        "allow": "להריץ את השאילתה עם הערך כפי שנכתב (בגילוי נאות)"
+      },
+      "probe": {
+        "label": "אישור מול המקור",
+        "help": "מתן אפשרות לבדיקות אישור של שורה אחת ולחיפושים מוגבלים במסד הנתונים של הלקוח. נבדקים רק מחברים שעוצרים פקודה בצד השרת."
+      },
+      "distinct": {
+        "label": "מניית תחומים קטנים שלא נלכדו",
+        "help": "מתן אפשרות ל-SELECT DISTINCT במקור עבור עמודה שהפרופיל מוכיח שהיא קטנה ונספרה במדויק. כבוי = אישור/חיפוש בלבד."
+      },
+      "denylist": {
+        "label": "לעולם לא לבדוק או להציג",
+        "help": "תבניות table.column מופרדות בפסיקים (תו כללי *) שלעולם לא נבדקות, נמנות או מוצעות, בנוסף לעמודות המסומנות כרגישות ולעמודות מוסתרות."
+      },
+      "existAge": {
+        "label": "גיל מטא-דאטה להוכחת קיום ערך (שעות)",
+        "help": "תמונת מצב ישנה מזה אינה יכולה לתקן שגיאת כתיב בעצמה; בדיקה במקור מאשרת אותה במקום."
+      },
+      "absentAge": {
+        "label": "גיל מטא-דאטה לקביעה שערך אינו קיים (שעות)",
+        "help": "מחמיר יותר: אמירה למשתמש שערך אינו קיים מוצגת כעובדה."
+      },
+      "enterNumber": "הזינו מספר עבור: {fields}",
+      "saved": "הגדרות השאילתות והבטיחות נשמרו"
+    },
+    "prompts": {
+      "title": "פרומפטים",
+      "desc": "תבניות שמפעילות את הסוכן ואת התכונות שלו. פרומפטים מותאמים עוקפים את ברירות המחדל; עקיפת מודל מריצה פרומפט אחד על מודל אחר.",
+      "discardConfirm": "לבטל שינויים שלא נשמרו ב-{label}?",
+      "customCount": "{count, plural, one {פרומפט מותאם אחד} two {# פרומפטים מותאמים} other {# פרומפטים מותאמים}}",
+      "loadFailed": "לא ניתן היה לטעון את הפרומפטים —",
+      "noneReturned": "לא הוחזרו פרומפטים",
+      "loadOneFailed": "לא ניתן היה לטעון פרומפט זה —",
+      "count": "{count, plural, one {פרומפט אחד} two {# פרומפטים} other {# פרומפטים}}",
+      "customSummary": "{count} מותאמים",
+      "allDefault": "כולם בברירת מחדל",
+      "overrideCount": "{count, plural, one {עקיפת מודל אחת} two {# עקיפות מודל} other {# עקיפות מודל}}",
+      "customBadge": "מותאם",
+      "defaultBadge": "ברירת מחדל",
+      "runsOn": "רץ על {model}",
+      "defaultModel": "ברירת מחדל (המודל הפעיל הגלובלי)",
+      "runWithModel": "הרצה עם מודל:",
+      "placeholders": "מצייני מקום שמוזרקים בזמן ריצה:",
+      "restoreDefaultTitle": "שחזור ברירת המחדל המקורית",
+      "alreadyDefault": "כבר בברירת מחדל",
+      "resetToDefault": "איפוס לברירת מחדל",
+      "savePrompt": "שמירת הפרומפט",
+      "versionHistory": "היסטוריית גרסאות",
+      "versionsSaved": "{count, plural, one {גרסה אחת נשמרה} two {# גרסאות נשמרו} other {# גרסאות נשמרו}}",
+      "resetConfirm": "לאפס פרומפט זה לברירת המחדל המקורית? השינויים המותאמים ועקיפת המודל שלו יאבדו.",
+      "saved": "הפרומפט נשמר",
+      "resetDone": "אופס לברירת מחדל",
+      "resetFailed": "האיפוס נכשל — {detail}",
+      "restoreConfirm": "לשחזר גרסה זו? היא תהפוך לגרסה הפעילה החדשה.",
+      "restored": "שוחזר ל-v{from} (נשמר כעת כ-v{to})",
+      "restoreFailed": "השחזור נכשל — {detail}",
+      "noHistory": "אין היסטוריה זמינה.",
+      "preview": "תצוגה מקדימה",
+      "modelUpdateFailed": "לא ניתן היה לעדכן את המודל — {detail}"
+    },
+    "integrations": {
+      "title": "אינטגרציות",
+      "desc": "חיבור Jeen Insights לשירותים חיצוניים כך שחברי הצוות — והסוכן בשמם — יוכלו לפעול על התוצאות שלהם, למשל לשלוח סיכום באימייל, באמצעות האישורים שלהם. כל פעולה דורשת הסכמת OAuth של המשתמש, אישור קבוצת מנהלים ושלב תצוגה מקדימה → אישור מפורש.",
+      "agentToolsOn": "קריאת כלים על ידי הסוכן הופעלה",
+      "agentToolsOff": "קריאת כלים על ידי הסוכן הושבתה",
+      "connectorsOn": "המחברים הופעלו",
+      "connectorsOff": "המחברים הושבתו",
+      "connectors": "מחברים",
+      "addConnector": "הוספת מחבר",
+      "groupRoles": "תפקידי קבוצות",
+      "recentActivity": "פעילות אחרונה",
+      "removeConfirm": "להסיר את {name}? חברי הצוות יאבדו את החיבורים שלהם.",
+      "connectorRemoved": "המחבר הוסר",
+      "connectorAdded": "המחבר נוסף",
+      "masterOff": "הפעילו את המתג הראשי כדי להוסיף מחברים ולנהל גישת קבוצות.",
+      "loadFailed": "לא ניתן היה לטעון את המחברים —",
+      "noConnectors": "אין עדיין מחברים. הוסיפו אחד מהקטלוג שלמטה.",
+      "allAdded": "כל המחברים הזמינים כבר נוספו.",
+      "comingSoon": "בקרוב: {names}",
+      "groupRolesHelp": "מיפוי מזהה אובייקט של קבוצת Entra (Azure AD) לתפקיד יכולת. התפקיד האפקטיבי של משתמש הוא הגבוה מבין תפקיד הבסיס, תפקיד הקבוצה וכל חריגת היתר מקומית.",
+      "groupIdPlaceholder": "מזהה אובייקט של קבוצה (GUID)",
+      "setRole": "הגדרה",
+      "addFailed": "לא ניתן היה להוסיף — {detail}",
+      "enterGroupId": "הזינו מזהה אובייקט של קבוצה",
+      "groupRoleSet": "תפקיד הקבוצה הוגדר",
+      "setRoleFailed": "לא ניתן היה להגדיר תפקיד — {detail}",
+      "keySet": "מפתח מוגדר",
+      "noKey": "אין מפתח",
+      "secretSet": "סוד מוגדר",
+      "noSecret": "אין סוד",
+      "apiKeyLabel": "מפתח API (כתיבה בלבד)",
+      "apiKeyPlaceholder": "מפתח API של הספק",
+      "saveKey": "שמירת המפתח",
+      "oauthClientLabel": "לקוח OAuth (רישום אפליקציה)",
+      "clientId": "Client ID",
+      "tenantId": "Tenant ID (או 'common')",
+      "clientSecret": "סוד לקוח (כתיבה בלבד)",
+      "saveSecret": "שמירת הסוד",
+      "recipientPolicy": "מדיניות נמענים",
+      "allowedDomains": "דומיינים מותרים, מופרדים בפסיקים (ריק = הדומיין של השולח)",
+      "allowExternal": "לאפשר נמענים מחוץ לרשימת ההיתר",
+      "savePolicy": "שמירת המדיניות",
+      "configJson": "תצורת המחבר (JSON)",
+      "saveConfig": "שמירת התצורה",
+      "configHealth": "תקינות התצורה",
+      "checkConfig": "בדיקת תצורת המחבר",
+      "check": "בדיקה",
+      "removeConnector": "הסרת המחבר",
+      "allowedGroups": "קבוצות Entra מורשות",
+      "noGroups": "אין קבוצות — עדיין אף אחד לא יכול להתחבר.",
+      "addGroup": "הוספת קבוצה",
+      "ready": "מוכן",
+      "disabled": "מושבת",
+      "notReady": "לא מוכן",
+      "checkFailed": "הבדיקה נכשלה",
+      "healthFailed": "בדיקת התקינות נכשלה — {detail}",
+      "enterSecret": "הזינו סוד לקוח",
+      "secretSaved": "סוד הלקוח נשמר",
+      "secretSaveFailed": "לא ניתן היה לשמור את הסוד — {detail}",
+      "enterApiKey": "הזינו מפתח API",
+      "apiKeySaved": "מפתח ה-API נשמר",
+      "apiKeySaveFailed": "לא ניתן היה לשמור את המפתח — {detail}",
+      "configInvalidJson": "התצורה אינה JSON תקין",
+      "configSaved": "התצורה נשמרה",
+      "configSaveFailed": "לא ניתן היה לשמור את התצורה — {detail}",
+      "policySaved": "המדיניות נשמרה",
+      "policySaveFailed": "לא ניתן היה לשמור את המדיניות — {detail}",
+      "groupAdded": "הקבוצה נוספה",
+      "groupAddFailed": "לא ניתן היה להוסיף קבוצה — {detail}",
+      "groupRemoved": "הקבוצה הוסרה",
+      "groupRemoveFailed": "לא ניתן היה להסיר קבוצה — {detail}",
+      "noGroupRoles": "לא הוגדרו תפקידי קבוצות.",
+      "groupRoleRemoved": "תפקיד הקבוצה הוסר",
+      "noActivity": "אין עדיין פעילות.",
+      "activityFailed": "לא ניתן היה לטעון את הפעילות —",
+      "enable": {
+        "label": "הפעלת מחברים",
+        "help": "מתג ראשי לכל פלטפורמת המחברים האישיים. כשהוא כבוי, אין מחברים, זרימות התחברות או פעולות זמינות לאף אחד."
+      },
+      "agentTools": {
+        "label": "לאפשר קריאת כלים על ידי הסוכן",
+        "help": "מתן אפשרות לסוכן להציע פעולות מחבר (למשל שליחת תוצאה באימייל) עבור משתמש. כל קריאה עוברת באותו שער תצוגה מקדימה → אישור ודורשת הסכמת OAuth של המשתמש ואישור קבוצה. דורש את המתג הראשי שלמעלה."
+      }
+    },
+    "myConnections": {
+      "title": "החיבורים שלי",
+      "desc": "חברו את החשבונות שלכם כדי לפעול על תוצאות — למשל לשלוח סיכום באימייל מתיבת הדואר שלכם. אתם שולטים בכל חיבור ויכולים להתנתק בכל עת.",
+      "loadFailed": "לא ניתן היה לטעון —",
+      "empty": "עדיין אין חיבורים זמינים עבורכם. בקשו ממנהל המערכת להעניק גישה לקבוצה שלכם.",
+      "connected": "מחובר",
+      "notConnected": "לא מחובר",
+      "disconnect": "ניתוק",
+      "connect": "חיבור",
+      "disconnectConfirm": "לנתק את {name}?",
+      "disconnected": "נותק",
+      "disconnectFailed": "לא ניתן היה להתנתק — {detail}"
+    },
+    "users": {
+      "title": "משתמשים",
+      "desc": "ניהול חברי סביבת העבודה והתפקידים שלהם.",
+      "member": "חבר/ה",
+      "role": "תפקיד",
+      "fullName": "שם מלא",
+      "passwordPlaceholder": "סיסמה (8 תווים לפחות)",
+      "roles": {
+        "viewer": "צופה",
+        "editor": "עורך",
+        "admin": "מנהל"
+      },
+      "addUser": "הוספת משתמש",
+      "adding": "מוסיף…",
+      "you": "(אתם)",
+      "removeUser": "הסרת משתמש",
+      "loadFailed": "לא ניתן היה לטעון את המשתמשים:",
+      "roleUpdated": "התפקיד עודכן ל{role}",
+      "roleUpdateFailed": "לא ניתן היה לעדכן את התפקיד — {detail}",
+      "removeConfirm": "להסיר את {name}? לא ניתן לבטל פעולה זו.",
+      "removed": "המשתמש הוסר",
+      "removeFailed": "לא ניתן היה להסיר את המשתמש — {detail}",
+      "allRequired": "כל השדות נדרשים.",
+      "passwordTooShort": "הסיסמה חייבת להכיל 8 תווים לפחות.",
+      "added": "{name} נוסף/ה"
+    },
+    "about": {
+      "title": "אודות",
+      "desc": "מידע על האפליקציה והתצורה.",
+      "version": "גרסה",
+      "llmModel": "מודל שפה",
+      "endpoint": "נקודת קצה",
+      "apiVersion": "גרסת API",
+      "llmTimeout": "זמן קצוב למודל",
+      "prompts": "פרומפטים",
+      "secondsPerCall": "{seconds} שניות לקריאה",
+      "registered": "{count} רשומים",
+      "loadFailed": "לא ניתן היה לטעון את פרטי האפליקציה."
+    },
+    "updateFailed": "לא ניתן היה לעדכן — {detail}",
+    "removeFailed": "לא ניתן היה להסיר — {detail}"
+  },
+  "analysis": {
+    "skills": {
+      "anomaly_detection": "זיהוי חריגות",
+      "forecast": "תחזית",
+      "changepoint": "נקודת שינוי",
+      "seasonality": "עונתיות",
+      "correlation": "מתאם",
+      "contribution": "תרומה",
+      "clustering": "אשכולות",
+      "driver_analysis": "ניתוח גורמים",
+      "regression": "רגרסיה",
+      "classification": "סיווג",
+      "cohort_retention": "שימור קוהורטות",
+      "experiment_test": "מבחן A/B"
+    },
+    "grain": {
+      "adj": {
+        "day": "יומי",
+        "week": "שבועי",
+        "month": "חודשי"
+      },
+      "unit": {
+        "day": "ימים",
+        "week": "שבועות",
+        "month": "חודשים"
+      },
+      "periods": "תקופות"
+    },
+    "tier": {
+      "meta": {
+        "A": "סיכומים בלבד",
+        "B": "ברמת שורה, מוגבל"
+      },
+      "title": {
+        "A": "רובד A: ה-SQL מסכם את הנתונים תחילה; רק סיכומים לתקופה מגיעים לשירות הניתוח.",
+        "B": "רובד B: שורות ישויות נשלחות לשירות הניתוח, מוגבלות ומבוקרות עם רשימת העמודות."
+      },
+      "neutralEgress": {
+        "A": "רק סיכומים מצטברים נשלחים לשירות הניתוח; שום נתון ברמת שורה אינו יוצא ממסד הנתונים. הספירה המדויקת מחושבת מחדש בהרצה.",
+        "B": "שורות ישויות נשלחות לשירות הניתוח, מוגבלות ומבוקרות עם רשימת העמודות. הספירה המדויקת מחושבת מחדש בהרצה."
+      },
+      "label": "רובד {tier}",
+      "aggregate": "מסוכם",
+      "rowLevel": "ברמת שורה"
+    },
+    "metric": {
+      "coverage": "כיסוי {value}",
+      "explains": "מסביר {value}"
+    },
+    "strip": {
+      "points": "{count} נק׳",
+      "rows": "{count} שורות",
+      "series": "{count} סדרות",
+      "flagged": "{count} סומנו",
+      "horizon": "אופק {value}",
+      "shifts": "{count, plural, one {שינוי אחד} two {# שינויים} other {# שינויים}}",
+      "strength": "עוצמה {value}",
+      "segments": "{count} פלחים",
+      "rowsSent": "{count} שורות נשלחו למודל",
+      "lowConfidence": "ביטחון נמוך",
+      "lowConfidenceTitle": "בקרה נעקפה בריצה זו; יש להתייחס לתוצאה כאינדיקטיבית בלבד.",
+      "editSetup": "עריכת ההגדרות"
+    },
+    "form": {
+      "setupGroup": "הגדרות",
+      "choose": "בחרו…",
+      "of": "מתוך",
+      "changed": "שונה",
+      "atLeast": "לפחות {value}",
+      "atMost": "לכל היותר {value}"
+    },
+    "summary": {
+      "vs": "מול",
+      "per": "לפי {grain}",
+      "last": "{count} {unit} אחרונים",
+      "ahead": "{count} {unit} קדימה",
+      "interval": "רווח {value}",
+      "sensitivity": "רגישות {value}",
+      "breaks": "עד {count} שברים",
+      "lag": "פיגור עד {count} {unit}",
+      "model": "מודל {value}",
+      "split": "לפי {column}"
+    },
+    "validation": {
+      "required": "שדה חובה.",
+      "pickAtLeast": "בחרו לפחות {count}.",
+      "pickAtMost": "בחרו לכל היותר {count}.",
+      "enterNumber": "הזינו מספר.",
+      "atLeast": "לפחות {value}.",
+      "atMost": "לכל היותר {value}.",
+      "enterDate": "הזינו תאריך.",
+      "invalidValue": "ערך לא תקין.",
+      "fieldsNeedLook": "{count, plural, one {שדה אחד דורש בדיקה.} two {# שדות דורשים בדיקה.} other {# שדות דורשים בדיקה.}}"
+    },
+    "definition": {
+      "setup": "הגדרות",
+      "reading": "כך נוצרה התשובה שלמעלה. שנו כל דבר והריצו מחדש; התשובה הנוכחית נשארת.",
+      "rerun": "הרצה מחדש",
+      "changeToRerun": "שנו ערך כדי להריץ מחדש.",
+      "resetAll": "איפוס הכול"
+    },
+    "proposal": {
+      "confirmKind": "אישור לפני ההרצה",
+      "clarifyKind": "דבר אחד להבהרה",
+      "guardKind": "בקרה",
+      "tier": "רובד {tier} · {mode}",
+      "egressDefault": "ה-SQL מסכם את המדד לסיכומים {grain}; רק שורות אלה נשלחות לשירות הניתוח.",
+      "planning": "תכנון",
+      "run": "הרצה",
+      "rephrase": "ניסוח מחדש של השאלה",
+      "rephraseTitle": "חזרה לתיבת השאלה וניסוח במילים אחרות",
+      "sqlInstead": "תשובה עם SQL במקום",
+      "dontAsk": "לא לשאול שוב על {skill} בחיבור זה",
+      "guardEgress": "0 שורות נשלחו למודל — ריצה חסומה אינה קוראת סדרות.",
+      "recommended": "מומלץ"
+    },
+    "details": {
+      "empty": "פרטי המודל יופיעו כאן עבור תשובות של זיהוי חריגות ותחזית.",
+      "method": "שיטה",
+      "metric": "מדד",
+      "coverage": "כיסוי",
+      "coverageOf": "{value} מתוך {total}",
+      "season": "עונה",
+      "noneConfirmed": "לא אושרה",
+      "rowsSent": "שורות שנשלחו",
+      "engine": "מנוע",
+      "baseline": "בסיס",
+      "selected": "נבחר",
+      "changedFrom": "שונה מהריצה הקודמת",
+      "lowConfidenceNote": "ביטחון נמוך: בקרה נעקפה בריצה זו. הסימון נלווה לנעיצות, לייצוא ולהיסטוריה.",
+      "candidates": "מועמדים",
+      "model": "מודל",
+      "metricCol": "מדד",
+      "value": "ערך",
+      "parameters": "פרמטרים",
+      "guards": "בקרות",
+      "noneRecorded": "לא נרשמו",
+      "data": "נתונים",
+      "filters": "מסננים: {value}",
+      "span": "טווח {start} → {end}",
+      "queried": "נשאל {value}",
+      "notes": "הערות"
+    },
+    "caption": {
+      "by": "{table} לפי {key}"
+    }
+  },
+  "onboarding": {
+    "checklist": {
+      "title": "צעדים ראשונים",
+      "titleComplete": "צעדים ראשונים — הושלם",
+      "allSet": "הכול מוכן",
+      "dismiss": "סגירת הצעדים הראשונים",
+      "pickConnection": "בחירת חיבור",
+      "askFirst": "שאלת השאלה הראשונה",
+      "openSql": "פתיחת ה-SQL שמאחורי תשובה",
+      "pinQuestion": "נעיצת שאלה לשימוש חוזר",
+      "start": "התחלה",
+      "showMe": "הראו לי"
+    },
+    "hints": {
+      "gotIt": "הבנתי",
+      "askHere": {
+        "title": "שאלו כאן",
+        "body": "הקלידו שאלה בעברית או באנגלית פשוטה — או לחצו על הצעה כדי למלא אותה אוטומטית."
+      },
+      "pin": {
+        "title": "נעיצת שאלה",
+        "body": "הקישו על הכוכב שליד כל שאלה כדי לנעוץ אותה. שאלות נעוצות נשארות כאן עבור חיבור זה."
+      },
+      "pinnedHere": {
+        "title": "הנעוצות נמצאות כאן",
+        "body": "שאלו שאלה, ואז הקישו על הכוכב שלה כדי לנעוץ — היא תופיע ברשימה זו לשימוש חוזר."
+      }
+    },
+    "cards": {
+      "trySales": {
+        "eyebrow": "נסו שאלה",
+        "title": "הצג את סך המכירות לשנת 2006",
+        "body": "מדד אחד, שנה אחת. מחזיר מספר יחיד ואת ה-SQL שמאחוריו.",
+        "cta": "הרצה ←",
+        "run": "הצג את סך המכירות לשנת 2006"
+      },
+      "seeChart": {
+        "eyebrow": "ראו תרשים",
+        "title": "השווה מכירות לפי חודש, 2006 מול 2007",
+        "body": "תרשים עמודות מקובץ שניתן לחדד בבקשה לתצוגה אחרת.",
+        "cta": "הרצה ←",
+        "run": "השווה מכירות לפי חודש, 2006 מול 2007"
+      },
+      "explore": {
+        "eyebrow": "הסתכלו מסביב קודם",
+        "title": "חקירת טבלאות וסכמה",
+        "body": "עיינו במה שחיבור זה חושף לפני ששואלים משהו.",
+        "cta": "פתיחת הטבלאות ←"
+      },
+      "note": "התשובות מגיעות לכאן: התרשים, השורות שמאחוריו, ה-SQL ופרופיל לכל עמודה."
+    },
+    "nudge": {
+      "title": "התשובה שלכם נשמרה בשיחה זו.",
+      "body": "נעצו אותה כדי להשתמש שוב בשאלה בחיבור זה, או פתחו את SQL ופרטי הריצה כדי לראות איך היא נוצרה.",
+      "pin": "נעיצה",
+      "dismiss": "סגירה"
+    },
+    "welcome": {
+      "title": "ברוכים הבאים ל-Jeen Insights",
+      "body": "שאלו שאלות על הנתונים שלכם בשפה חופשית. כל תשובה מגיעה עם התרשים, השורות וה-SQL שיצר אותן.",
+      "step1": {
+        "title": "בחירת חיבור",
+        "body": "מסד הנתונים הפעיל שלכם נמצא בסרגל העליון."
+      },
+      "step2": {
+        "title": "שאלה בשפה חופשית",
+        "body": "התחילו מהצעה או הקלידו שאלה משלכם."
+      },
+      "step3": {
+        "title": "בדיקת העבודה",
+        "body": "התרשים, השורות וה-SQL נפתחים זה לצד זה."
+      },
+      "takeTour": "סיור של 30 שניות",
+      "skip": "דילוג לעת עתה",
+      "dontShow": "לא להציג שוב",
+      "meta": "{steps} צעדים · 30 שנ׳"
+    },
+    "tour": {
+      "skip": "דילוג על הסיור",
+      "step": "צעד {current} / {total}",
+      "finish": "סיום",
+      "connection": {
+        "title": "בחרו את מסד הנתונים או הפרויקט הפעיל.",
+        "body": "כל שאלה, הצעה ותשובה שמורה שייכות לחיבור המוצג כאן."
+      },
+      "suggestions": {
+        "title": "לחצו על כל שאלה מוצעת כדי למלא שאילתה אוטומטית.",
+        "body": "ההצעות נוצרות מהמטא-דאטה המאוצר של חיבור זה, ולכן הן תמיד רצות."
+      },
+      "composer": {
+        "title": "או הקלידו שאלה משלכם בעברית או באנגלית פשוטה.",
+        "body": "הקלידו @ לטבלאות, # לעמודות, / לתבניות שמורות."
+      },
+      "tables": {
+        "title": "לא בטוחים מה יש שם? עיינו בטבלאות ובעמודות.",
+        "body": "מונחים עסקיים מאוצרים מופיעים לצד שמות העמודות הפיזיים, כך שתראו מה הסוכן רואה."
+      }
+    }
+  },
+  "insights": {
+    "title": "תובנות",
+    "generating": "מייצר תובנות…",
+    "thinking": "חושב…",
+    "generatingChars": "מייצר… {count, number} תווים",
+    "none": "לא נמצאו תובנות משמעותיות עבור תוצאה זו.",
+    "whatWeFound": "מה מצאנו",
+    "recommendedNext": "מומלץ להמשיך",
+    "followUps": "שאלות המשך",
+    "noPrompt": "אין פרומפט זמין",
+    "tokensIn": "כניסה {count}",
+    "tokensOut": "יציאה {count}"
+  },
+  "tables": {
+    "pickConnection": "בחרו חיבור תחילה",
+    "emptyCatalog": "אין טבלאות בקטלוג — רעננו את המטא-דאטה תחילה",
+    "none": "לא נמצאו טבלאות",
+    "loadFailed": "טעינת הטבלאות נכשלה",
+    "noMatch": "אין טבלאות תואמות",
+    "columnsFailed": "לא ניתן היה לטעון את העמודות",
+    "explore": "חקירת הנתונים",
+    "showSchema": "הצגת הסכמה",
+    "copyName": "העתקת השם"
+  },
+  "saved": {
+    "pickConnection": "בחרו חיבור כדי לראות ניתוחים שמורים.",
+    "loading": "טוען ניתוחים שמורים…",
+    "empty": "אין עדיין ניתוחים שמורים.",
+    "loadFailed": "לא ניתן לטעון את הניתוחים השמורים.",
+    "retrySave": "ניסיון שמירה חוזר",
+    "retrySaveTitle": "השמירה נכשלה. לחצו לניסיון חוזר.",
+    "saved": "הניתוח נשמר",
+    "saveFailed": "השמירה נכשלה",
+    "restored": "הניתוח השמור שוחזר",
+    "restoreFailed": "השחזור נכשל"
+  },
+  "pinned": {
+    "pickConnection": "בחרו חיבור כדי לראות את השאלות האחרונות שלכם.",
+    "empty": "עדיין אין שאלות — שאלו אחת למעלה והיא תופיע כאן.",
+    "pinnedQuestions": "שאלות נעוצות",
+    "pinnedCount": "{count} נעוצות",
+    "recentQuestions": "שאלות אחרונות",
+    "pin": "נעיצת השאלה",
+    "unpin": "ביטול נעיצת השאלה",
+    "loadFailed": "לא ניתן לטעון את ההיסטוריה כרגע.",
+    "noMatch": "אין שאלות תואמות."
+  },
+  "send": {
+    "noSnapshot": "לא ניתן לשלוח תוצאה זו (אין תמונת מצב בשרת).",
+    "loadConnectionsFailed": "לא ניתן היה לטעון את החיבורים שלכם — {detail}",
+    "noEmailConnector": "אין מחבר אימייל זמין עבורכם. בקשו ממנהל המערכת להעניק גישה.",
+    "connectTitle": "חיבור {name}",
+    "connectNote": "כדי לשלוח תוצאות באימייל בשמכם, חברו תחילה את חשבון {name} שלכם. תופנו להתחברות ולמתן הרשאה.",
+    "sendingFrom": "נשלח מ-",
+    "defaultSubject": "תוצאות השאילתה",
+    "title": "שליחת התוצאה באימייל",
+    "from": "מאת",
+    "to": "אל",
+    "recipients": "נמענים",
+    "recipientsHint": "מופרדים בפסיקים. הנמענים נבדקים מול מדיניות הארגון שלכם.",
+    "subject": "נושא",
+    "note": "הערה (אופציונלי)",
+    "notePlaceholder": "הוסיפו הודעה קצרה…",
+    "summary": "סיכום שנוצר בשרת של {count, plural, one {שורה אחת} two {# שורות} other {# שורות}} יישלח מתיבת הדואר שלכם. לא נכללים קבצים מצורפים או קישורים לנתונים גולמיים.",
+    "sendEmail": "שליחת אימייל",
+    "enterRecipient": "הזינו נמען אחד לפחות.",
+    "enterSubject": "הזינו נושא.",
+    "checking": "בודק…",
+    "sending": "שולח…",
+    "confirmTitle": "אישור השליחה",
+    "confirmSend": "אישור ושליחה",
+    "externalRecipient": "נמען חיצוני",
+    "externalWarning": "אימייל זה כולל נמענים חיצוניים מחוץ לארגון שלכם. בדקו היטב לפני השליחה.",
+    "accepted": "האימייל התקבל למשלוח.",
+    "failed": "השליחה נכשלה: {detail}"
+  },
+  "charts": {
+    "types": {
+      "auto": "אוטומטי (המלצת המודל)",
+      "bar": "תרשים עמודות",
+      "line": "תרשים קווי",
+      "pie": "תרשים עוגה",
+      "area": "תרשים שטח",
+      "scatter": "תרשים פיזור",
+      "horizontal_bar": "עמודות אופקיות",
+      "stacked_bar": "עמודות מוערמות",
+      "stacked_area": "שטח מוערם",
+      "donut": "תרשים טבעת",
+      "combo": "משולב (עמודות + קו)",
+      "heatmap": "מפת חום",
+      "gauge": "מד / KPI",
+      "map": "מפה שטוחה",
+      "osm_map": "OpenStreetMap"
+    },
+    "selector": {
+      "label": "סוג התרשים",
+      "auto": "אוטומטי"
+    },
+    "loading": "טוען תרשים…",
+    "generating": "מייצר תרשים {type}…",
+    "generatingAuto": "מייצר תרשים לפי המלצת המודל…",
+    "options": {
+      "labels": "תוויות",
+      "labelsTitle": "הצגת תוויות נתונים על הסדרות",
+      "legend": "מקרא",
+      "legendTitle": "הצגת מקרא התרשים",
+      "zoom": "זום",
+      "zoomTitle": "הפעלת זום עם מחוון וגלילה",
+      "sortDesc": "מיון ↓",
+      "sortDescTitle": "מיון הקטגוריות מהגבוה לנמוך",
+      "columns": "עמודות",
+      "columnsTitle": "בחירת עמודות X / Y / סדרה",
+      "colors": "צבעים",
+      "paletteTitle": "בחירת פלטת הצבעים של התרשים",
+      "mapBindings": "קישורי מפה",
+      "mapBindingsTitle": "בחירת מיקום וערכים למפה",
+      "locationLabel": "תווית מיקום",
+      "country": "מדינה",
+      "postalCode": "מיקוד",
+      "latitude": "קו רוחב",
+      "longitude": "קו אורך",
+      "aggregate": "סיכום",
+      "rowCount": "מספר שורות",
+      "xCategory": "X / קטגוריה",
+      "yValue": "Y / ערך",
+      "seriesOptional": "סדרה (אופציונלי)",
+      "cityPlace": "עיר / מקום",
+      "stateProvince": "מדינה / מחוז",
+      "colorValue": "צבע / ערך",
+      "sizeOptional": "גודל (אופציונלי)",
+      "none": "— ללא —"
+    },
+    "map": {
+      "controls": "בקרות מפה",
+      "resetView": "איפוס התצוגה",
+      "fit": "התאמה",
+      "zoomIn": "זום +",
+      "zoomOut": "זום -",
+      "panZoom": "גרירה/זום",
+      "noDataAreas": "אזורים ללא נתונים",
+      "palette": "פלטה"
+    },
+    "chat": {
+      "placeholder": "ערכו את התרשים במילים — “ערימה לפי ערוץ, סקלה לוגריתמית”",
+      "analysisPlaceholder": "כווננו את הניתוח — “שבועי במקום יומי”, “סמן פחות”",
+      "refine": "חידוד התרשים",
+      "adjustAnalysis": "כוונון הניתוח",
+      "enhance": "שיפור",
+      "reset": "איפוס התרשים",
+      "resetTitle": "חזרה לתרשים המקורי. העריכות תקפות לסשן זה בלבד — הנתונים שלכם לא משתנים לעולם.",
+      "needChart": "צרו תרשים תחילה, ואז אוכל לחדד אותו.",
+      "working": "עובד על זה…",
+      "applyFailed": "לא ניתן היה להחיל את השינוי: {detail}",
+      "outOfScope": "בקשה זו דורשת שאילתה חדשה — שאלו אותה בתיבת השאלה הראשית.",
+      "renderFailed": "התקבלה תצורה אך העיבוד נכשל. התרשים לא שונה.",
+      "updated": "התרשים עודכן.",
+      "applied": "הוחל: {label}",
+      "applying": "מחיל…",
+      "apply": "החלה",
+      "rerun": "הרצה מחדש",
+      "rerunning": "מריץ מחדש את הניתוח…",
+      "rerunFailed": "לא ניתן היה להריץ מחדש: {detail}",
+      "networkError": "שגיאת רשת: {detail}."
+    },
+    "actions": {
+      "savePng": "שמירת PNG",
+      "savePngTitle": "הורדת התרשים כ-PNG",
+      "copyTitle": "העתקת תמונת התרשים ללוח",
+      "noChartExport": "אין עדיין תרשים לייצוא.",
+      "imageFailed": "לא ניתן היה ליצור תמונת תרשים.",
+      "saved": "התרשים נשמר כ-PNG.",
+      "noChartCopy": "אין עדיין תרשים להעתקה.",
+      "clipboardUnsupported": "העתקת תמונה ללוח אינה נתמכת בדפדפן/בהקשר זה.",
+      "copying": "מעתיק…",
+      "copied": "התרשים הועתק ללוח.",
+      "copyFailed": "לא ניתן היה להעתיק את התרשים: {detail}"
+    },
+    "toggle": {
+      "unavailable": "תצוגת תרשים אינה זמינה לנתונים אלה",
+      "table": "טבלה",
+      "chart": "תרשים"
+    },
+    "enhance": {
+      "title": "שימוש ב-AI לשיפור התרשים עם עיצוב ופורמט טובים יותר",
+      "label": "שיפור עם AI",
+      "loading": "משפר…",
+      "done": "שופר!"
+    },
+    "errors": {
+      "rerunUnavailable": "הרצה מחדש של הניתוח אינה זמינה כאן",
+      "cannotBuild": "לא ניתן היה לבנות תרשים מהנתונים האלה",
+      "noImageData": "אין נתוני תמונה",
+      "libraryLoadFailed": "טעינת ספריית התרשימים נכשלה",
+      "libraryNotLoaded": "ספריית התרשימים לא נטענה"
+    }
+  }
+}

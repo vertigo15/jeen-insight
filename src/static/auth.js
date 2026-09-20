@@ -28,8 +28,9 @@
     return `background: hsl(${hue}, 55%, 52%); color: #fff;`;
   }
 
-  const ROLE_LABELS = { admin: 'Admin', editor: 'Editor', viewer: 'Viewer' };
+  const t = (key, args) => (window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
   const ROLE_CLASS  = { admin: 'role-admin', editor: 'role-editor', viewer: 'role-viewer' };
+  const roleLabel = (role) => (window.I18n && window.I18n.has(`settings.users.roles.${role}`) ? t(`settings.users.roles.${role}`) : role);
 
   // ── bootstrap ──────────────────────────────────────────────────────────────
 
@@ -66,7 +67,7 @@
     if (nameEl)  nameEl.textContent  = user.name  || '';
     if (emailEl) emailEl.textContent = user.email || '';
     if (roleEl) {
-      roleEl.textContent  = ROLE_LABELS[user.role] || user.role;
+      roleEl.textContent  = roleLabel(user.role);
       roleEl.className    = 'user-role-badge ' + (ROLE_CLASS[user.role] || '');
     }
 
@@ -116,9 +117,9 @@
       if (typeof window.showToast === 'function') window.showToast(m, t);
     };
     if (result === 'connected') {
-      toast('Connection established', 'success');
+      toast(t('connection.established'), 'success');
     } else {
-      toast('Could not connect' + (msg ? ' — ' + msg : ''), 'error');
+      toast(msg ? t('connection.connectFailedDetail', { detail: window.I18n ? window.I18n.isolate(msg) : msg }) : t('connection.connectFailed'), 'error');
     }
     // Strip the params so a refresh doesn't re-fire the toast.
     params.delete('connector_result');

@@ -76,7 +76,8 @@ def test_workspace_chart_starts_collapsed_with_aligned_controls():
     ).read_text()
 
     assert "chartCollapsed: true" in controller
-    assert 'id="v3-chart-toggle" class="v3-text-btn">Expand</button>' in controller
+    # The toggle label comes from the locale catalog (common.expand / common.collapse).
+    assert "id=\"v3-chart-toggle\" class=\"v3-text-btn\">${h('common.expand')}</button>" in controller
     assert ".v3-chart-types > .chart-type-selector-container {" in styles
     assert "height: 30px;" in styles
     assert "#v3-chart-toggle {" in styles
@@ -89,7 +90,7 @@ def test_workspace_renders_findings_as_key_insights():
         root / "src/static/workspace/workspaceController.js"
     ).read_text()
 
-    assert 'class="v3-insights" aria-label="Key insights"' in controller
+    assert "class=\"v3-insights\" aria-label=\"${h('conversation.turn.keyInsights')}\"" in controller
     assert "v3-insights-title" in controller
     assert "v3-insight-index" in controller
     assert 'dir="${insightsDirection}"' in controller

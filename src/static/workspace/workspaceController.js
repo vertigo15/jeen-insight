@@ -5,16 +5,32 @@
 (function () {
     'use strict';
 
+    // Interface strings come from the locale catalog (static/i18n/i18n.js).
+    // `t` is plain text; `h` is HTML-escaped for template literals/attributes.
+    const t = (key, args) => (window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
+    const escFull = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+    const h = (key, args) => escFull(t(key, args));
+    // Bidi-isolate user data (names, questions, identifiers) interpolated into a sentence.
+    const iso = (value) => (window.I18n && typeof window.I18n.isolate === 'function' ? window.I18n.isolate(value) : String(value == null ? '' : value));
+    const isRtl = () => Boolean(window.I18n && window.I18n.isRtl);
+    // Interface-error boundary: a localized headline (from a stable code or the
+    // HTTP status) with the raw backend text kept as secondary, bidi-isolated detail.
+    const errorText = (info, fallback) => (window.I18n && typeof window.I18n.errorText === 'function'
+        ? window.I18n.errorText(info)
+        : fallback);
+
     const PHASES = [
-        { id: 'memory', label: 'Memory' },
-        { id: 'router', label: 'Route question' },
-        { id: 'catalog', label: 'Load catalog' },
-        { id: 'generation', label: 'Generate query' },
-        { id: 'validation', label: 'Validate' },
-        { id: 'execution', label: 'Execute' },
-        { id: 'analytics', label: 'Analyze' },
-        { id: 'format', label: 'Format answer' },
-        { id: 'save', label: 'Save memory' },
+        { id: 'memory', label: t('phases.memory') },
+        { id: 'router', label: t('phases.router') },
+        { id: 'catalog', label: t('phases.catalog') },
+        { id: 'generation', label: t('phases.generation') },
+        { id: 'validation', label: t('phases.validation') },
+        { id: 'execution', label: t('phases.execution') },
+        { id: 'analytics', label: t('phases.analytics') },
+        { id: 'format', label: t('phases.format') },
+        { id: 'save', label: t('phases.save') },
     ];
 
     const NODE_PHASE = {
@@ -85,6 +101,7 @@
     }
 
     function formatCompact(value) {
+        if (window.I18n && typeof window.I18n.formatCompact === 'function') return window.I18n.formatCompact(value);
         const n = Number(value);
         if (!Number.isFinite(n)) return value == null ? '—' : String(value);
         return new Intl.NumberFormat(undefined, { notation: n >= 1000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(n);
@@ -153,7 +170,7 @@
             const values = rows.map((row) => rowValue(row, name, index));
             const present = values.filter((v) => v !== null && v !== undefined && v !== '');
             const type = inferColumnType(values);
-            let range = 'No non-null values';
+            let range = t('results.profile.noValues');
             if (present.length) {
                 if (type === 'number') {
                     const nums = present.map(numericValue);
@@ -186,11 +203,11 @@
     function safeTraceNote(event) {
         const node = event?.node || '';
         if (/generator|repair|prompt_builder|summarizer|memory_answer/.test(node)) {
-            return event.type === 'llm' ? 'model step completed' : 'context prepared';
+            return event.type === 'llm' ? t('conversation.trace.modelStep') : t('conversation.trace.contextPrepared');
         }
-        if (node === 'fused_eval_analytics') return 'analysis completed';
+        if (node === 'fused_eval_analytics') return t('conversation.trace.analysisCompleted');
         if (node === 'execute_query' || node === 'pbi_execute_query') {
-            return /^\d+ rows/.test(event.detail || '') ? event.detail : 'read-only query completed';
+            return /^\d+ rows/.test(event.detail || '') ? event.detail : t('conversation.trace.readOnlyQuery');
         }
         const safeNodes = new Set([
             'context_composer', 'fused_router', 'catalog_lookup',
@@ -281,36 +298,36 @@
             shell.id = 'v3-shell';
             shell.className = 'v3-shell';
             shell.innerHTML = `
-              <nav class="v3-rail" aria-label="Primary navigation">
+              <nav class="v3-rail" aria-label="${h('shell.rail.navigation')}">
                 <img class="v3-logo" src="/static/images/jeen-mark.png" alt="Jeen">
                 <div class="v3-rail-divider"></div>
-                <button class="v3-rail-btn is-active" data-rail="conversation" aria-label="Conversation" data-tooltip="Conversation">${ICON.railConversation}</button>
-                <button class="v3-rail-btn" data-rail="tables" aria-label="Tables" data-tooltip="Tables">${ICON.table}</button>
-                <button class="v3-rail-btn" data-rail="pinned" aria-label="Pinned questions" data-tooltip="Pinned">${ICON.pin}</button>
-                <button class="v3-rail-btn" data-rail="history" aria-label="Conversation history" data-tooltip="History">${ICON.history}</button>
+                <button class="v3-rail-btn is-active" data-rail="conversation" aria-label="${h('shell.rail.conversation')}" data-tooltip="${h('shell.rail.conversation')}">${ICON.railConversation}</button>
+                <button class="v3-rail-btn" data-rail="tables" aria-label="${h('shell.rail.tables')}" data-tooltip="${h('shell.rail.tables')}">${ICON.table}</button>
+                <button class="v3-rail-btn" data-rail="pinned" aria-label="${h('shell.rail.pinnedLabel')}" data-tooltip="${h('shell.rail.pinned')}">${ICON.pin}</button>
+                <button class="v3-rail-btn" data-rail="history" aria-label="${h('shell.rail.historyLabel')}" data-tooltip="${h('shell.rail.history')}">${ICON.history}</button>
                 <div class="v3-rail-spacer"></div>
-                <button id="v3-settings-button" class="v3-rail-btn v3-rail-btn--settings" data-rail="settings" aria-label="Settings" data-tooltip="Settings">${ICON.settings}</button>
+                <button id="v3-settings-button" class="v3-rail-btn v3-rail-btn--settings" data-rail="settings" aria-label="${h('shell.rail.settings')}" data-tooltip="${h('shell.rail.settings')}">${ICON.settings}</button>
               </nav>
               <div class="v3-app">
                 <header class="v3-topbar">
                   <button id="v3-conversation-toggle" class="v3-conversation-toggle" aria-expanded="true" aria-controls="v3-conversation">
-                    ${ICON.conversation}<span>Hide conversation</span>
+                    ${ICON.conversation}<span>${h('shell.topbar.hideConversation')}</span>
                   </button>
                   <div id="v3-connection-slot" class="v3-connection-slot"></div>
                   <div class="v3-topbar-spacer"></div>
                   <div id="v3-theme-slot"></div>
-                  <button class="v3-topbar-icon" aria-label="Notifications" title="Notifications">${ICON.bell}</button>
+                  <button class="v3-topbar-icon" aria-label="${h('shell.topbar.notifications')}" title="${h('shell.topbar.notifications')}">${ICON.bell}</button>
                   <div id="v3-user-slot"></div>
                 </header>
                 <div class="v3-body">
                   <div id="v3-drawer-overlay" class="v3-drawer-overlay"></div>
-                  <aside id="v3-conversation" class="v3-conversation" aria-label="Conversation workspace">
+                  <aside id="v3-conversation" class="v3-conversation" aria-label="${h('shell.panels.workspaceLabel')}">
                     <div class="v3-tabs-wrap">
-                      <div class="v3-tabs" role="tablist" aria-label="Conversation sections">
-                        <button id="v3-tab-conversation" class="v3-tab" data-tab="conversation" role="tab" aria-selected="true" aria-controls="v3-panel-conversation">Conversation</button>
-                        <button id="v3-tab-tables" class="v3-tab" data-tab="tables" role="tab" aria-selected="false" aria-controls="v3-panel-tables">Tables</button>
-                        <button id="v3-tab-pinned" class="v3-tab" data-tab="pinned" role="tab" aria-selected="false" aria-controls="v3-panel-pinned">Pinned</button>
-                        <button id="v3-tab-conversations" class="v3-tab" data-tab="conversations" role="tab" aria-selected="false" aria-controls="v3-panel-conversations">History</button>
+                      <div class="v3-tabs" role="tablist" aria-label="${h('shell.tabs.sections')}">
+                        <button id="v3-tab-conversation" class="v3-tab" data-tab="conversation" role="tab" aria-selected="true" aria-controls="v3-panel-conversation">${h('shell.tabs.conversation')}</button>
+                        <button id="v3-tab-tables" class="v3-tab" data-tab="tables" role="tab" aria-selected="false" aria-controls="v3-panel-tables">${h('shell.tabs.tables')}</button>
+                        <button id="v3-tab-pinned" class="v3-tab" data-tab="pinned" role="tab" aria-selected="false" aria-controls="v3-panel-pinned">${h('shell.tabs.pinned')}</button>
+                        <button id="v3-tab-conversations" class="v3-tab" data-tab="conversations" role="tab" aria-selected="false" aria-controls="v3-panel-conversations">${h('shell.tabs.history')}</button>
                       </div>
                     </div>
                     <section id="v3-panel-conversation" class="v3-panel" data-panel="conversation" role="tabpanel" aria-labelledby="v3-tab-conversation">
@@ -318,8 +335,8 @@
                     </section>
                     <section id="v3-panel-conversations" class="v3-panel v3-panel-list" data-panel="conversations" role="tabpanel" aria-labelledby="v3-tab-conversations" hidden>
                       <div class="v3-conversations-head">
-                        <span class="v3-thread-empty-label">Previous conversations</span>
-                        <button class="v3-text-btn" data-question-log title="Flat log of every question asked">Question log</button>
+                        <span class="v3-thread-empty-label">${h('shell.panels.previousConversations')}</span>
+                        <button class="v3-text-btn" data-question-log title="${h('shell.panels.questionLogTitle')}">${h('shell.panels.questionLog')}</button>
                       </div>
                       <div id="v3-conversations-list" class="v3-conversations-list"></div>
                     </section>
@@ -329,7 +346,7 @@
                     </section>
                     <section id="v3-panel-pinned" class="v3-panel v3-panel-list" data-panel="pinned" role="tabpanel" aria-labelledby="v3-tab-pinned" hidden>
                       <div id="v3-question-search-slot" class="v3-panel-search"></div>
-                      <div class="v3-thread-empty-label">Pinned & recent questions</div>
+                      <div class="v3-thread-empty-label">${h('shell.panels.pinnedRecent')}</div>
                       <div id="v3-pinned-slot"></div>
                     </section>
                     <div class="v3-composer-wrap">
@@ -337,7 +354,7 @@
                         <div id="v3-input-slot"></div>
                         <div id="v3-suggestions-slot"></div>
                         <div class="v3-composer-bottom">
-                          <span class="v3-composer-hint">@ tables · # columns · / templates</span>
+                          <span class="v3-composer-hint"><kbd>@</kbd> ${h('shell.composer.hintTables')} · <kbd>#</kbd> ${h('shell.composer.hintColumns')} · <kbd>/</kbd> ${h('shell.composer.hintTemplates')}</span>
                           <span class="v3-composer-spacer"></span>
                           <div id="v3-ask-slot"></div>
                         </div>
@@ -347,23 +364,23 @@
                   <main class="v3-workspace" aria-live="polite">
                     <header class="v3-result-head">
                       <div class="v3-result-copy">
-                        <h1 id="v3-result-title" class="v3-result-title">Ask a question to get started</h1>
+                        <h1 id="v3-result-title" class="v3-result-title">${h('shell.result.getStarted')}</h1>
                         <div id="v3-meta-row" class="v3-meta-row"></div>
                       </div>
                       <div id="v3-actions" class="v3-actions"></div>
                     </header>
                     <div class="v3-scroll">
                       <div id="v3-placeholder" class="v3-placeholder">
-                        <strong>No result yet</strong>
-                        <span>Ask a question on the left. The chart, rows, SQL and profiling for that answer appear here.</span>
+                        <strong>${h('shell.result.noResultYet')}</strong>
+                        <span>${h('shell.result.placeholderCopy')}</span>
                       </div>
                       <div id="v3-ml-definition" class="v3-ml-definition" hidden></div>
                       <section id="v3-chart-block" class="v3-data-block" hidden>
                         <div class="v3-toolbar">
-                          <span id="v3-chart-caption" class="v3-caption">Chart</span>
+                          <span id="v3-chart-caption" class="v3-caption">${h('shell.result.chart')}</span>
                           <span class="v3-toolbar-spacer"></span>
                           <div id="v3-chart-types" class="v3-chart-types"></div>
-                          <button id="v3-chart-toggle" class="v3-text-btn">Expand</button>
+                          <button id="v3-chart-toggle" class="v3-text-btn">${h('common.expand')}</button>
                         </div>
                         <div id="v3-chart-frame" class="v3-chart-frame"></div>
                         <div id="v3-chart-edit" class="v3-chart-edit"></div>
@@ -372,7 +389,7 @@
                         <div class="v3-toolbar">
                           <span id="v3-row-caption" class="v3-caption"></span>
                           <span class="v3-toolbar-spacer"></span>
-                          <input id="v3-result-filter" type="search" placeholder="Filter rows…" aria-label="Filter result rows">
+                          <input id="v3-result-filter" type="search" dir="auto" placeholder="${h('shell.result.filterRows')}" aria-label="${h('shell.result.filterRowsLabel')}">
                           <div id="v3-describe-slot"></div>
                         </div>
                         <div id="v3-cap-banner" class="v3-cap-banner" hidden></div>
@@ -383,13 +400,13 @@
                     <section class="v3-dock">
                       <div class="v3-dock-bar">
                         ${ICON.code}
-                        <div class="v3-dock-tabs" role="tablist" aria-label="Result details">
-                          <button class="v3-dock-tab" data-dock="sql" role="tab">SQL & run details</button>
-                          <button class="v3-dock-tab" data-dock="profiling" role="tab">Profiling</button>
-                          <button class="v3-dock-tab v3-dock-tab--model" data-dock="model" role="tab" hidden>Model details</button>
+                        <div class="v3-dock-tabs" role="tablist" aria-label="${h('shell.dock.label')}">
+                          <button class="v3-dock-tab" data-dock="sql" role="tab">${h('shell.dock.sqlTab')}</button>
+                          <button class="v3-dock-tab" data-dock="profiling" role="tab">${h('shell.dock.profilingTab')}</button>
+                          <button class="v3-dock-tab v3-dock-tab--model" data-dock="model" role="tab" hidden>${h('shell.dock.modelTab')}</button>
                         </div>
-                        <span id="v3-dock-meta" class="v3-dock-meta">no run yet</span>
-                        <button id="v3-dock-toggle" class="v3-text-btn" aria-expanded="false">Show</button>
+                        <span id="v3-dock-meta" class="v3-dock-meta">${h('shell.dock.noRunYet')}</span>
+                        <button id="v3-dock-toggle" class="v3-text-btn" aria-expanded="false">${h('common.show')}</button>
                       </div>
                       <div id="v3-dock-body" class="v3-dock-body" hidden></div>
                     </section>
@@ -414,27 +431,29 @@
             this._move('#user-menu-wrap', '#v3-user-slot');
             this.input = this._move('#question-input', '#v3-input-slot', (node) => {
                 node.rows = 2;
-                node.placeholder = 'Ask a follow-up about your data…';
+                node.placeholder = t('shell.composer.followupPlaceholder');
+                node.setAttribute('dir', 'auto');
                 node.removeAttribute('style');
             });
             this.suggestions = this._move('#question-suggestions', '#v3-suggestions-slot');
             this.askButton = this._move('#ask-button', '#v3-ask-slot', (node) => {
                 node.className = 'v3-ask';
                 node.style.display = '';
-                node.innerHTML = 'Ask <span style="opacity:.6">↵</span>';
+                node.innerHTML = `${h('shell.composer.ask')} <span style="opacity:.6">↵</span>`;
             });
             this._move('#table-search', '#v3-table-search-slot', (node) => { node.style.display = ''; });
             this._move('#tables-list', '#v3-tables-slot');
             this._move('#question-search', '#v3-question-search-slot', (node) => {
                 node.style.display = '';
-                node.placeholder = 'Search your questions…';
+                node.placeholder = t('shell.panels.searchQuestions');
+                node.setAttribute('dir', 'auto');
             });
             this._move('#question-history', '#v3-pinned-slot');
 
             const actions = [
-                ['#export-btn', 'Export', 'v3-icon-action', ICON.export],
-                ['#copy-results-btn', 'Copy', 'v3-icon-action', ICON.copy],
-                ['#send-result-btn', 'Send', '', null],
+                ['#export-btn', t('common.export'), 'v3-icon-action', ICON.export],
+                ['#copy-results-btn', t('common.copy'), 'v3-icon-action', ICON.copy],
+                ['#send-result-btn', t('common.send'), '', null],
             ];
             actions.forEach(([selector, label, className, icon]) => {
                 this._move(selector, '#v3-actions', (node) => {
@@ -448,7 +467,7 @@
             this._move('#describe-btn', '#v3-describe-slot', (node) => {
                 node.style.display = '';
                 node.className = 'v3-text-btn';
-                node.textContent = 'Describe';
+                node.textContent = t('results.actions.describe');
             });
             this._move('#describe-section', '#v3-describe-content');
             this._move('#chart-type-selector-container', '#v3-chart-types', (node) => { node.style.display = ''; });
@@ -516,8 +535,11 @@
             const buttons = [...event.currentTarget.querySelectorAll(selector)];
             const current = Math.max(0, buttons.indexOf(document.activeElement));
             let next = current;
-            if (event.key === 'ArrowRight') next = (current + 1) % buttons.length;
-            if (event.key === 'ArrowLeft') next = (current - 1 + buttons.length) % buttons.length;
+            // In RTL the tab strip is mirrored, so ArrowRight moves to the previous tab.
+            const forwardKey = isRtl() ? 'ArrowLeft' : 'ArrowRight';
+            const backwardKey = isRtl() ? 'ArrowRight' : 'ArrowLeft';
+            if (event.key === forwardKey) next = (current + 1) % buttons.length;
+            if (event.key === backwardKey) next = (current - 1 + buttons.length) % buttons.length;
             if (event.key === 'Home') next = 0;
             if (event.key === 'End') next = buttons.length - 1;
             event.preventDefault();
@@ -599,7 +621,7 @@
             panel.setAttribute('aria-hidden', String(!open));
             const toggle = document.getElementById('v3-conversation-toggle');
             toggle.setAttribute('aria-expanded', String(open));
-            toggle.querySelector('span').textContent = open ? 'Hide conversation' : 'Conversation';
+            toggle.querySelector('span').textContent = open ? t('shell.topbar.hideConversation') : t('shell.topbar.showConversation');
             if (!open && restoreFocus) toggle.focus();
             setTimeout(() => window.dispatchEvent(new Event('resize')), 0);
         },
@@ -629,13 +651,13 @@
             if (!q || this.sending) return;
             if (this.readOnly) {
                 if (typeof window.showToast === 'function') {
-                    window.showToast('This conversation belongs to a connection that is no longer available. Start a new conversation to ask questions.', 'error');
+                    window.showToast(t('conversation.readOnlySend'), 'error');
                 }
                 return;
             }
             const connection = typeof window.getActiveConnection === 'function' ? window.getActiveConnection() : '';
             if (!connection) {
-                if (typeof window.showToast === 'function') window.showToast('Select a connection first', 'error');
+                if (typeof window.showToast === 'function') window.showToast(t('errors.selectConnectionFirst'), 'error');
                 return;
             }
 
@@ -695,13 +717,19 @@
                     if (event === 'node') this._onNode(turn, data);
                     if (event === 'result') this._onResult(turn, data);
                     if (event === 'enrichment') this._onEnrichment(turn, data);
-                    if (event === 'error') throw new Error(data.detail || data.error || 'Query failed');
+                    if (event === 'error') throw new Error(errorText({ payload: data, code: data.code || 'QUERY_FAILED' }, data.detail || data.error || t('errors.queryFailed')));
                 }, abort.signal);
                 if (stale()) return;
-                if (turn.status === 'running') throw new Error('Query stream ended before a result arrived');
+                if (turn.status === 'running') throw new Error(t('errors.streamEnded'));
             } catch (error) {
                 if (stale() || abort.signal.aborted) return;
-                this._onError(turn, error);
+                // A failed fetch (offline, proxy down) surfaces as a TypeError with
+                // browser-English text; give it the localized network headline.
+                if (error && error.name === 'TypeError') {
+                    this._onError(turn, new Error(errorText({ error, network: true }, error.message)));
+                } else {
+                    this._onError(turn, error);
+                }
             } finally {
                 if (this._streamAbort === abort) this._streamAbort = null;
                 if (!stale()) {
@@ -735,9 +763,9 @@
                 return `<button type="button" class="v3-ml-alt v3-filter-option" data-filter-option="${index}"${title}>${esc(option.label)}${value}</button>`;
             }).join('');
             const any = clarify.allow_any && options.length > 1
-                ? '<button type="button" class="v3-ml-alt v3-filter-option" data-filter-any>Any of these fields</button>' : '';
+                ? `<button type="button" class="v3-ml-alt v3-filter-option" data-filter-any>${h('conversation.text.anyOfFields')}</button>` : '';
             const other = clarify.allow_other
-                ? '<button type="button" class="v3-text-btn" data-filter-other>Something else…</button>' : '';
+                ? `<button type="button" class="v3-text-btn" data-filter-other>${h('conversation.text.somethingElse')}</button>` : '';
             return `<div class="v3-route-clarify v3-filter-clarify">
               <p class="v3-ml-message" dir="${directionOf(answer)}">${esc(answer)}</p>
               <div class="v3-ml-actions">${buttons}${any}</div>
@@ -774,22 +802,23 @@
             (filters.resolved || []).forEach((f, index) => {
                 const value = Array.isArray(f.value) ? f.value.join(', ') : String(f.value ?? '');
                 const raw = f.raw_value != null && String(f.raw_value).toLowerCase() !== value.toLowerCase()
-                    ? ` <small>(from “${esc(String(f.raw_value))}”)</small>` : '';
+                    ? ` <small>(${h('conversation.filters.from', { raw: iso(String(f.raw_value)) })})</small>` : '';
                 const where = f.any_of_columns && f.any_of_columns.length > 1
-                    ? f.any_of_columns.join(' or ') : `${f.table}.${f.column}`;
-                const evidence = f.evidence ? ` <span class="v3-filter-evidence" title="verified via ${esc(f.evidence)}${f.tier ? ' ' + esc(f.tier) : ''}">${esc(f.evidence)}</span>` : '';
+                    ? f.any_of_columns.join(` ${t('conversation.filters.or')} `) : `${f.table}.${f.column}`;
+                const evidence = f.evidence ? ` <span class="v3-filter-evidence" title="${h('conversation.filters.verifiedVia', { evidence: iso(`${f.evidence}${f.tier ? ' ' + f.tier : ''}`) })}">${esc(f.evidence)}</span>` : '';
                 // Other fields that hold this value: one click re-asks with that field.
                 const switches = (f.alternatives || []).map((alt, altIndex) =>
-                    `<button type="button" class="v3-filter-switch" data-filter-switch="${index}:${altIndex}" title="Filter on ${esc(alt.table)}.${esc(alt.column)} instead">use ${esc(alt.table)}.${esc(alt.column)}</button>`).join('');
-                chips.push(`<span class="v3-filter-chip is-verified">${esc(where)} ${esc(f.op === 'in' ? 'in' : f.op === 'contains' ? 'contains' : '=')} <strong>${esc(value)}</strong>${raw}${evidence}${switches}</span>`);
+                    `<button type="button" class="v3-filter-switch" data-filter-switch="${index}:${altIndex}" title="${h('conversation.filters.useInstead', { field: iso(`${alt.table}.${alt.column}`) })}">${h('conversation.filters.use', { field: iso(`${alt.table}.${alt.column}`) })}</button>`).join('');
+                const op = f.op === 'in' ? t('conversation.filters.opIn') : f.op === 'contains' ? t('conversation.filters.opContains') : '=';
+                chips.push(`<span class="v3-filter-chip is-verified"><bdi>${esc(where)}</bdi> ${esc(op)} <strong><bdi>${esc(value)}</bdi></strong>${raw}${evidence}${switches}</span>`);
             });
             (filters.unverified || []).forEach((f) => {
                 const value = Array.isArray(f.value) ? f.value.join(', ') : String(f.value ?? '');
-                chips.push(`<span class="v3-filter-chip is-unverified" title="${esc(f.reason || 'not verified')}">${esc(`${f.table || ''}.${f.column || ''}`)} ≈ <strong>${esc(value)}</strong> <small>unverified</small></span>`);
+                chips.push(`<span class="v3-filter-chip is-unverified" title="${escFull(f.reason || t('conversation.filters.notVerified'))}"><bdi>${esc(`${f.table || ''}.${f.column || ''}`)}</bdi> ≈ <strong><bdi>${esc(value)}</bdi></strong> <small>${h('conversation.filters.unverified')}</small></span>`);
             });
             if (!chips.length && !(filters.assumptions || []).length) return '';
             const notes = (filters.assumptions || []).map((a) => `<div class="v3-filter-note">${esc(a)}</div>`).join('');
-            return `<div class="v3-filtered-by"><div class="v3-filtered-by-title">Filtered by</div><div class="v3-filter-chips">${chips.join('')}</div>${notes}</div>`;
+            return `<div class="v3-filtered-by"><div class="v3-filtered-by-title">${h('conversation.filters.title')}</div><div class="v3-filter-chips">${chips.join('')}</div>${notes}</div>`;
         },
 
         async _stream(payload, onEvent, signal) {
@@ -801,9 +830,11 @@
             });
             if (!response.ok) {
                 const body = await response.text();
-                throw new Error(body || `Query failed (${response.status})`);
+                let payload = body;
+                try { payload = JSON.parse(body); } catch (_) { /* plain text */ }
+                throw new Error(errorText({ status: response.status, payload }, body || t('errors.queryFailedStatus', { status: response.status })));
             }
-            if (!response.body) throw new Error('Streaming is unavailable in this browser');
+            if (!response.body) throw new Error(t('errors.streamingUnavailable'));
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
@@ -1024,7 +1055,7 @@
                 if (stale()) return;
                 if (response.status === 401) return;
                 if (response.status === 404 && conversationId) {
-                    if (typeof window.showToast === 'function') window.showToast('That conversation no longer exists', 'error');
+                    if (typeof window.showToast === 'function') window.showToast(t('conversation.list.gone'), 'error');
                     this.hydrating = false;
                     this.render();
                     return;
@@ -1111,7 +1142,7 @@
             const turn = this.turns.find((item) => item.id === turnId);
             if (!turn || !turn.restored || turn.rerunning) return;
             if (this.readOnly) {
-                if (typeof window.showToast === 'function') window.showToast('This connection is no longer available.', 'error');
+                if (typeof window.showToast === 'function') window.showToast(t('conversation.rerun.connectionGone'), 'error');
                 return;
             }
             const generation = this._generation;
@@ -1142,7 +1173,7 @@
                 this.selectedTurnId = turn.id;
                 this.selectedResultId = turn.id;
                 this.lastAppliedResultId = null;
-                if (typeof window.showToast === 'function') window.showToast('Data refreshed', 'success');
+                if (typeof window.showToast === 'function') window.showToast(t('conversation.rerun.refreshed'), 'success');
             } catch (error) {
                 if (generation !== this._generation) return;
                 turn.rerunError = error && error.message ? error.message : String(error);
@@ -1155,12 +1186,12 @@
 
         _rerunMessage(status, detail) {
             const text = String(detail || '');
-            if (status === 403 || /grant_required/.test(text)) return 'Reconnect your Power BI account to reload this data.';
-            if (status === 409 && /connection_unavailable/.test(text)) return 'This connection is no longer available.';
-            if (status === 409 && /turn_has_no_query/.test(text)) return 'This answer has no query to re-run.';
-            if (status === 504) return 'The query timed out. Try again or narrow the question.';
-            if (status === 502) return text.replace(/^\{.*?"detail":\s*"?/, '').slice(0, 200) || 'The data source returned an error.';
-            return `Could not reload the data (${status}).`;
+            if (status === 403 || /grant_required/.test(text)) return t('conversation.rerun.reconnectPowerBi');
+            if (status === 409 && /connection_unavailable/.test(text)) return t('conversation.rerun.connectionGone');
+            if (status === 409 && /turn_has_no_query/.test(text)) return t('conversation.rerun.noQuery');
+            if (status === 504) return t('conversation.rerun.timedOut');
+            if (status === 502) return text.replace(/^\{.*?"detail":\s*"?/, '').slice(0, 200) || t('conversation.rerun.sourceError');
+            return t('conversation.rerun.failedStatus', { status });
         },
 
         // ── History tab: browse / open / rename / delete conversations ──────
@@ -1169,7 +1200,7 @@
         async loadConversationList() {
             const host = document.getElementById('v3-conversations-list');
             if (!host) return;
-            host.innerHTML = '<div class="v3-thread-empty-label">Loading conversations…</div>';
+            host.innerHTML = `<div class="v3-thread-empty-label">${h('conversation.list.loading')}</div>`;
             try {
                 const response = await fetch('/api/conversations?all=true&limit=100');
                 if (!response.ok) throw new Error(`list ${response.status}`);
@@ -1177,7 +1208,7 @@
                 this._conversationList = Array.isArray(data.items) ? data.items : [];
             } catch (error) {
                 console.warn('[Workspace] conversation list failed', error);
-                host.innerHTML = '<div class="v3-thread-empty-label">Could not load conversations.</div>';
+                host.innerHTML = `<div class="v3-thread-empty-label">${h('conversation.list.loadFailed')}</div>`;
                 return;
             }
             this.renderConversationList();
@@ -1188,14 +1219,14 @@
             if (!host) return;
             const items = this._conversationList || [];
             if (!items.length) {
-                host.innerHTML = '<div class="v3-thread-empty-label">No previous conversations yet.</div>';
+                host.innerHTML = `<div class="v3-thread-empty-label">${h('conversation.list.empty')}</div>`;
                 return;
             }
             const active = typeof window.getActiveConnection === 'function' ? window.getActiveConnection() : '';
             const groups = [
-                { label: 'This connection', items: items.filter((c) => c.connection_available !== false && c.source_key === active) },
-                { label: 'Other connections', items: items.filter((c) => c.connection_available !== false && c.source_key !== active) },
-                { label: 'Unavailable connections', items: items.filter((c) => c.connection_available === false), readOnly: true },
+                { label: t('conversation.list.thisConnection'), items: items.filter((c) => c.connection_available !== false && c.source_key === active) },
+                { label: t('conversation.list.otherConnections'), items: items.filter((c) => c.connection_available !== false && c.source_key !== active) },
+                { label: t('conversation.list.unavailableConnections'), items: items.filter((c) => c.connection_available === false), readOnly: true },
             ].filter((group) => group.items.length);
             host.innerHTML = groups.map((group) => `
               <div class="v3-conv-group">
@@ -1222,13 +1253,13 @@
             return `<div class="v3-conv-item${current ? ' is-current' : ''}" data-open-conversation="${esc(c.id)}" role="button" tabindex="0">
               <div class="v3-conv-title" dir="${directionOf(c.title)}" title="${esc(c.title)}">${esc(c.title)}</div>
               <div class="v3-conv-meta">
-                <span>${esc(c.source_label || c.source_key)}${readOnly ? ' · read-only' : ''}</span>
-                <span>${c.turn_count} ${c.turn_count === 1 ? 'question' : 'questions'}${when ? ` · ${esc(when)}` : ''}</span>
+                <span><bdi>${esc(c.source_label || c.source_key)}</bdi>${readOnly ? ` · ${h('conversation.list.readOnly')}` : ''}</span>
+                <span>${h('conversation.list.questionCount', { count: Number(c.turn_count) || 0 })}${when ? ` · ${esc(when)}` : ''}</span>
               </div>
               ${c.last_question && c.last_question !== c.title ? `<div class="v3-conv-last" dir="${directionOf(c.last_question)}">${esc(c.last_question)}</div>` : ''}
               <div class="v3-conv-actions">
-                <button class="v3-text-btn" data-conv-action="rename" data-conv-id="${esc(c.id)}">Rename</button>
-                <button class="v3-text-btn" data-conv-action="delete" data-conv-id="${esc(c.id)}">Delete</button>
+                <button class="v3-text-btn" data-conv-action="rename" data-conv-id="${esc(c.id)}">${h('common.rename')}</button>
+                <button class="v3-text-btn" data-conv-action="delete" data-conv-id="${esc(c.id)}">${h('common.delete')}</button>
               </div>
             </div>`;
         },
@@ -1253,7 +1284,7 @@
         },
 
         async renameConversation(item) {
-            const title = window.prompt('Rename conversation', item.title || '');
+            const title = window.prompt(t('conversation.rename.prompt'), item.title || '');
             if (title === null) return;
             const clean = title.trim();
             if (!clean) return;
@@ -1272,22 +1303,22 @@
                 this.renderConversationList();
             } catch (error) {
                 console.warn('[Workspace] rename failed', error);
-                if (typeof window.showToast === 'function') window.showToast('Rename failed', 'error');
+                if (typeof window.showToast === 'function') window.showToast(t('conversation.rename.failed'), 'error');
             }
         },
 
         async deleteConversation(item) {
-            if (!window.confirm(`Delete "${item.title}"? This removes its questions and results.`)) return;
+            if (!window.confirm(t('conversation.delete.confirm', { title: iso(item.title) }))) return;
             try {
                 const response = await fetch(`/api/conversations/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
                 if (!response.ok && response.status !== 404) throw new Error(`delete ${response.status}`);
                 this._conversationList = (this._conversationList || []).filter((c) => c.id !== item.id);
                 if (this.conversation && this.conversation.id === item.id) this.reset();
                 this.renderConversationList();
-                if (typeof window.showToast === 'function') window.showToast('Conversation deleted', 'success');
+                if (typeof window.showToast === 'function') window.showToast(t('conversation.delete.done'), 'success');
             } catch (error) {
                 console.warn('[Workspace] delete failed', error);
-                if (typeof window.showToast === 'function') window.showToast('Delete failed', 'error');
+                if (typeof window.showToast === 'function') window.showToast(t('conversation.delete.failed'), 'error');
             }
         },
         activate() { this.setConversation(true); },
@@ -1316,22 +1347,22 @@
             if (!thread) return;
             if (!this.turns.length && this.hydrating) {
                 thread.innerHTML = `<div class="v3-thread-empty v3-thread-restoring" aria-busy="true">
-                  <div class="v3-thread-empty-label">Restoring your last conversation…</div>
+                  <div class="v3-thread-empty-label">${h('shell.result.restoring')}</div>
                 </div>`;
                 return;
             }
             if (!this.turns.length) {
-                const connectionName = document.getElementById('connection-pill-name')?.textContent?.trim() || 'this dataset';
+                const connectionName = document.getElementById('connection-pill-name')?.textContent?.trim() || t('connection.thisDataset');
                 const suggestions = typeof window.getStarterSuggestions === 'function' ? window.getStarterSuggestions(4) : [];
                 // ML quick-start chips appear once the catalog has a date column
                 // and a measure on one table — this is how the feature is found.
                 const ml = this._ensureMlSuggestions(this._analysisConnection());
-                const mlChips = ml.map((item) => `<button class="v3-chip v3-chip--ml" data-suggestion="${esc(item.text)}" title="${esc(item.skill || 'analysis')}">${esc(item.text)}</button>`).join('');
+                const mlChips = ml.map((item) => `<button class="v3-chip v3-chip--ml" dir="${directionOf(item.text)}" data-suggestion="${esc(item.text)}" title="${escFull(item.skill || t('conversation.empty.analysis'))}">${esc(item.text)}</button>`).join('');
                 thread.innerHTML = `<div class="v3-thread-empty">
-                  <h2>What would you like to know about your data?</h2>
-                  <p>Ask in plain language. Answers come back with a chart, the rows behind it, and the SQL that produced them.</p>
-                  <div class="v3-thread-empty-label">Suggested for ${esc(connectionName)}</div>
-                  <div class="v3-suggestions">${suggestions.map((item) => `<button class="v3-chip" data-suggestion="${esc(item.text)}">${esc(item.text)}</button>`).join('')}${mlChips}</div>
+                  <h2>${h('conversation.empty.title')}</h2>
+                  <p>${h('conversation.empty.copy')}</p>
+                  <div class="v3-thread-empty-label">${h('conversation.empty.suggestedFor', { connection: iso(connectionName) })}</div>
+                  <div class="v3-suggestions">${suggestions.map((item) => `<button class="v3-chip" dir="${directionOf(item.text)}" data-suggestion="${esc(item.text)}">${esc(item.text)}</button>`).join('')}${mlChips}</div>
                 </div>`;
                 thread.querySelectorAll('[data-suggestion]').forEach((button) => button.addEventListener('click', () => this.send(button.dataset.suggestion)));
                 return;
@@ -1339,11 +1370,11 @@
 
             const title = this.conversation ? this.conversation.title : '';
             const readOnlyNote = this.readOnly
-                ? `<div class="v3-readonly-note">Read-only: the connection "${esc(this.conversation?.source_label || this.conversation?.source_key || '')}" is no longer available.</div>`
+                ? `<div class="v3-readonly-note">${h('conversation.readOnlyNote', { connection: iso(this.conversation?.source_label || this.conversation?.source_key || '') })}</div>`
                 : '';
             const head = `<div class="v3-thread-head">
-                <span class="v3-thread-title" title="${esc(title)}">${esc(title)}</span>
-                <button class="v3-text-btn" data-new-conversation>New conversation</button>
+                <span class="v3-thread-title" dir="${directionOf(title)}" title="${esc(title)}">${esc(title)}</span>
+                <button class="v3-text-btn" data-new-conversation>${h('conversation.newConversation')}</button>
               </div>${readOnlyNote}`;
             thread.innerHTML = head + this.turns.map((turn) => this._turnHtml(turn)).join('');
             thread.querySelector('[data-new-conversation]')?.addEventListener('click', (event) => {
@@ -1388,9 +1419,9 @@
                 if (!turn) return;
                 try {
                     await fetch('/api/feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query_id: turn.result?.query_id, feedback: 'catalog_gap', comment: turn.error }) });
-                    button.textContent = 'Reported ✓';
+                    button.textContent = t('conversation.turn.reported');
                 } catch (_) {
-                    button.textContent = 'Retry report';
+                    button.textContent = t('conversation.turn.retryReport');
                 }
             }));
         },
@@ -1403,7 +1434,7 @@
                   <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
                   <div class="v3-running-list">${PHASES.map((phase) => {
                     const status = turn.phaseState[phase.id];
-                    const label = status === 'done' ? 'ok' : status === 'running' ? 'running…' : status === 'error' ? 'failed' : '';
+                    const label = status === 'done' ? h('conversation.turn.statusOk') : status === 'running' ? h('conversation.turn.statusRunning') : status === 'error' ? h('conversation.turn.statusFailed') : '';
                     return `<div class="v3-running-row is-${status}"><span class="v3-dot is-${status === 'done' ? 'ok' : status}"></span><span>${esc(phase.label)}</span><span class="v3-running-status">${label}</span></div>`;
                 }).join('')}</div>
                 </article>`;
@@ -1412,18 +1443,18 @@
                 const failed = [...turn.trace].reverse().find((item) => item.status === 'node_failed');
                 const isNewest = this.turns[this.turns.length - 1]?.id === turn.id;
                 const meta = turn.restored
-                    ? `${esc(turn.executionStatus || 'error')} · restored from history`
-                    : `query_failed · failed at ${esc(failed?.node || 'query')} · ${formatMs(turn.durationMs)}`;
-                return `<article class="v3-turn${selected || (!turn.restored && isNewest) ? ' is-selected' : ''}" data-turn="${turn.id}" tabindex="0" aria-label="Show answer: ${esc(turn.question)}">
+                    ? `${esc(turn.executionStatus || t('conversation.turn.error'))} · ${h('conversation.turn.restoredFromHistory')}`
+                    : h('conversation.turn.failedAt', { node: iso(failed?.node || t('conversation.turn.query')), duration: formatMs(turn.durationMs) });
+                return `<article class="v3-turn${selected || (!turn.restored && isNewest) ? ' is-selected' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showAnswerBadge')}" tabindex="0" aria-label="${h('conversation.turn.showAnswer', { question: iso(turn.question) })}">
                   <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
-                  <div class="v3-error-block">${esc(turn.error)}
+                  <div class="v3-error-block" dir="auto">${esc(turn.error)}
                     <div class="v3-error-meta">${meta}</div>
                   </div>
-                  ${isNewest ? '<div class="v3-summary" style="margin-top:12px;color:var(--muted)">The newest question failed. Your last successful result remains in the workspace.</div>' : ''}
+                  ${isNewest ? `<div class="v3-summary" style="margin-top:12px;color:var(--muted)">${h('conversation.turn.newestFailed')}</div>` : ''}
                   <div class="v3-error-actions">
-                    <button data-retry="${turn.id}">Retry</button>
-                    ${turn.restored ? '' : '<button title="SQL editing requires a validated execution contract">Edit SQL</button>'}
-                    <button data-report-gap="${turn.id}">Report catalog gap</button>
+                    <button data-retry="${turn.id}">${h('common.retry')}</button>
+                    ${turn.restored ? '' : `<button title="${h('conversation.turn.editSqlTitle')}">${h('conversation.turn.editSql')}</button>`}
+                    <button data-report-gap="${turn.id}">${h('conversation.turn.reportGap')}</button>
                   </div>
                 </article>`;
             }
@@ -1439,30 +1470,30 @@
                 // shows the question, the message and what the run is waiting for.
                 const proposal = result.proposal;
                 const kind = proposal.kind || result.status;
-                const waiting = kind === 'guard' ? 'blocked by a guard · 0 rows sent' : kind === 'clarify' ? 'waiting for a choice' : 'waiting for confirmation';
-                return `<article class="v3-turn is-proposal${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" data-route-path="ml" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="Show card: ${esc(turn.question)}" aria-current="${selected ? 'true' : 'false'}">
+                const waiting = kind === 'guard' ? t('conversation.turn.waitingGuard') : kind === 'clarify' ? t('conversation.turn.waitingChoice') : t('conversation.turn.waitingConfirm');
+                return `<article class="v3-turn is-proposal${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showCardBadge')}" data-route-path="ml" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="${h('conversation.turn.showCard', { question: iso(turn.question) })}" aria-current="${selected ? 'true' : 'false'}">
                   <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
-                  <div class="v3-run-strip">${this._routePillHtml(result)}<span class="v3-skill-chip">${esc(skillLabel[proposal.skill] || proposal.skill || 'analysis')}</span><span class="v3-run-meta">${esc(waiting)}</span></div>
+                  <div class="v3-run-strip">${this._routePillHtml(result)}<span class="v3-skill-chip">${esc(skillLabel[proposal.skill] || proposal.skill || t('conversation.empty.analysis'))}</span><span class="v3-run-meta">${esc(waiting)}</span></div>
                   <div class="v3-answer"><div class="v3-summary" dir="${directionOf(summary)}">${esc(summary || proposal.message || '')}</div></div>
                 </article>`;
             }
             const analysis = result.analysis && result.analysis.skill ? result.analysis : null;
             const mlPill = analysis
-                ? `<span class="v3-skill-chip">${esc(skillLabel[analysis.skill] || analysis.skill)}</span>${result.low_confidence || analysis.low_confidence ? '<span class="v3-lowconf-pill">low confidence</span>' : ''}`
+                ? `<span class="v3-skill-chip">${esc(skillLabel[analysis.skill] || analysis.skill)}</span>${result.low_confidence || analysis.low_confidence ? `<span class="v3-lowconf-pill">${h('conversation.turn.lowConfidence')}</span>` : ''}`
                 : '';
             const insightsDirection = directionOf(findings.map(textOf).join(' '));
             const dots = PHASES.map((phase) => {
                 const events = finished.filter((item) => (NODE_PHASE[item.node] || 'execution') === phase.id);
                 const elapsed = events.reduce((total, item) => total + Number(item.elapsed_ms || 0), 0);
                 const ran = events.length > 0;
-                return `<span class="v3-dot${ran ? ' is-done' : ''}" title="${esc(phase.label)}${ran ? ` · ${formatMs(elapsed)}` : ' · not run'}"></span>`;
+                return `<span class="v3-dot${ran ? ' is-done' : ''}" title="${escFull(phase.label)}${ran ? ` · ${formatMs(elapsed)}` : ` · ${h('conversation.turn.notRun')}`}"></span>`;
             }).join('');
             const trace = turn.trace.filter((item) => item.status !== 'node_started');
             const routePath = (result.routing || {}).path || (analysis ? 'ml' : 'sql');
-            const strip = turn.restored ? this._restoredStripHtml(turn) : `<div class="v3-run-strip">${dots}${this._routePillHtml(result)}${mlPill}<span class="v3-run-meta">${formatMs(turn.durationMs)} · ${trace.length} nodes</span>
-                <button class="v3-text-btn" data-trace-toggle="${turn.id}">${turn.traceOpen ? 'hide run' : 'run details'}</button>
+            const strip = turn.restored ? this._restoredStripHtml(turn) : `<div class="v3-run-strip">${dots}${this._routePillHtml(result)}${mlPill}<span class="v3-run-meta">${h('conversation.turn.runMeta', { duration: formatMs(turn.durationMs), count: trace.length })}</span>
+                <button class="v3-text-btn" data-trace-toggle="${turn.id}">${turn.traceOpen ? h('conversation.turn.hideRun') : h('conversation.turn.runDetails')}</button>
               </div>`;
-            return `<article class="v3-turn${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" data-route-path="${esc(routePath)}" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="Show answer: ${esc(turn.question)}" aria-current="${selected ? 'true' : 'false'}">
+            return `<article class="v3-turn${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showAnswerBadge')}" data-route-path="${esc(routePath)}" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="${h('conversation.turn.showAnswer', { question: iso(turn.question) })}" aria-current="${selected ? 'true' : 'false'}">
               <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
               ${strip}
               ${!turn.restored && turn.traceOpen ? `<div class="v3-trace">${trace.map((item) => `<div class="v3-trace-row">
@@ -1471,8 +1502,8 @@
                 <span class="v3-trace-ms">${formatMs(item.elapsed_ms)}</span></div>`).join('')}</div>` : ''}
               <div class="v3-answer">
                 ${summary ? `<div class="v3-summary" dir="${directionOf(summary)}">${esc(summary)}</div>` : ''}
-                ${findings.length ? `<section class="v3-insights" aria-label="Key insights" dir="${insightsDirection}">
-                  <div class="v3-insights-title"><span class="v3-insights-mark" aria-hidden="true">✦</span>Key insights</div>
+                ${findings.length ? `<section class="v3-insights" aria-label="${h('conversation.turn.keyInsights')}" dir="${insightsDirection}">
+                  <div class="v3-insights-title"><span class="v3-insights-mark" aria-hidden="true">✦</span>${h('conversation.turn.keyInsights')}</div>
                   <div class="v3-insights-list">${findings.map((finding, index) => `<div class="v3-finding">
                     <span class="v3-insight-index" aria-hidden="true">${index + 1}</span>
                     <span dir="${directionOf(finding)}">${esc(textOf(finding))}</span>
@@ -1489,7 +1520,7 @@
             const routing = (result && result.routing) || {};
             const path = routing.path || (result && result.analysis && result.analysis.skill ? 'ml' : result && result.proposal ? 'ml' : 'sql');
             if (path !== 'ml' && path !== 'sql') return '';
-            const label = path === 'ml' ? 'ML skill' : 'SQL';
+            const label = path === 'ml' ? t('conversation.turn.routeMl') : t('conversation.turn.routeSql');
             const title = routing.reason ? `${label} · ${routing.reason}` : label;
             return `<span class="v3-route-pill is-${path}" data-route-path="${esc(path)}" data-route-source="${esc(routing.source || '')}" title="${esc(title)}">${esc(label)}</span>`;
         },
@@ -1497,40 +1528,41 @@
         _restoredStripHtml(turn) {
             const when = turn.snapshotAt ? this._formatWhen(turn.snapshotAt) : null;
             if (turn.resultKind === 'text') {
-                return '<div class="v3-run-strip"><span class="v3-run-meta">restored · text answer</span></div>';
+                return `<div class="v3-run-strip"><span class="v3-run-meta">${h('conversation.restored.textAnswer')}</span></div>`;
             }
             if (turn.rerunning) {
-                return '<div class="v3-run-strip"><span class="v3-run-meta">Reloading data…</span></div>';
+                return `<div class="v3-run-strip"><span class="v3-run-meta">${h('conversation.restored.reloading')}</span></div>`;
             }
             if (turn.result?.results) {
                 const label = when
-                    ? `Snapshot from ${esc(when)}`
-                    : turn.snapshotStatus === 'too_large' ? 'Fresh result · too large to keep' : 'Restored snapshot';
+                    ? h('conversation.restored.snapshotFrom', { when })
+                    : turn.snapshotStatus === 'too_large' ? h('conversation.restored.freshTooLarge') : h('conversation.restored.snapshot');
                 const analysis = turn.result.analysis && turn.result.analysis.skill ? turn.result.analysis : null;
                 const pill = analysis && window.JeenAnalysisUI
-                    ? `<span class="v3-skill-chip">${esc(window.JeenAnalysisUI.SKILL_LABEL[analysis.skill] || analysis.skill)}</span>${turn.result.low_confidence || analysis.low_confidence ? '<span class="v3-lowconf-pill">low confidence</span>' : ''}`
+                    ? `<span class="v3-skill-chip">${esc(window.JeenAnalysisUI.SKILL_LABEL[analysis.skill] || analysis.skill)}</span>${turn.result.low_confidence || analysis.low_confidence ? `<span class="v3-lowconf-pill">${h('conversation.turn.lowConfidence')}</span>` : ''}`
                     : '';
                 return `<div class="v3-run-strip">${pill}
-                  <span class="v3-run-meta">${label}${turn.hasChart ? ' · chart' : ''}</span>
-                  ${turn.canLoadData || turn.result?.sql ? `<button class="v3-text-btn" data-load-data="${turn.id}">Refresh</button>` : ''}
+                  <span class="v3-run-meta">${label}${turn.hasChart ? ` · ${h('conversation.restored.chart')}` : ''}</span>
+                  ${turn.canLoadData || turn.result?.sql ? `<button class="v3-text-btn" data-load-data="${turn.id}">${h('common.refresh')}</button>` : ''}
                 </div>`;
             }
             if (turn.artifactState === 'loading') {
-                return '<div class="v3-run-strip"><span class="v3-run-meta">Loading rows…</span></div>';
+                return `<div class="v3-run-strip"><span class="v3-run-meta">${h('conversation.restored.loadingRows')}</span></div>`;
             }
             const reason = turn.snapshotStatus === 'too_large'
-                ? 'result too large to keep; re-run to view'
+                ? t('conversation.restored.tooLarge')
                 : turn.artifactState === 'failed'
-                    ? 'rows could not be loaded'
-                    : 'rows not kept; re-run to view';
+                    ? t('conversation.restored.loadFailed')
+                    : t('conversation.restored.notKept');
             return `<div class="v3-run-strip">
               <span class="v3-run-meta">${esc(reason)}</span>
-              ${turn.canLoadData || turn.result?.sql ? `<button class="v3-text-btn" data-load-data="${turn.id}">Load data</button>` : ''}
+              ${turn.canLoadData || turn.result?.sql ? `<button class="v3-text-btn" data-load-data="${turn.id}">${h('conversation.restored.loadData')}</button>` : ''}
               ${turn.rerunError ? `<span class="v3-run-meta v3-run-error">${esc(turn.rerunError)}</span>` : ''}
             </div>`;
         },
 
         _formatWhen(iso) {
+            if (window.I18n && typeof window.I18n.formatDate === 'function') return window.I18n.formatDate(iso, 'dateTime') || String(iso);
             const date = new Date(iso);
             if (Number.isNaN(date.getTime())) return String(iso);
             return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
@@ -1543,32 +1575,32 @@
             const placeholder = document.getElementById('v3-placeholder');
             if (this._placeholderDefault === null) this._placeholderDefault = placeholder.innerHTML;
             const loading = turn.artifactState === 'loading' || turn.rerunning;
-            let title = 'Loading rows…';
-            let copy = 'Fetching the stored result for this answer.';
+            let title = t('conversation.pending.loadingTitle');
+            let copy = t('conversation.pending.loadingCopy');
             let action = '';
             if (!loading) {
                 if (turn.snapshotStatus === 'too_large') {
-                    title = 'Result too large to keep';
-                    copy = 'This answer returned more rows than the app stores. Re-run the query to view them.';
+                    title = t('conversation.pending.tooLargeTitle');
+                    copy = t('conversation.pending.tooLargeCopy');
                 } else if (turn.artifactState === 'failed') {
-                    title = 'Rows could not be loaded';
-                    copy = turn.rerunError || 'Try again, or re-run the query to fetch fresh data.';
+                    title = t('conversation.pending.failedTitle');
+                    copy = turn.rerunError || t('conversation.pending.failedCopy');
                 } else {
-                    title = 'Rows not kept for this answer';
-                    copy = 'Older results are trimmed to save space. Re-run the query to view them.';
+                    title = t('conversation.pending.notKeptTitle');
+                    copy = t('conversation.pending.notKeptCopy');
                 }
                 if (turn.canLoadData || turn.result?.sql) {
-                    action = `<button class="v3-load-data" data-load-data="${turn.id}">${turn.rerunning ? 'Loading…' : 'Load data'}</button>`;
+                    action = `<button class="v3-load-data" data-load-data="${turn.id}">${turn.rerunning ? h('common.loading') : h('conversation.restored.loadData')}</button>`;
                 }
             }
-            document.getElementById('v3-result-title').textContent = turn.question;
-            document.getElementById('v3-meta-row').innerHTML = `<span class="v3-status is-empty">${loading ? 'Loading' : 'No rows loaded'}</span>`;
+            this._setResultTitle(turn.question);
+            document.getElementById('v3-meta-row').innerHTML = `<span class="v3-status is-empty">${loading ? h('conversation.pending.loading') : h('conversation.pending.noRowsLoaded')}</span>`;
             placeholder.innerHTML = `<strong>${esc(title)}</strong><span>${esc(copy)}</span>${action}`;
             placeholder.querySelector('[data-load-data]')?.addEventListener('click', () => this.rerunTurn(turn.id));
             placeholder.hidden = false;
             document.getElementById('v3-chart-block').hidden = true;
             document.getElementById('v3-table-block').hidden = true;
-            document.getElementById('v3-dock-meta').textContent = turn.result?.sql ? 'stored query' : 'no query text';
+            document.getElementById('v3-dock-meta').textContent = turn.result?.sql ? t('conversation.pending.storedQuery') : t('conversation.pending.noQueryText');
             this._setActionsEnabled(false);
             this.renderDock();
         },
@@ -1596,21 +1628,21 @@
             const data = turn.result || {};
             const proposal = data.proposal || {};
             const kind = proposal.kind || data.status || 'confirm';
-            const statusLabel = kind === 'guard' || data.status === 'blocked' ? 'Blocked' : kind === 'clarify' ? 'Clarify' : 'Planning';
+            const statusLabel = kind === 'guard' || data.status === 'blocked' ? t('conversation.proposal.blocked') : kind === 'clarify' ? t('conversation.proposal.clarify') : t('conversation.proposal.planning');
             const skill = (window.JeenAnalysisUI && window.JeenAnalysisUI.SKILL_LABEL[proposal.skill]) || proposal.skill || '';
             const failed = (proposal.guard_results || []).filter((g) => !g.passed);
             const meta = kind === 'guard'
-                ? `guard: ${failed.map((g) => g.name).join(', ') || 'refused'} · 0 rows sent`
-                : kind === 'clarify' ? 'one question before running' : 'confirm before running';
-            document.getElementById('v3-result-title').textContent = turn.question;
+                ? t('conversation.proposal.guardMeta', { names: iso(failed.map((g) => g.name).join(', ') || t('conversation.proposal.refused')) })
+                : kind === 'clarify' ? t('conversation.proposal.clarifyMeta') : t('conversation.proposal.confirmMeta');
+            this._setResultTitle(turn.question);
             // Guard keeps a status strip (it saves to history and reads as a result);
             // confirm/clarify lead with the Planning line inside the card, so the strip
             // stays out of the way — matching the skill-states mockup.
             document.getElementById('v3-meta-row').innerHTML = kind === 'guard'
-                ? `<span class="v3-status is-blocked">${statusLabel}</span>
+                ? `<span class="v3-status is-blocked">${esc(statusLabel)}</span>
                    ${skill ? `<span class="v3-skill-chip">${esc(skill)}</span>` : ''}
-                   <span class="v3-result-meta">${esc(meta)}${turn.restored ? ' · restored' : ''}</span>`
-                : (turn.restored ? '<span class="v3-result-meta">restored</span>' : '');
+                   <span class="v3-result-meta">${esc(meta)}${turn.restored ? ` · ${h('conversation.restored.restored')}` : ''}</span>`
+                : (turn.restored ? `<span class="v3-result-meta">${h('conversation.restored.restored')}</span>` : '');
             placeholder.innerHTML = window.JeenAnalysisUI
                 ? window.JeenAnalysisUI.proposalHtml(proposal)
                 : `<strong>${esc(statusLabel)}</strong><span>${esc(textOf(data.answer))}</span>`;
@@ -1621,7 +1653,7 @@
             const chart = document.getElementById('chart-view-container');
             if (chart) chart.style.display = 'none';
             this._setModelTabVisible(false);
-            document.getElementById('v3-dock-meta').textContent = kind === 'guard' ? 'blocked before SQL' : 'waiting for you';
+            document.getElementById('v3-dock-meta').textContent = kind === 'guard' ? t('conversation.proposal.blockedBeforeSql') : t('conversation.proposal.waitingForYou');
             this._setActionsEnabled(false);
             this.renderDock();
             this._bindProposalCard(turn, placeholder);
@@ -1661,11 +1693,11 @@
             if (expired) {
                 card.querySelectorAll('[data-run], [data-exit]').forEach((b) => {
                     b.disabled = true;
-                    b.title = 'This proposal can no longer be resumed; ask the question again.';
+                    b.title = t('conversation.proposal.expiredTitle');
                 });
                 const note = document.createElement('div');
                 note.className = 'v3-ml-error';
-                note.textContent = 'This card has expired. Ask the question again to get a fresh one.';
+                note.textContent = t('conversation.proposal.expiredNote');
                 card.appendChild(note);
             }
             card.querySelector('[data-run]')?.addEventListener('click', async () => {
@@ -1677,7 +1709,7 @@
                 }
                 const patch = window.JeenAnalysisUI ? window.JeenAnalysisUI.collectPatch(card) : {};
                 const remember = Boolean(card.querySelector('[data-remember]')?.checked);
-                setBusy(true, 'Running…');
+                setBusy(true, t('conversation.proposal.running'));
                 try {
                     await this.runProposal(turn, { patch, remember });
                 } catch (error) {
@@ -1725,14 +1757,16 @@
             try { payload = await response.json(); } catch (_) { payload = {}; }
             if (!response.ok) {
                 // The BFF wraps upstream errors as {error: "<json>"}; surface the detail.
-                let detail = payload.detail || payload.error || `Request failed (${response.status})`;
+                let detail = payload.detail || payload.error || t('conversation.proposal.requestFailed', { status: response.status });
                 if (typeof detail === 'string' && detail.trim().startsWith('{')) {
                     try { const inner = JSON.parse(detail); detail = inner.detail || detail; } catch (_) { /* keep text */ }
                 }
                 // A structured 422 ({message, field, loc}) travels on the error so
                 // the setup card can put the message on the field it names.
                 const structured = detail && typeof detail === 'object' ? detail : null;
-                const message = structured ? (structured.message || JSON.stringify(structured)) : String(detail);
+                const message = structured
+                    ? (structured.message || JSON.stringify(structured))
+                    : errorText({ status: response.status, payload }, String(detail));
                 const error = new Error(message);
                 error.status = response.status;
                 error.detail = structured;
@@ -1744,9 +1778,9 @@
         /** Resume a persisted proposal (confirm / clarification pick / guard exit). */
         async runProposal(turn, { patch = {}, remember = false, override = false } = {}) {
             const proposal = (turn.result || {}).proposal || {};
-            if (!proposal.proposal_id) throw new Error('This proposal can no longer be resumed; ask the question again.');
+            if (!proposal.proposal_id) throw new Error(t('conversation.proposal.expiredTitle'));
             const connection = this._analysisConnection();
-            if (!connection) throw new Error('Select a connection first');
+            if (!connection) throw new Error(t('errors.selectConnectionFirst'));
             const sessionId = turn.result?.session_id || (typeof window._jeenGetSessionId === 'function' ? window._jeenGetSessionId() : null);
             const prefs = window.JeenPreferences ? window.JeenPreferences.getAll() : {};
             const body = {
@@ -1786,7 +1820,7 @@
             }
             if (open) this._renderDefinition(host, turn, button);
             button.setAttribute('aria-expanded', String(open));
-            button.textContent = open ? 'Hide setup' : 'Edit setup';
+            button.textContent = open ? t('conversation.proposal.hideSetup') : t('conversation.proposal.editSetup');
             button.addEventListener('click', () => {
                 const nowOpen = this._definitionOpenFor !== turn.id;
                 this._definitionOpenFor = nowOpen ? turn.id : null;
@@ -1799,7 +1833,7 @@
                     host.innerHTML = '';
                 }
                 button.setAttribute('aria-expanded', String(nowOpen));
-                button.textContent = nowOpen ? 'Hide setup' : 'Edit setup';
+                button.textContent = nowOpen ? t('conversation.proposal.hideSetup') : t('conversation.proposal.editSetup');
             });
         },
 
@@ -1834,7 +1868,7 @@
                 card.classList.toggle('is-busy', busy);
                 card.querySelectorAll('button, select, input').forEach((el) => { el.disabled = busy; });
                 if (runButton) {
-                    runButton.textContent = busy ? 'Running…' : 'Re-run';
+                    runButton.textContent = busy ? t('conversation.proposal.running') : t('conversation.proposal.rerun');
                     if (!busy && form) runButton.disabled = !form.state.dirty;
                 }
             };
@@ -1843,7 +1877,7 @@
                 host.hidden = true;
                 host.innerHTML = '';
                 toggle.setAttribute('aria-expanded', 'false');
-                toggle.textContent = 'Edit setup';
+                toggle.textContent = t('conversation.proposal.editSetup');
             });
             runButton?.addEventListener('click', async () => {
                 if (form) {
@@ -1873,9 +1907,9 @@
         async rerunAnalysis(instruction, patch) {
             const turn = this.turns.find((item) => item.id === this.selectedResultId);
             const analysis = turn && turn.result && turn.result.analysis;
-            if (!turn || !analysis || !analysis.skill) throw new Error('Select an analysis result to re-run');
+            if (!turn || !analysis || !analysis.skill) throw new Error(t('conversation.proposal.selectAnalysis'));
             const connection = this._analysisConnection();
-            if (!connection) throw new Error('Select a connection first');
+            if (!connection) throw new Error(t('errors.selectConnectionFirst'));
             const sessionId = turn.result.session_id || (typeof window._jeenGetSessionId === 'function' ? window._jeenGetSessionId() : null);
             const prefs = window.JeenPreferences ? window.JeenPreferences.getAll() : {};
             const body = {
@@ -1976,35 +2010,35 @@
             const answer = textOf(data.answer);
             const clarify = data.route_clarification;
             const filterClarify = data.filter_clarification;
-            document.getElementById('v3-result-title').textContent = turn.question;
+            this._setResultTitle(turn.question);
             if (filterClarify && Array.isArray(filterClarify.options)) {
                 // The grounder could not tell which field (or which value) a word
                 // of the question meant: offer the candidates instead of guessing.
                 document.getElementById('v3-meta-row').innerHTML = `
-                  <span class="v3-status">Needs a choice</span>
-                  <span class="v3-result-meta">${filterClarify.kind === 'column' ? 'which field?' : 'which value?'}</span>`;
+                  <span class="v3-status">${h('conversation.text.needsChoice')}</span>
+                  <span class="v3-result-meta">${filterClarify.kind === 'column' ? h('conversation.text.whichField') : h('conversation.text.whichValue')}</span>`;
                 placeholder.innerHTML = this._filterClarifyHtml(filterClarify, answer);
                 this._bindFilterClarify(placeholder, turn, filterClarify);
             } else if (clarify) {
                 // Ambiguous SQL-vs-ML: offer the two choices instead of guessing.
-                const pct = clarify.confidence != null ? ` · ${Math.round(clarify.confidence * 100)}% sure` : '';
+                const pct = clarify.confidence != null ? ` · ${h('conversation.text.percentSure', { percent: Math.round(clarify.confidence * 100) })}` : '';
                 document.getElementById('v3-meta-row').innerHTML = `
-                  <span class="v3-status">Needs a choice</span>
-                  <span class="v3-result-meta">direct answer or analysis?${pct}</span>`;
+                  <span class="v3-status">${h('conversation.text.needsChoice')}</span>
+                  <span class="v3-result-meta">${h('conversation.text.directOrAnalysis')}${pct}</span>`;
                 placeholder.innerHTML = `<div class="v3-route-clarify">
                   <p class="v3-ml-message" dir="${directionOf(answer)}">${esc(answer)}</p>
                   <div class="v3-ml-actions">
-                    <button type="button" class="v3-ml-run" data-route-analysis>Run the analysis</button>
-                    <button type="button" class="v3-ml-alt" data-route-sql>Answer directly with SQL</button>
+                    <button type="button" class="v3-ml-run" data-route-analysis>${h('conversation.text.runAnalysis')}</button>
+                    <button type="button" class="v3-ml-alt" data-route-sql>${h('conversation.text.answerWithSql')}</button>
                   </div>
                 </div>`;
                 placeholder.querySelector('[data-route-analysis]')?.addEventListener('click', () => this.send(turn.question, { analysis: true }));
                 placeholder.querySelector('[data-route-sql]')?.addEventListener('click', () => this.send(turn.question, { analysis: false }));
             } else {
                 document.getElementById('v3-meta-row').innerHTML = `
-                  <span class="v3-status">Answered</span>
-                  <span class="v3-result-meta">text answer${turn.restored ? ' · restored' : ''}</span>`;
-                placeholder.innerHTML = `<strong>Answer</strong><span dir="${directionOf(answer)}">${esc(answer || 'No data was needed for this answer.')}</span>`;
+                  <span class="v3-status">${h('conversation.text.answered')}</span>
+                  <span class="v3-result-meta">${h('conversation.text.textAnswer')}${turn.restored ? ` · ${h('conversation.restored.restored')}` : ''}</span>`;
+                placeholder.innerHTML = `<strong>${h('conversation.text.answer')}</strong><span dir="${directionOf(answer)}">${esc(answer || t('conversation.text.noDataNeeded'))}</span>`;
             }
             placeholder.hidden = false;
             this._hideDefinition();
@@ -2023,9 +2057,17 @@
                     window.JeenLegacyBridge.applyResult(payload);
                 }
             }
-            document.getElementById('v3-dock-meta').textContent = 'no query text';
+            document.getElementById('v3-dock-meta').textContent = t('conversation.pending.noQueryText');
             this._setActionsEnabled(false);
             this.renderDock();
+        },
+
+        /** The result heading shows the user's question, so it takes the question's direction. */
+        _setResultTitle(text) {
+            const title = document.getElementById('v3-result-title');
+            if (!title) return;
+            title.textContent = text;
+            title.setAttribute('dir', directionOf(text));
         },
 
         renderWorkspace() {
@@ -2036,14 +2078,14 @@
             if (!turn) {
                 this._restorePlaceholder();
                 this._hideDefinition();
-                document.getElementById('v3-result-title').textContent = this.hydrating
-                    ? 'Restoring your last conversation…'
-                    : 'Ask a question to get started';
-                document.getElementById('v3-meta-row').innerHTML = '<span class="v3-status is-empty">No result yet</span>';
+                const emptyTitle = document.getElementById('v3-result-title');
+                emptyTitle.textContent = this.hydrating ? t('shell.result.restoring') : t('shell.result.getStarted');
+                emptyTitle.removeAttribute('dir');
+                document.getElementById('v3-meta-row').innerHTML = `<span class="v3-status is-empty">${h('shell.result.noResultYet')}</span>`;
                 placeholder.hidden = false;
                 chartBlock.hidden = true;
                 tableBlock.hidden = true;
-                document.getElementById('v3-dock-meta').textContent = 'no run yet';
+                document.getElementById('v3-dock-meta').textContent = t('shell.dock.noRunYet');
                 this._setActionsEnabled(false);
                 this.renderDock();
                 return;
@@ -2078,19 +2120,19 @@
             const cap = cappedMeta(results);
             const newest = this.turns[this.turns.length - 1];
             const stale = newest && newest.status === 'error' && newest.id !== turn.id;
-            document.getElementById('v3-result-title').textContent = turn.question;
+            this._setResultTitle(turn.question);
             const restoredNote = turn.restored && turn.snapshotAt
-                ? `<span class="v3-result-meta">Snapshot from ${esc(this._formatWhen(turn.snapshotAt))}</span>`
+                ? `<span class="v3-result-meta">${h('results.status.snapshotFrom', { when: this._formatWhen(turn.snapshotAt) })}</span>`
                 : '';
             const isAnalysis = Boolean(data.analysis && data.analysis.skill);
             const mlStrip = isAnalysis && window.JeenAnalysisUI ? window.JeenAnalysisUI.stripSegments(data) : '';
             const metaRow = document.getElementById('v3-meta-row');
             metaRow.innerHTML = `
-              <span class="v3-status">${cap.capped ? 'Completed · capped' : 'Completed'}</span>
+              <span class="v3-status">${cap.capped ? h('results.status.completedCapped') : h('results.status.completed')}</span>
               ${mlStrip}
-              <span class="v3-result-meta">${rows.length} rows · ${formatMs(metrics.execution_time_ms)} exec · ${formatMs(metrics.llm_latency_ms)} llm</span>
+              <span class="v3-result-meta">${h('results.status.meta', { rows: rows.length, exec: formatMs(metrics.execution_time_ms), llm: formatMs(metrics.llm_latency_ms) })}</span>
               ${restoredNote}
-              ${stale ? '<span class="v3-stale-note">Last successful answer — the newest question failed</span>' : ''}`;
+              ${stale ? `<span class="v3-stale-note">${h('results.status.staleNote')}</span>` : ''}`;
             this._bindDefinitionToggle(metaRow, turn);
             placeholder.hidden = true;
             // An empty result set has nothing to chart; keep the (empty) grid only.
@@ -2136,20 +2178,27 @@
                 }
             }
             this._setActionsEnabled(true);
-            document.getElementById('v3-chart-caption').textContent = isAnalysis && window.JeenAnalysisUI
-                ? `${window.JeenAnalysisUI.chartCaption(data)} · ${rows.length} points`
-                : `${results.columns?.slice(0, 2).join(' by ') || 'result'} · ${rows.length} points`;
+            const captionColumns = isAnalysis && window.JeenAnalysisUI
+                ? window.JeenAnalysisUI.chartCaption(data)
+                : (results.columns && results.columns.length > 1
+                    ? t('results.chart.captionBy', { first: iso(results.columns[0]), second: iso(results.columns[1]) })
+                    : (results.columns && results.columns[0]) || t('results.chart.result'));
+            document.getElementById('v3-chart-caption').textContent = t('results.chart.caption', { columns: iso(captionColumns), count: rows.length });
             const banner = document.getElementById('v3-cap-banner');
             banner.hidden = !cap.capped;
             if (cap.capped) {
-                const totalCopy = cap.total ? ` ${formatCompact(cap.total)} rows matched the query.` : ' The total matched row count is unavailable.';
-                banner.textContent = `Result capped at ${formatCompact(cap.cap)} loaded rows.${totalCopy} Exports contain the loaded result only.`;
+                const totalCopy = cap.total ? t('results.cap.matched', { total: formatCompact(cap.total) }) : t('results.cap.totalUnavailable');
+                banner.textContent = `${t('results.cap.banner', { cap: formatCompact(cap.cap) })} ${totalCopy} ${t('results.cap.exportsNote')}`;
             }
             const inputTokens = metrics.input_tokens == null ? '—' : formatCompact(metrics.input_tokens);
             const outputTokens = metrics.output_tokens == null ? '—' : formatCompact(metrics.output_tokens);
             const validated = turn.trace.some((event) => ['sqlglot_validate', 'dax_static_validate'].includes(event.node) && event.status === 'node_finished');
-            document.getElementById('v3-dock-meta').textContent =
-                `${inputTokens} / ${outputTokens} tok · ${metrics.retry_count == null ? '—' : metrics.retry_count} retries · ${validated ? 'validated query' : data.sql ? 'generated query' : 'no query text'}`;
+            document.getElementById('v3-dock-meta').textContent = t('results.dockMeta', {
+                input: inputTokens,
+                output: outputTokens,
+                retries: metrics.retry_count == null ? '—' : metrics.retry_count,
+                validation: validated ? t('results.validation.validated') : data.sql ? t('results.validation.generated') : t('results.validation.none'),
+            });
             // The plot is the point of an ML/analysis result, so expand it by
             // default; plain SQL stays collapsed. A manual toggle on this result
             // (stored above) always wins.
@@ -2190,8 +2239,8 @@
             window.JeenLegacyBridge?.setVisibleRows?.(filtered);
             const cap = cappedMeta(results);
             document.getElementById('v3-row-caption').textContent = this.filter
-                ? `${filtered.length} of ${allRows.length} loaded`
-                : cap.total ? `${allRows.length} loaded · ${formatCompact(cap.total)} matched` : `${allRows.length} rows loaded`;
+                ? t('results.grid.filteredOf', { shown: filtered.length, total: allRows.length })
+                : cap.total ? t('results.grid.loadedMatched', { loaded: allRows.length, total: formatCompact(cap.total) }) : t('results.grid.rowsLoaded', { count: allRows.length });
             const grid = document.getElementById('v3-grid');
             const wrap = document.getElementById('v3-grid-wrap');
             const numeric = new Set(columns.map((column, index) => inferColumnType(filtered.slice(0, 50).map((row) => rowValue(row, column, index))) === 'number' ? index : -1).filter((index) => index >= 0));
@@ -2227,14 +2276,14 @@
             const rowHtml = (row, visibleIndex) => {
                 const sourceIndex = allRows.indexOf(row);
                 const selected = mapActive && this.mapSelectedRows.has(sourceIndex);
-                return `<div class="v3-grid-row${selected ? ' is-map-selected' : ''}" data-row="${visibleIndex}" data-source-row="${sourceIndex}"${mapActive ? ' title="Focus map at this location"' : ''}>${descriptors.map((descriptor) => {
+                return `<div class="v3-grid-row${selected ? ' is-map-selected' : ''}" data-row="${visibleIndex}" data-source-row="${sourceIndex}"${mapActive ? ` title="${h('results.grid.focusMap')}"` : ''}>${descriptors.map((descriptor) => {
                 const raw = descriptor.derived
                     ? derivedValues.get(descriptor.sourceIndex)?.[visibleIndex]
                     : rowValue(row, columns[descriptor.sourceIndex], descriptor.sourceIndex);
                 const rendered = descriptor.derived
                     ? (descriptor.derived.type === 'pct_total' && raw != null ? `${formatCompact(raw)}%` : formatCompact(raw))
                     : (window.JeenLegacyBridge?.formatTableValue?.(raw, descriptor.sourceIndex, descriptor.numeric) ?? (raw ?? '—'));
-                    return `<div class="v3-grid-cell${descriptor.numeric ? ' is-numeric' : ''}${descriptor.derived ? ' is-derived' : ''}" title="${esc(rendered)}">${esc(rendered)}</div>`;
+                    return `<div class="v3-grid-cell${descriptor.numeric ? ' is-numeric' : ''}${descriptor.derived ? ' is-derived' : ''}"${descriptor.numeric ? ' dir="ltr"' : ''} title="${esc(rendered)}">${esc(rendered)}</div>`;
                 }).join('')}</div>`;
             };
             const bindGridActions = () => {
@@ -2287,7 +2336,7 @@
         _renderChartCollapse() {
             document.getElementById('v3-chart-frame').hidden = this.chartCollapsed;
             document.getElementById('v3-chart-edit').hidden = this.chartCollapsed;
-            document.getElementById('v3-chart-toggle').textContent = this.chartCollapsed ? 'Expand' : 'Collapse';
+            document.getElementById('v3-chart-toggle').textContent = this.chartCollapsed ? t('common.expand') : t('common.collapse');
         },
 
         toggleDock(tab) {
@@ -2317,12 +2366,12 @@
             const body = document.getElementById('v3-dock-body');
             const toggle = document.getElementById('v3-dock-toggle');
             body.hidden = !this.dockOpen;
-            toggle.textContent = this.dockOpen ? 'Hide' : 'Show';
+            toggle.textContent = this.dockOpen ? t('common.hide') : t('common.show');
             toggle.setAttribute('aria-expanded', String(this.dockOpen));
             if (!this.dockOpen) return;
             const turn = this.turns.find((item) => item.id === this.selectedResultId);
             if (!turn) {
-                body.innerHTML = '<div class="v3-dock-empty">No run yet — SQL, timings and column profiling appear here after a question is answered.</div>';
+                body.innerHTML = `<div class="v3-dock-empty">${h('shell.dock.empty')}</div>`;
                 return;
             }
             body.innerHTML = this.dockTab === 'profiling'
@@ -2349,31 +2398,31 @@
             const rows = normalizeRows(data.results).length;
             const nodes = new Set(turn.trace.filter((event) => event.status === 'node_finished').map((event) => event.node));
             const validation = nodes.has('sqlglot_validate')
-                ? 'sqlglot validated'
-                : nodes.has('dax_static_validate') ? 'DAX validated' : 'validation unavailable';
+                ? t('results.sql.sqlglotValidated')
+                : nodes.has('dax_static_validate') ? t('results.sql.daxValidated') : t('results.sql.validationUnavailable');
             const stats = [
-                ['Rows', rows],
-                ['Exec', formatMs(metrics.execution_time_ms)],
-                ['LLM', formatMs(metrics.llm_latency_ms)],
-                ['Tokens', formatCompact(metrics.total_tokens)],
-                ['Retries', metrics.retry_count == null ? '—' : metrics.retry_count],
+                [t('results.sql.rows'), rows],
+                [t('results.sql.exec'), formatMs(metrics.execution_time_ms)],
+                [t('results.sql.llm'), formatMs(metrics.llm_latency_ms)],
+                [t('results.sql.tokens'), formatCompact(metrics.total_tokens)],
+                [t('results.sql.retries'), metrics.retry_count == null ? '—' : metrics.retry_count],
             ];
-            return `<div class="v3-stats">${stats.map(([label, value]) => `<div class="v3-stat"><div class="v3-stat-label">${label}</div><div class="v3-stat-value">${esc(value)}</div></div>`).join('')}</div>
+            return `<div class="v3-stats">${stats.map(([label, value]) => `<div class="v3-stat"><div class="v3-stat-label">${escFull(label)}</div><div class="v3-stat-value">${esc(value)}</div></div>`).join('')}</div>
               ${this._filtersHtml(data)}
               <div class="v3-sql-card">
-                <div class="v3-sql-provenance">generated · ${validation} · read-only <button data-dev-details>Developer details</button><button data-copy-sql>Copy</button></div>
-                <pre>${esc(data.sql || '-- No SQL or DAX was generated for this answer.')}</pre>
+                <div class="v3-sql-provenance">${h('results.sql.provenance', { validation })} <button data-dev-details>${h('results.sql.developerDetails')}</button><button data-copy-sql>${h('common.copy')}</button></div>
+                <pre dir="ltr">${esc(data.sql || t('results.sql.noSql'))}</pre>
               </div>`;
         },
 
         _profileHtml(turn) {
             const profiles = compactProfile(turn.result.results);
-            if (!profiles.length) return '<div class="v3-dock-empty">No result columns are available to profile.</div>';
+            if (!profiles.length) return `<div class="v3-dock-empty">${h('results.profile.empty')}</div>`;
             return `<div class="v3-profile-list">${profiles.map((profile) => `<div class="v3-profile-row">
-              <div class="v3-profile-name"><strong title="${esc(profile.name)}">${esc(profile.name)}</strong><span>${esc(profile.type)}</span></div>
-              <div class="v3-profile-range"><div class="v3-profile-track"><div class="v3-profile-fill" style="width:${profile.fillPct}%"></div></div><span>${esc(profile.range)}</span></div>
-              <div class="v3-profile-figure">${profile.distinct} distinct</div><div class="v3-profile-figure">nulls ${profile.nullPct}%</div>
-            </div>`).join('')}</div><div class="v3-profile-foot">Need distributions and correlations? <button class="v3-text-btn" data-full-profile>Open full profile report</button></div>`;
+              <div class="v3-profile-name"><strong title="${esc(profile.name)}"><bdi>${esc(profile.name)}</bdi></strong><span>${h(`results.profile.type.${profile.type}`)}</span></div>
+              <div class="v3-profile-range"><div class="v3-profile-track"><div class="v3-profile-fill" style="width:${profile.fillPct}%"></div></div><span dir="auto">${esc(profile.range)}</span></div>
+              <div class="v3-profile-figure">${h('results.profile.distinct', { count: profile.distinct })}</div><div class="v3-profile-figure">${h('results.profile.nulls', { percent: profile.nullPct })}</div>
+            </div>`).join('')}</div><div class="v3-profile-foot">${h('results.profile.footQuestion')} <button class="v3-text-btn" data-full-profile>${h('results.profile.openFull')}</button></div>`;
         },
 
         _openFullProfile() {
@@ -2383,7 +2432,7 @@
             const overlay = document.createElement('div');
             overlay.id = 'v3-profile-overlay';
             overlay.className = 'v3-profile-overlay';
-            overlay.innerHTML = '<div class="v3-profile-modal"><button class="v3-profile-close" aria-label="Close profile">×</button><div class="v3-profile-modal-body"></div></div>';
+            overlay.innerHTML = `<div class="v3-profile-modal"><button class="v3-profile-close" aria-label="${h('results.profile.close')}">×</button><div class="v3-profile-modal-body"></div></div>`;
             document.body.appendChild(overlay);
             const opener = document.activeElement;
             overlay.querySelector('.v3-profile-modal-body').appendChild(section);
@@ -2411,13 +2460,13 @@
                     const canSend = Boolean(me.connectors_enabled && me.is_entra && window._resultHandle);
                     button.disabled = !canSend;
                     button.setAttribute('aria-disabled', String(!canSend));
-                    button.title = canSend ? 'Send result' : 'Connect Microsoft Entra and a delivery connector to send this result';
+                    button.title = canSend ? t('results.actions.sendResult') : t('results.actions.sendDisabled');
                 }
             });
         },
 
         _initials() {
-            const name = String(window._currentUser?.name || window._currentUser?.email || 'You').trim();
+            const name = String(window._currentUser?.name || window._currentUser?.email || t('common.you')).trim();
             const parts = name.split(/\s+/);
             return (parts.length > 1 ? `${parts[0][0]}${parts[parts.length - 1][0]}` : name.slice(0, 2)).toUpperCase();
         },

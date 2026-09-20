@@ -46,8 +46,12 @@ def _connect():
     )
 
 
-def friendly_db_error(exc: Exception) -> str:
-    """Map a DB exception to a user-facing login/health message."""
+def friendly_db_error_key(exc: Exception) -> str:
+    """Map a DB exception to the catalog key of a user-facing login message.
+
+    Returns a key under ``login.errors.*`` so the Flask layer can render it in
+    the request's UI language (``src.i18n.translate``).
+    """
     msg = str(exc).lower()
     if any(
         token in msg
@@ -61,19 +65,19 @@ def friendly_db_error(exc: Exception) -> str:
             "network is unreachable",
         )
     ):
-        return (
-            "Cannot reach the metadata database. "
-            "Check your network or VPN, and ensure your IP is allowed in "
-            "Azure Postgres firewall rules."
-        )
+        return "login.errors.dbUnreachable"
     if "password authentication failed" in msg:
-        return "Database authentication failed. Check METADATA_DB_USER / METADATA_DB_PASSWORD."
+        return "login.errors.dbAuthFailed"
     if "auth_users" in msg and "does not exist" in msg:
-        return (
-            "Login tables are missing. Run: "
-            "python scripts/run_insights_migrations.py"
-        )
-    return "Sign-in is temporarily unavailable (database error)."
+        return "login.errors.dbTablesMissing"
+    return "login.errors.dbUnavailable"
+
+
+def friendly_db_error(exc: Exception) -> str:
+    """English user-facing message for a DB exception (operator/health paths)."""
+    from src.i18n import translate
+
+    return translate("en", friendly_db_error_key(exc))
 
 
 def check_connection() -> tuple[bool, str | None]:
@@ -94,7 +98,7 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
         row = conn.execute(
             """
             SELECT id, name, email, password_hash, role, status, avatar_hue,
-                   last_active_at, created_at
+                   last_active_at, created_at, locale
             FROM auth_users WHERE email = %s LIMIT 1
             """,
             (email,),
@@ -111,6 +115,7 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
         "avatar_hue":    row[6],
         "last_active_at": row[7].isoformat() if row[7] else None,
         "created_at":    row[8].isoformat() if row[8] else None,
+        "locale":        row[9],
     }
 
 
@@ -138,7 +143,7 @@ def list_users() -> List[Dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT id, name, email, role, status, avatar_hue,
-                   created_at, last_active_at
+                   created_at, last_active_at, locale
             FROM auth_users ORDER BY id
             """
         ).fetchall()
@@ -152,9 +157,17 @@ def list_users() -> List[Dict[str, Any]]:
             "avatar_hue":    r[5],
             "created_at":    r[6].isoformat() if r[6] else None,
             "last_active_at": r[7].isoformat() if r[7] else None,
+            "locale":        r[8],
         }
         for r in rows
     ]
+
+
+def set_user_locale(user_id: int, locale: str) -> None:
+    """Persist the account's UI language (a shipped BCP 47 tag; see src.i18n)."""
+    with _connect() as conn:
+        conn.execute("UPDATE auth_users SET locale = %s WHERE id = %s", (locale, user_id))
+        conn.commit()
 
 
 def create_user(

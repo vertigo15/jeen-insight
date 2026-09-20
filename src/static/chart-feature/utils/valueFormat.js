@@ -9,6 +9,9 @@
  * @module valueFormat
  */
 
+/** Intl tag for grouping/decimals: the interface language's formatting locale. */
+const formatLocale = () => (typeof window !== 'undefined' && window.I18n && window.I18n.formatLocale) || 'en-US';
+
 /**
  * @param {{kind?: string, compact?: boolean, symbol?: string, scale?: number}} meta
  *   kind: "number" | "currency" | "percent"
@@ -31,7 +34,7 @@ export function makeValueFormatter(meta = {}) {
         return d > 0 ? s.replace(/\.?0+$/, '') : s;
     };
     // Thousands separators for the non-abbreviated path: 1,234,567.
-    const grouped = (n) => Math.round(n).toLocaleString('en-US');
+    const grouped = (n) => Math.round(n).toLocaleString(formatLocale());
 
     return function format(value) {
         if (value === null || value === undefined) return '';
@@ -125,10 +128,10 @@ export function makeLabelFormatter(meta = {}, values = []) {
         return d > 0 ? s.replace(/\.?0+$/, '') : s;
     };
     const grouped = (n) => {
-        if (Number.isInteger(n)) return n.toLocaleString('en-US');
+        if (Number.isInteger(n)) return n.toLocaleString(formatLocale());
         const abs = Math.abs(n);
         const decimals = abs >= 1000 ? 0 : abs < 1 ? 3 : 2;
-        return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: decimals });
+        return n.toLocaleString(formatLocale(), { minimumFractionDigits: 0, maximumFractionDigits: decimals });
     };
 
     return function formatLabel(value) {
@@ -142,7 +145,7 @@ export function makeLabelFormatter(meta = {}, values = []) {
             const [base, suffix] = unit;
             const q = n / base;
             const decimals = Math.abs(q) < 100 ? 1 : 0;
-            body = (Math.abs(q) >= 1000 ? Math.round(q).toLocaleString('en-US') : trim(q, decimals)) + suffix;
+            body = (Math.abs(q) >= 1000 ? Math.round(q).toLocaleString(formatLocale()) : trim(q, decimals)) + suffix;
         } else {
             body = grouped(n);
         }
