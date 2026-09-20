@@ -220,29 +220,6 @@
       flex-shrink: 0;
     }
 
-    /* Pre-auth interface-language toggle: labels are in each language's own script. */
-    .login-lang {
-      display: flex;
-      justify-content: center;
-      gap: 4px;
-      margin-top: 20px;
-    }
-    .login-lang-btn {
-      background: none;
-      border: 1px solid transparent;
-      border-radius: var(--radius-pill);
-      color: var(--color-muted);
-      font: inherit;
-      font-size: 12px;
-      padding: 4px 10px;
-      cursor: pointer;
-    }
-    .login-lang-btn:hover { color: var(--color-text); }
-    .login-lang-btn[aria-checked="true"] {
-      color: var(--color-text);
-      border-color: var(--color-border);
-      background: var(--color-surface-2);
-    }
   </style>
 </head>
 <body>
@@ -345,14 +322,6 @@
         <button type="submit" class="login-btn" id="login-btn">{{ t('login.submit') }}</button>
       </form>
 
-      <div class="login-lang" role="radiogroup" aria-label="{{ t('settings.general.language.label') }}">
-        {% for l in ui_locales %}
-        <button type="button" class="login-lang-btn" role="radio" lang="{{ l.tag }}" dir="{{ l.dir }}"
-                data-locale="{{ l.tag }}" aria-checked="{{ 'true' if l.tag == locale else 'false' }}">
-          <bdi>{{ l.name }}</bdi>
-        </button>
-        {% endfor %}
-      </div>
     </div>
   </div>
 
@@ -380,17 +349,6 @@
       btn.appendChild(document.createTextNode({{ t('login.submitting')|tojson }}));
     });
 
-    // Pre-auth language choice: a readable cookie the server reads on the next
-    // request (a signed-in account's saved language takes precedence later).
-    document.querySelectorAll('.login-lang-btn').forEach((button) => {
-      button.addEventListener('click', () => {
-        const tag = button.dataset.locale;
-        if (!tag || button.getAttribute('aria-checked') === 'true') return;
-        const secure = location.protocol === 'https:' ? '; secure' : '';
-        document.cookie = 'locale=' + encodeURIComponent(tag) + '; path=/; max-age=31536000; samesite=lax' + secure;
-        location.reload();
-      });
-    });
   </script>
 </body>
 </html>

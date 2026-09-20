@@ -191,7 +191,8 @@
     },
     "user": {
       "account": "חשבון",
-      "signOut": "התנתקות"
+      "signOut": "התנתקות",
+      "language": "שפה"
     },
     "theme": {
       "switchToDark": "מעבר למצב כהה",

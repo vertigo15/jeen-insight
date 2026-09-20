@@ -4154,6 +4154,29 @@ a.sp-nav-item {
 .user-dropdown-logout { color: var(--color-error); }
 .user-dropdown-logout:hover { background: var(--color-error-bg); }
 
+/* Interface language (account property; see auth.js). Labels are written in
+   their own language, so each option carries its own lang/dir. */
+.user-dropdown-lang {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+}
+.user-dropdown-lang-label { font-size: var(--text-xs); color: var(--color-muted); white-space: nowrap; }
+.user-lang-picker {
+  display: inline-flex; align-items: center; gap: 2px; padding: 2px;
+  border: 1px solid var(--color-border); border-radius: var(--radius-full);
+  background: var(--color-surface);
+}
+.user-lang-picker[aria-busy="true"] { opacity: .6; pointer-events: none; }
+.user-lang-option {
+  border: 0; border-radius: var(--radius-full); background: transparent;
+  color: var(--color-muted); font: inherit; font-size: var(--text-xs);
+  padding: 3px 10px; cursor: pointer; white-space: nowrap;
+  transition: background 120ms ease, color 120ms ease;
+}
+.user-lang-option:hover { color: var(--color-text); background: var(--color-surface-2); }
+.user-lang-option[aria-checked="true"] { background: var(--color-text); color: var(--color-bg, #fff); }
+.user-lang-option:focus-visible { box-shadow: var(--shadow-focus); outline: none; }
+
 /* Role badges (inline and in table) */
 .user-role-badge {
   display: inline-flex; align-items: center;
@@ -6360,6 +6383,7 @@ textarea.chat-tool-input { resize: vertical; min-height: 2.2rem; font-family: in
   unicode-bidi: isolate;
   text-align: left;
 }
+[dir="rtl"] .user-dropdown-email { text-align: right; }
 /* Numeric table cells stay an LTR island aligned to the trailing edge. */
 [dir="rtl"] td.numeric,
 [dir="rtl"] .cell-numeric,

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from selenium import webdriver
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support import expected_conditions as EC
@@ -315,6 +316,34 @@ def test_interface_language_switch_mirrors_the_shell_and_persists(driver):
         assert [o.get_attribute("lang") for o in options] == ["en", "he"]
         active = picker.find_element(By.CSS_SELECTOR, '[aria-checked="true"]')
         assert active.get_attribute("data-locale") == "he"
+
+        # The everyday switch is in the avatar menu: open it and flip back to
+        # English from there (saves to the account, then the page reloads LTR).
+        driver.get(APP_URL)
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "v3-shell")))
+        # A first-time account gets the welcome dialog over the shell (mounted
+        # asynchronously after onboarding state loads); skip it if it shows up.
+        try:
+            WebDriverWait(driver, 4).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, ".jo-backdrop [data-skip]"))
+            ).click()
+            WebDriverWait(driver, 5).until_not(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".jo-backdrop"))
+            )
+        except TimeoutException:
+            pass  # returning user, no dialog
+        avatar = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "user-avatar-btn")))
+        avatar.click()
+        menu_picker = WebDriverWait(driver, 5).until(
+            EC.visibility_of_element_located((By.ID, "user-lang-picker"))
+        )
+        assert menu_picker.find_element(By.CSS_SELECTOR, '[aria-checked="true"]').get_attribute("data-locale") == "he"
+        _shot(driver, "10_hebrew_user_menu.png")
+        menu_picker.find_element(By.CSS_SELECTOR, '[data-locale="en"]').click()
+        WebDriverWait(driver, 15).until(
+            lambda d: d.find_element(By.TAG_NAME, "html").get_attribute("lang") == "en"
+        )
+        assert driver.find_element(By.TAG_NAME, "html").get_attribute("dir") == "ltr"
     finally:
         _set_locale(driver, "en")
         assert driver.find_element(By.TAG_NAME, "html").get_attribute("dir") == "ltr"

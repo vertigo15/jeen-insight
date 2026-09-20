@@ -191,7 +191,8 @@
     },
     "user": {
       "account": "Account",
-      "signOut": "Sign out"
+      "signOut": "Sign out",
+      "language": "Language"
     },
     "theme": {
       "switchToDark": "Switch to dark mode",

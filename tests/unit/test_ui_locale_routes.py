@@ -52,8 +52,8 @@ def test_login_page_defaults_to_english_ltr_with_language_headers(client):
     vary = {v.strip() for v in res.headers.get("Vary", "").split(",")}
     assert {"Cookie", "Accept-Language"} <= vary
     assert "Sign in to your workspace" in body
-    # The pre-auth toggle lists every shipped language in its own script.
-    assert 'data-locale="he"' in body and "עברית" in body
+    # No language control before sign-in: the choice lives in the account menu.
+    assert "login-lang" not in body and 'data-locale="he"' not in body
     # Anonymous pages never receive the workspace catalog payload.
     assert 'id="i18n-bootstrap"' not in body
 
@@ -295,3 +295,16 @@ def test_login_next_cannot_redirect_off_site(client, monkeypatch):
     res = client.get("/login?next=//evil.example/x")
     assert res.status_code == 302
     assert res.headers["Location"] in ("/", "http://localhost/")
+
+
+def test_workspace_user_menu_carries_the_language_picker(client):
+    """The switcher lives in the avatar dropdown, server-rendered so the active
+    option is right on first paint, each label in its own script/direction."""
+    _login(client, locale="he")
+    body = client.get("/").get_data(as_text=True)
+    assert 'id="user-lang-picker"' in body
+    assert 'lang="en" dir="ltr"' in body and 'lang="he" dir="rtl"' in body
+    he_option = re.search(r'<button[^>]*data-locale="he"[^>]*>', body).group(0)
+    en_option = re.search(r'<button[^>]*data-locale="en"[^>]*>', body).group(0)
+    assert 'aria-checked="true"' in he_option and 'aria-checked="false"' in en_option
+    assert "<bdi>עברית</bdi>" in body and "<bdi>English</bdi>" in body
