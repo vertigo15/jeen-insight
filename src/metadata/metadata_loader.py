@@ -25,7 +25,18 @@ from typing import Any, Dict, List, Optional
 
 import asyncpg
 
-from .catalog_filter import filter_tables_rich, filter_columns
+from .catalog_filter import filter_tables_rich, filter_columns, is_system_object
+
+# A catalogue row the model may query: not a PostgreSQL system-schema object,
+# not hidden by the catalogue owner, not dropped from the source. Referenced as
+# the `t` alias of public.metadata_tables. Rows without a schema_name pass here
+# and fall through to the name-based is_system_object() check. Each clause is
+# only emitted when the Schema Modeler version at hand ships the column.
+_VISIBLE_TABLE_CLAUSES = {
+    "schema_name": "COALESCE(t.schema_name, '') NOT IN ('information_schema', 'pg_catalog')",
+    "is_hidden": "COALESCE(t.is_hidden, FALSE) = FALSE",
+    "is_deleted": "COALESCE(t.is_deleted, FALSE) = FALSE",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +59,30 @@ class MetadataLoader:
         self._has_profile_table: Optional[bool] = None
         # Whether metadata_relationships carries structured from/to endpoints.
         self._structured_relationships: Optional[bool] = None
+        # SQL predicate selecting queryable metadata_tables rows (alias `t`);
+        # probed lazily against the columns this Schema Modeler version has.
+        self._visible_table_sql: Optional[str] = None
+
+    async def _visible_tables_predicate(self, conn) -> str:
+        """Return the visibility predicate for ``public.metadata_tables t``."""
+        if self._visible_table_sql is None:
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'metadata_tables'
+                      AND column_name = ANY($1::text[])
+                    """,
+                    list(_VISIBLE_TABLE_CLAUSES),
+                )
+                present = {r["column_name"] for r in rows}
+            except Exception as exc:  # noqa: BLE001
+                logger.info("metadata_loader: metadata_tables column probe failed (%s)", exc)
+                present = set()
+            clauses = [sql for col, sql in _VISIBLE_TABLE_CLAUSES.items() if col in present]
+            self._visible_table_sql = " AND ".join(clauses) if clauses else "TRUE"
+            logger.info("metadata_loader: visible-table predicate uses %s", sorted(present) or "name filter only")
+        return self._visible_table_sql
 
     # ------------------------------------------------------------------
     # Public API
@@ -113,8 +148,9 @@ class MetadataLoader:
             return cached[1]  # type: ignore[return-value]
 
         async with self.pool.acquire() as conn:
+            visible = await self._visible_tables_predicate(conn)
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT
                     t.table_name,
                     t.table_description,
@@ -125,6 +161,7 @@ class MetadataLoader:
                     ON  c.source            = t.source
                     AND lower(c.table_name) = lower(t.table_name)
                 WHERE t.source = $1
+                  AND {visible}
                 GROUP BY t.table_name, t.table_description
                 ORDER BY t.table_name
                 """,
@@ -295,24 +332,34 @@ class MetadataLoader:
         logger.info("metadata_sources schema column: %r", self._schema_column)
 
     async def _load_tables(self, source_key: str) -> List[str]:
-        """Return one line per table.  Description is omitted when absent."""
+        """Return one line per *queryable* table.  Description is omitted when absent.
+
+        Schema Modeler harvests whole databases, so the catalogue can carry the
+        PostgreSQL ``information_schema`` / ``pg_catalog`` objects and tables the
+        owner hid or that vanished from the source. None of those may reach the
+        model or the SQL validator: the schema flag is checked in SQL and the
+        name-based fallback (:func:`is_system_object`) covers rows without one.
+        """
         async with self.pool.acquire() as conn:
+            visible = await self._visible_tables_predicate(conn)
             rows = await conn.fetch(
-                """
-                SELECT
-                    CASE
-                        WHEN table_description IS NOT NULL
-                             AND trim(table_description) <> ''
-                        THEN table_name || ' - ' || table_description
-                        ELSE table_name
-                    END AS line
-                FROM public.metadata_tables
-                WHERE source = $1
-                ORDER BY table_name
+                f"""
+                SELECT t.table_name, t.table_description
+                FROM public.metadata_tables t
+                WHERE t.source = $1
+                  AND {visible}
+                ORDER BY t.table_name
                 """,
                 source_key,
             )
-        return [r["line"] for r in rows]
+        lines: List[str] = []
+        for r in rows:
+            name = r["table_name"]
+            if not name or is_system_object(name):
+                continue
+            description = (r["table_description"] or "").strip()
+            lines.append(f"{name} - {description}" if description else str(name))
+        return lines
 
     async def _load_columns(self, source_key: str) -> List[str]:
         """Return one line per visible column.  Only meaningful attributes are emitted:
@@ -324,28 +371,37 @@ class MetadataLoader:
           the model must not be offered a field the catalog owner hid.
         """
         async with self.pool.acquire() as conn:
+            visible = await self._visible_tables_predicate(conn)
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT
-                    table_name || '.' || column_name ||
-                    ' - Type: ' || data_type ||
+                    c.table_name,
+                    c.table_name || '.' || c.column_name ||
+                    ' - Type: ' || c.data_type ||
                     CASE
-                        WHEN description IS NOT NULL AND trim(description) <> ''
-                        THEN ', Description: ' || description
+                        WHEN c.description IS NOT NULL AND trim(c.description) <> ''
+                        THEN ', Description: ' || c.description
                         ELSE ''
                     END ||
-                    CASE WHEN COALESCE(is_primary_key, FALSE) = TRUE THEN ', PK: true' ELSE '' END ||
-                    CASE WHEN COALESCE(is_nullable,    TRUE)  = FALSE THEN ', NOT NULL'   ELSE '' END
+                    CASE WHEN COALESCE(c.is_primary_key, FALSE) = TRUE THEN ', PK: true' ELSE '' END ||
+                    CASE WHEN COALESCE(c.is_nullable,    TRUE)  = FALSE THEN ', NOT NULL'   ELSE '' END
                     AS line
-                FROM public.metadata_columns
-                WHERE source = $1
-                  AND COALESCE(is_hidden, FALSE) = FALSE
-                  AND COALESCE(is_deleted, FALSE) = FALSE
-                ORDER BY table_name, column_name
+                FROM public.metadata_columns c
+                WHERE c.source = $1
+                  AND COALESCE(c.is_hidden, FALSE) = FALSE
+                  AND COALESCE(c.is_deleted, FALSE) = FALSE
+                  -- Columns of a system-schema, hidden or dropped table go with it.
+                  AND NOT EXISTS (
+                      SELECT 1 FROM public.metadata_tables t
+                      WHERE t.source = c.source
+                        AND lower(t.table_name) = lower(c.table_name)
+                        AND NOT ({visible})
+                  )
+                ORDER BY c.table_name, c.column_name
                 """,
                 source_key,
             )
-        return [r["line"] for r in rows]
+        return [r["line"] for r in rows if not is_system_object(r["table_name"])]
 
     async def _has_profiles(self) -> bool:
         if self._has_profile_table is None:

@@ -17,6 +17,8 @@ databricks-sql-connector>=4.3.0
 # Auth
 bcrypt>=4.0.0
 msal>=1.28.0
+# Generic OIDC sign-in (Keycloak, Zitadel): ID-token validation against JWKS
+PyJWT[crypto]>=2.8.0
 # Envelope encryption (AES-GCM) for connector secrets + per-user OAuth tokens
 cryptography>=42.0.0
 # Signed, timestamped internal service tokens (Flask -> FastAPI Principal)

@@ -71,6 +71,7 @@
     "pageTitle": "Sign in — Jeen Insights",
     "subtitle": "Sign in to your workspace",
     "microsoft": "Sign in with Microsoft",
+    "continueWith": "Continue with {provider}",
     "or": "or",
     "emailLabel": "Email / username",
     "emailPlaceholder": "admin",
@@ -91,7 +92,10 @@
       "dbUnavailable": "Sign-in is temporarily unavailable (database error).",
       "dbUnreachable": "Cannot reach the metadata database. Check your network or VPN, and ensure your IP is allowed in Azure Postgres firewall rules.",
       "dbAuthFailed": "Database authentication failed. Check METADATA_DB_USER / METADATA_DB_PASSWORD.",
-      "dbTablesMissing": "Login tables are missing. Run: python scripts/run_insights_migrations.py"
+      "dbTablesMissing": "Login tables are missing. Run: python scripts/run_insights_migrations.py",
+      "ssoFailed": "Sign-in with {provider} failed: {reason}",
+      "ssoCancelled": "Sign-in with {provider} was cancelled.",
+      "ssoNoEmail": "Your {provider} account has no email address."
     }
   },
   "setup": {

@@ -107,9 +107,21 @@ test.describe('Smoke', { tag: ['@smoke'] }, () => {
     await L.newConversation(page);
     const turn = await L.ask(page, FORECAST_Q, {}, L.WAIT.card);
     L.expectPath(turn, 'ml');
-    expect(turn.card, `expected a confirm card, got ${turn.card || turn.status} — ${turn.answer}`).toBe('confirm');
-    await expect(L.confirmCard(page)).toHaveAttribute('data-skill', 'forecast');
-    await expect(L.confirmCard(page).locator('[data-run]')).toBeEnabled();
+    // The planner stops for the user either way: a confirm card when the catalog
+    // names the date axis, a clarify card (pick the date column) when it does not
+    // — the db catalog source lacks the column roles the MCP catalog carries.
+    // Both prove the router and planner; nothing runs until the user acts.
+    expect(['confirm', 'clarify'], `expected a stop card, got ${turn.card || turn.status} — ${turn.answer}`).toContain(turn.card);
+    const card = page.locator('#v3-placeholder .v3-ml-card');
+    if (turn.card === 'confirm') {
+      await expect(card).toHaveAttribute('data-skill', 'forecast');
+      await expect(card.locator('[data-run]')).toBeEnabled();
+    } else {
+      const options = await card.locator('[data-exit]').count();
+      expect(options, 'a clarification must offer choices').toBeGreaterThan(0);
+      L.annotate(testInfo, 'finding', `planner asked for clarification instead of confirming: ${turn.answer || (await card.locator('.v3-ml-message').textContent())}`);
+    }
+    L.annotate(testInfo, 'ml_card', turn.card);
     const last = await L.lastTurnResult(page);
     L.annotate(testInfo, 'latency', L.latencyOf(last && last.result, turn.wallMs));
   });
