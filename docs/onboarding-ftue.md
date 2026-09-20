@@ -2,9 +2,11 @@
 
 A layer on top of the v3 workspace that helps first-time users get to their first
 answer: a welcome dialog, a guided tour, quick-start cards, a getting-started
-checklist, and a post-answer nudge. State is persisted **server-side per user**
-so "show once" / progress holds across browsers and devices — nothing lives in
-`localStorage`.
+checklist, and a post-answer nudge. Progress and the permanent opt-out are
+persisted **server-side per user** so they hold across browsers and devices.
+The one deliberate exception is the session-scoped "Skip for now", which has no
+server equivalent and lives in a user-scoped `sessionStorage` key (see
+[Frequency model](#frequency-model)). Nothing lives in `localStorage`.
 
 No new dependencies and no build step: the client is a single vanilla-JS IIFE
 loaded after `workspaceController.js`, reading the DOM the workspace already
@@ -15,7 +17,7 @@ already emits.
 
 | Surface | What it is |
 | --- | --- |
-| **Welcome dialog** | First-run modal introducing the product, with "Take a 30-second tour", "Skip for now", and a "Don't show this again" checkbox. |
+| **Welcome dialog** | First-run modal introducing the product, with "Take a 30-second tour", "Skip for now" (mutes every surface for this session), and a "Don't show this again" checkbox (permanent opt-out of every surface). |
 | **Guided tour** | A four-step coach-mark tour (connection → suggestions → composer → tables). Non-blocking; repositions on resize/scroll; Escape/Skip exits. |
 | **Quick-start cards** | Replace the empty result placeholder with runnable example questions + a "browse tables" card. Retire after the third answer; reset on connection change. |
 | **Getting-started checklist** | A four-item progress card above the composer. Items auto-complete from real usage signals. |
@@ -81,14 +83,28 @@ CREATE TABLE IF NOT EXISTS insights_user_onboarding (
 );
 ```
 
+plus the permanent opt-out column added by `028_ftue_opt_out.sql`:
+
+```sql
+ALTER TABLE insights_user_onboarding
+    ADD COLUMN IF NOT EXISTS ftue_opted_out_at TIMESTAMPTZ;
+```
+
 Field meaning:
 
 - `checklist` — the four steps as `{item: true}`; all four true drives the
   "You're all set" state.
-- `tour_completed_at` — set when the guided tour finishes/exits.
-- `welcome_seen_at` — set **only** when the user ticks "Don't show this again".
+- `tour_completed_at` — set when the user finishes or exits the guided tour
+  themselves (not when the tour is cancelled by a skip/opt-out underneath it).
+- `welcome_seen_at` — set alongside `ftue_opted_out_at` when the user ticks
+  "Don't show this again".
+- `ftue_opted_out_at` — the **permanent opt-out**: suppresses every FTUE
+  surface for that account. It is a dedicated column on purpose: a user can
+  reach `welcome_seen_at + checklist_dismissed_at + nudge_dismissed_at` through
+  ordinary independent dismissals, and that must not silently become a global
+  preference.
 - `checklist_dismissed_at` / `nudge_dismissed_at` — set when those cards are
-  dismissed.
+  dismissed individually.
 
 ### Request path
 
@@ -108,10 +124,24 @@ into local state without ever downgrading a known value to null.
 
 ## Frequency model
 
-The welcome dialog and guided tour **re-appear every session until the user
-explicitly opts out** via the "Don't show this again" checkbox (which persists
-`welcome_seen_at`). Skipping or taking the tour is temporary. The checklist and
-nudge likewise persist across sessions until dismissed or completed.
+Left alone, the welcome dialog re-appears each new session, and the checklist,
+cards and nudge persist until individually dismissed or completed. Two controls
+on the welcome dialog change that for **every** surface at once:
+
+| Control | Scope | Where it lives |
+| --- | --- | --- |
+| **Skip for now** (or Escape) | Mutes the whole FTUE — welcome, tour, checklist, quick-start cards, nudge, coach-mark hints — for the **current tab's session**. Anything already on screen is removed immediately; nothing remounts on reload or on a connection change; it returns in a genuinely new session (new tab/window). | Client only: an in-memory flag mirrored into `sessionStorage` under `jeen:onboarding:skip:<identity>`, written for every identity known to the page (`id:<user_id>` from the onboarding GET, `auth:<id>` / `email:<email>` from `/api/auth/me`) so the skip survives a reload where one of those sources fails soft. User-scoped so a logout/login in the same tab cannot inherit it; when no identity is known nothing is written and the in-memory flag alone covers the page. |
+| **Don't show this again** (ticked, then Skip or Take a tour) | **Permanent** opt-out of the whole FTUE for that account, across browsers and devices. | Server: `ftue_opted_out_at` (via `PATCH {ftue_opted_out: true}`). The session flag is also set so nothing can flash back before the write lands. |
+
+"Take a 30-second tour" always runs the tour the user just asked for, even when
+the box is ticked; when it ends, the rest of the FTUE stays muted.
+
+Known limits: `sessionStorage` is per tab (top-level browsing context), so a
+skip in one tab does not affect other open tabs at all — each has its own
+session (a tab opened *from* the skipped tab may start with a copy). The service is fail-soft
+(a DB error returns an empty row with HTTP 200), so a lost permanent write is
+still covered for the current session by the session flag and would re-show the
+FTUE next session.
 
 ## Files
 
@@ -123,6 +153,7 @@ nudge likewise persist across sessions until dismissed or completed.
 | `src/agent/onboarding.py` | `OnboardingService` (get-or-create + merge). |
 | `src/api/models.py` | `OnboardingPatch` request model. |
 | `db/migrations/insights/021_user_onboarding.sql` | The state table. |
+| `db/migrations/insights/028_ftue_opt_out.sql` | Adds `ftue_opted_out_at` (permanent opt-out). |
 | `src/ui_app.py` | Flask proxy routes that stamp `user_id`. |
 
 ## Testing a fresh run
@@ -134,4 +165,8 @@ row (a fresh empty row is recreated on next load):
 DELETE FROM insights_user_onboarding WHERE user_id = '<your-user-id>';
 ```
 
-Then hard-refresh the workspace (also picks up the latest `?v=` assets).
+Then open a **fresh tab from the address bar** (a plain hard-refresh keeps the
+tab's `sessionStorage`, so a "Skip for now" from earlier in that tab would still
+mute the FTUE; a tab opened via a link from that tab may inherit a copy) or
+remove the `jeen:onboarding:skip:*` keys from DevTools > Application > Session
+Storage. A hard-refresh also picks up the latest `?v=` assets.

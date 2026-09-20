@@ -6,6 +6,7 @@ Backed by a single table, `insights_user_onboarding` (one row per user_id):
   * checklist (jsonb)      — flat {item: bool} map for the getting-started card
   * checklist_dismissed_at — checklist card dismissed
   * nudge_dismissed_at     — post-first-answer nudge dismissed
+  * ftue_opted_out_at      — permanent opt-out of every FTUE surface
 
 The pool is shared with `MetadataLoader`/`ConnectionService`/`ConversationHistoryService`
 (all point at METADATA_DB_*). Reads/writes are fail-soft: on any DB error (e.g. the
@@ -33,6 +34,7 @@ def _empty_state(user_id: str) -> Dict[str, Any]:
         "checklist": {},
         "checklist_dismissed_at": None,
         "nudge_dismissed_at": None,
+        "ftue_opted_out_at": None,
         "updated_at": None,
     }
 
@@ -54,6 +56,7 @@ def _row_to_dict(row: asyncpg.Record) -> Dict[str, Any]:
         "tour_completed_at",
         "checklist_dismissed_at",
         "nudge_dismissed_at",
+        "ftue_opted_out_at",
         "updated_at",
     ):
         value = data.get(key)
@@ -97,6 +100,7 @@ class OnboardingService:
         tour_completed: Optional[bool] = None,
         checklist_dismissed: Optional[bool] = None,
         nudge_dismissed: Optional[bool] = None,
+        ftue_opted_out: Optional[bool] = None,
         checklist: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Apply a partial update. Boolean flags stamp NOW() into their column
@@ -112,6 +116,7 @@ class OnboardingService:
                         tour_completed_at,
                         checklist_dismissed_at,
                         nudge_dismissed_at,
+                        ftue_opted_out_at,
                         checklist
                     )
                     VALUES (
@@ -120,7 +125,8 @@ class OnboardingService:
                         CASE WHEN $3::bool THEN NOW() END,
                         CASE WHEN $4::bool THEN NOW() END,
                         CASE WHEN $5::bool THEN NOW() END,
-                        COALESCE($6::jsonb, '{}'::jsonb)
+                        CASE WHEN $6::bool THEN NOW() END,
+                        COALESCE($7::jsonb, '{}'::jsonb)
                     )
                     ON CONFLICT (user_id) DO UPDATE SET
                         welcome_seen_at =
@@ -135,8 +141,11 @@ class OnboardingService:
                         nudge_dismissed_at =
                             CASE WHEN $5::bool THEN NOW()
                                  ELSE insights_user_onboarding.nudge_dismissed_at END,
+                        ftue_opted_out_at =
+                            CASE WHEN $6::bool THEN NOW()
+                                 ELSE insights_user_onboarding.ftue_opted_out_at END,
                         checklist =
-                            insights_user_onboarding.checklist || COALESCE($6::jsonb, '{}'::jsonb),
+                            insights_user_onboarding.checklist || COALESCE($7::jsonb, '{}'::jsonb),
                         updated_at = NOW()
                     RETURNING *
                     """,
@@ -145,6 +154,7 @@ class OnboardingService:
                     tour_completed,
                     checklist_dismissed,
                     nudge_dismissed,
+                    ftue_opted_out,
                     json.dumps(checklist) if checklist is not None else None,
                 )
                 return _row_to_dict(row) if row else _empty_state(user_id)

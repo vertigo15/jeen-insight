@@ -41,5 +41,6 @@ async def patch_onboarding(
         tour_completed=patch.tour_completed,
         checklist_dismissed=patch.checklist_dismissed,
         nudge_dismissed=patch.nudge_dismissed,
+        ftue_opted_out=patch.ftue_opted_out,
         checklist=patch.checklist,
     )

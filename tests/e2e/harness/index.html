@@ -71,6 +71,24 @@
   <script src="/src/static/analysis/analysisPanel.js"></script>
   <script src="/src/static/workspace/workspaceController.js"></script>
 
+  <!--
+    Onboarding (FTUE) layer is opt-in via ?ftue=1: its welcome-dialog backdrop
+    swallows every click, so only the onboarding specs load it. It must come
+    after workspaceController.js (it reads the DOM the controller builds).
+  -->
+  <script>
+    (function () {
+      if (new URLSearchParams(location.search).get('ftue') !== '1') return;
+      var css = document.createElement('link');
+      css.rel = 'stylesheet';
+      css.href = '/src/static/workspace/onboarding.css';
+      document.head.appendChild(css);
+      var js = document.createElement('script');
+      js.src = '/src/static/workspace/onboarding.js';
+      document.body.appendChild(js);
+    })();
+  </script>
+
   <script>
     // Tiny test helper: type + submit a question through the real controller.
     window.__ask = (q, opts) => window.ChatController.send(q, opts || {});
