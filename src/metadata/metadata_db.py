@@ -46,6 +46,13 @@ async def get_metadata_pool() -> asyncpg.Pool:
             min_size=2,
             max_size=10,
             command_timeout=30,
+            # Every Insights object lives in `public` and is referenced
+            # unqualified. The database is shared with other products that
+            # keep same-named tables in their own schemas, so pin the search
+            # path per session instead of trusting the role/database default.
+            # (pg_catalog is always searched first implicitly; listing it
+            # explicitly would make it the creation schema for unqualified DDL.)
+            server_settings={"search_path": "public"},
         )
         logger.info(
             "✅ Metadata DB pool ready (%s:%s/%s)",

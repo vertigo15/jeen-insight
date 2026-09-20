@@ -1,0 +1,45 @@
+---
+description: What "deploy to defence k8s" means for this repo — the target cluster, URL, namespace, registry, overlay and the exact rollout procedure
+alwaysApply: true
+---
+
+# Deploying to the defence Kubernetes cluster
+
+"Deploy to defence k8s / defence cluster / dev161" always means this target and
+nothing else:
+
+| | |
+|---|---|
+| App URL | http://jeen-insights.dev161.internal/ (private DNS A record → internal LB of `svc/jeen-insights-ui`) |
+| Cluster | AKS `aks-openmetadata-dev161-weu`, kube context `defence-aks-openmetadata-dev161` |
+| Namespace / release | `jeen-insights` / Helm release `jeen-insights` from `deployment/k8s_dev` |
+| Overlay | `deployment/k8s_dev/values.defence.yaml` (Recreate strategy, `apps` node pool, no ingress) |
+| Registry | `acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-{api,ui,analytics}` |
+| Secrets | hand-managed `jeen-insights-secrets` (DB, KEK, OIDC client secrets) and ConfigMap `jeen-insights-idp-ca`; never templated |
+| Metadata DB | `10.42.2.4` `jeen_data_metadata`, shared with the LIVE Schema Modeler — Insights-owned objects only |
+| DNS zone | private zone `dev161.internal` in RG `cts-dev-metadata-environment` |
+
+## Procedure
+
+1. Build **linux/amd64** images from the working tree with an immutable tag
+   `$(date +%Y%m%d-%H%M)-$(git rev-parse --short HEAD)`; `az acr login` then push.
+   Only rebuild the components whose code changed; keep the other tags.
+2. Schema changes go through the Job, never through pods:
+   render `deployment/k8s_dev/migrate-job.template.yaml` with the API image and
+   apply it before the Helm upgrade (pods run with `SCHEMA_BOOTSTRAP_ON_START=false`
+   and refuse to start if the baseline is missing).
+3. `helm dependency build deployment/k8s_dev` (the packaged subcharts go stale
+   when a chart template changes), then
+   `helm upgrade --install jeen-insights deployment/k8s_dev --kube-context defence-aks-openmetadata-dev161 --namespace jeen-insights --values deployment/k8s_dev/values.defence.yaml --set jeen-insights-api.image.tag=… --set jeen-insights-ui.image.tag=… --set jeen-insights-analytics.image.tag=… --rollback-on-failure --wait --timeout 10m`.
+4. Verify: pods Ready, API log shows `baseline verified`, `model=gpt-5.1`,
+   `DB catalog mode`; `curl http://jeen-insights.dev161.internal/health`; then
+   `cd tests/e2e && LIVE_APP_URL=http://jeen-insights.dev161.internal LIVE_EMAIL=live-admin LIVE_PASSWORD=… npm run test:live:smoke`.
+
+## Do not
+
+- Point anything at the dev stack (`jeen-dev-db…`, `jeen-ai-dev-swe…`) — the
+  defence overlay leaves `AZURE_OPENAI_*` blank on purpose; the model comes from
+  the DB (`gpt-5.1` on `jeen-ai-defense-dev-swe`).
+- Touch Schema Modeler tables (`metadata_*`, `settings_services`, `admin_*`, …)
+  from migrations or fixes; only `insights_*`, `connector*`, `auth_users`, `app_settings`.
+- Run `RUN_MIGRATIONS_ON_START=true` or DDL from an API pod against this DB.

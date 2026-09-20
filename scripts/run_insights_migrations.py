@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import os
 import sys
 from pathlib import Path
@@ -28,6 +29,7 @@ from typing import Awaitable, Callable, List, Tuple
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.metadata import get_metadata_pool, close_metadata_pool  # noqa: E402
+from src.metadata.insights_schema import ensure_insights_baseline  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,6 +38,81 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "db" / "migrations" / "insights"
+
+# Session-level advisory lock so concurrent runners (several API replicas
+# starting with RUN_MIGRATIONS_ON_START=true, or an operator running the script
+# while a pod boots) apply revisions one at a time instead of racing on DDL.
+_ADVISORY_LOCK_KEY = "jeen_insights_schema_migrations"
+
+# The metadata DB is shared with Jeen Schema Modeler, so the runner must never
+# queue indefinitely behind another session: it bounds how long it waits for
+# the advisory lock, for any table lock (lock_timeout) and for any single
+# statement (statement_timeout). A timeout aborts the run before the next
+# unrecorded revision starts; the already-applied revisions stay recorded.
+_LOCK_WAIT_SECONDS = os.getenv("MIGRATION_LOCK_WAIT_SECONDS", "120")
+_LOCK_TIMEOUT = os.getenv("MIGRATION_LOCK_TIMEOUT", "15s")
+_STATEMENT_TIMEOUT = os.getenv("MIGRATION_STATEMENT_TIMEOUT", "10min")
+_LOCK_POLL_SECONDS = 1.0
+
+
+class MigrationLockTimeout(RuntimeError):
+    """Another runner (or a stuck session) held the migration lock too long."""
+
+
+class MigrationConfigError(ValueError):
+    """A MIGRATION_* knob would disable or unbound a safety limit."""
+
+
+def _parse_wait_seconds(raw: str) -> float:
+    try:
+        value = float(str(raw).strip())
+    except ValueError as exc:
+        raise MigrationConfigError(f"MIGRATION_LOCK_WAIT_SECONDS={raw!r} is not a number") from exc
+    if not math.isfinite(value) or value < 0:
+        raise MigrationConfigError(
+            f"MIGRATION_LOCK_WAIT_SECONDS={raw!r} must be a finite, non-negative number of seconds"
+        )
+    return value
+
+
+async def _configure_session_timeouts(conn) -> None:
+    """Apply lock_timeout / statement_timeout for this session.
+
+    Values are validated server-side as positive intervals (a zero interval would
+    *disable* the limit) and applied through parameterised ``set_config`` so no
+    part of the environment value is ever interpolated into SQL.
+    """
+    for setting, value in (("lock_timeout", _LOCK_TIMEOUT), ("statement_timeout", _STATEMENT_TIMEOUT)):
+        seconds = await conn.fetchval(
+            "SELECT EXTRACT(EPOCH FROM $1::text::interval)::float8", value
+        )
+        if seconds is None or seconds <= 0:
+            raise MigrationConfigError(
+                f"MIGRATION_{setting.upper()}={value!r} must be a positive interval (e.g. '15s')"
+            )
+        await conn.fetchval("SELECT set_config($1, $2, false)", setting, value)
+    logger.info(
+        "session timeouts: lock_timeout=%s statement_timeout=%s | search_path=%s",
+        _LOCK_TIMEOUT, _STATEMENT_TIMEOUT,
+        await conn.fetchval("SELECT current_setting('search_path')"),
+    )
+
+
+async def _acquire_migration_lock(conn, *, wait_seconds: float | str = _LOCK_WAIT_SECONDS) -> None:
+    """Take the advisory lock, polling with pg_try_advisory_lock up to *wait_seconds*."""
+    wait_seconds = _parse_wait_seconds(wait_seconds)
+    deadline = asyncio.get_running_loop().time() + wait_seconds
+    while True:
+        if await conn.fetchval("SELECT pg_try_advisory_lock(hashtext($1))", _ADVISORY_LOCK_KEY):
+            return
+        if asyncio.get_running_loop().time() >= deadline:
+            raise MigrationLockTimeout(
+                f"could not acquire the migration lock within {wait_seconds:g}s — another "
+                "runner is still applying revisions, or a session is holding the lock. "
+                "Check pg_locks / pg_stat_activity and retry."
+            )
+        logger.info("migration lock is held by another session — waiting…")
+        await asyncio.sleep(_LOCK_POLL_SECONDS)
 
 
 async def _ensure_history(conn) -> None:
@@ -187,13 +264,23 @@ async def _run_backfills(conn) -> None:
 async def run() -> None:
     if not MIGRATIONS_DIR.is_dir():
         raise FileNotFoundError(f"Migrations directory not found: {MIGRATIONS_DIR}")
+    _parse_wait_seconds(_LOCK_WAIT_SECONDS)  # fail on bad config before connecting
 
     pool = await get_metadata_pool()
     try:
         async with pool.acquire() as conn:
-            await _ensure_history(conn)
-            applied = await _apply_sql_files(conn)
-            await _run_backfills(conn)
+            await _configure_session_timeouts(conn)
+            await _acquire_migration_lock(conn)
+            try:
+                # Revisions 012/017 INSERT into app_settings, which the API
+                # otherwise creates at start-up; create the baseline first so a
+                # fresh database can be migrated before the API ever ran.
+                await ensure_insights_baseline(conn, require_platform=False, lock_timeout=None)
+                await _ensure_history(conn)
+                applied = await _apply_sql_files(conn)
+                await _run_backfills(conn)
+            finally:
+                await conn.execute("SELECT pg_advisory_unlock(hashtext($1))", _ADVISORY_LOCK_KEY)
     finally:
         await close_metadata_pool()
 

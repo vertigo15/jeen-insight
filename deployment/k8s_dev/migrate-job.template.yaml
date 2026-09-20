@@ -1,0 +1,104 @@
+# One-off schema migration Job for Kubernetes (AKS) environments.
+#
+# The API image ships with RUN_MIGRATIONS_ON_START=false and the shared-DB
+# overlays set SCHEMA_BOOTSTRAP_ON_START=false, so on a metadata database
+# shared with Jeen Schema Modeler the Insights revisions are applied by this
+# explicit, operator-run Job rather than by whichever API pod boots first
+# (pods only verify the schema). Runs scripts/run_insights_migrations.py: each
+# db/migrations/insights/*.sql once, in order, tracked in
+# insights_schema_migrations, serialised by a bounded advisory lock with
+# session lock/statement timeouts (see the runner for MIGRATION_* knobs).
+#
+# Render and run (the Job name carries the tag; completed Jobs are immutable):
+#
+#   IMAGE=acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-api
+#   TAG=<tag>
+#   sed -e "s|__IMAGE__|$IMAGE|g" -e "s|__TAG__|$TAG|g" \
+#       deployment/k8s_dev/migrate-job.template.yaml > /tmp/migrate-job.yaml
+#   kubectl -n jeen-insights apply -f /tmp/migrate-job.yaml
+#   kubectl -n jeen-insights wait --for=condition=complete job/jeen-insights-migrate-$TAG --timeout=15m
+#   kubectl -n jeen-insights logs job/jeen-insights-migrate-$TAG
+#
+# Requires the `jeen-insights-secrets` Secret (METADATA_DB_*, APP_ENCRYPTION_KEY,
+# ...) in the namespace. The API ConfigMap is optional so the Job can run
+# before the first Helm install.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jeen-insights-migrate-__TAG__
+  labels:
+    app.kubernetes.io/name: jeen-insights-migrate
+    app.kubernetes.io/part-of: jeen-insights
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jeen-insights-migrate
+        app.kubernetes.io/part-of: jeen-insights
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      nodeSelector:
+        agentpool: apps
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+      containers:
+        - name: migrate
+          image: __IMAGE__:__TAG__
+          imagePullPolicy: IfNotPresent
+          # Bypasses the image entrypoint so RUN_MIGRATIONS_ON_START is irrelevant.
+          command: ["python", "scripts/run_insights_migrations.py"]
+          env:
+            - name: METADATA_DB_SSL
+              value: "true"
+            - name: JEEN_DEV_MODE
+              value: "false"
+            - name: LOG_LEVEL
+              value: INFO
+            - name: LOG_FORMAT
+              value: json
+            # Fail fast on a shared database instead of queuing behind another
+            # session; defaults in the runner are the same, listed for visibility.
+            - name: MIGRATION_LOCK_WAIT_SECONDS
+              value: "120"
+            - name: MIGRATION_LOCK_TIMEOUT
+              value: 15s
+            - name: MIGRATION_STATEMENT_TIMEOUT
+              value: 10min
+            # Never encrypt the shared MCP token from a Job: every reader of the
+            # DB must share the KEK first (see the runner's backfill notes).
+            - name: ENCRYPT_MCP_TOKENS_BACKFILL
+              value: "false"
+          envFrom:
+            - secretRef:
+                name: jeen-insights-secrets
+            - configMapRef:
+                name: jeen-insights-api
+                optional: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
