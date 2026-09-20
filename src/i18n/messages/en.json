@@ -1,0 +1,1506 @@
+{
+  "app": {
+    "name": "Jeen Insights",
+    "title": "Jeen Insights — Data Analytics"
+  },
+  "common": {
+    "ok": "OK",
+    "cancel": "Cancel",
+    "close": "Close",
+    "save": "Save",
+    "saving": "Saving…",
+    "saved": "Saved",
+    "delete": "Delete",
+    "rename": "Rename",
+    "retry": "Retry",
+    "refresh": "Refresh",
+    "reload": "Reload",
+    "loading": "Loading…",
+    "never": "never",
+    "justNow": "just now",
+    "copy": "Copy",
+    "copied": "Copied",
+    "export": "Export",
+    "send": "Send",
+    "show": "Show",
+    "hide": "Hide",
+    "expand": "Expand",
+    "collapse": "Collapse",
+    "yes": "Yes",
+    "no": "No",
+    "on": "On",
+    "off": "Off",
+    "none": "None",
+    "clear": "Clear",
+    "search": "Search",
+    "edit": "Edit",
+    "remove": "Remove",
+    "add": "Add",
+    "apply": "Apply",
+    "reset": "Reset",
+    "all": "All",
+    "back": "Back",
+    "next": "Next",
+    "done": "Done",
+    "skip": "Skip",
+    "you": "You",
+    "unknownError": "Something went wrong",
+    "notAvailable": "—",
+    "copyFailed": "Copy failed"
+  },
+  "errors": {
+    "requestFailed": "The request failed",
+    "network": "Could not reach the server. Check your connection and try again.",
+    "badRequest": "The request was rejected",
+    "unauthenticated": "Your session has ended. Sign in again to continue.",
+    "forbidden": "You do not have permission to do that",
+    "notFound": "Not found",
+    "conflict": "This conflicts with the current state",
+    "rateLimited": "Too many requests. Please wait a moment and try again.",
+    "serverError": "The server hit an error",
+    "backendUnavailable": "The analytics service is unavailable right now",
+    "csrf": "Your session token expired. Reload the page and try again.",
+    "setupRequired": "First-run setup is required",
+    "queryFailed": "Query failed",
+    "queryFailedStatus": "Query failed ({status})",
+    "streamEnded": "The query stream ended before a result arrived",
+    "streamingUnavailable": "Streaming is unavailable in this browser",
+    "selectConnectionFirst": "Select a connection first"
+  },
+  "login": {
+    "pageTitle": "Sign in — Jeen Insights",
+    "subtitle": "Sign in to your workspace",
+    "microsoft": "Sign in with Microsoft",
+    "or": "or",
+    "emailLabel": "Email / username",
+    "emailPlaceholder": "admin",
+    "passwordLabel": "Password",
+    "togglePassword": "Toggle password visibility",
+    "submit": "Sign in with password",
+    "submitting": "Signing in…",
+    "errors": {
+      "required": "Email and password are required.",
+      "invalidCredentials": "Invalid email or password.",
+      "disabled": "This account is disabled. Contact your administrator.",
+      "tooManyAttempts": "Too many sign-in attempts. Please wait a minute and try again.",
+      "microsoftFailed": "Microsoft sign-in failed: {reason}",
+      "unknownReason": "unknown error",
+      "invalidState": "Invalid sign-in state. Please try again.",
+      "microsoftCancelled": "Microsoft sign-in was cancelled.",
+      "noEmail": "Your Microsoft account has no email address.",
+      "dbUnavailable": "Sign-in is temporarily unavailable (database error).",
+      "dbUnreachable": "Cannot reach the metadata database. Check your network or VPN, and ensure your IP is allowed in Azure Postgres firewall rules.",
+      "dbAuthFailed": "Database authentication failed. Check METADATA_DB_USER / METADATA_DB_PASSWORD.",
+      "dbTablesMissing": "Login tables are missing. Run: python scripts/run_insights_migrations.py"
+    }
+  },
+  "setup": {
+    "pageTitle": "First-run setup — Jeen Insights",
+    "heading": "Welcome to Jeen Insights",
+    "subtitle": "Create the first administrator account",
+    "hint": "No admin account exists yet. This one-time screen creates it. Enter the setup token printed in the server logs (or your SETUP_BOOTSTRAP_TOKEN environment variable) to continue.",
+    "tokenLabel": "Setup token",
+    "nameLabel": "Full name",
+    "emailLabel": "Email",
+    "passwordLabel": "Password (min 12 characters)",
+    "confirmLabel": "Confirm password",
+    "submit": "Create admin & continue",
+    "errors": {
+      "invalidToken": "Invalid setup token. Check the server logs (or set SETUP_BOOTSTRAP_TOKEN).",
+      "allRequired": "All fields are required.",
+      "passwordTooShort": "Password must be at least 12 characters.",
+      "passwordsMismatch": "Passwords do not match."
+    }
+  },
+  "connection": {
+    "switchActive": "Switch active connection",
+    "connections": "Connections",
+    "thisDataset": "this dataset",
+    "established": "Connection established",
+    "connectFailed": "Could not connect",
+    "connectFailedDetail": "Could not connect — {detail}",
+    "search": "Search connections…",
+    "noMatch": "No connections match “{term}”",
+    "none": "No connections available",
+    "refreshMetadata": "Refresh metadata for {name}",
+    "noneShort": "No connections",
+    "loadFailed": "Failed to load"
+  },
+  "shell": {
+    "rail": {
+      "navigation": "Primary navigation",
+      "conversation": "Conversation",
+      "tables": "Tables",
+      "pinned": "Pinned",
+      "pinnedLabel": "Pinned questions",
+      "history": "History",
+      "historyLabel": "Conversation history",
+      "settings": "Settings"
+    },
+    "topbar": {
+      "hideConversation": "Hide conversation",
+      "showConversation": "Conversation",
+      "notifications": "Notifications"
+    },
+    "tabs": {
+      "sections": "Conversation sections",
+      "conversation": "Conversation",
+      "tables": "Tables",
+      "pinned": "Pinned",
+      "history": "History"
+    },
+    "panels": {
+      "workspaceLabel": "Conversation workspace",
+      "previousConversations": "Previous conversations",
+      "questionLog": "Question log",
+      "questionLogTitle": "Flat log of every question asked",
+      "pinnedRecent": "Pinned & recent questions",
+      "searchTables": "Search tables…",
+      "refreshTables": "Refresh tables",
+      "searchQuestions": "Search your questions…",
+      "savedAnalyses": "Saved analyses",
+      "refreshSavedAnalyses": "Refresh saved analyses",
+      "clearHistory": "Clear question history"
+    },
+    "composer": {
+      "placeholder": "show sales per month",
+      "followupPlaceholder": "Ask a follow-up about your data…",
+      "inputLabel": "Enter your question",
+      "submit": "Submit question",
+      "ask": "Ask",
+      "hintTables": "tables",
+      "hintColumns": "columns",
+      "hintTemplates": "templates"
+    },
+    "result": {
+      "getStarted": "Ask a question to get started",
+      "restoring": "Restoring your last conversation…",
+      "noResultYet": "No result yet",
+      "placeholderCopy": "Ask a question on the side panel. The chart, rows, SQL and profiling for that answer appear here.",
+      "chart": "Chart",
+      "filterRows": "Filter rows…",
+      "filterRowsLabel": "Filter result rows"
+    },
+    "dock": {
+      "label": "Result details",
+      "sqlTab": "SQL & run details",
+      "profilingTab": "Profiling",
+      "modelTab": "Model details",
+      "noRunYet": "no run yet",
+      "empty": "No run yet — SQL, timings and column profiling appear here after a question is answered."
+    },
+    "user": {
+      "account": "Account",
+      "signOut": "Sign out",
+      "language": "Language"
+    },
+    "theme": {
+      "switchToDark": "Switch to dark mode",
+      "switchToLight": "Switch to light mode"
+    },
+    "legacy": {
+      "toggleSidebar": "Toggle sidebar",
+      "navigationPanel": "Navigation panel"
+    }
+  },
+  "phases": {
+    "memory": "Memory",
+    "router": "Route question",
+    "catalog": "Load catalog",
+    "generation": "Generate query",
+    "validation": "Validate",
+    "execution": "Execute",
+    "analytics": "Analyze",
+    "format": "Format answer",
+    "save": "Save memory"
+  },
+  "conversation": {
+    "empty": {
+      "title": "What would you like to know about your data?",
+      "copy": "Ask in plain language. Answers come back with a chart, the rows behind it, and the SQL that produced them.",
+      "suggestedFor": "Suggested for {connection}",
+      "analysis": "analysis"
+    },
+    "readOnlyNote": "Read-only: the connection “{connection}” is no longer available.",
+    "readOnlySend": "This conversation belongs to a connection that is no longer available. Start a new conversation to ask questions.",
+    "newConversation": "New conversation",
+    "list": {
+      "loading": "Loading conversations…",
+      "loadFailed": "Could not load conversations.",
+      "empty": "No previous conversations yet.",
+      "thisConnection": "This connection",
+      "otherConnections": "Other connections",
+      "unavailableConnections": "Unavailable connections",
+      "readOnly": "read-only",
+      "questionCount": "{count, plural, one {# question} other {# questions}}",
+      "gone": "That conversation no longer exists"
+    },
+    "rename": {
+      "prompt": "Rename conversation",
+      "failed": "Rename failed"
+    },
+    "delete": {
+      "confirm": "Delete “{title}”? This removes its questions and results.",
+      "done": "Conversation deleted",
+      "failed": "Delete failed"
+    },
+    "turn": {
+      "showAnswer": "Show answer: {question}",
+      "showCard": "Show card: {question}",
+      "statusOk": "ok",
+      "statusRunning": "running…",
+      "statusFailed": "failed",
+      "restoredFromHistory": "restored from history",
+      "failedAt": "query failed · failed at {node} · {duration}",
+      "error": "error",
+      "query": "query",
+      "newestFailed": "The newest question failed. Your last successful result remains in the workspace.",
+      "editSql": "Edit SQL",
+      "editSqlTitle": "SQL editing requires a validated execution contract",
+      "reportGap": "Report catalog gap",
+      "reported": "Reported ✓",
+      "retryReport": "Retry report",
+      "waitingGuard": "blocked by a guard · 0 rows sent",
+      "waitingChoice": "waiting for a choice",
+      "waitingConfirm": "waiting for confirmation",
+      "lowConfidence": "low confidence",
+      "notRun": "not run",
+      "runMeta": "{duration} · {count, plural, one {# node} other {# nodes}}",
+      "hideRun": "hide run",
+      "runDetails": "run details",
+      "keyInsights": "Key insights",
+      "routeMl": "ML skill",
+      "routeSql": "SQL",
+      "showAnswerBadge": "Show answer",
+      "showCardBadge": "Show card"
+    },
+    "trace": {
+      "modelStep": "model step completed",
+      "contextPrepared": "context prepared",
+      "analysisCompleted": "analysis completed",
+      "readOnlyQuery": "read-only query completed"
+    },
+    "restored": {
+      "textAnswer": "restored · text answer",
+      "reloading": "Reloading data…",
+      "snapshotFrom": "Snapshot from {when}",
+      "freshTooLarge": "Fresh result · too large to keep",
+      "snapshot": "Restored snapshot",
+      "chart": "chart",
+      "loadingRows": "Loading rows…",
+      "tooLarge": "result too large to keep; re-run to view",
+      "loadFailed": "rows could not be loaded",
+      "notKept": "rows not kept; re-run to view",
+      "loadData": "Load data",
+      "restored": "restored"
+    },
+    "pending": {
+      "loadingTitle": "Loading rows…",
+      "loadingCopy": "Fetching the stored result for this answer.",
+      "tooLargeTitle": "Result too large to keep",
+      "tooLargeCopy": "This answer returned more rows than the app stores. Re-run the query to view them.",
+      "failedTitle": "Rows could not be loaded",
+      "failedCopy": "Try again, or re-run the query to fetch fresh data.",
+      "notKeptTitle": "Rows not kept for this answer",
+      "notKeptCopy": "Older results are trimmed to save space. Re-run the query to view them.",
+      "loading": "Loading",
+      "noRowsLoaded": "No rows loaded",
+      "storedQuery": "stored query",
+      "noQueryText": "no query text"
+    },
+    "rerun": {
+      "connectionGone": "This connection is no longer available.",
+      "refreshed": "Data refreshed",
+      "reconnectPowerBi": "Reconnect your Power BI account to reload this data.",
+      "noQuery": "This answer has no query to re-run.",
+      "timedOut": "The query timed out. Try again or narrow the question.",
+      "sourceError": "The data source returned an error.",
+      "failedStatus": "Could not reload the data ({status})."
+    },
+    "proposal": {
+      "blocked": "Blocked",
+      "clarify": "Clarify",
+      "planning": "Planning",
+      "guardMeta": "guard: {names} · 0 rows sent",
+      "refused": "refused",
+      "clarifyMeta": "one question before running",
+      "confirmMeta": "confirm before running",
+      "blockedBeforeSql": "blocked before SQL",
+      "waitingForYou": "waiting for you",
+      "expiredTitle": "This proposal can no longer be resumed; ask the question again.",
+      "expiredNote": "This card has expired. Ask the question again to get a fresh one.",
+      "running": "Running…",
+      "rerun": "Re-run",
+      "editSetup": "Edit setup",
+      "hideSetup": "Hide setup",
+      "selectAnalysis": "Select an analysis result to re-run",
+      "requestFailed": "Request failed ({status})"
+    },
+    "text": {
+      "needsChoice": "Needs a choice",
+      "whichField": "which field?",
+      "whichValue": "which value?",
+      "directOrAnalysis": "direct answer or analysis?",
+      "percentSure": "{percent}% sure",
+      "runAnalysis": "Run the analysis",
+      "answerWithSql": "Answer directly with SQL",
+      "answered": "Answered",
+      "textAnswer": "text answer",
+      "answer": "Answer",
+      "noDataNeeded": "No data was needed for this answer.",
+      "anyOfFields": "Any of these fields",
+      "somethingElse": "Something else…"
+    },
+    "filters": {
+      "title": "Filtered by",
+      "from": "from “{raw}”",
+      "verifiedVia": "verified via {evidence}",
+      "useInstead": "Filter on {field} instead",
+      "use": "use {field}",
+      "or": "or",
+      "opIn": "in",
+      "opContains": "contains",
+      "notVerified": "not verified",
+      "unverified": "unverified"
+    }
+  },
+  "results": {
+    "actions": {
+      "exportLabel": "Export results to Excel",
+      "copyLabel": "Copy results to clipboard",
+      "describe": "Describe",
+      "describeLabel": "Show statistical description",
+      "rerunFresh": "Rerun fresh",
+      "rerunFreshLabel": "Rerun saved analysis fresh",
+      "sendLabel": "Send or share this result",
+      "sendResult": "Send result",
+      "sendDisabled": "Connect Microsoft Entra and a delivery connector to send this result"
+    },
+    "status": {
+      "completed": "Completed",
+      "completedCapped": "Completed · capped",
+      "meta": "{rows, plural, one {# row} other {# rows}} · {exec} exec · {llm} llm",
+      "staleNote": "Last successful answer — the newest question failed",
+      "snapshotFrom": "Snapshot from {when}"
+    },
+    "chart": {
+      "caption": "{columns} · {count, plural, one {# point} other {# points}}",
+      "captionBy": "{first} by {second}",
+      "result": "result"
+    },
+    "cap": {
+      "banner": "Result capped at {cap} loaded rows.",
+      "matched": "{total} rows matched the query.",
+      "totalUnavailable": "The total matched row count is unavailable.",
+      "exportsNote": "Exports contain the loaded result only."
+    },
+    "dockMeta": "{input} / {output} tok · {retries} retries · {validation}",
+    "validation": {
+      "validated": "validated query",
+      "generated": "generated query",
+      "none": "no query text"
+    },
+    "grid": {
+      "filteredOf": "{shown} of {total} loaded",
+      "loadedMatched": "{loaded} loaded · {total} matched",
+      "rowsLoaded": "{count, plural, one {# row loaded} other {# rows loaded}}",
+      "focusMap": "Focus map at this location"
+    },
+    "sql": {
+      "sqlglotValidated": "sqlglot validated",
+      "daxValidated": "DAX validated",
+      "validationUnavailable": "validation unavailable",
+      "rows": "Rows",
+      "exec": "Exec",
+      "llm": "LLM",
+      "tokens": "Tokens",
+      "retries": "Retries",
+      "provenance": "generated · {validation} · read-only",
+      "developerDetails": "Developer details",
+      "noSql": "-- No SQL or DAX was generated for this answer."
+    },
+    "profile": {
+      "empty": "No result columns are available to profile.",
+      "noValues": "No non-null values",
+      "distinct": "{count} distinct",
+      "nulls": "nulls {percent}%",
+      "footQuestion": "Need distributions and correlations?",
+      "openFull": "Open full profile report",
+      "close": "Close profile",
+      "type": {
+        "number": "number",
+        "text": "text",
+        "datetime": "datetime",
+        "boolean": "boolean",
+        "empty": "empty"
+      }
+    },
+    "noResults": "No results to display",
+    "menu": {
+      "sort": "Sort",
+      "ascending": "Ascending",
+      "descending": "Descending",
+      "format": "Format",
+      "resetFormat": "Reset format",
+      "formats": {
+        "dec2": "Number (2 dec)",
+        "currency": "Currency ($)",
+        "percent": "Percentage (%)",
+        "compact": "Compact (1.2K)",
+        "integer": "Integer",
+        "dec0": "0 decimals",
+        "dec1": "1 decimal",
+        "dec4": "4 decimals"
+      },
+      "calculate": "Calculate",
+      "addPctTotal": "Add % of total",
+      "addRunningTotal": "Add running total",
+      "addChange": "Add change (Δ)",
+      "removeDerived": "Remove derived column",
+      "filterCopy": "Filter · Copy",
+      "filterNonNull": "Filter non-null",
+      "copyColumn": "Copy column values",
+      "analyze": "Analyze",
+      "askColumn": "Ask about this column",
+      "explore": "Explore",
+      "askRow": "Ask about this row",
+      "explainRow": "Explain this row",
+      "compareAverage": "Compare to average",
+      "findSimilar": "Find similar rows",
+      "filterBy": "Filter by",
+      "copyRow": "Copy row",
+      "rowCopied": "Row copied",
+      "columnCopied": "{column} copied ({count, plural, one {# value} other {# values}})",
+      "questions": {
+        "thisRow": "this row",
+        "column": "Analyze the “{column}” column",
+        "columnInContext": "Analyze the “{column}” column from: {question}",
+        "row": "Tell me about the row where {label}",
+        "rowInContext": "Tell me about the row where {label}, in the context of: {question}",
+        "explain": "Explain the values in the row where {label}",
+        "explainInContext": "Explain why the row ({label}) has these values, in the context of: {question}",
+        "compare": "Compare the row ({label}) to the average across all results",
+        "compareInContext": "How does the row ({label}) compare to the average across all results? Context: {question}",
+        "similar": "Find rows similar to the row where {label}",
+        "similarInContext": "Find other rows similar to ({label}) in the data. Context: {question}"
+      }
+    }
+  },
+  "devPanel": {
+    "title": "Run Details",
+    "close": "Close developer panel",
+    "resize": "Resize developer panel",
+    "dragToResize": "Drag to resize",
+    "generatedSql": "Generated SQL",
+    "copySql": "Copy SQL to clipboard",
+    "promptType": "Prompt type",
+    "tabs": {
+      "sql": "SQL",
+      "prompts": "Prompts",
+      "execution": "Execution",
+      "query": "Query",
+      "insights": "Insights",
+      "chart": "Chart"
+    },
+    "insightsPromptEmpty": "Insights prompt will appear here after insights are generated.",
+    "chartPromptEmpty": "Chart prompt will appear here after a chart is generated.",
+    "traceEmpty": "Run a query to see the execution trace.",
+    "noTrace": "No trace data for this query.",
+    "noPromptInfo": "No prompt information available",
+    "noPromptToCopy": "No prompt to copy",
+    "promptCopied": "Prompt copied"
+  },
+  "historyDrawer": {
+    "title": "History",
+    "ariaLabel": "Query history",
+    "close": "Close history",
+    "search": "Search history…",
+    "empty": "No queries yet for this connection.",
+    "loadFailed": "Failed to load history."
+  },
+  "profiling": {
+    "reportTitle": "Data Profiling Report"
+  },
+  "settings": {
+    "shell": {
+      "title": "SETTINGS",
+      "close": "Close settings",
+      "logout": "Logout"
+    },
+    "saveFailed": "Could not save — {detail}",
+    "nav": {
+      "groupUser": "USER",
+      "groupAgent": "AI AGENT",
+      "groupOther": "OTHER",
+      "general": "General",
+      "metadataCatalog": "Metadata & Catalog",
+      "aiModels": "AI Models",
+      "querySafety": "Query & Safety",
+      "myConnections": "My Connections",
+      "integrations": "Integrations",
+      "users": "Users",
+      "prompts": "Prompts",
+      "about": "About"
+    },
+    "general": {
+      "title": "General",
+      "desc": "Application preferences and runtime behaviour.",
+      "appearanceCard": "Appearance & Display",
+      "chartCard": "Chart & Insights",
+      "modelCard": "AI Model",
+      "language": {
+        "label": "Interface language",
+        "help": "Menus, buttons and messages use this language. Answers follow the language of your question.",
+        "saveFailed": "Could not save the language. Try again."
+      },
+      "theme": {
+        "label": "Theme",
+        "help": "Light is the default; System follows your OS preference.",
+        "light": "Light",
+        "dark": "Dark",
+        "system": "System"
+      },
+      "rowLimit": {
+        "label": "Row limit",
+        "help": "Maximum rows returned per query. Server-enforced.",
+        "option": "{count, plural, one {# row} other {# rows}}"
+      },
+      "conversationTabs": {
+        "label": "Conversation tabs",
+        "help": "Show the Conversation / Tables / Pinned / History tab bar above the chat. All of these are always available from the side rail.",
+        "hidden": "Hidden (default)",
+        "shown": "Shown"
+      },
+      "chartType": {
+        "label": "Default chart type",
+        "help": "Used when switching to chart view. Auto lets the LLM choose."
+      },
+      "autoInsights": {
+        "label": "Auto-insights",
+        "help": "Automatically generate AI insights after every result set."
+      },
+      "temperature": {
+        "label": "LLM temperature",
+        "help": "Higher = more creative SQL (riskier). 0.2–0.4 is the sweet spot for accuracy.",
+        "auto": "Auto (use defaults)",
+        "deterministic": "{value} (deterministic)",
+        "recommended": "{value} (recommended)",
+        "creative": "{value} (most creative)"
+      },
+      "resetAll": "Reset all to defaults",
+      "resetConfirm": "Reset all preferences to defaults?"
+    },
+    "models": {
+      "title": "AI Models",
+      "desc": "Select the language model used for all SQL generation and analytics. The selection is applied live and persisted across restarts.",
+      "recheck": "Re-check health",
+      "checking": "Checking…",
+      "probing": "Probing every model…",
+      "loadFailed": "Could not load models:",
+      "checkedAgo": "checked {when}",
+      "working": "{count} working",
+      "failing": "{count} failing",
+      "notApplicable": "{count} n/a",
+      "healthUnavailable": "Health check unavailable",
+      "available": "Available with current credentials",
+      "notConfigured": "Not configured",
+      "defaultBadge": "default",
+      "healthOk": "Working — last health check passed",
+      "healthFail": "Failing — {detail}",
+      "healthFailDefault": "last health check failed",
+      "healthUnknown": "Not checked yet — click “Re-check health”",
+      "switched": "Model switched to {name}",
+      "switchFailed": "Could not switch model — {detail}"
+    },
+    "catalog": {
+      "title": "Metadata & Catalog",
+      "desc": "Where the text-to-SQL agent loads every connection's curated catalog — tables, columns, relationships and business terms — for prompt context. A single, application-wide source.",
+      "showingStats": "Showing stats for {connection}.",
+      "source": "Catalog source",
+      "sourceHelp": "Applies to the whole application. Switching takes effect on the next query.",
+      "deleteServerConfirm": "Delete this server? This cannot be undone.",
+      "serverDeleted": "Server deleted",
+      "serverAdded": "Server added",
+      "serverUpdated": "Server updated",
+      "cacheCleared": "Cache cleared",
+      "noCache": "No cache",
+      "minutes": "{count} min",
+      "hours": "{count} h",
+      "refreshing": "Refreshing…",
+      "refreshMetadata": "Refresh metadata",
+      "db": {
+        "synced": "Synced · cache HIT",
+        "remaining": "{time} remaining",
+        "miss": "Cache MISS — will fetch on next query",
+        "provider": "Provider",
+        "database": "Metadata database",
+        "tablesColumns": "Tables · columns",
+        "termsPairs": "Business terms · pairs"
+      },
+      "mcp": {
+        "notChecked": "not checked",
+        "active": "active",
+        "empty": "No MCP servers yet. Add one to source this catalog.",
+        "servers": "MCP servers",
+        "addServer": "Add server",
+        "callout": "MCP delivers live, federated metadata — but bypasses Schema Modeler's curation layer. The DLP / governance scan and SELECT-only execution still apply. Results are cached per the TTL below."
+      },
+      "form": {
+        "addTitle": "Add MCP server",
+        "editTitle": "Edit MCP server",
+        "serverName": "Server name",
+        "endpoint": "Endpoint",
+        "endpointHelp": "For stdio transport, give the launch command, e.g.",
+        "transport": "Transport",
+        "auth": "Authentication",
+        "bearer": "Bearer token",
+        "tokenReplace": "Enter a new token to replace the saved one",
+        "tokenPaste": "Paste a bearer token",
+        "tokenSavedHelp": "The saved token cannot be retrieved. Enter a new value to replace it, or leave this blank to keep it.",
+        "tokenHelp": "Stored server-side and never sent to the LLM.",
+        "saveChanges": "Save changes"
+      },
+      "health": {
+        "rerun": "Re-run health check",
+        "test": "Test & health check",
+        "healthy": "Healthy",
+        "degraded": "Degraded",
+        "unreachable": "Unreachable",
+        "checked": "checked {when}",
+        "handshaking": "Handshaking with {name}…",
+        "serverNotChecked": "{name} not checked",
+        "pending": "Running handshake and tool discovery. Previous results are hidden until this check completes.",
+        "protocol": "Protocol",
+        "handshake": "Handshake",
+        "uptime": "Uptime",
+        "resources": "{count} resources",
+        "prompts": "{count} prompts",
+        "unmapped": "unmapped",
+        "capabilities": "Capabilities",
+        "toolsExposed": "Tools exposed",
+        "noTools": "No tools discovered.",
+        "failed": "Health check failed"
+      },
+      "mapping": {
+        "awaiting": "awaiting health check",
+        "requiredUnmapped": "required but unmapped. This server cannot be the active catalog source until satisfied.",
+        "title": "Catalog tool mapping",
+        "help": "Tools are auto-discovered from the server and mapped to each catalog need via"
+      },
+      "inspector": {
+        "sourceLive": "live tools/list",
+        "sourceHealth": "health snapshot",
+        "loading": "Loading tools…",
+        "refreshSchemas": "Refresh tool schemas",
+        "loadSchemas": "Load tool schemas",
+        "title": "MCP function inspector",
+        "help": "View tool input/output schemas and run a test call against this server.",
+        "function": "Function",
+        "noDescription": "No description provided.",
+        "inputSchema": "Input schema",
+        "outputSchema": "Output schema",
+        "testArguments": "Test arguments",
+        "editorMode": "Argument editor mode",
+        "guided": "Guided fields",
+        "advancedJson": "Advanced JSON",
+        "optionalHelp": "Optional blank fields are omitted. The MCP server performs final validation.",
+        "useSample": "Use schema sample",
+        "copyInput": "Copy input",
+        "run": "Run function",
+        "empty": "Run a health check or load schemas to discover this server's functions.",
+        "notSet": "Not set",
+        "editInJson": "Edit this {type} value in Advanced JSON.",
+        "argsMustBeObject": "Arguments must be a JSON object.",
+        "required": "{key} is required.",
+        "mustBeString": "{key} must be a string.",
+        "mustBeNumber": "{key} must be a number.",
+        "mustBeInteger": "{key} must be an integer.",
+        "mustBeBoolean": "{key} must be true or false.",
+        "mustBeAllowed": "{key} must be one of the allowed values.",
+        "minLength": "{key} must contain at least {min} characters.",
+        "riskDestructive": "This tool may permanently modify or delete data.",
+        "riskExternal": "This tool may contact external systems.",
+        "riskReadOnly": "The server marks this tool as read-only.",
+        "riskUnknown": "This tool is not explicitly marked as read-only.",
+        "badgeReadOnly": "read-only",
+        "badgeDestructive": "destructive",
+        "badgeExternal": "external access",
+        "badgeIdempotent": "idempotent",
+        "badgeConfirm": "confirmation required",
+        "toolError": "Tool error",
+        "result": "Result",
+        "structured": "Structured content",
+        "viewContent": "Content",
+        "viewTree": "Tree",
+        "viewFormatted": "Formatted",
+        "viewRaw": "Raw MCP",
+        "copyView": "Copy view",
+        "aiAnalyzing": "AI analyzing…",
+        "aiHelp": "AI help with error",
+        "runDetails": "Run details",
+        "requestErrorDetails": "Request error details",
+        "aiAnalyzingNote": "AI is analyzing the test failure. It will only suggest changes; it will not rerun the tool.",
+        "aiAssistance": "AI error assistance",
+        "aiSummary": "Summary:",
+        "aiNoSummary": "No summary provided.",
+        "aiLikelyCause": "Likely cause:",
+        "aiNextSteps": "Safe next steps:",
+        "aiSuggestedArgs": "Suggested arguments",
+        "useSuggestion": "Use suggestion",
+        "noContentBlocks": "The MCP server returned no content blocks.",
+        "block": "{type} block",
+        "outputValid": "Structured content matches the advertised output schema.",
+        "outputInvalid": "Structured content does not match the advertised output schema.",
+        "emptyArray": "Empty array",
+        "emptyObject": "Empty object"
+      },
+      "cache": {
+        "live": "No cache (live)",
+        "nextRun": "next run",
+        "liveFetch": "live fetch",
+        "refetchNote": "re-fetches every query · freshest, slower",
+        "hit": "cache HIT",
+        "miss": "cache MISS",
+        "invalidate": "invalidate",
+        "title": "Catalog cache TTL",
+        "help": "How long the catalog is held before re-fetching. HIT / MISS is reported each run by the pipeline step",
+        "mcpOnly": "Caching applies to MCP sources · activate a server to configure"
+      },
+      "toasts": {
+        "switchFailed": "Could not switch source — {detail}",
+        "refreshFailed": "Refresh failed — {detail}",
+        "selectFailed": "Could not select server — {detail}",
+        "deleteFailed": "Delete failed — {detail}",
+        "loadedFunctions": "Loaded {count, plural, one {# MCP function} other {# MCP functions}}",
+        "loadFunctionsFailed": "Could not load MCP functions — {detail}",
+        "inputCopied": "Test input copied to clipboard",
+        "inputCopyFailed": "Could not copy test input",
+        "invalidJson": "Invalid JSON arguments — {detail}",
+        "runConfirm": "Run “{name}” with these arguments?",
+        "callComplete": "MCP function call complete",
+        "callFailed": "MCP function call failed",
+        "callFailedDetail": "MCP function call failed — {detail}",
+        "resultCopied": "Result copied to clipboard",
+        "resultCopyFailed": "Could not copy the result",
+        "aiSuggestionLoaded": "AI suggestion loaded. Review it, then run the tool manually.",
+        "ttlFailed": "Could not save TTL — {detail}"
+      },
+      "sourceDb": "Metadata DB",
+      "sourceMcp": "MCP Server"
+    },
+    "querySafety": {
+      "title": "Query & Safety",
+      "descShort": "Global guardrails for SQL execution and conversation memory. Applied live across the whole application and persisted across restarts.",
+      "desc": "Global guardrails for SQL execution, conversation memory, and Power BI value matching. Applied live across the whole application and persisted across restarts.",
+      "loadFailed": "Could not load settings —",
+      "range": "Range {min}–{max}.",
+      "sqlExecution": "SQL Execution",
+      "memory": "Conversation Memory",
+      "pbiResolution": "Power BI Entity Resolution",
+      "sqlGrounding": "SQL Filter Grounding",
+      "evidence": "Metadata Evidence & Source Probes",
+      "timeout": {
+        "label": "DB statement timeout (ms)",
+        "help": "Per-query Postgres timeout. Prevents a runaway query from exhausting the pool. 0 = no timeout."
+      },
+      "maxRows": {
+        "label": "Max result rows",
+        "help": "Hard ceiling on rows returned, regardless of the requested limit."
+      },
+      "contextTurns": {
+        "label": "Context turns",
+        "help": "Number of previous Q&A turns loaded as short-term memory for follow-up questions."
+      },
+      "pbiResolve": {
+        "label": "Resolve filter values",
+        "help": "Check the values the assistant filters on against the real values in the model, correcting typos and asking when a name is ambiguous. Turning this off sends filter values through to DAX exactly as written."
+      },
+      "pbiThreshold": {
+        "label": "Match threshold",
+        "help": "How close a value must be to count as the same value, 0–100. Lower accepts more typos but asks for confirmation less often."
+      },
+      "pbiDomain": {
+        "label": "Values read per column",
+        "help": "Ceiling on how many distinct values are read from a column when checking one. Higher is more accurate on large dimensions but slower."
+      },
+      "pbiCross": {
+        "label": "Search related columns",
+        "help": "When a value is not in the column the assistant picked, look for it in sibling columns of the same table (e.g. a model name given as a product name)."
+      },
+      "sqlResolve": {
+        "label": "Resolve filter values",
+        "help": "Check SQL filter values against authorized source values before query generation. It corrects one unambiguous typo and asks before choosing among alternatives."
+      },
+      "sqlThreshold": {
+        "label": "Match threshold",
+        "help": "How close a source value must be to count as a typo correction."
+      },
+      "sqlDomain": {
+        "label": "Values read per column",
+        "help": "Maximum source values checked for one SQL filter. Higher improves coverage but can add latency."
+      },
+      "sqlTimeout": {
+        "label": "Lookup deadline (ms)",
+        "help": "Stop a single MCP or database value lookup after this time and leave the literal unverified."
+      },
+      "sqlCache": {
+        "label": "Verified-value cache (seconds)",
+        "help": "How long user-scoped, complete value domains may be reused."
+      },
+      "metaEvidence": {
+        "label": "Use Schema Modeler profiles and captured values",
+        "help": "Read column profiles and captured distinct values (metadata DB or MCP profile tools) before touching the source. Corrects typos from a complete snapshot and finds which columns hold a value."
+      },
+      "visibility": {
+        "label": "Value visibility",
+        "help": "Who may see captured values in clarifications and the cache. Use user-scoped on any source with row-level security.",
+        "none": "None — never enumerate values from metadata",
+        "sourceWide": "Source-wide — every user of the source sees the same values",
+        "userScoped": "User-scoped — values differ per user (row-level security)"
+      },
+      "unverified": {
+        "label": "Unverifiable filter values",
+        "help": "What happens when no evidence can confirm a value: ask (default) or run the query with the value as written and say it was not verified.",
+        "ask": "Ask the user for the exact value",
+        "allow": "Run the query with the literal as written (disclosed)"
+      },
+      "probe": {
+        "label": "Confirm on the source",
+        "help": "Allow one-row confirmation probes and bounded searches on the customer’s database. Only connectors that stop a statement server-side are probed."
+      },
+      "distinct": {
+        "label": "Enumerate small uncaptured domains",
+        "help": "Allow SELECT DISTINCT on the source for a column the profile proves small and exactly counted. Off = only confirm/search."
+      },
+      "denylist": {
+        "label": "Never probe or show",
+        "help": "Comma-separated table.column patterns (* wildcards) that are never probed, enumerated or offered, in addition to sensitive-tagged and hidden columns."
+      },
+      "existAge": {
+        "label": "Metadata age to prove a value exists (hours)",
+        "help": "A snapshot older than this cannot correct a typo on its own; a source probe confirms it instead."
+      },
+      "absentAge": {
+        "label": "Metadata age to say a value does not exist (hours)",
+        "help": "Stricter: telling the user a value is absent is shown as a fact."
+      },
+      "enterNumber": "Enter a number for: {fields}",
+      "saved": "Query & Safety settings saved"
+    },
+    "prompts": {
+      "title": "Prompts",
+      "desc": "Templates that drive the agent and its features. Custom prompts override the shipped defaults; a model override runs one prompt on a different model.",
+      "discardConfirm": "Discard unsaved changes to {label}?",
+      "customCount": "{count, plural, one {# custom prompt} other {# custom prompts}}",
+      "loadFailed": "Could not load prompts —",
+      "noneReturned": "no prompts returned",
+      "loadOneFailed": "Could not load this prompt —",
+      "count": "{count, plural, one {# prompt} other {# prompts}}",
+      "customSummary": "{count} custom",
+      "allDefault": "all at default",
+      "overrideCount": "{count, plural, one {# model override} other {# model overrides}}",
+      "customBadge": "Custom",
+      "defaultBadge": "Default",
+      "runsOn": "runs on {model}",
+      "defaultModel": "Default (global active model)",
+      "runWithModel": "Run with model:",
+      "placeholders": "Placeholders injected at runtime:",
+      "restoreDefaultTitle": "Restore original default",
+      "alreadyDefault": "Already at default",
+      "resetToDefault": "Reset to default",
+      "savePrompt": "Save prompt",
+      "versionHistory": "Version history",
+      "versionsSaved": "{count, plural, one {# version saved} other {# versions saved}}",
+      "resetConfirm": "Reset this prompt to its original default? Your custom changes and its model override will be lost.",
+      "saved": "Prompt saved",
+      "resetDone": "Reset to default",
+      "resetFailed": "Reset failed — {detail}",
+      "restoreConfirm": "Restore this version? It will become the new active version.",
+      "restored": "Restored to v{from} (now saved as v{to})",
+      "restoreFailed": "Restore failed — {detail}",
+      "noHistory": "No history available.",
+      "preview": "Preview",
+      "modelUpdateFailed": "Could not update model — {detail}"
+    },
+    "integrations": {
+      "title": "Integrations",
+      "desc": "Connect Jeen Insights to external services so members — and the assistant, on their behalf — can act on their results, e.g. email a summary, using their own credentials. Every action requires the member's own OAuth consent, admin group approval, and an explicit preview → confirm step.",
+      "agentToolsOn": "Agent tool-calling enabled",
+      "agentToolsOff": "Agent tool-calling disabled",
+      "connectorsOn": "Connectors enabled",
+      "connectorsOff": "Connectors disabled",
+      "connectors": "Connectors",
+      "addConnector": "Add a connector",
+      "groupRoles": "Group roles",
+      "recentActivity": "Recent activity",
+      "removeConfirm": "Remove {name}? Members will lose their connections.",
+      "connectorRemoved": "Connector removed",
+      "connectorAdded": "Connector added",
+      "masterOff": "Turn on the master switch to add connectors and manage group access.",
+      "loadFailed": "Could not load connectors —",
+      "noConnectors": "No connectors yet. Add one from the catalog below.",
+      "allAdded": "All available connectors have been added.",
+      "comingSoon": "Coming soon: {names}",
+      "groupRolesHelp": "Map an Entra (Azure AD) group's object ID to a capability role. A member's effective role is the highest of their base role, group role, and any local allow exception.",
+      "groupIdPlaceholder": "Group object ID (GUID)",
+      "setRole": "Set",
+      "addFailed": "Could not add — {detail}",
+      "enterGroupId": "Enter a group object ID",
+      "groupRoleSet": "Group role set",
+      "setRoleFailed": "Could not set role — {detail}",
+      "keySet": "key set",
+      "noKey": "no key",
+      "secretSet": "secret set",
+      "noSecret": "no secret",
+      "apiKeyLabel": "API key (write-only)",
+      "apiKeyPlaceholder": "Provider API key",
+      "saveKey": "Save key",
+      "oauthClientLabel": "OAuth client (app registration)",
+      "clientId": "Client ID",
+      "tenantId": "Tenant ID (or 'common')",
+      "clientSecret": "Client secret (write-only)",
+      "saveSecret": "Save secret",
+      "recipientPolicy": "Recipient policy",
+      "allowedDomains": "Allowed domains, comma-separated (blank = sender's own domain)",
+      "allowExternal": "Allow recipients outside the allowlist",
+      "savePolicy": "Save policy",
+      "configJson": "Connector config (JSON)",
+      "saveConfig": "Save config",
+      "configHealth": "Configuration health",
+      "checkConfig": "Check connector configuration",
+      "check": "Check",
+      "removeConnector": "Remove connector",
+      "allowedGroups": "Allowed Entra groups",
+      "noGroups": "No groups — nobody can connect yet.",
+      "addGroup": "Add group",
+      "ready": "ready",
+      "disabled": "disabled",
+      "notReady": "not ready",
+      "checkFailed": "check failed",
+      "healthFailed": "Health check failed — {detail}",
+      "enterSecret": "Enter a client secret",
+      "secretSaved": "Client secret saved",
+      "secretSaveFailed": "Could not save secret — {detail}",
+      "enterApiKey": "Enter an API key",
+      "apiKeySaved": "API key saved",
+      "apiKeySaveFailed": "Could not save key — {detail}",
+      "configInvalidJson": "Config is not valid JSON",
+      "configSaved": "Config saved",
+      "configSaveFailed": "Could not save config — {detail}",
+      "policySaved": "Policy saved",
+      "policySaveFailed": "Could not save policy — {detail}",
+      "groupAdded": "Group added",
+      "groupAddFailed": "Could not add group — {detail}",
+      "groupRemoved": "Group removed",
+      "groupRemoveFailed": "Could not remove group — {detail}",
+      "noGroupRoles": "No group roles configured.",
+      "groupRoleRemoved": "Group role removed",
+      "noActivity": "No activity yet.",
+      "activityFailed": "Could not load activity —",
+      "enable": {
+        "label": "Enable connectors",
+        "help": "Master switch for the entire per-user connector platform. While off, no connectors, sign-in flows, or actions are available to anyone."
+      },
+      "agentTools": {
+        "label": "Allow agent tool-calling",
+        "help": "Let the assistant propose connector actions (e.g. email a result) for a member. Every call still routes through the same preview → confirm gate and requires the member's OAuth consent + group approval. Requires the master switch above."
+      }
+    },
+    "myConnections": {
+      "title": "My Connections",
+      "desc": "Connect your own accounts so you can act on results — for example, email a summary from your own mailbox. You control each connection and can disconnect at any time.",
+      "loadFailed": "Could not load —",
+      "empty": "No connections are available to you yet. Ask an administrator to grant your group access.",
+      "connected": "connected",
+      "notConnected": "not connected",
+      "disconnect": "Disconnect",
+      "connect": "Connect",
+      "disconnectConfirm": "Disconnect {name}?",
+      "disconnected": "Disconnected",
+      "disconnectFailed": "Could not disconnect — {detail}"
+    },
+    "users": {
+      "title": "Users",
+      "desc": "Manage workspace members and their roles.",
+      "member": "Member",
+      "role": "Role",
+      "fullName": "Full name",
+      "passwordPlaceholder": "Password (min 8 chars)",
+      "roles": {
+        "viewer": "Viewer",
+        "editor": "Editor",
+        "admin": "Admin"
+      },
+      "addUser": "Add user",
+      "adding": "Adding…",
+      "you": "(you)",
+      "removeUser": "Remove user",
+      "loadFailed": "Could not load users:",
+      "roleUpdated": "Role updated to {role}",
+      "roleUpdateFailed": "Could not update role — {detail}",
+      "removeConfirm": "Remove {name}? This cannot be undone.",
+      "removed": "User removed",
+      "removeFailed": "Could not remove user — {detail}",
+      "allRequired": "All fields are required.",
+      "passwordTooShort": "Password must be at least 8 characters.",
+      "added": "{name} added"
+    },
+    "about": {
+      "title": "About",
+      "desc": "Application information and configuration.",
+      "version": "Version",
+      "llmModel": "LLM Model",
+      "endpoint": "Endpoint",
+      "apiVersion": "API Version",
+      "llmTimeout": "LLM Timeout",
+      "prompts": "Prompts",
+      "secondsPerCall": "{seconds}s per call",
+      "registered": "{count} registered",
+      "loadFailed": "Could not load app info."
+    },
+    "updateFailed": "Could not update — {detail}",
+    "removeFailed": "Could not remove — {detail}"
+  },
+  "analysis": {
+    "skills": {
+      "anomaly_detection": "anomaly detection",
+      "forecast": "forecast",
+      "changepoint": "changepoint",
+      "seasonality": "seasonality",
+      "correlation": "correlation",
+      "contribution": "contribution",
+      "clustering": "clustering",
+      "driver_analysis": "driver analysis",
+      "regression": "regression",
+      "classification": "classification",
+      "cohort_retention": "cohort retention",
+      "experiment_test": "A/B test"
+    },
+    "grain": {
+      "adj": {
+        "day": "daily",
+        "week": "weekly",
+        "month": "monthly"
+      },
+      "unit": {
+        "day": "days",
+        "week": "weeks",
+        "month": "months"
+      },
+      "periods": "periods"
+    },
+    "tier": {
+      "meta": {
+        "A": "Aggregates only",
+        "B": "Row-level, capped"
+      },
+      "title": {
+        "A": "Tier A: SQL rolls the data up first; only per-period totals reach the analysis service.",
+        "B": "Tier B: entity rows are sent to the analysis service, capped and audited with the column list."
+      },
+      "neutralEgress": {
+        "A": "Only aggregated totals are sent to the analysis service; no row-level data leaves the database. The exact count is recomputed when you run.",
+        "B": "Entity rows are sent to the analysis service, capped and audited with the column list. The exact count is recomputed when you run."
+      },
+      "label": "tier {tier}",
+      "aggregate": "aggregate",
+      "rowLevel": "row-level"
+    },
+    "metric": {
+      "coverage": "coverage {value}",
+      "explains": "explains {value}"
+    },
+    "strip": {
+      "points": "{count} pts",
+      "rows": "{count} rows",
+      "series": "{count} series",
+      "flagged": "{count} flagged",
+      "horizon": "horizon {value}",
+      "shifts": "{count, plural, one {# shift} other {# shifts}}",
+      "strength": "strength {value}",
+      "segments": "{count} segments",
+      "rowsSent": "{count} rows sent to model",
+      "lowConfidence": "low confidence",
+      "lowConfidenceTitle": "A guard was overridden for this run; treat the result as indicative.",
+      "editSetup": "Edit setup"
+    },
+    "form": {
+      "setupGroup": "Setup",
+      "choose": "Choose…",
+      "of": "of",
+      "changed": "changed",
+      "atLeast": "at least {value}",
+      "atMost": "at most {value}"
+    },
+    "summary": {
+      "vs": "vs",
+      "per": "per {grain}",
+      "last": "last {count} {unit}",
+      "ahead": "{count} {unit} ahead",
+      "interval": "{value} interval",
+      "sensitivity": "{value} sensitivity",
+      "breaks": "up to {count} breaks",
+      "lag": "lag up to {count} {unit}",
+      "model": "{value} model",
+      "split": "per {column}"
+    },
+    "validation": {
+      "required": "Required.",
+      "pickAtLeast": "Pick at least {count}.",
+      "pickAtMost": "Pick at most {count}.",
+      "enterNumber": "Enter a number.",
+      "atLeast": "At least {value}.",
+      "atMost": "At most {value}.",
+      "enterDate": "Enter a date.",
+      "invalidValue": "Invalid value.",
+      "fieldsNeedLook": "{count, plural, one {# field needs a look.} other {# fields need a look.}}"
+    },
+    "definition": {
+      "setup": "Setup",
+      "reading": "This is how the answer above was produced. Change anything and re-run; the current answer stays.",
+      "rerun": "Re-run",
+      "changeToRerun": "Change a value to re-run.",
+      "resetAll": "Reset all"
+    },
+    "proposal": {
+      "confirmKind": "confirm before running",
+      "clarifyKind": "one thing to clarify",
+      "guardKind": "guard",
+      "tier": "tier {tier} · {mode}",
+      "egressDefault": "SQL rolls the measure up to {grain} totals; only those rows are sent to the analysis service.",
+      "planning": "Planning",
+      "run": "Run",
+      "rephrase": "Rephrase the question",
+      "rephraseTitle": "Return to the composer and ask in other words",
+      "sqlInstead": "Answer with SQL instead",
+      "dontAsk": "Don't ask again for {skill} on this connection",
+      "guardEgress": "0 rows sent to the model — a blocked run reads no series.",
+      "recommended": "recommended"
+    },
+    "details": {
+      "empty": "Model details appear here for anomaly detection and forecast answers.",
+      "method": "Method",
+      "metric": "Metric",
+      "coverage": "Coverage",
+      "coverageOf": "{value} of {total}",
+      "season": "Season",
+      "noneConfirmed": "none confirmed",
+      "rowsSent": "Rows sent",
+      "engine": "Engine",
+      "baseline": "baseline",
+      "selected": "selected",
+      "changedFrom": "Changed from the previous run",
+      "lowConfidenceNote": "Low confidence: a guard was overridden for this run. The flag travels with pins, exports and history.",
+      "candidates": "Candidates",
+      "model": "model",
+      "metricCol": "metric",
+      "value": "value",
+      "parameters": "Parameters",
+      "guards": "Guards",
+      "noneRecorded": "none recorded",
+      "data": "Data",
+      "filters": "filters: {value}",
+      "span": "span {start} → {end}",
+      "queried": "queried {value}",
+      "notes": "Notes"
+    },
+    "caption": {
+      "by": "{table} by {key}"
+    }
+  },
+  "onboarding": {
+    "checklist": {
+      "title": "Getting started",
+      "titleComplete": "Getting started — complete",
+      "allSet": "You’re all set",
+      "dismiss": "Dismiss getting started",
+      "pickConnection": "Pick a connection",
+      "askFirst": "Ask your first question",
+      "openSql": "Open the SQL behind an answer",
+      "pinQuestion": "Pin a question you will reuse",
+      "start": "Start",
+      "showMe": "Show me"
+    },
+    "hints": {
+      "gotIt": "Got it",
+      "askHere": {
+        "title": "Ask here",
+        "body": "Type a question in plain English or Hebrew — or click a suggestion to auto-fill one."
+      },
+      "pin": {
+        "title": "Pin a question",
+        "body": "Tap the star on any question to pin it. Pinned questions stay here for this connection."
+      },
+      "pinnedHere": {
+        "title": "Pinned lives here",
+        "body": "Ask a question, then tap its star to pin it — it will show up in this list to reuse."
+      }
+    },
+    "cards": {
+      "trySales": {
+        "eyebrow": "TRY A QUESTION",
+        "title": "Show total sales for 2006",
+        "body": "One measure, one year. Returns a single figure and the SQL behind it.",
+        "cta": "Run it →",
+        "run": "Show total sales for 2006"
+      },
+      "seeChart": {
+        "eyebrow": "SEE A CHART",
+        "title": "Compare sales by month, 2006 vs 2007",
+        "body": "A grouped bar chart you can refine by asking for a different view.",
+        "cta": "Run it →",
+        "run": "Compare sales by month, 2006 vs 2007"
+      },
+      "explore": {
+        "eyebrow": "LOOK AROUND FIRST",
+        "title": "Explore tables & schema",
+        "body": "Browse what this connection exposes before you ask anything.",
+        "cta": "Open Tables →"
+      },
+      "note": "Answers land here: the chart, the rows behind it, the SQL, and per-column profiling."
+    },
+    "nudge": {
+      "title": "Your answer is saved to this conversation.",
+      "body": "Pin it to reuse the question on this connection later, or open SQL & run details to see how it was produced.",
+      "pin": "Pin it",
+      "dismiss": "Dismiss"
+    },
+    "welcome": {
+      "title": "Welcome to Jeen Insights",
+      "body": "Ask questions about your data in plain language. Every answer comes back with the chart, the rows, and the SQL that produced them.",
+      "step1": {
+        "title": "Pick a connection",
+        "body": "Your active database sits in the top bar."
+      },
+      "step2": {
+        "title": "Ask in plain language",
+        "body": "Start from a suggestion or type your own."
+      },
+      "step3": {
+        "title": "Check the work",
+        "body": "Chart, rows and SQL open side by side."
+      },
+      "takeTour": "Take a 30-second tour",
+      "skip": "Skip for now",
+      "dontShow": "Don’t show this again",
+      "meta": "{steps} steps · 30s"
+    },
+    "tour": {
+      "skip": "Skip tour",
+      "step": "Step {current} / {total}",
+      "finish": "Finish",
+      "connection": {
+        "title": "Select your active database or project.",
+        "body": "Every question, suggestion and saved answer belongs to the connection shown here."
+      },
+      "suggestions": {
+        "title": "Click any suggested question to auto-fill a query.",
+        "body": "Suggestions are generated from this connection's curated metadata, so they always run."
+      },
+      "composer": {
+        "title": "Or type your own question in plain English or Hebrew.",
+        "body": "Type @ for tables, # for columns, / for saved templates."
+      },
+      "tables": {
+        "title": "Not sure what is in there? Browse tables and columns.",
+        "body": "Curated business terms sit next to the physical column names, so you can see what the agent sees."
+      }
+    }
+  },
+  "insights": {
+    "title": "Insights",
+    "generating": "Generating insights…",
+    "thinking": "Thinking…",
+    "generatingChars": "Generating… {count, number} chars",
+    "none": "No significant insights found for this result.",
+    "whatWeFound": "What we found",
+    "recommendedNext": "Recommended next",
+    "followUps": "Follow-up questions",
+    "noPrompt": "No prompt available",
+    "tokensIn": "in {count}",
+    "tokensOut": "out {count}"
+  },
+  "tables": {
+    "pickConnection": "Pick a connection first",
+    "emptyCatalog": "No tables in catalog — refresh metadata first",
+    "none": "No tables found",
+    "loadFailed": "Failed to load tables",
+    "noMatch": "No matching tables",
+    "columnsFailed": "Could not load columns",
+    "explore": "Explore data",
+    "showSchema": "Show schema",
+    "copyName": "Copy name"
+  },
+  "saved": {
+    "pickConnection": "Pick a connection to see saved analyses.",
+    "loading": "Loading saved analyses…",
+    "empty": "No saved analyses yet.",
+    "loadFailed": "Unable to load saved analyses.",
+    "retrySave": "Retry save",
+    "retrySaveTitle": "Save failed. Click to retry.",
+    "saved": "Analysis saved",
+    "saveFailed": "Save failed",
+    "restored": "Saved analysis restored",
+    "restoreFailed": "Restore failed"
+  },
+  "pinned": {
+    "pickConnection": "Pick a connection to see your recent questions.",
+    "empty": "No questions yet — ask one above and it’ll show up here.",
+    "pinnedQuestions": "Pinned questions",
+    "pinnedCount": "{count} pinned",
+    "recentQuestions": "Recent questions",
+    "pin": "Pin question",
+    "unpin": "Unpin question",
+    "loadFailed": "Unable to load history right now.",
+    "noMatch": "No matching questions."
+  },
+  "send": {
+    "noSnapshot": "This result cannot be sent (no server snapshot).",
+    "loadConnectionsFailed": "Could not load your connections — {detail}",
+    "noEmailConnector": "No email connector is available to you. Ask an admin to grant access.",
+    "connectTitle": "Connect {name}",
+    "connectNote": "To email results as yourself, first connect your {name} account. You’ll be redirected to sign in and grant permission.",
+    "sendingFrom": "Sending from",
+    "defaultSubject": "Query results",
+    "title": "Email this result",
+    "from": "From",
+    "to": "To",
+    "recipients": "Recipients",
+    "recipientsHint": "Comma-separated. Recipients are validated against your organization’s policy.",
+    "subject": "Subject",
+    "note": "Note (optional)",
+    "notePlaceholder": "Add a short message…",
+    "summary": "A server-rendered summary of {count, plural, one {# row} other {# rows}} will be sent from your mailbox. No attachments or raw data links are included.",
+    "sendEmail": "Send email",
+    "enterRecipient": "Enter at least one recipient.",
+    "enterSubject": "Enter a subject.",
+    "checking": "Checking…",
+    "sending": "Sending…",
+    "confirmTitle": "Confirm send",
+    "confirmSend": "Confirm & send",
+    "externalRecipient": "External recipient",
+    "externalWarning": "This email includes external recipient(s) outside your organization. Review carefully before sending.",
+    "accepted": "Email accepted for delivery.",
+    "failed": "Send failed: {detail}"
+  },
+  "charts": {
+    "types": {
+      "auto": "Auto (LLM Recommended)",
+      "bar": "Bar Chart",
+      "line": "Line Chart",
+      "pie": "Pie Chart",
+      "area": "Area Chart",
+      "scatter": "Scatter Plot",
+      "horizontal_bar": "Horizontal Bar",
+      "stacked_bar": "Stacked Bar",
+      "stacked_area": "Stacked Area",
+      "donut": "Donut Chart",
+      "combo": "Combo (Bar + Line)",
+      "heatmap": "Heatmap",
+      "gauge": "Gauge / KPI",
+      "map": "Flat Map",
+      "osm_map": "OpenStreetMap"
+    },
+    "selector": {
+      "label": "Chart type",
+      "auto": "Auto"
+    },
+    "loading": "Loading chart…",
+    "generating": "Generating {type} chart…",
+    "generatingAuto": "Generating LLM-recommended chart…",
+    "options": {
+      "labels": "Labels",
+      "labelsTitle": "Show data labels on series",
+      "legend": "Legend",
+      "legendTitle": "Show chart legend",
+      "zoom": "Zoom",
+      "zoomTitle": "Enable slider + scroll zoom",
+      "sortDesc": "Sort ↓",
+      "sortDescTitle": "Sort categories high to low",
+      "columns": "Columns",
+      "columnsTitle": "Choose X / Y / Series columns",
+      "colors": "Colors",
+      "paletteTitle": "Choose the chart colour palette",
+      "mapBindings": "Map bindings",
+      "mapBindingsTitle": "Choose map location and values",
+      "locationLabel": "Location label",
+      "country": "Country",
+      "postalCode": "Postal code",
+      "latitude": "Latitude",
+      "longitude": "Longitude",
+      "aggregate": "Aggregate",
+      "rowCount": "Row count",
+      "xCategory": "X / Category",
+      "yValue": "Y / Value",
+      "seriesOptional": "Series (optional)",
+      "cityPlace": "City / place",
+      "stateProvince": "State / province",
+      "colorValue": "Color / value",
+      "sizeOptional": "Size (optional)",
+      "none": "— none —"
+    },
+    "map": {
+      "controls": "Map controls",
+      "resetView": "Reset view",
+      "fit": "Fit",
+      "zoomIn": "Zoom +",
+      "zoomOut": "Zoom -",
+      "panZoom": "Pan/zoom",
+      "noDataAreas": "No-data areas",
+      "palette": "Palette"
+    },
+    "chat": {
+      "placeholder": "Edit this chart in words — “stack by channel, log scale”",
+      "analysisPlaceholder": "Adjust this analysis — “weekly instead of daily”, “flag fewer”",
+      "refine": "Refine this chart",
+      "adjustAnalysis": "Adjust this analysis",
+      "enhance": "Enhance",
+      "reset": "Reset chart",
+      "resetTitle": "Revert to the original chart. Edits are session-only — your data is never changed.",
+      "needChart": "Generate a chart first, then I can refine it.",
+      "working": "Working on it…",
+      "applyFailed": "Couldn’t apply that change: {detail}",
+      "outOfScope": "That request needs a new query — please ask it in the main question box.",
+      "renderFailed": "Got a config back but failed to render it. The chart was not changed.",
+      "updated": "Updated the chart.",
+      "applied": "Applied: {label}",
+      "applying": "Applying…",
+      "apply": "Apply",
+      "rerun": "Re-run",
+      "rerunning": "Re-running the analysis…",
+      "rerunFailed": "Couldn't re-run: {detail}",
+      "networkError": "Network error: {detail}."
+    },
+    "actions": {
+      "savePng": "Save PNG",
+      "savePngTitle": "Download chart as PNG",
+      "copyTitle": "Copy chart image to clipboard",
+      "noChartExport": "No chart to export yet.",
+      "imageFailed": "Could not generate chart image.",
+      "saved": "Chart saved as PNG.",
+      "noChartCopy": "No chart to copy yet.",
+      "clipboardUnsupported": "Clipboard image copy is not supported in this browser/context.",
+      "copying": "Copying…",
+      "copied": "Chart copied to clipboard.",
+      "copyFailed": "Could not copy chart: {detail}"
+    },
+    "toggle": {
+      "unavailable": "Chart view not available for this data",
+      "table": "Table",
+      "chart": "Chart"
+    },
+    "enhance": {
+      "title": "Use AI to enhance chart with better styling and formatting",
+      "label": "Enhance with AI",
+      "loading": "Enhancing…",
+      "done": "Enhanced!"
+    },
+    "errors": {
+      "rerunUnavailable": "Analysis re-run is unavailable here",
+      "cannotBuild": "Could not build a chart for this data",
+      "noImageData": "No image data",
+      "libraryLoadFailed": "Failed to load the chart library",
+      "libraryNotLoaded": "Chart library not loaded"
+    }
+  }
+}

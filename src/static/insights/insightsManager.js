@@ -185,7 +185,7 @@ class InsightsManager {
         }
 
         if (!finalInsights) {
-            throw new Error('Stream ended without a done event');
+            throw new Error('Stream ended without a done event'); // i18n-ignore: internal, logged only
         }
     }
 
@@ -400,7 +400,16 @@ class InsightsManager {
     _fmtTok(n) {
         if (n == null || !Number.isFinite(n)) return null;
         if (n >= 10000) return (n / 1000).toFixed(1) + 'K';
-        return n.toLocaleString('en-US');
+        return window.I18n ? window.I18n.formatNumber(n) : n.toLocaleString();
+    }
+
+    /** Interface strings come from the locale catalog (static/i18n/i18n.js). */
+    _t(key, args) {
+        return window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key);
+    }
+
+    _h(key, args) {
+        return this.escapeHtml(this._t(key, args));
     }
 
     /**
@@ -420,8 +429,8 @@ class InsightsManager {
         if (llmStr || inTok || outTok) {
             // Final render — show full metrics
             if (llmStr)  right += `<span class="ins-meta-chip">LLM ${this.escapeHtml(llmStr)}</span>`;
-            if (inTok)   right += `<span class="ins-meta-chip">in ${this.escapeHtml(inTok)}</span>`;
-            if (outTok)  right += `<span class="ins-meta-chip">out ${this.escapeHtml(outTok)}</span>`;
+            if (inTok)   right += `<span class="ins-meta-chip">${this._h('insights.tokensIn', { count: inTok })}</span>`;
+            if (outTok)  right += `<span class="ins-meta-chip">${this._h('insights.tokensOut', { count: outTok })}</span>`;
         } else if (ttftLabel) {
             // During streaming — show TTFT
             right = `<span class="ttft">TTFT ${this.escapeHtml(ttftLabel)}</span>`;
@@ -434,7 +443,7 @@ class InsightsManager {
         <div class="ins-head">
             <span class="ins-title">
                 <span class="ins-spark">${InsightsManager._SVG_SPARK}</span>
-                Insights
+                ${this._h('insights.title')}
             </span>
             <span class="ins-meta-row">${right}</span>
         </div>`;
@@ -447,8 +456,8 @@ class InsightsManager {
         container.innerHTML = `
         <div class="ins-card">
             ${this._headerHtml(null, null)}
-            <div class="ins-loading" role="status" aria-label="Generating insights…">
-                <p id="ins-stream-status" class="ins-stream-status">Thinking…</p>
+            <div class="ins-loading" role="status" aria-label="${this._h('insights.generating')}">
+                <p id="ins-stream-status" class="ins-stream-status">${this._h('insights.thinking')}</p>
                 <div class="skeleton" style="height:0.9rem;width:85%;border-radius:4px;"></div>
                 <div class="skeleton" style="height:0.9rem;width:68%;border-radius:4px;"></div>
                 <div class="skeleton" style="height:0.9rem;width:76%;border-radius:4px;"></div>
@@ -466,7 +475,7 @@ class InsightsManager {
     _setStreamingProgress(container, charsReceived) {
         const el = container.querySelector('#ins-stream-status');
         if (!el) return;
-        el.textContent = `Generating\u2026 ${charsReceived.toLocaleString('en-US')} chars`;
+        el.textContent = this._t('insights.generatingChars', { count: Number(charsReceived) || 0 });
     }
 
     /**
@@ -519,7 +528,7 @@ class InsightsManager {
                 container.innerHTML = '';
             } else {
                 container.innerHTML = `<div class="ins-card">${this._headerHtml(ttftLabel, metrics)}
-                    <p class="ins-empty">No significant insights found for this result.</p>
+                    <p class="ins-empty">${this._h('insights.none')}</p>
                 </div>`;
             }
             return;
@@ -541,7 +550,7 @@ class InsightsManager {
         // ── Key findings ─────────────────────────────────────────────────────
         if (findings.length) {
             html += `<div>`;
-            html += `<div class="ins-subhead">What we found</div>`;
+            html += `<div class="ins-subhead">${this._h('insights.whatWeFound')}</div>`;
             html += `<div class="ins-list">`;
             findings.forEach(f => {
                 html += `<div class="ins-item">
@@ -555,7 +564,7 @@ class InsightsManager {
         // ── Recommended next (action suggestions) ────────────────────────────
         if (actionSuggestions.length) {
             html += `<div>`;
-            html += `<div class="ins-subhead">Recommended next</div>`;
+            html += `<div class="ins-subhead">${this._h('insights.recommendedNext')}</div>`;
             html += `<div class="ins-list">`;
             actionSuggestions.forEach(s => {
                 html += `<div class="ins-item ins-item--suggest">
@@ -569,11 +578,11 @@ class InsightsManager {
         // ── Follow-up questions ──────────────────────────────────────────────
         if (followups.length) {
             html += `<div>`;
-            html += `<div class="ins-subhead">Follow-up questions</div>`;
+            html += `<div class="ins-subhead">${this._h('insights.followUps')}</div>`;
             html += `<div class="ins-followups">`;
             followups.forEach(q => {
                 const safe = this.escapeHtml(q);
-                html += `<button class="ins-followup" type="button" data-q="${safe}">
+                html += `<button class="ins-followup" type="button" data-q="${safe}" dir="auto">
                     <span class="ins-followup-q">${safe}</span>
                     ${InsightsManager._SVG_ARROW_SM}
                 </button>`;
@@ -620,7 +629,7 @@ class InsightsManager {
         }
 
         if (!insights.prompt) {
-            promptContent.innerHTML = '<p style="color: #999;">No prompt available</p>';
+            promptContent.innerHTML = `<p style="color: #999;">${this._h('insights.noPrompt')}</p>`;
             return;
         }
 

@@ -28,8 +28,9 @@
     return `background: hsl(${hue}, 55%, 52%); color: #fff;`;
   }
 
-  const ROLE_LABELS = { admin: 'Admin', editor: 'Editor', viewer: 'Viewer' };
+  const t = (key, args) => (window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
   const ROLE_CLASS  = { admin: 'role-admin', editor: 'role-editor', viewer: 'role-viewer' };
+  const roleLabel = (role) => (window.I18n && window.I18n.has(`settings.users.roles.${role}`) ? t(`settings.users.roles.${role}`) : role);
 
   // ── bootstrap ──────────────────────────────────────────────────────────────
 
@@ -66,7 +67,7 @@
     if (nameEl)  nameEl.textContent  = user.name  || '';
     if (emailEl) emailEl.textContent = user.email || '';
     if (roleEl) {
-      roleEl.textContent  = ROLE_LABELS[user.role] || user.role;
+      roleEl.textContent  = roleLabel(user.role);
       roleEl.className    = 'user-role-badge ' + (ROLE_CLASS[user.role] || '');
     }
 
@@ -87,6 +88,12 @@
       });
     }
 
+    // ── Interface language ─────────────────────────────────────────────────
+    // An account property (PATCH /api/auth/me/locale). The save is not
+    // optimistic: the page reloads only after the server persisted the value
+    // and set the cookie, so a failed save never leaves a half-flipped shell.
+    _wireLanguagePicker(drop);
+
     // ── Sign out ────────────────────────────────────────────────────────────
     // /logout is POST-only + CSRF-protected, so a bare <a href> no longer
     // works. Issue a token-bearing POST (csrf.js adds the header) then redirect.
@@ -106,6 +113,57 @@
     _surfaceConnectorResult();
   }
 
+  function _wireLanguagePicker(drop) {
+    const group = document.getElementById('user-lang-picker');
+    if (!group) return;
+    const options = [...group.querySelectorAll('.user-lang-option')];
+    const current = (window.I18n && window.I18n.locale) || document.documentElement.lang || 'en';
+    const setBusy = (busy) => {
+      group.setAttribute('aria-busy', String(busy));
+      options.forEach((b) => { b.disabled = busy; });
+    };
+    const choose = async (tag) => {
+      if (!tag || tag === current) return;
+      setBusy(true);
+      try {
+        const res = await fetch('/api/auth/me/locale', {
+          method: 'PATCH',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ locale: tag }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        // Server has set the cookie + session; the shell is built once at boot,
+        // so a reload is what renders everything in the new language.
+        window.location.reload();
+      } catch (err) {
+        console.warn('[auth] language save failed:', err);
+        setBusy(false);
+        if (typeof window.showToast === 'function') {
+          window.showToast(t('settings.general.language.saveFailed'), 'error');
+        }
+      }
+    };
+    // Keep the dropdown open while saving (the document click handler closes it).
+    group.addEventListener('click', (e) => e.stopPropagation());
+    options.forEach((button) => button.addEventListener('click', () => choose(button.dataset.locale)));
+    group.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      const rtl = Boolean(window.I18n && window.I18n.isRtl);
+      const forward = rtl ? 'ArrowLeft' : 'ArrowRight';
+      const idx = Math.max(0, options.indexOf(document.activeElement));
+      let next = idx;
+      if (event.key === forward) next = (idx + 1) % options.length;
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = options.length - 1;
+      else next = (idx - 1 + options.length) % options.length;
+      event.preventDefault();
+      options[next].focus();
+      choose(options[next].dataset.locale);
+    });
+    if (drop) drop.addEventListener('keydown', (e) => { if (e.key === 'Escape') drop.hidden = true; });
+  }
+
   // Surface OAuth connect results bounced back from /integrations/callback.
   function _surfaceConnectorResult() {
     const params = new URLSearchParams(window.location.search);
@@ -116,9 +174,9 @@
       if (typeof window.showToast === 'function') window.showToast(m, t);
     };
     if (result === 'connected') {
-      toast('Connection established', 'success');
+      toast(t('connection.established'), 'success');
     } else {
-      toast('Could not connect' + (msg ? ' — ' + msg : ''), 'error');
+      toast(msg ? t('connection.connectFailedDetail', { detail: window.I18n ? window.I18n.isolate(msg) : msg }) : t('connection.connectFailed'), 'error');
     }
     // Strip the params so a refresh doesn't re-fire the toast.
     params.delete('connector_result');

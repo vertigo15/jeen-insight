@@ -17,12 +17,14 @@ import logging
 import os
 import secrets
 import time
-from typing import Any, Dict
+from typing import Optional, Any, Dict
+from urllib.parse import urlsplit
 
 import requests
 from flask import (
     Flask,
     Response,
+    g,
     jsonify,
     redirect,
     render_template,
@@ -37,6 +39,18 @@ from flask_wtf import CSRFProtect
 from flask_wtf.csrf import CSRFError
 from werkzeug.wsgi import ClosingIterator
 
+from src.i18n import (
+    LOCALE_COOKIE,
+    LOCALE_COOKIE_MAX_AGE,
+    LOCALES,
+    client_bootstrap,
+    dir_for,
+    isolate,
+    native_name,
+    normalize_locale,
+    resolve_locale,
+    translate,
+)
 from src.logging_config import (
     REQUEST_ID_HEADER,
     bind_request_id,
@@ -194,7 +208,7 @@ def _handle_rate_limit(exc):
     if request.path == "/login":
         body = render_template(
             "login.html",
-            error="Too many sign-in attempts. Please wait a minute and try again.",
+            error=_t("login.errors.tooManyAttempts"),
             entra_sso_enabled=_entra_sso_enabled(),
         )
         response = app.make_response((body, 429))
@@ -309,7 +323,7 @@ def _proxy_get(path: str, params: Dict[str, Any] | None = None, timeout: float =
         )
     except requests.exceptions.RequestException as e:
         logger.error("Backend GET %s failed: %s", path, e)
-        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+        return jsonify({"error": f"Backend unavailable: {e}", "code": "BACKEND_UNAVAILABLE"}), 503
     if response.status_code == 200:
         return jsonify(response.json())
     return jsonify({"error": response.text}), response.status_code
@@ -322,7 +336,7 @@ def _proxy_post(path: str, payload: Dict[str, Any], timeout: float = 60) -> Any:
         )
     except requests.exceptions.RequestException as e:
         logger.error("Backend POST %s failed: %s", path, e)
-        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+        return jsonify({"error": f"Backend unavailable: {e}", "code": "BACKEND_UNAVAILABLE"}), 503
     if response.status_code == 200:
         return jsonify(response.json())
     return jsonify({"error": response.text}), response.status_code
@@ -335,7 +349,7 @@ def _proxy_patch(path: str, payload: Dict[str, Any], timeout: float = 30) -> Any
         )
     except requests.exceptions.RequestException as e:
         logger.error("Backend PATCH %s failed: %s", path, e)
-        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+        return jsonify({"error": f"Backend unavailable: {e}", "code": "BACKEND_UNAVAILABLE"}), 503
     if response.status_code == 200:
         return jsonify(response.json())
     return jsonify({"error": response.text}), response.status_code
@@ -348,7 +362,7 @@ def _proxy_delete(path: str, params: Dict[str, Any] | None = None, timeout: floa
         )
     except requests.exceptions.RequestException as e:
         logger.error("Backend DELETE %s failed: %s", path, e)
-        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+        return jsonify({"error": f"Backend unavailable: {e}", "code": "BACKEND_UNAVAILABLE"}), 503
     if response.status_code == 200:
         return jsonify(response.json())
     return jsonify({"error": response.text}), response.status_code
@@ -394,6 +408,8 @@ def _write_user_session(
     session["user_email"] = user["email"]
     session["user_role"] = user["role"]
     session["avatar_hue"] = user["avatar_hue"]
+    # Account UI language (None until the user picks one in Settings).
+    session["locale"] = normalize_locale(user.get("locale"))
     session["auth_provider"] = provider
     # Authoritative "as-of" time for the identity's directory claims. Group
     # membership captured below is only trusted for a bounded TTL measured from
@@ -415,6 +431,102 @@ def _admin_required():
             return jsonify({"error": "Admin role required", "code": "FORBIDDEN"}), 403
         return redirect(url_for("index"))
     return None
+
+
+# ── Interface language ───────────────────────────────────────────────────────
+# The UI language is an account property (auth_users.locale, mirrored into the
+# session at login) with a readable `locale` cookie that carries the pre-login
+# choice and keeps a fresh tab flash-free. See src/i18n for the precedence rule.
+
+def _current_locale() -> str:
+    """Effective UI locale for this request (computed once, cached on ``g``)."""
+    cached = getattr(g, "locale", None)
+    if cached:
+        return cached
+    locale = resolve_locale(
+        authenticated="user_id" in session,
+        session_locale=session.get("locale"),
+        cookie_locale=request.cookies.get(LOCALE_COOKIE),
+        accept_language=request.headers.get("Accept-Language"),
+    )
+    g.locale = locale
+    return locale
+
+
+def _t(key: str, **args: Any) -> str:
+    """Server-side translation in the request's locale (Jinja ``t()`` too)."""
+    return translate(_current_locale(), key, **args)
+
+
+def _set_locale_cookie(response, locale: str):
+    """Mirror *locale* into the readable cookie (no secret; JS keeps in sync)."""
+    response.set_cookie(
+        LOCALE_COOKIE,
+        locale,
+        max_age=LOCALE_COOKIE_MAX_AGE,
+        path="/",
+        samesite="Lax",
+        secure=SESSION_COOKIE_SECURE,
+        httponly=False,
+    )
+    return response
+
+
+def _safe_next(value: Optional[str]) -> str:
+    """Constrain a post-login ``next`` target to a local absolute path.
+
+    Anything with a scheme, host, or protocol-relative prefix (``//evil``,
+    ``https://evil``, ``\\evil``) collapses to ``/`` so the login flow cannot be
+    used as an open redirect.
+    """
+    candidate = (value or "").strip()
+    if not candidate.startswith("/") or candidate.startswith(("//", "/\\")):
+        return "/"
+    parsed = urlsplit(candidate)
+    if parsed.scheme or parsed.netloc:
+        return "/"
+    return candidate
+
+
+def _redirect_after_login(target: str, user: Dict[str, Any]):
+    """Redirect after a successful sign-in, syncing the cookie to the account.
+
+    If the account has no saved language yet, the pre-login cookie keeps
+    driving the display and is NOT written to the account — choosing a
+    language is an explicit action in Settings.
+    """
+    response = redirect(_safe_next(target))
+    account_locale = normalize_locale(user.get("locale"))
+    if account_locale:
+        _set_locale_cookie(response, account_locale)
+    return response
+
+
+@app.before_request
+def _bind_locale():
+    _current_locale()
+
+
+@app.context_processor
+def _inject_i18n():
+    locale = _current_locale()
+    return {
+        "locale": locale,
+        "dir": dir_for(locale),
+        "t": _t,
+        "ui_locales": [
+            {"tag": tag, "name": native_name(tag), "dir": dir_for(tag)}
+            for tag in LOCALES
+        ],
+    }
+
+
+@app.after_request
+def _language_headers(response: Response) -> Response:
+    if (response.mimetype or "").startswith("text/html"):
+        response.headers["Content-Language"] = _current_locale()
+        response.vary.update({"Cookie", "Accept-Language"})
+    return response
 
 
 # ── Auth guard ───────────────────────────────────────────────────────────────
@@ -452,7 +564,7 @@ def login():
     if request.method == "GET":
         # Already logged in — skip the login page.
         if "user_id" in session:
-            return redirect(request.args.get("next") or "/")
+            return redirect(_safe_next(request.args.get("next")))
         return render_template(
             "login.html",
             error=None,
@@ -466,30 +578,32 @@ def login():
     password = request.form.get("password") or ""
 
     error = None
+    db_error = False
     if not email or not password:
-        error = "Email and password are required."
+        error = _t("login.errors.required")
     else:
         try:
             user = get_user_by_email(email)
         except Exception as exc:  # noqa: BLE001
             logger.exception("login: auth DB lookup failed for %s", email)
-            from src.auth_db import friendly_db_error
+            from src.auth_db import friendly_db_error_key
 
-            error = friendly_db_error(exc)
+            db_error = True
+            error = _t(friendly_db_error_key(exc))
             if os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG":
                 error = f"{error} ({exc})"
         else:
             if user is None or not verify_password(password, user["password_hash"]):
-                error = "Invalid email or password."
+                error = _t("login.errors.invalidCredentials")
             elif user["status"] != "active":
-                error = "This account is disabled. Contact your administrator."
+                error = _t("login.errors.disabled")
             else:
                 _write_user_session(user, provider="local")
                 touch_last_active(user["id"])
                 logger.info("login: %s (%s) authenticated", user["email"], user["role"])
-                return redirect(request.form.get("next") or "/")
+                return _redirect_after_login(request.form.get("next") or "/", user)
 
-    status = 503 if error and "unavailable" in error else 401
+    status = 503 if db_error else 401
     return render_template(
         "login.html",
         error=error,
@@ -512,7 +626,7 @@ def setup():
         _setup_bootstrap_token()
         return render_template("setup.html", error=None)
 
-    from src.auth_db import create_first_admin, friendly_db_error
+    from src.auth_db import create_first_admin, friendly_db_error_key
 
     # Out-of-band bootstrap token: blocks anonymous takeover of a fresh install.
     provided_token = request.form.get("setup_token") or ""
@@ -520,7 +634,7 @@ def setup():
         logger.warning("setup: rejected first-run attempt with an invalid setup token")
         return render_template(
             "setup.html",
-            error="Invalid setup token. Check the server logs (or set SETUP_BOOTSTRAP_TOKEN).",
+            error=_t("setup.errors.invalidToken"),
         ), 403
 
     name     = (request.form.get("name") or "").strip()
@@ -530,11 +644,11 @@ def setup():
 
     error = None
     if not name or not email or not password:
-        error = "All fields are required."
+        error = _t("setup.errors.allRequired")
     elif len(password) < 12:
-        error = "Password must be at least 12 characters."
+        error = _t("setup.errors.passwordTooShort")
     elif password != confirm:
-        error = "Passwords do not match."
+        error = _t("setup.errors.passwordsMismatch")
     if error:
         return render_template("setup.html", error=error), 400
 
@@ -546,12 +660,12 @@ def setup():
         return redirect(url_for("login"))
     except Exception as exc:  # noqa: BLE001
         logger.exception("setup: failed to create first admin")
-        return render_template("setup.html", error=friendly_db_error(exc)), 503
+        return render_template("setup.html", error=_t(friendly_db_error_key(exc))), 503
 
     _admin_bootstrapped = True
     _write_user_session(user, provider="local")
     logger.info("setup: first admin created (%s)", user["email"])
-    return redirect("/")
+    return _redirect_after_login("/", user)
 
 
 @app.route("/auth/microsoft")
@@ -564,7 +678,7 @@ def microsoft_login():
 
     state = secrets.token_urlsafe(32)
     session["oauth_state"] = state
-    session["oauth_next"] = request.args.get("next") or "/"
+    session["oauth_next"] = _safe_next(request.args.get("next"))
     callback_uri = entra_auth.redirect_uri(_public_base_url())
     auth_url = entra_auth.build_auth_url(redirect_uri=callback_uri, state=state)
     return redirect(auth_url)
@@ -583,7 +697,7 @@ def microsoft_callback():
     if ms_error:
         return render_template(
             "login.html",
-            error=f"Microsoft sign-in failed: {ms_error}",
+            error=_t("login.errors.microsoftFailed", reason=isolate(ms_error)),
             entra_sso_enabled=True,
         ), 401
 
@@ -592,7 +706,7 @@ def microsoft_callback():
     if not state or state != expected:
         return render_template(
             "login.html",
-            error="Invalid sign-in state. Please try again.",
+            error=_t("login.errors.invalidState"),
             entra_sso_enabled=True,
         ), 401
 
@@ -600,7 +714,7 @@ def microsoft_callback():
     if not code:
         return render_template(
             "login.html",
-            error="Microsoft sign-in was cancelled.",
+            error=_t("login.errors.microsoftCancelled"),
             entra_sso_enabled=True,
         ), 401
 
@@ -610,7 +724,10 @@ def microsoft_callback():
     if err or not result:
         return render_template(
             "login.html",
-            error=f"Microsoft sign-in failed: {err or 'unknown error'}",
+            error=_t(
+                "login.errors.microsoftFailed",
+                reason=isolate(err) if err else _t("login.errors.unknownReason"),
+            ),
             entra_sso_enabled=True,
         ), 401
 
@@ -619,7 +736,7 @@ def microsoft_callback():
     if not profile["email"]:
         return render_template(
             "login.html",
-            error="Your Microsoft account has no email address.",
+            error=_t("login.errors.noEmail"),
             entra_sso_enabled=True,
         ), 401
 
@@ -627,7 +744,7 @@ def microsoft_callback():
         user = get_or_create_sso_user(profile["email"], profile["name"])
     except Exception as exc:  # noqa: BLE001
         logger.exception("microsoft login: user provision failed for %s", profile["email"])
-        error = "Sign-in is temporarily unavailable (database error)."
+        error = _t("login.errors.dbUnavailable")
         if os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG":
             error = f"{error} ({exc})"
         return render_template(
@@ -639,14 +756,14 @@ def microsoft_callback():
     if user["status"] != "active":
         return render_template(
             "login.html",
-            error="This account is disabled. Contact your administrator.",
+            error=_t("login.errors.disabled"),
             entra_sso_enabled=True,
         ), 401
 
     _write_user_session(user, provider="microsoft", directory=directory)
     touch_last_active(user["id"])
     logger.info("microsoft login: %s (%s) authenticated", user["email"], user["role"])
-    return redirect(next_url)
+    return _redirect_after_login(next_url, user)
 
 
 @app.route("/logout", methods=["POST"])
@@ -674,6 +791,9 @@ def auth_me():
         "email":      session["user_email"],
         "role":       session["user_role"],
         "avatar_hue": session["avatar_hue"],
+        # Saved UI language (null until chosen); the page itself already renders
+        # in the effective locale, so this only feeds the picker's initial state.
+        "locale":     normalize_locale(session.get("locale")),
         # Surface flags the UI uses to gate connector surfaces.
         "is_entra":   bool(session.get("object_id")),
         "connectors_enabled": get_connectors_enabled_sync(),
@@ -681,6 +801,37 @@ def auth_me():
         # to also be enabled). Surfaced so the UI can reflect/gate the feature.
         "agent_tools_enabled": get_agent_tools_enabled_sync(),
     })
+
+
+@app.route("/api/auth/me/locale", methods=["PATCH"])
+def auth_set_locale():
+    """Set the caller's UI language.
+
+    Persists to ``auth_users.locale`` (the durable per-account property), updates
+    the session, and mirrors the value into the readable ``locale`` cookie so the
+    very next page load renders the new language/direction with no flash.
+    CSRF-protected by Flask-WTF (csrf.js attaches the token to same-origin PATCH).
+    """
+    if "user_id" not in session:
+        return jsonify({"error": "Not authenticated", "code": "UNAUTHENTICATED"}), 401
+    data = request.get_json(silent=True) or {}
+    locale = normalize_locale(data.get("locale"))
+    if not locale:
+        return jsonify({
+            "error": f"locale must be one of: {', '.join(LOCALES)}",
+            "code": "INVALID_LOCALE",
+        }), 400
+    from src.auth_db import set_user_locale
+
+    try:
+        set_user_locale(int(session["user_id"]), locale)
+    except Exception:  # noqa: BLE001
+        logger.exception("auth_set_locale failed")
+        return jsonify({"error": "Could not save the language preference", "code": "DB_ERROR"}), 500
+    session["locale"] = locale
+    g.locale = locale
+    response = jsonify({"locale": locale})
+    return _set_locale_cookie(response, locale)
 
 
 # ── User management routes (— served by Flask, not proxied) ──────────────────
@@ -779,7 +930,7 @@ def settings_set_prompt_model(name: str):
             headers=_internal_headers(),
         )
     except requests.exceptions.RequestException as e:
-        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+        return jsonify({"error": f"Backend unavailable: {e}", "code": "BACKEND_UNAVAILABLE"}), 503
     return jsonify(resp.json()), resp.status_code
 
 
@@ -787,7 +938,13 @@ def settings_set_prompt_model(name: str):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    # The workspace is a classic-script app that builds its shell at boot, so
+    # the effective locale's merged catalog is embedded in the page (as a
+    # non-executable JSON block) and parsed synchronously by static/i18n/i18n.js.
+    return render_template(
+        "index.html",
+        i18n_bootstrap=client_bootstrap(_current_locale()),
+    )
 
 
 @app.route("/landing")
@@ -1441,7 +1598,7 @@ def settings_save_prompt(name: str):
             headers=_internal_headers(),
         )
     except requests.exceptions.RequestException as e:
-        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+        return jsonify({"error": f"Backend unavailable: {e}", "code": "BACKEND_UNAVAILABLE"}), 503
     return jsonify(resp.json()), resp.status_code
 
 
@@ -1457,7 +1614,7 @@ def settings_reset_prompt(name: str):
             headers=_internal_headers(),
         )
     except requests.exceptions.RequestException as e:
-        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+        return jsonify({"error": f"Backend unavailable: {e}", "code": "BACKEND_UNAVAILABLE"}), 503
     return jsonify(resp.json()), resp.status_code
 
 
@@ -1504,7 +1661,7 @@ def settings_set_active_model():
             headers=_internal_headers(),
         )
     except requests.exceptions.RequestException as e:
-        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+        return jsonify({"error": f"Backend unavailable: {e}", "code": "BACKEND_UNAVAILABLE"}), 503
     return jsonify(resp.json()), resp.status_code
 
 
@@ -1534,7 +1691,7 @@ def settings_update_runtime():
             headers=_internal_headers(),
         )
     except requests.exceptions.RequestException as e:
-        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+        return jsonify({"error": f"Backend unavailable: {e}", "code": "BACKEND_UNAVAILABLE"}), 503
     return jsonify(resp.json()), resp.status_code
 
 
@@ -1561,7 +1718,7 @@ def _forward(api_path: str, *, timeout: float = 30) -> Any:
         )
     except requests.exceptions.RequestException as e:
         logger.error("proxy %s %s failed: %s", request.method, target, e)
-        return jsonify({"error": f"Backend unavailable: {e}"}), 503
+        return jsonify({"error": f"Backend unavailable: {e}", "code": "BACKEND_UNAVAILABLE"}), 503
     try:
         return jsonify(resp.json()), resp.status_code
     except Exception:  # noqa: BLE001
@@ -1705,7 +1862,7 @@ def _safe_detail(resp) -> str:
 
 
 def _integration_result_redirect(status: str, message: str) -> Any:
-    from urllib.parse import quote
+    from urllib.parse import quote, urlsplit
 
     return redirect(f"/?connector_result={quote(status)}&connector_msg={quote(message or '')}")
 

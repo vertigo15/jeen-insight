@@ -39,7 +39,7 @@
   background: transparent;
   cursor: pointer;
   color: var(--text);
-  text-align: left;
+  text-align: start;
   font-family: inherit;
 }
 .jo-ring {
@@ -120,7 +120,7 @@
 .jo-item-circle svg { display: none; width: 10px; height: 10px; color: #fff; }
 .jo-item-label { font-size: 13px; color: var(--text); }
 .jo-item-action {
-  margin-left: auto;
+  margin-inline-start: auto;
   padding: 2px 4px;
   border: 0;
   background: transparent;
@@ -155,7 +155,7 @@
   padding: 0;
   border: 0;
   border-radius: 0;
-  text-align: left;
+  text-align: start;
 }
 .jo-cards {
   display: grid;
@@ -171,7 +171,7 @@
   border-radius: 16px;
   background: var(--bg);
   cursor: pointer;
-  text-align: left;
+  text-align: start;
   font-family: var(--font-sans);
   transition: border-color .16s ease, background-color .16s ease;
 }
@@ -371,7 +371,7 @@
 }
 .jo-pill-ghost:hover { color: var(--text); }
 .jo-dialog-meta {
-  margin-left: auto;
+  margin-inline-start: auto;
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: .04em;
@@ -429,7 +429,7 @@
   align-items: center;
   gap: 8px;
 }
-.jo-dots { margin-left: auto; display: flex; gap: 6px; }
+.jo-dots { margin-inline-start: auto; display: flex; gap: 6px; }
 .jo-dot { width: 6px; height: 6px; border-radius: 9999px; background: var(--jo-dot-idle); }
 .jo-dot.is-active { background: var(--rose); }
 
@@ -446,3 +446,7 @@
     animation-duration: .01ms !important;
   }
 }
+
+/* Hebrew has no upper case: the tracked-caps eyebrow style is Latin-only. */
+[dir="rtl"] .jo-card-eyebrow,
+[dir="rtl"] .jo-dialog-eyebrow { letter-spacing: 0; text-transform: none; }

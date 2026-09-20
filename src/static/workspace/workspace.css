@@ -37,7 +37,7 @@ body.v3-ready > .app-layout { display: none !important; }
   align-items: center;
   gap: 16px;
   padding: 16px 0;
-  border-right: 1px solid var(--border);
+  border-inline-end: 1px solid var(--border);
   background: var(--bg);
 }
 .v3-logo { width: 26px; height: 26px; object-fit: contain; }
@@ -57,8 +57,9 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-rail-btn.is-active { background: var(--rosesoft); color: var(--rose); }
 .v3-rail-spacer { flex: 1; }
 
-/* Rail tooltips: shown to the right of the icon on hover and keyboard focus.
-   The rail is lifted above the app pane so the bubble is never painted under it. */
+/* Rail tooltips: shown on the trailing side of the icon (right in LTR, left in
+   RTL) on hover and keyboard focus. The rail is lifted above the app pane so the
+   bubble is never painted under it. */
 .v3-rail { position: relative; z-index: 15; }
 .v3-rail-btn[data-tooltip] { position: relative; }
 .v3-rail-btn[data-tooltip]::after,
@@ -72,7 +73,7 @@ body.v3-ready > .app-layout { display: none !important; }
 }
 .v3-rail-btn[data-tooltip]::after {
   content: attr(data-tooltip);
-  left: calc(100% + 12px);
+  inset-inline-start: calc(100% + 12px);
   padding: 5px 9px;
   border-radius: 7px;
   background: var(--text);
@@ -86,12 +87,14 @@ body.v3-ready > .app-layout { display: none !important; }
 }
 .v3-rail-btn[data-tooltip]::before {
   content: '';
-  left: calc(100% + 6px);
+  inset-inline-start: calc(100% + 6px);
   border: 5px solid transparent;
-  border-left: 0;
-  border-right-color: var(--text);
+  border-inline-start: 0;
+  border-inline-end-color: var(--text);
   transform: translate(-4px, -50%);
 }
+[dir="rtl"] .v3-rail-btn[data-tooltip]::after,
+[dir="rtl"] .v3-rail-btn[data-tooltip]::before { transform: translate(4px, -50%); }
 .v3-rail-btn[data-tooltip]:hover::after,
 .v3-rail-btn[data-tooltip]:hover::before,
 .v3-rail-btn[data-tooltip]:focus-visible::after,
@@ -150,7 +153,7 @@ body.v3-ready > .app-layout { display: none !important; }
   background: var(--bg);
   box-shadow: none;
 }
-.v3-connection-slot .connection-panel { top: 38px; left: 0; right: auto; min-width: 260px; }
+.v3-connection-slot .connection-panel { top: 38px; inset-inline-start: 0; inset-inline-end: auto; min-width: 260px; }
 .v3-topbar-spacer { flex: 1; }
 .v3-topbar-icon, .v3-topbar .theme-toggle {
   width: 32px !important;
@@ -174,7 +177,7 @@ body.v3-ready > .app-layout { display: none !important; }
   min-height: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border);
+  border-inline-end: 1px solid var(--border);
   background: var(--bg);
 }
 .v3-conversation[hidden] { display: none !important; }
@@ -238,7 +241,7 @@ body.v3-ready > .app-layout { display: none !important; }
   color: var(--faint);
   font-size: 11px;
 }
-.v3-history-group-head span:last-child:not(:first-child) { margin-left: auto; }
+.v3-history-group-head span:last-child:not(:first-child) { margin-inline-start: auto; }
 .v3-star { color: var(--rose); }
 #v3-pinned-slot .history-item {
   min-height: 0;
@@ -298,7 +301,7 @@ body.v3-ready > .app-layout { display: none !important; }
   color: var(--muted);
   font-size: 12.5px;
   font-weight: 300;
-  text-align: left;
+  text-align: start;
 }
 .v3-chip:hover { border-color: transparent; background: var(--rosesoft); color: var(--rose); }
 
@@ -321,10 +324,10 @@ body.v3-ready > .app-layout { display: none !important; }
 }
 .v3-turn:not(.is-selected):not(.is-running):hover .v3-question { color: var(--link); }
 .v3-turn::after {
-  content: 'Show answer';
+  content: attr(data-show-label);
   position: absolute;
   bottom: 11px;
-  right: 14px;
+  inset-inline-end: 14px;
   padding: 3px 9px;
   border-radius: 9999px;
   background: var(--rosesoft);
@@ -359,14 +362,14 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-dot.is-done { background: var(--rose); }
 .v3-dot.is-ok { background: var(--ok); }
 .v3-dot.is-running { background: var(--rose); box-shadow: 0 0 0 3px var(--rosesoft); }
-.v3-run-meta { margin-left: 3px; color: var(--faint); font: 11px var(--font-mono); }
+.v3-run-meta { margin-inline-start: 3px; color: var(--faint); font: 11px var(--font-mono); }
 .v3-text-btn { padding: 4px 7px; border: 0; border-radius: 9999px; background: transparent; color: var(--link); font-size: 11.5px; }
 .v3-text-btn:hover { background: var(--soft); color: var(--link2); }
 .v3-trace { margin-top: 11px; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); }
 .v3-trace-row { display: grid; grid-template-columns: 6px minmax(82px, auto) 1fr 46px; align-items: center; gap: 9px; padding: 7px 11px; border-bottom: 1px solid var(--border); font: 10.5px var(--font-mono); }
 .v3-trace-row:last-child { border-bottom: 0; }
 .v3-trace-note { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
-.v3-trace-ms { color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
+.v3-trace-ms { color: var(--faint); text-align: end; font-variant-numeric: tabular-nums; direction: ltr; }
 .v3-answer { margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 11px; }
 .v3-summary { font-size: 14.5px; font-weight: 400; line-height: 1.6; text-align: start; text-wrap: pretty; }
 .v3-insights {
@@ -435,27 +438,38 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-error-actions button:first-child { border-color: var(--text); background: var(--text); color: var(--bg); }
 
 .v3-composer-wrap { flex: 0 0 auto; padding: 10px 18px 18px; }
-.v3-composer { position: relative; padding: 12px 12px 9px; border: 1px solid var(--border2); border-radius: 18px; background: var(--bg); box-shadow: var(--shadow); }
+.v3-composer { position: relative; padding: 12px; border: 1px solid var(--border2); border-radius: 18px; background: var(--bg); box-shadow: var(--shadow); }
+/* Focus lives on the card, not the borderless textarea inside it — otherwise the
+   .v3-shell :focus-visible ring draws a rectangle that collides with the Ask row. */
+.v3-composer:focus-within { border-color: var(--rose); box-shadow: var(--shadow), 0 0 0 3px var(--rosesoft); }
+.v3-shell .v3-composer textarea:focus,
+.v3-shell .v3-composer textarea:focus-visible { outline: none; box-shadow: none; }
 .v3-composer textarea {
   display: block; width: 100%; min-height: 42px; max-height: 140px; resize: none;
   border: 0; outline: 0; background: transparent; font-size: 14px; font-weight: 300; line-height: 1.5;
 }
-.v3-composer-bottom { display: flex; align-items: center; gap: 8px; }
-.v3-composer-hint { color: var(--faint); font-size: 11px; }
+.v3-composer-bottom { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+.v3-composer-hint { min-width: 0; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v3-composer-hint kbd {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px;
+  margin: 0 2px 0 3px; vertical-align: middle;
+  border: 1px solid var(--border2); border-bottom-width: 2px; border-radius: 4px; background: var(--soft);
+  color: var(--text); font: 500 10px/1 var(--font-mono);
+}
+.v3-composer-hint kbd:first-child { margin-inline-start: 0; }
 .v3-composer-spacer { flex: 1; }
 .v3-ask {
   height: 30px; padding: 0 14px; border: 0; border-radius: 9999px;
   background: var(--text); color: var(--bg); font-size: 13px;
-  transform: translateY(2px);
 }
 .v3-ask:hover { opacity: .85; }
 .v3-ask:disabled { opacity: .45; cursor: not-allowed; }
-.v3-composer .question-suggestions { bottom: calc(100% + 8px); top: auto; left: 0; right: 0; }
+.v3-composer .question-suggestions { bottom: calc(100% + 8px); top: auto; inset-inline: 0; }
 
 .v3-workspace { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .v3-result-head { flex: 0 0 auto; display: flex; align-items: flex-start; gap: 20px; padding: 4px 28px 0; }
 .v3-result-copy { flex: 1; min-width: 0; }
-.v3-result-title { margin: 0; font-size: 26px; font-weight: 400; line-height: 1.25; letter-spacing: -.02em; text-align: left; text-wrap: pretty; }
+.v3-result-title { margin: 0; font-size: 26px; font-weight: 400; line-height: 1.25; letter-spacing: -.02em; text-align: start; text-wrap: pretty; }
 .v3-meta-row { margin-top: 7px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
 .v3-status { height: 24px; padding: 0 11px; display: inline-flex; align-items: center; border-radius: 9999px; background: var(--linksoft); color: var(--link); font-size: 12px; white-space: nowrap; }
 .v3-status.is-empty { background: var(--soft); color: var(--muted); }
@@ -568,10 +582,12 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-grid-head { position: sticky; top: 0; z-index: 2; background: var(--soft); }
 .v3-grid-cell { min-width: 0; overflow: hidden; padding: 13px 18px; color: var(--text); font-size: 13.5px; font-weight: 300; text-overflow: ellipsis; white-space: nowrap; }
 .v3-grid-head .v3-grid-cell { padding: 12px 18px; color: var(--muted); font-size: 12.5px; font-weight: 400; }
-.v3-grid-head button.v3-grid-cell { border: 0; background: transparent; text-align: left; }
-.v3-grid-head button.v3-grid-cell.is-numeric { text-align: right; }
+.v3-grid-head button.v3-grid-cell { border: 0; background: transparent; text-align: start; }
+.v3-grid-head button.v3-grid-cell.is-numeric { text-align: end; }
 .v3-grid-head button.v3-grid-cell:hover { color: var(--text); }
-.v3-grid-cell.is-numeric { font-family: var(--font-mono); text-align: right; font-variant-numeric: tabular-nums; }
+/* Numbers are an LTR island: digits, minus signs and decimal points keep their
+   order in an RTL document, aligned to the trailing edge. */
+.v3-grid-cell.is-numeric { font-family: var(--font-mono); text-align: end; font-variant-numeric: tabular-nums; }
 .v3-grid-cell.is-derived { background: color-mix(in srgb, var(--rosesoft) 45%, transparent); }
 .v3-virtual-spacer { grid-column: 1 / -1; }
 .v3-workspace .describe-section { margin-top: 10px; }
@@ -592,7 +608,7 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-sql-card { overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); }
 .v3-sql-provenance { padding: 10px 14px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); color: var(--muted); font: 11.5px var(--font-mono); }
 .v3-sql-provenance button { border: 0; background: transparent; color: var(--link); }
-.v3-sql-provenance [data-dev-details] { margin-left: auto; }
+.v3-sql-provenance [data-dev-details] { margin-inline-start: auto; }
 .v3-sql-card pre { margin: 0; padding: 16px; color: var(--text); font: 12.5px/1.75 var(--font-mono); white-space: pre-wrap; }
 .v3-profile-list { display: flex; flex-direction: column; gap: 7px; }
 .v3-profile-row { padding: 11px 15px; display: flex; align-items: center; gap: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); }
@@ -603,7 +619,7 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-profile-track { height: 4px; overflow: hidden; border-radius: 9999px; background: var(--soft2); }
 .v3-profile-fill { height: 100%; border-radius: inherit; background: var(--rose); }
 .v3-profile-range span { display: block; margin-top: 7px; overflow: hidden; color: var(--muted); font: 11.5px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
-.v3-profile-figure { width: 92px; flex: 0 0 92px; color: var(--muted); font-size: 11.5px; text-align: right; }
+.v3-profile-figure { width: 92px; flex: 0 0 92px; color: var(--muted); font-size: 11.5px; text-align: end; }
 .v3-profile-figure:last-child { width: 72px; flex-basis: 72px; color: var(--faint); }
 .v3-profile-foot { margin-top: 10px; color: var(--faint); font-size: 12px; font-weight: 300; }
 
@@ -635,7 +651,7 @@ body.v3-ready .sp-overlay {
   position: sticky;
   top: 0;
   z-index: 2;
-  float: right;
+  float: inline-end;
   width: 32px;
   height: 32px;
   border: 1px solid var(--border);
@@ -674,6 +690,7 @@ body.v3-ready .sp-overlay {
 .v3-chip--ml { border-color: var(--rose); color: var(--rose); }
 .v3-chip--ml::before { content: "✦ "; }
 
+.v3-route-clarify { display: grid; gap: 14px; text-align: start; }
 .v3-filter-clarify .v3-ml-actions { gap: 8px; }
 .v3-filter-option small { color: var(--muted); font-weight: 400; margin-inline-start: 4px; }
 .v3-filter-other .v3-text-btn { color: var(--link); background: transparent; border: 0; padding: 0; font-size: 12.5px; cursor: pointer; }
@@ -858,3 +875,29 @@ body.v3-ready .sp-overlay {
     transition-duration: .01ms !important;
   }
 }
+
+/* ── RTL (dir="rtl" on <html>) ──────────────────────────────────────────────
+   Layout uses logical properties above, so the shell mirrors on its own: the
+   rail and the conversation panel sit on the trailing (right) edge, tooltips
+   open toward the workspace, and text aligns to the start edge. The rules here
+   cover only what logical CSS cannot express: directional glyphs and LTR
+   islands (code, SQL, identifiers) that must keep their own order. */
+[dir="rtl"] .v3-sql-card pre,
+[dir="rtl"] .v3-trace-row span:nth-child(2),
+[dir="rtl"] .v3-stat-value,
+[dir="rtl"] .v3-dock-meta,
+[dir="rtl"] .v3-filter-chip,
+[dir="rtl"] .v3-ml-diff-chip,
+[dir="rtl"] .v3-mono {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+[dir="rtl"] .v3-sql-card pre { text-align: left; }
+/* Keep run metrics ("1.2s · 7 nodes") readable as a unit without flipping the row. */
+[dir="rtl"] .v3-run-meta,
+[dir="rtl"] .v3-result-meta { unicode-bidi: plaintext; }
+/* Directional glyphs drawn as text (chevrons, arrows) mirror with the layout. */
+[dir="rtl"] .v3-conv-item .v3-conv-meta,
+[dir="rtl"] .v3-insights-mark { unicode-bidi: isolate; }
+[dir="rtl"] .v3-text-btn[data-question-log]::after,
+[dir="rtl"] .jo-card-cta { unicode-bidi: plaintext; }

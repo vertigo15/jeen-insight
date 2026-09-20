@@ -41,6 +41,27 @@
     <div id="chart-view-container"></div>
   </div>
 
+  <!--
+    Interface language: in production Flask embeds the effective locale's
+    catalog as a JSON block; the static harness fetches the English catalog
+    synchronously so the real runtime below is ready before the controller
+    builds the shell (the specs assert English copy).
+  -->
+  <script>
+    (function () {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', '/src/i18n/messages/en.json', false);
+      xhr.send(null);
+      window.__I18N_BOOTSTRAP__ = {
+        locale: 'en', dir: 'ltr', formatLocale: 'en-US',
+        locales: [{ tag: 'en', name: 'English', dir: 'ltr' }, { tag: 'he', name: 'עברית', dir: 'rtl' }],
+        messages: JSON.parse(xhr.responseText),
+      };
+    })();
+  </script>
+  <script src="/src/static/vendor/intl-messageformat/intl-messageformat.iife.js"></script>
+  <script src="/src/static/i18n/i18n.js"></script>
+
   <!-- 1) real routing truth  2) scenario shapes  3) fake network + env stubs -->
   <script src="/tests/e2e/harness/routing.generated.js"></script>
   <script src="/tests/e2e/harness/fixtures.js"></script>

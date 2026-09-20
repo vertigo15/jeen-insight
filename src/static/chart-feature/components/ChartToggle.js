@@ -5,6 +5,10 @@
  * @module ChartToggle
  */
 
+// Interface strings come from the locale catalog (static/i18n/i18n.js, loaded first).
+const t = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
+const th = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.h === 'function' ? window.I18n.h(key, args) : String(key));
+
 /// <reference path="../types/chart.types.js" />
 
 /**
@@ -40,14 +44,14 @@ export class ChartToggle {
                     class="view-toggle-btn active" 
                     data-view="table"
                 >
-                    📊 Table
+                    📊 ${th('charts.toggle.table')}
                 </button>
                 <button 
                     id="toggle-chart-btn" 
                     class="view-toggle-btn" 
                     data-view="chart"
                 >
-                    📈 Chart
+                    📈 ${th('charts.toggle.chart')}
                 </button>
             </div>
         `;
@@ -129,7 +133,7 @@ export class ChartToggle {
         const chartBtn = document.getElementById('toggle-chart-btn');
         if (chartBtn) {
             chartBtn.disabled = true;
-            chartBtn.title = 'Chart view not available for this data';
+            chartBtn.title = t('charts.toggle.unavailable');
             console.log('[ChartToggle] Chart button disabled');
         }
     }

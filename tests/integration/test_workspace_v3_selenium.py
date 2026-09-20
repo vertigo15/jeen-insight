@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from selenium import webdriver
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support import expected_conditions as EC
@@ -19,6 +20,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 
 APP_URL = os.getenv("APP_URL", "http://localhost:8501")
+# Sign-in used by the fixture; override for stacks whose admin password differs.
+E2E_USER = os.getenv("E2E_USER", "admin")
+E2E_PASSWORD = os.getenv("E2E_PASSWORD", "ChangeMe123!")
 SCREENSHOTS = Path("tests/screenshots/workspace_v3")
 
 
@@ -35,8 +39,8 @@ def driver():
         browser.get(APP_URL)
         if "login" in browser.current_url:
             wait = WebDriverWait(browser, 10)
-            wait.until(EC.presence_of_element_located((By.ID, "email"))).send_keys("admin")
-            browser.find_element(By.ID, "password").send_keys("ChangeMe123!")
+            wait.until(EC.presence_of_element_located((By.ID, "email"))).send_keys(E2E_USER)
+            browser.find_element(By.ID, "password").send_keys(E2E_PASSWORD)
             browser.find_element(By.ID, "login-btn").click()
         WebDriverWait(browser, 15).until(
             EC.presence_of_element_located((By.ID, "v3-shell"))
@@ -61,7 +65,7 @@ def _inject_success(driver) -> None:
         };
         const phases = window.WorkspaceV3Utils.PHASES;
         const trace = [
-          ['memory_shrink_check', 12, 'logic'],
+          ['context_composer', 12, 'logic'],
           ['fused_router', 190, 'llm'],
           ['catalog_lookup', 86, 'db'],
           ['sql_generator', 720, 'llm'],
@@ -235,3 +239,111 @@ def test_hebrew_answers_use_rtl_insight_layout(driver):
     )
     assert "rgba" in insights.value_of_css_property("background-color")
     _shot(driver, "08_hebrew_rtl.png")
+
+
+def _set_locale(driver, locale: str) -> None:
+    """Switch the signed-in account's interface language through the real API.
+
+    csrf.js has wrapped window.fetch on the page, so the PATCH carries the token.
+    The server persists the choice, updates the session and sets the `locale`
+    cookie; a fresh navigation then renders the whole document in that language.
+    """
+    status = driver.execute_async_script(
+        """
+        const [locale, done] = arguments;
+        fetch('/api/auth/me/locale', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ locale }),
+        }).then((r) => done(r.status)).catch(() => done(0));
+        """,
+        locale,
+    )
+    assert status == 200, f"PATCH /api/auth/me/locale -> {status}"
+    driver.get(APP_URL)
+    WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "v3-shell")))
+
+
+def test_interface_language_switch_mirrors_the_shell_and_persists(driver):
+    """Hebrew UI: <html lang dir> flips, the chrome is translated, the rail sits
+    on the trailing (right) edge, and the choice survives a fresh page load.
+    Restores English at the end so the other tests keep asserting English copy."""
+    try:
+        _set_locale(driver, "he")
+        html = driver.find_element(By.TAG_NAME, "html")
+        assert html.get_attribute("lang") == "he"
+        assert html.get_attribute("dir") == "rtl"
+
+        # Shell copy comes from the Hebrew catalog.
+        rail = driver.find_element(By.CSS_SELECTOR, ".v3-rail")
+        assert rail.get_attribute("aria-label") == "ניווט ראשי"
+        title = driver.find_element(By.ID, "v3-result-title")
+        assert title.text == "שאלו שאלה כדי להתחיל"
+        assert driver.find_element(By.CSS_SELECTOR, '[data-rail="tables"]').get_attribute("data-tooltip") == "טבלאות"
+
+        # Logical CSS mirrors the layout: the rail hugs the right edge and the
+        # conversation panel sits to the right of the workspace.
+        width = driver.execute_script("return window.innerWidth")
+        assert rail.rect["x"] + rail.rect["width"] >= width - 2
+        conversation = driver.find_element(By.ID, "v3-conversation")
+        workspace = driver.find_element(By.CSS_SELECTOR, ".v3-workspace")
+        assert conversation.rect["x"] > workspace.rect["x"]
+
+        # Persistence: /api/auth/me reports the saved value and a new load stays Hebrew.
+        me = driver.execute_async_script(
+            "const done = arguments[0]; fetch('/api/auth/me').then(r => r.json()).then(done);"
+        )
+        assert me["locale"] == "he"
+        driver.get(APP_URL)
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "v3-shell")))
+        assert driver.find_element(By.TAG_NAME, "html").get_attribute("dir") == "rtl"
+
+        # An English answer inside the Hebrew UI keeps its own direction.
+        _inject_success(driver)
+        assert driver.find_element(By.CSS_SELECTOR, ".v3-summary").get_attribute("dir") == "ltr"
+
+        # Settings > General shows the picker with own-language labels, Hebrew active.
+        driver.find_element(By.ID, "v3-settings-button").click()
+        picker = WebDriverWait(driver, 10).until(
+            EC.visibility_of_element_located((By.ID, "sp-language"))
+        )
+        _shot(driver, "09_hebrew_interface.png")
+        options = picker.find_elements(By.CSS_SELECTOR, ".sp-lang-option")
+        labels = [o.get_attribute("textContent").strip() for o in options]
+        assert labels == ["English", "עברית"]
+        assert all(o.is_displayed() for o in options)
+        # Each option is tagged with its own language/direction for screen readers.
+        assert [o.get_attribute("lang") for o in options] == ["en", "he"]
+        active = picker.find_element(By.CSS_SELECTOR, '[aria-checked="true"]')
+        assert active.get_attribute("data-locale") == "he"
+
+        # The everyday switch is in the avatar menu: open it and flip back to
+        # English from there (saves to the account, then the page reloads LTR).
+        driver.get(APP_URL)
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "v3-shell")))
+        # A first-time account gets the welcome dialog over the shell (mounted
+        # asynchronously after onboarding state loads); skip it if it shows up.
+        try:
+            WebDriverWait(driver, 4).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, ".jo-backdrop [data-skip]"))
+            ).click()
+            WebDriverWait(driver, 5).until_not(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".jo-backdrop"))
+            )
+        except TimeoutException:
+            pass  # returning user, no dialog
+        avatar = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "user-avatar-btn")))
+        avatar.click()
+        menu_picker = WebDriverWait(driver, 5).until(
+            EC.visibility_of_element_located((By.ID, "user-lang-picker"))
+        )
+        assert menu_picker.find_element(By.CSS_SELECTOR, '[aria-checked="true"]').get_attribute("data-locale") == "he"
+        _shot(driver, "10_hebrew_user_menu.png")
+        menu_picker.find_element(By.CSS_SELECTOR, '[data-locale="en"]').click()
+        WebDriverWait(driver, 15).until(
+            lambda d: d.find_element(By.TAG_NAME, "html").get_attribute("lang") == "en"
+        )
+        assert driver.find_element(By.TAG_NAME, "html").get_attribute("dir") == "ltr"
+    finally:
+        _set_locale(driver, "en")
+        assert driver.find_element(By.TAG_NAME, "html").get_attribute("dir") == "ltr"

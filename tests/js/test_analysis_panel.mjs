@@ -10,8 +10,15 @@ import path from 'node:path';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(path.join(here, '../../src/static/analysis/analysisPanel.js'), 'utf8');
+// The panel reads its copy from the interface-language runtime; load it with
+// the English catalog so the assertions below keep checking real English text.
+const messages = JSON.parse(fs.readFileSync(path.join(here, '../../src/i18n/messages/en.json'), 'utf8'));
 const sandbox = { window: {} };
+sandbox.window.__I18N_BOOTSTRAP__ = { locale: 'en', dir: 'ltr', formatLocale: 'en-US', messages };
 vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(path.join(here, '../../src/static/vendor/intl-messageformat/intl-messageformat.iife.js'), 'utf8'), sandbox);
+sandbox.window.IntlMessageFormat = sandbox.IntlMessageFormat;
+vm.runInContext(fs.readFileSync(path.join(here, '../../src/static/i18n/i18n.js'), 'utf8'), sandbox);
 vm.runInContext(src, sandbox);
 const UI = sandbox.window.JeenAnalysisUI;
 

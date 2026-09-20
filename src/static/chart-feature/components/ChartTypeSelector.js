@@ -21,6 +21,10 @@
 
 import { CHART_TYPE_OPTIONS, CHART_TYPE_VALUES, getChartTypeOption } from '../chartTypes.js?v=78';
 
+// Interface strings come from the locale catalog (static/i18n/i18n.js, loaded first).
+const t = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
+const hasKey = (key) => Boolean(typeof window !== 'undefined' && window.I18n && typeof window.I18n.has === 'function' && window.I18n.has(key));
+
 const CARET_SVG =
     '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
     '<path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -39,6 +43,12 @@ function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, (c) => (
         { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
     ));
+}
+
+/** Localized label for a chart type option (falls back to the registry label). */
+function typeLabel(option) {
+    if (!option) return '';
+    return hasKey(`charts.types.${option.value}`) ? t(`charts.types.${option.value}`) : option.label;
 }
 
 /** Short name used for the "· Auto" suffix (mockup shows "Bar · Auto"). */
@@ -117,7 +127,7 @@ export class ChartTypeSelector {
         container.classList.add('ctype-host');
         container.innerHTML = `
             <div class="ctype">
-                <button type="button" class="ctype-btn" aria-haspopup="listbox" aria-expanded="false" aria-controls="${this._menuId}" title="Chart type">
+                <button type="button" class="ctype-btn" aria-haspopup="listbox" aria-expanded="false" aria-controls="${this._menuId}" title="${escapeHtml(t('charts.selector.label'))}">
                     <span class="ctype-btn-icon">${iconSvg(this._buttonIcon(), 'ctype-glyph')}</span>
                     <span class="ctype-btn-label">${escapeHtml(this._buttonLabel())}</span>
                     <span class="ctype-caret">${CARET_SVG}</span>
@@ -139,9 +149,9 @@ export class ChartTypeSelector {
         menu.className = 'ctype-menu';
         menu.id = this._menuId;
         menu.setAttribute('role', 'listbox');
-        menu.setAttribute('aria-label', 'Chart type');
+        menu.setAttribute('aria-label', t('charts.selector.label'));
         menu.hidden = true;
-        menu.innerHTML = this.chartTypes.map((t, i) => this._itemHtml(t, i)).join('');
+        menu.innerHTML = this.chartTypes.map((option, i) => this._itemHtml(option, i)).join('');
 
         menu.addEventListener('mousedown', (e) => e.preventDefault()); // keep button focus
         menu.addEventListener('click', (e) => {
@@ -157,15 +167,15 @@ export class ChartTypeSelector {
         this.menuEl = menu;
     }
 
-    _itemHtml(t, i) {
-        const selected = t.value === this.currentType;
-        const divider = t.value === 'auto' ? ' ctype-item--divider' : '';
+    _itemHtml(option, i) {
+        const selected = option.value === this.currentType;
+        const divider = option.value === 'auto' ? ' ctype-item--divider' : '';
         return `<button type="button" role="option" tabindex="-1"` +
             ` class="ctype-item${selected ? ' is-selected' : ''}${divider}"` +
-            ` data-value="${t.value}" data-index="${i}" id="${this._menuId}-opt-${i}"` +
+            ` data-value="${option.value}" data-index="${i}" id="${this._menuId}-opt-${i}"` +
             ` aria-selected="${selected ? 'true' : 'false'}">` +
-            `${iconSvg(t.icon, 'ctype-item-icon')}` +
-            `<span class="ctype-item-label">${escapeHtml(t.label)}</span>` +
+            `${iconSvg(option.icon, 'ctype-item-icon')}` +
+            `<span class="ctype-item-label">${escapeHtml(typeLabel(option))}</span>` +
             `${CHECK_SVG}</button>`;
     }
 
@@ -250,9 +260,9 @@ export class ChartTypeSelector {
 
     _handleDocPointer(e) {
         if (!this.isOpen) return;
-        const t = e.target;
-        if (this.menuEl && this.menuEl.contains(t)) return;
-        if (this.btnEl && this.btnEl.contains(t)) return;
+        const target = e.target;
+        if (this.menuEl && this.menuEl.contains(target)) return;
+        if (this.btnEl && this.btnEl.contains(target)) return;
         this.close();
     }
 
@@ -331,12 +341,12 @@ export class ChartTypeSelector {
         if (this.currentType === 'auto') {
             if (this.llmRecommendation) {
                 const o = getChartTypeOption(this.llmRecommendation);
-                return `${shortLabel(o ? o.label : this.llmRecommendation)} · Auto`;
+                return `${shortLabel(o ? typeLabel(o) : this.llmRecommendation)} · ${t('charts.selector.auto')}`;
             }
-            return 'Auto';
+            return t('charts.selector.auto');
         }
         const o = getChartTypeOption(this.currentType);
-        return o ? o.label : this.currentType;
+        return o ? typeLabel(o) : this.currentType;
     }
 
     _buttonIcon() {
@@ -389,7 +399,7 @@ export class ChartTypeSelector {
 
     getChartTypeName(chartType) {
         const type = getChartTypeOption(chartType);
-        return type ? type.label : chartType;
+        return type ? typeLabel(type) : chartType;
     }
 
     reset() {
