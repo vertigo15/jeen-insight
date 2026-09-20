@@ -51,6 +51,7 @@ from langgraph.graph import END, START, StateGraph
 
 from src.agent.conversation_history import ConversationHistoryService
 from src.agent.langgraph_agent.nodes.capability import make_capability_answer
+from src.agent.langgraph_agent.nodes.catalog_help import make_catalog_help_answer
 from src.agent.langgraph_agent.nodes.context import context_composer
 from src.agent.langgraph_agent.nodes.eval import make_fused_eval_analytics
 from src.agent.langgraph_agent.nodes.execution import trivial_result_check
@@ -107,6 +108,7 @@ _NODE_META: dict[str, tuple[str, str]] = {
     "context_composer":        ("🧠", "logic"),
     "fused_router":            ("🔀", "llm"),
     "capability_answer":       ("💡", "llm"),
+    "catalog_help_answer":     ("📖", "logic"),
     "memory_answer_generator": ("💬", "llm"),
     "history_search":          ("🗂", "db"),
     "dax_catalog_lookup":      ("📦", "db"),
@@ -239,6 +241,7 @@ def build_dax_graph(
     engine = snapshot_engine or SnapshotSqlEngine(getattr(history_service, "pool", None))
     n("context_composer",        context_composer)
     n("fused_router",            make_fused_router(router_llm, prompt_loader))
+    n("catalog_help_answer",     make_catalog_help_answer(governed_columns=dlp_governed_columns))
     n("capability_answer",       make_capability_answer(
         router_llm, prompt_loader, fallback=_dax_capability_fallback))
     n("memory_answer_generator", make_memory_answer_generator(
@@ -276,6 +279,7 @@ def build_dax_graph(
     builder.add_edge("context_composer", "fused_router")
     builder.add_conditional_edges("fused_router", _route_from_router)
     builder.add_edge("capability_answer", "response_formatter")
+    builder.add_edge("catalog_help_answer", "response_formatter")
     builder.add_conditional_edges("memory_answer_generator", _route_from_memory_answer)
     builder.add_edge("history_search", "response_formatter")
 
@@ -328,6 +332,9 @@ def _route_from_router(state: DaxAgentState) -> str:
         return "history_search"
     if route == "capability":
         return "capability_answer"
+    # catalog_help loads the dataset catalog first, then answers from it.
+    if route == "catalog_help":
+        return "dax_catalog_lookup"
     # ``clarify_route`` only exists for the SQL graph's analysis branch; the DAX
     # router runs with analysis disabled, so treat it like any other terminal.
     if route in ("out_of_scope", "unsafe", "greeting", "clarify_route"):
@@ -348,6 +355,8 @@ def _route_from_memory_answer(state: DaxAgentState) -> str:
 def _route_from_catalog(state: DaxAgentState) -> str:
     if state.get("catalog_blocked"):
         return "response_formatter"
+    if state.get("route") == "catalog_help":
+        return "catalog_help_answer"
     return "dax_query_planner"
 
 

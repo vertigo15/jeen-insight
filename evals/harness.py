@@ -233,6 +233,28 @@ async def score_route(
             expected=expected, actual=actual, detail="local greeting regex",
         )
 
+    # Questions about the assistant itself ("which ML models can I use?") are
+    # rescued to the capability route by the router's deterministic cue, so they
+    # are scorable offline too — this mirrors the node exactly.
+    from src.agent.langgraph_agent.nodes.router import (  # noqa: PLC0415
+        detect_capability_intent,
+        detect_catalog_help_intent,
+    )
+
+    if detect_capability_intent(question or ""):
+        actual = "capability"
+        return CaseResult(
+            case_id=case_id, dimension="route", passed=(actual == expected),
+            expected=expected, actual=actual, detail="local capability cue",
+        )
+
+    if detect_catalog_help_intent(question or ""):
+        actual = "catalog_help"
+        return CaseResult(
+            case_id=case_id, dimension="route", passed=(actual == expected),
+            expected=expected, actual=actual, detail="local catalog cue",
+        )
+
     # Strong ML cues ("forecast", "anomalies") are upgraded locally by the
     # router when ML skills are enabled, so they are deterministically scorable
     # too. A case that expects needs_query but carries a strong cue is a real
