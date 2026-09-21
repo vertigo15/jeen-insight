@@ -98,6 +98,34 @@ def test_plan_is_validated_and_case_corrected():
     assert out.params["window"] == 26 and out.params["sensitivity"] == 0.9
 
 
+def test_plan_carries_a_named_model_and_ignores_an_unknown_one():
+    cands = catalog_candidates(_COLUMNS)
+    # A valid anomaly method is passed through as the contract enum value.
+    named = build_params_from_plan(_plan(method="sigma3"), cands, resolved_filters=[],
+                                   connection_schema=None, connection_catalog=None)
+    assert named.params["method"] == "sigma3"
+    seasonal = build_params_from_plan(_plan(method="seasonal"), cands, resolved_filters=[],
+                                      connection_schema=None, connection_catalog=None)
+    assert seasonal.params["method"] == "seasonal"
+    # A spoken alias is normalised; a forecast alias lands on the enum too.
+    aliased = build_params_from_plan(_plan(method="3 sigma"), cands, resolved_filters=[],
+                                     connection_schema=None, connection_catalog=None)
+    assert aliased.params["method"] == "sigma3"
+    ets = build_params_from_plan(_plan(skill="forecast", method="ETS"), cands, resolved_filters=[],
+                                 connection_schema=None, connection_catalog=None)
+    assert ets.params["method"] == "auto_ets"
+    # No method, or a method that is not a valid option, falls to the default (auto).
+    default = build_params_from_plan(_plan(), cands, resolved_filters=[], connection_schema=None, connection_catalog=None)
+    assert default.params["method"] == "auto"
+    garbage = build_params_from_plan(_plan(method="prophet"), cands, resolved_filters=[],
+                                     connection_schema=None, connection_catalog=None)
+    assert garbage.params["method"] == "auto"
+    # A forecast-only method must not leak onto anomaly detection.
+    wrong = build_params_from_plan(_plan(method="theta"), cands, resolved_filters=[],
+                                   connection_schema=None, connection_catalog=None)
+    assert wrong.params["method"] == "auto"
+
+
 def test_plan_forecast_carries_horizon_and_window():
     out = build_params_from_plan(_plan(skill="forecast", horizon=13, interval=0.9, window_periods=104),
                                  catalog_candidates(_COLUMNS), resolved_filters=[], connection_schema=None, connection_catalog=None)

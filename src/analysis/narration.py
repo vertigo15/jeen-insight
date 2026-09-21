@@ -205,6 +205,19 @@ def _narrate_anomaly(facts: Dict[str, Any], params: Dict[str, Any]) -> Narration
     elif n is not None and n_flagged == 0:
         # Only assert "all clear" when we actually know the point count.
         findings.append(f"All {n} {_period_word(grain, True)} sat inside the expected range - no anomalies.")
+    # Whether the AI found a season is stated explicitly (sourced from facts, not
+    # inferred), so it is visible even when the engine's caveat is crowded out.
+    detected = facts.get("seasonal_detected")
+    if detected is None:
+        detected = bool(facts.get("seasonal_periods"))
+    if detected:
+        periods = facts.get("seasonal_periods") or []
+        modelled = facts.get("seasonal_modelled", True)
+        if periods:
+            tail = "and it is modelled" if modelled else "but the chosen model ignores it"
+            findings.append(f"A {periods[0]}-{_period_word(grain)} seasonal pattern was detected {tail}.")
+    else:
+        findings.append("No seasonal pattern was detected; the expected line is a smoothed trend.")
     # Band coverage vs expected is surfaced by the engine caveat, so it is not
     # repeated here (narrate() appends the caveat when present).
 

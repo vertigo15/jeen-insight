@@ -48,6 +48,7 @@ Use ONLY names listed here, spelled exactly as listed.
   "group_by": "<dimension column to split into one series per value, or null>",
   "horizon": <integer periods, forecast only, or null>,
   "sensitivity": <0.80–0.99, anomaly only, or null>,
+  "method": "<model override, or null — anomaly_detection: auto | seasonal | trend | sigma3; forecast: auto | auto_arima | auto_ets | theta | drift | seasonal_naive>",
   "interval": <0.50–0.99, forecast only, or null>,
   "other_measure_column": "<second numeric column, correlation only>",
   "max_lag": <integer, correlation only, or null>,
@@ -79,6 +80,9 @@ Rules:
   Leave `start`/`end` null unless the user named explicit dates.
 - `group_by` only when the user asks for one series *per* something ("per territory", "by product line").
 - Anomaly detection: "flag fewer" means a higher sensitivity; the default is 0.95.
+- `method` only when the user names a model — anomaly detection "using 3-sigma" → `sigma3`,
+  "seasonal model" → `seasonal`, "trend only" → `trend`; forecast "with ETS" → `auto_ets`,
+  "ARIMA" → `auto_arima`, "seasonal naive" → `seasonal_naive`. Otherwise null (Auto chooses).
 - Forecast: the default horizon is 8 periods and the default interval is 0.80. A named target
   period to project ("forecast for July-December 2008", "forecast through Q4", "next 6 months") is
   the `horizon` (its length in `grain` periods) — set `horizon`, leave `start`/`end` null, and do

@@ -1,18 +1,37 @@
 """ANOMALY_DETECTION engine — tier A.
 
+Every method builds the same kind of answer: an *expected* line, then a band
+around it, and points outside the band are flagged. They differ only in how the
+expected line is drawn and how the band is scaled.
+
 ``auto``
     Decompose the series with MSTL on the confirmed seasonal periods (or a
     robust LOWESS trend when none is confirmed); the expected value is trend +
-    seasonal. Residuals are scaled by a robust MAD estimate, so the anomalies
-    being looked for do not inflate the band that should catch them. The band
-    is ``expected ± k · scale`` with ``k`` the two-sided normal quantile for
-    ``sensitivity``: on well-behaved history about ``1 − sensitivity`` of points
-    fall outside, which is exactly what the parameter promises.
+    seasonal.
+
+``seasonal``
+    Force the MSTL seasonal decomposition. When no period is confirmed it uses
+    the grain's candidate period anyway (an explicit choice is honoured), and
+    only falls back to a trend when the grain/length leaves no testable period
+    or the decomposition fails — the note says which.
+
+``trend``
+    Force the robust LOWESS trend, with no seasonal term.
+
+``auto``/``seasonal``/``trend`` scale the residuals with a robust MAD estimate,
+so the anomalies being looked for do not inflate the band that should catch
+them. The band is ``expected ± k · scale`` with ``k`` the two-sided normal
+quantile for ``sensitivity``: on well-behaved history about ``1 − sensitivity``
+of points fall outside, which is exactly what the parameter promises.
 
 ``sigma3``
-    ``mean ± 3σ`` on the same residuals, using the ordinary standard deviation.
-    Kept because people ask for it by name; labelled non-robust in the notes.
+    ``expected ± 3σ`` on the same (auto) residuals, using the ordinary standard
+    deviation. Kept because people ask for it by name; labelled non-robust in
+    the notes, and it ignores ``sensitivity``.
 
+Whichever method runs, the result states whether a season was *detected* (a
+confirmed period, independent of the method) and whether the expected line
+actually *modelled* it, so the reader is never left guessing what ``auto`` did.
 The engine never sees the database or the user's text. It reports the empirical
 band coverage so the user can compare it with the sensitivity they set.
 """
@@ -110,9 +129,7 @@ def _expected_line(y: np.ndarray, periods: List[int]) -> Tuple[np.ndarray, str, 
     frac = float(min(0.6, max(0.25, 8.0 / max(n, 1))))
     x = np.arange(n, dtype=float)
     smoothed = lowess(y, x, frac=frac, it=2, return_sorted=False)
-    notes.append(
-        "No seasonal pattern could be confirmed on this history; the expected line is a smoothed trend."
-    )
+    notes.append("The expected line is a smoothed LOWESS trend (no seasonal term).")
     # A loess trend over ~frac·n points absorbs roughly 1/(frac·n) of the noise per point.
     correction = 1.0 / math.sqrt(max(1e-9, 1.0 - 1.0 / max(2.0, frac * n)))
     return np.asarray(smoothed, dtype=float), f"LOWESS trend (frac={frac:.2f})", notes, correction
@@ -136,8 +153,29 @@ def run(params: AnomalyParams, sf: SeriesFrame, ctx: Optional[RunContext] = None
     observed = sf.frame["observed"].to_numpy(dtype=bool)
     n = len(y)
 
-    expected, method_label, notes, correction = _expected_line(y, list(sf.seasonal_periods))
+    confirmed_periods = list(sf.seasonal_periods)
+    if params.method == "trend":
+        periods_for_line: List[int] = []
+    elif params.method == "seasonal":
+        # An explicit seasonal choice is honoured even when the strength test
+        # did not confirm a period: fall back to the grain's candidate so MSTL
+        # has something to decompose; _expected_line drops to a trend on its own
+        # only when that too is impossible.
+        periods_for_line = confirmed_periods or list(sf.candidate_periods)
+    else:  # auto, sigma3
+        periods_for_line = confirmed_periods
+
+    expected, method_label, notes, correction = _expected_line(y, periods_for_line)
     resid = y - expected
+    modelled_seasonal = method_label.startswith("MSTL")
+
+    if params.method == "seasonal" and not modelled_seasonal:
+        if not sf.candidate_periods:
+            notes.append("A seasonal model was requested, but this grain and history length leave no testable "
+                         "seasonal period; a smoothed trend was used instead.")
+        else:
+            notes.append("A seasonal model was requested, but the seasonal decomposition could not run; "
+                         "a smoothed trend was used instead.")
 
     if params.method == "sigma3":
         sigma = float(np.std(resid)) or 1e-12
@@ -211,7 +249,27 @@ def run(params: AnomalyParams, sf: SeriesFrame, ctx: Optional[RunContext] = None
     else:
         headline_detail = ""
 
-    caveats: List[str] = []
+    # Seasonality is reported independently of the method: whether a period was
+    # *detected* (a confirmed strength) and whether the expected line *modelled*
+    # it. This is the single authoritative statement — the reader never has to
+    # infer what ``auto`` decided.
+    grain_unit = sf.period_label(plural=False)
+    if confirmed_periods:
+        m = confirmed_periods[0]
+        strength = sf.seasonal_strength.get(m)
+        strength_txt = f" (strength {strength:.2f})" if isinstance(strength, (int, float)) else ""
+        if modelled_seasonal:
+            season_caveat = f"A {m}-{grain_unit} seasonal pattern was detected{strength_txt} and is modelled in the expected line."
+        else:
+            season_caveat = f"A {m}-{grain_unit} seasonal pattern was detected{strength_txt}, but the chosen model ignores it."
+    elif modelled_seasonal:
+        m = periods_for_line[0] if periods_for_line else None
+        season_caveat = (f"No seasonal pattern was confirmed; the {m}-{grain_unit} candidate was used "
+                         "because a seasonal model was requested.")
+    else:
+        season_caveat = "No seasonal pattern was detected in this history."
+
+    caveats: List[str] = [season_caveat]
     if cov is not None:
         caveats.append(
             f"{fmt_pct(cov)} of history sits inside the band; sensitivity {params.sensitivity:.2f} "
@@ -235,6 +293,8 @@ def run(params: AnomalyParams, sf: SeriesFrame, ctx: Optional[RunContext] = None
         "sensitivity": params.sensitivity,
         "method": method_used,
         "seasonal_periods": list(sf.seasonal_periods),
+        "seasonal_detected": bool(confirmed_periods),
+        "seasonal_modelled": bool(modelled_seasonal),
         "span_start": idx[0].date().isoformat() if n else None,
         "span_end": idx[-1].date().isoformat() if n else None,
         "fit_wape": num(fit_wape),
@@ -263,6 +323,7 @@ def run(params: AnomalyParams, sf: SeriesFrame, ctx: Optional[RunContext] = None
             "method": params.method,
             "k": round(k, 3),
             "scale": round(scale, 4),
+            "seasonal_periods_used": periods_for_line if modelled_seasonal else [],
             "seasonal_strength": {str(m): v for m, v in sf.seasonal_strength.items()},
         },
         notes=notes,
