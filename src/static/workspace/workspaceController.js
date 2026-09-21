@@ -263,6 +263,7 @@
         dockOpen: false,
         _sqlDockWasOpen: false,
         chartCollapsed: true,
+        chartOptionsOpen: false,
         filter: '',
         mapSelectedRows: new Set(),
         desktopPreference: true,
@@ -280,6 +281,8 @@
         _streamAbort: null,
         _hydrateAbort: null,
         _hydration: null,
+        _analysisRerunInFlight: null,
+        _analysisRerunAbort: null,
 
         init() {
             if (document.getElementById('v3-shell')) return;
@@ -395,12 +398,32 @@
                         <span>${h('shell.result.placeholderCopy')}</span>
                       </div>
                       <div id="v3-ml-definition" class="v3-ml-definition" hidden></div>
+                      <section id="v3-analysis-adjust" class="v3-analysis-adjust" aria-labelledby="v3-analysis-adjust-title" hidden>
+                        <div class="v3-analysis-adjust-copy">
+                          <strong id="v3-analysis-adjust-title">${h('charts.chat.adjustAnalysis')}</strong>
+                          <span>${h('charts.chat.adjustHelp')}</span>
+                        </div>
+                        <div id="v3-analysis-adjust-content"></div>
+                      </section>
+                      <div id="v3-chart-status" class="v3-chart-status" role="status" hidden>
+                        <span>${h('results.chart.unavailable')}</span>
+                        <button type="button" class="v3-text-btn" data-chart-retry>${h('common.retry')}</button>
+                      </div>
                       <section id="v3-chart-block" class="v3-data-block" hidden>
                         <div class="v3-toolbar">
                           <span id="v3-chart-caption" class="v3-caption">${h('shell.result.chart')}</span>
                           <span class="v3-toolbar-spacer"></span>
-                          <div id="v3-chart-types" class="v3-chart-types"></div>
-                          <button id="v3-chart-toggle" class="v3-text-btn">${h('common.expand')}</button>
+                          <div id="v3-chart-types" class="v3-chart-types">
+                            <div id="v3-chart-primary" class="v3-chart-primary"></div>
+                            <button id="v3-chart-more" type="button" class="v3-chart-more"
+                                    aria-expanded="false" aria-controls="v3-chart-secondary">
+                              ${h('charts.options.more')}
+                            </button>
+                            <div id="v3-chart-secondary" class="v3-chart-secondary"></div>
+                          </div>
+                          <button id="v3-chart-toggle" type="button" class="v3-text-btn"
+                                  aria-expanded="false" aria-controls="v3-chart-types v3-chart-frame v3-chart-edit"
+                                  aria-label="${h('results.chart.expandLabel')}">${h('common.expand')}</button>
                         </div>
                         <div id="v3-chart-frame" class="v3-chart-frame"></div>
                         <div id="v3-chart-edit" class="v3-chart-edit"></div>
@@ -410,10 +433,10 @@
                           <span id="v3-row-caption" class="v3-caption"></span>
                           <span class="v3-toolbar-spacer"></span>
                           <input id="v3-result-filter" type="search" dir="auto" placeholder="${h('shell.result.filterRows')}" aria-label="${h('shell.result.filterRowsLabel')}">
-                          <div id="v3-describe-slot"></div>
                         </div>
                         <div id="v3-cap-banner" class="v3-cap-banner" hidden></div>
                         <div id="v3-grid-wrap" class="v3-grid-wrap"><div id="v3-grid" class="v3-grid"></div></div>
+                        <div class="v3-table-actions"><div id="v3-describe-slot"></div></div>
                         <div id="v3-describe-content"></div>
                       </section>
                     </div>
@@ -490,8 +513,8 @@
                 node.textContent = t('results.actions.describe');
             });
             this._move('#describe-section', '#v3-describe-content');
-            this._move('#chart-type-selector-container', '#v3-chart-types', (node) => { node.style.display = ''; });
-            this._move('#chart-options-panel-container', '#v3-chart-types', (node) => { node.style.display = ''; });
+            this._move('#chart-type-selector-container', '#v3-chart-primary', (node) => { node.style.display = ''; });
+            this._move('#chart-options-panel-container', '#v3-chart-secondary', (node) => { node.style.display = ''; });
             const chart = this._move('#chart-view-container', '#v3-chart-frame', (node) => {
                 node.style.display = 'block';
             });
@@ -500,6 +523,19 @@
                 if (chat) document.getElementById('v3-chart-edit').appendChild(chat);
             }
             this._setActionsEnabled(false);
+        },
+
+        _placeChartInteraction(isAnalysis) {
+            const chartEdit = document.getElementById('v3-chart-edit');
+            const analysisAdjust = document.getElementById('v3-analysis-adjust');
+            const analysisContent = document.getElementById('v3-analysis-adjust-content');
+            const chat = document.getElementById('chart-chat-container');
+            if (chat) {
+                const target = isAnalysis ? analysisContent : chartEdit;
+                if (target && chat.parentNode !== target) target.appendChild(chat);
+            }
+            if (analysisAdjust) analysisAdjust.hidden = !isAnalysis;
+            if (chartEdit && isAnalysis) chartEdit.hidden = true;
         },
 
         _bind() {
@@ -523,6 +559,10 @@
                 const current = this.turns.find((item) => item.id === this.selectedResultId);
                 if (current) current.chartCollapsed = this.chartCollapsed;
                 this._renderChartCollapse();
+            });
+            document.getElementById('v3-chart-more').addEventListener('click', () => {
+                this.chartOptionsOpen = !this.chartOptionsOpen;
+                this._renderChartOptionsOverflow();
             });
             document.getElementById('v3-result-filter').addEventListener('input', (event) => {
                 this.filter = event.target.value.toLowerCase();
@@ -981,6 +1021,8 @@
 
         _captureSelectedChart() {
             const current = this.turns.find((item) => item.id === this.selectedResultId);
+            if (!current || this.lastAppliedResultId !== current.id
+                || current.chartLoading || current.chartUnavailable) return;
             if (current && current.result?.results && window.JeenLegacyBridge?.getChartState) {
                 const state = window.JeenLegacyBridge.getChartState();
                 if (state && state.chart_config) current.chartState = state;
@@ -996,6 +1038,12 @@
                 try { this._hydrateAbort.abort(); } catch (_) { /* already settled */ }
                 this._hydrateAbort = null;
             }
+            if (this._analysisRerunAbort) {
+                try { this._analysisRerunAbort.abort(); } catch (_) { /* already settled */ }
+                this._analysisRerunAbort = null;
+            }
+            this._analysisRerunInFlight = null;
+            window.JeenLegacyBridge?.setAnalysisRerunBusy?.(false);
         },
 
         reset() {
@@ -1767,11 +1815,19 @@
             return typeof window.getActiveConnection === 'function' ? window.getActiveConnection() : '';
         },
 
-        async _postJson(url, body) {
+        async _postJson(url, body, { signal = null, timeoutMs = 0 } = {}) {
+            let requestSignal = signal;
+            if (timeoutMs > 0 && typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+                const timeoutSignal = AbortSignal.timeout(timeoutMs);
+                requestSignal = signal && typeof AbortSignal.any === 'function'
+                    ? AbortSignal.any([signal, timeoutSignal])
+                    : (signal || timeoutSignal);
+            }
             const response = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
+                signal: requestSignal,
             });
             let payload = {};
             try { payload = await response.json(); } catch (_) { payload = {}; }
@@ -1915,6 +1971,7 @@
                     await this.rerunAnalysis(null, patch);
                     this._definitionOpenFor = null;  // the new answer is selected; its own card is a click away
                 } catch (error) {
+                    if (error && error.name === 'AbortError') return;
                     setBusy(false);
                     const detail = error && typeof error === 'object' ? error.detail : null;
                     if (form && detail && form.showServerError(detail)) return;
@@ -1925,6 +1982,9 @@
 
         /** Re-run the selected ML result with an instruction or a structured patch. */
         async rerunAnalysis(instruction, patch) {
+            if (this._analysisRerunInFlight) {
+                throw new Error(t('charts.chat.rerunAlreadyRunning'));
+            }
             const turn = this.turns.find((item) => item.id === this.selectedResultId);
             const analysis = turn && turn.result && turn.result.analysis;
             if (!turn || !analysis || !analysis.skill) throw new Error(t('conversation.proposal.selectAnalysis'));
@@ -1941,13 +2001,35 @@
             };
             if (patch && Object.keys(patch).length) body.params_patch = patch;
             else body.instruction = String(instruction || '').trim();
-            const data = await this._postJson('/api/analysis/rerun', body);
-            const label = body.instruction ? `${turn.question} — ${body.instruction}` : turn.question;
-            this._appendServerTurn(data, { question: label, parent: turn });
+            const run = { parentId: turn.id, startedAt: Date.now() };
+            const generation = this._generation;
+            const abort = new AbortController();
+            this._analysisRerunInFlight = run;
+            this._analysisRerunAbort = abort;
+            window.JeenLegacyBridge?.setAnalysisRerunBusy?.(true);
+            try {
+                const data = await this._postJson('/api/analysis/rerun', body, {
+                    signal: abort.signal,
+                    timeoutMs: 185_000,
+                });
+                if (generation !== this._generation || abort.signal.aborted) return;
+                const label = body.instruction ? `${turn.question} — ${body.instruction}` : turn.question;
+                const select = this.selectedResultId === turn.id;
+                this._appendServerTurn(data, { question: label, parent: turn, select });
+                if (!select && typeof window.showToast === 'function') {
+                    window.showToast(t('charts.chat.rerunCompleted'), 'info');
+                }
+            } finally {
+                if (this._analysisRerunAbort === abort) this._analysisRerunAbort = null;
+                if (this._analysisRerunInFlight === run) {
+                    this._analysisRerunInFlight = null;
+                    window.JeenLegacyBridge?.setAnalysisRerunBusy?.(false);
+                }
+            }
         },
 
         /** Append a completed turn returned by /api/analysis/run|rerun (never mutates the parent). */
-        _appendServerTurn(data, { question, parent } = {}) {
+        _appendServerTurn(data, { question, parent, select = true } = {}) {
             const turn = {
                 id: `turn-${Date.now()}-${++this.seq}`,
                 question: question || data.question || (parent && parent.question) || '',
@@ -1967,13 +2049,15 @@
                 turn.error = data.error;
             }
             this.turns.push(turn);
-            this._captureSelectedChart();
-            this.selectedTurnId = turn.id;
-            this.selectedResultId = turn.id;
-            this.filter = '';
+            if (select) {
+                this._captureSelectedChart();
+                this.selectedTurnId = turn.id;
+                this.selectedResultId = turn.id;
+                this.filter = '';
+            }
             if (data.session_id && typeof window._jeenSetSessionId === 'function') window._jeenSetSessionId(data.session_id);
             this.render();
-            this._scrollThread();
+            if (select) this._scrollThread();
         },
 
         /** Build (server-side, deterministically) and attach the band chart for an ML result. */
@@ -1981,7 +2065,10 @@
             const data = turn.result || {};
             const spec = data.analysis && data.analysis.chart_spec;
             const connection = this._analysisConnection();
-            if (!spec || !data.query_id || !connection) return;
+            if (!spec || !data.query_id || !connection) {
+                turn.chartUnavailable = true;
+                return;
+            }
             const body = { connection, query_id: String(data.query_id), chart_spec: spec };
             try {
                 let payload;
@@ -1994,8 +2081,12 @@
                 if (payload && payload.chart_config) {
                     turn.chartState = { chart_spec: payload.chart_spec || spec, chart_config: payload.chart_config };
                     turn.hasChart = true;
+                    turn.chartUnavailable = false;
+                } else {
+                    turn.chartUnavailable = true;
                 }
             } catch (error) {
+                turn.chartUnavailable = true;
                 console.warn('[Workspace] analysis chart failed', error);
             }
         },
@@ -2098,7 +2189,10 @@
             const placeholder = document.getElementById('v3-placeholder');
             const chartBlock = document.getElementById('v3-chart-block');
             const tableBlock = document.getElementById('v3-table-block');
+            const chartStatus = document.getElementById('v3-chart-status');
+            if (chartStatus) chartStatus.hidden = true;
             if (!turn) {
+                this._placeChartInteraction(false);
                 this._restorePlaceholder();
                 this._hideDefinition();
                 const emptyTitle = document.getElementById('v3-result-title');
@@ -2118,12 +2212,14 @@
             // ML skills: the run stopped to ask (confirm card, clarification,
             // guard refusal). The card owns the answer pane.
             if (data.proposal) {
+                this._placeChartInteraction(false);
                 this._renderProposal(turn);
                 return;
             }
             // A restored table turn whose rows are not here yet (loading, pruned,
             // too large, failed): show the state instead of an empty table.
             if (turn.restored && turn.resultKind === 'table' && !data.results) {
+                this._placeChartInteraction(false);
                 this._renderPendingResult(turn);
                 return;
             }
@@ -2132,6 +2228,7 @@
             // keep showing the previous turn's chart.
             const isText = turn.resultKind === 'text' || (!(data.results && data.results.columns) && !data.sql);
             if (isText) {
+                this._placeChartInteraction(false);
                 this._setModelTabVisible(false);
                 this._renderTextResult(turn);
                 return;
@@ -2148,6 +2245,19 @@
                 ? `<span class="v3-result-meta">${h('results.status.snapshotFrom', { when: this._formatWhen(turn.snapshotAt) })}</span>`
                 : '';
             const isAnalysis = Boolean(data.analysis && data.analysis.skill);
+            this._placeChartInteraction(isAnalysis);
+            window.JeenLegacyBridge?.setChartAnalysisMode?.(isAnalysis);
+            window.JeenLegacyBridge?.setAnalysisRerunBusy?.(Boolean(this._analysisRerunInFlight));
+            const chartNeedsApply = this.lastAppliedResultId !== turn.id;
+            if (chartNeedsApply) {
+                this.chartOptionsOpen = false;
+                this._renderChartOptionsOverflow();
+            }
+            if (chartNeedsApply && (!isAnalysis || rows.length > 0)) {
+                window.JeenLegacyBridge?.setChartInteractionEnabled?.(false);
+            } else if (isAnalysis && rows.length === 0) {
+                window.JeenLegacyBridge?.setChartInteractionEnabled?.(true);
+            }
             const mlStrip = isAnalysis && window.JeenAnalysisUI ? window.JeenAnalysisUI.stripSegments(data) : '';
             const metaRow = document.getElementById('v3-meta-row');
             metaRow.innerHTML = `
@@ -2158,15 +2268,17 @@
               ${stale ? `<span class="v3-stale-note">${h('results.status.staleNote')}</span>` : ''}`;
             this._bindDefinitionToggle(metaRow, turn);
             placeholder.hidden = true;
-            // An empty result set has nothing to chart; keep the (empty) grid only.
-            chartBlock.hidden = rows.length === 0;
+            // An empty result set has nothing to chart. ML charts stay hidden
+            // until their deterministic server-built baseline is available;
+            // never expose a stale prior chart or fall back to generic LLM charting.
+            chartBlock.hidden = rows.length === 0 || (isAnalysis && !turn.chartState);
             tableBlock.hidden = false;
             this._setModelTabVisible(isAnalysis);
 
             // ML results never ask the LLM for a chart: the envelope's role-based
             // spec is built server-side once, stored as the turn's chart
             // baseline, and rendered through the restore path.
-            if (isAnalysis && !turn.chartState && !turn.chartLoading && rows.length) {
+            if (isAnalysis && !turn.chartState && !turn.chartLoading && !turn.chartUnavailable && rows.length) {
                 turn.chartLoading = true;
                 this._loadAnalysisChart(turn).finally(() => {
                     turn.chartLoading = false;
@@ -2176,8 +2288,22 @@
                     }
                 });
             }
+            if (isAnalysis && turn.chartUnavailable) {
+                window.JeenLegacyBridge?.setChartInteractionEnabled?.(true);
+                if (chartStatus) {
+                    chartStatus.hidden = false;
+                    const retry = chartStatus.querySelector('[data-chart-retry]');
+                    if (retry) retry.onclick = () => {
+                        turn.chartUnavailable = false;
+                        turn.chartLoading = false;
+                        this.renderWorkspace();
+                    };
+                }
+            }
 
-            if (this.lastAppliedResultId !== turn.id && window.JeenLegacyBridge && !(isAnalysis && turn.chartLoading)) {
+            if (chartNeedsApply && window.JeenLegacyBridge
+                && !(isAnalysis && turn.chartLoading)
+                && (!isAnalysis || Boolean(turn.chartState))) {
                 this.lastAppliedResultId = turn.id;
                 const showChart = () => {
                     const chart = document.getElementById('chart-view-container');
@@ -2186,6 +2312,9 @@
                     if (typeof window.JeenLegacyBridge.setChartAnalysisMode === 'function') {
                         window.JeenLegacyBridge.setChartAnalysisMode(isAnalysis);
                     }
+                    window.JeenLegacyBridge.setAnalysisRerunBusy?.(Boolean(this._analysisRerunInFlight));
+                    window.JeenLegacyBridge.setChartInteractionEnabled?.(true);
+                    this._placeChartInteraction(isAnalysis);
                 };
                 if ((turn.restored || turn.chartState) && typeof window.JeenLegacyBridge.applyRestoredResult === 'function') {
                     // Known rows (+ optional stored chart): render through the
@@ -2196,8 +2325,11 @@
                         if (this.selectedResultId === applied) showChart();
                     });
                 } else {
+                    const applied = turn.id;
                     window.JeenLegacyBridge.applyResult(data);
-                    requestAnimationFrame(showChart);
+                    requestAnimationFrame(() => {
+                        if (this.selectedResultId === applied) showChart();
+                    });
                 }
             }
             this._setActionsEnabled(true);
@@ -2356,10 +2488,36 @@
             renderWindow();
         },
 
+        _renderChartOptionsOverflow() {
+            const secondary = document.getElementById('v3-chart-secondary');
+            const toggle = document.getElementById('v3-chart-more');
+            if (secondary) secondary.classList.toggle('is-open', this.chartOptionsOpen);
+            if (toggle) toggle.setAttribute('aria-expanded', String(this.chartOptionsOpen));
+        },
+
         _renderChartCollapse() {
-            document.getElementById('v3-chart-frame').hidden = this.chartCollapsed;
-            document.getElementById('v3-chart-edit').hidden = this.chartCollapsed;
-            document.getElementById('v3-chart-toggle').textContent = this.chartCollapsed ? t('common.expand') : t('common.collapse');
+            const turn = this.turns.find((item) => item.id === this.selectedResultId);
+            const isAnalysis = Boolean(turn?.result?.analysis?.skill);
+            const controls = document.getElementById('v3-chart-types');
+            const frame = document.getElementById('v3-chart-frame');
+            const edit = document.getElementById('v3-chart-edit');
+            const toggle = document.getElementById('v3-chart-toggle');
+            if (controls) controls.hidden = this.chartCollapsed;
+            if (this.chartCollapsed) {
+                this.chartOptionsOpen = false;
+                this._renderChartOptionsOverflow();
+            }
+            if (frame) frame.hidden = this.chartCollapsed;
+            if (edit) edit.hidden = this.chartCollapsed || isAnalysis;
+            if (toggle) {
+                toggle.textContent = this.chartCollapsed ? t('common.expand') : t('common.collapse');
+                toggle.setAttribute('aria-expanded', String(!this.chartCollapsed));
+                toggle.setAttribute(
+                    'aria-label',
+                    t(this.chartCollapsed ? 'results.chart.expandLabel' : 'results.chart.collapseLabel')
+                );
+            }
+            window.JeenLegacyBridge?.setChartCollapsed?.(this.chartCollapsed);
         },
 
         toggleDock(tab) {

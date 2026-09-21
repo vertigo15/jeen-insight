@@ -51,6 +51,9 @@ export class ChartManager {
         this.osmMapRenderer = null;
         this.chartCapabilities = { osm_map: { enabled: false, geocoding_enabled: false } };
         this.llmRecommendedType = null;
+        this.analysisMode = false;
+        this.interactionEnabled = true;
+        this.analysisRerunBusy = false;
         this.currentChartSpec = null;
         this.originalChartSpec = null;
         // Baseline (LLM-generated) config — Reset reverts to this.
@@ -181,6 +184,7 @@ export class ChartManager {
         if (document.getElementById('chart-options-panel-container')) {
             this.chartOptionsPanel = new ChartOptionsPanel('chart-options-panel-container', {
                 onColumnsChange: () => {
+                    if (this.analysisMode) return;
                     if (this.state.currentView === 'chart') {
                         const selectedType = this.chartTypeSelector.getSelectedType();
                         this.handleChartTypeChange(selectedType);
@@ -255,6 +259,8 @@ export class ChartManager {
             this.chartChat.mount();
             this.chartChat.disable();
         }
+        this.setAnalysisMode(this.analysisMode);
+        this.setAnalysisRerunBusy(this.analysisRerunBusy);
 
         console.log('[ChartManager] Components initialized');
     }
@@ -334,6 +340,10 @@ export class ChartManager {
      * @param {string} chartType - Selected chart type
      */
     async handleChartTypeChange(chartType) {
+        if (this.analysisMode) {
+            this.showToast(t('charts.options.analysisTypeLocked'), 'info');
+            return;
+        }
         console.log('[ChartManager] Chart type changed to:', chartType);
 
         // Clear cache for this chart type to force regeneration
@@ -642,7 +652,7 @@ export class ChartManager {
                 this.currentEchartsOptions = displayConfig;
                 this._syncMapControls('osm_map');
                 this._renderMapFeedback(displayConfig);
-                if (this.chartChat) this.chartChat.enable();
+                this._syncChartChatEnabled();
                 this._enableChartActions(false);
                 console.log('[ChartManager] OpenStreetMap chart rendered successfully');
             } catch (error) {
@@ -676,7 +686,7 @@ export class ChartManager {
                 this.mapOptionsPanel.syncFromConfig(displayConfig);
             }
             this._renderMapFeedback(displayConfig);
-            if (this.chartChat) this.chartChat.enable();
+            this._syncChartChatEnabled();
             this._enableChartActions(true);
             console.log('[ChartManager] Chart rendered successfully');
         } catch (error) {
@@ -876,6 +886,44 @@ export class ChartManager {
             chart_spec: this.currentChartSpec,
             chart_config: this.currentEchartsOptions || this.originalConfig || null,
         };
+    }
+
+    setAnalysisMode(on) {
+        this.analysisMode = Boolean(on);
+        this.chartChat?.setAnalysisMode(this.analysisMode);
+        this.chartTypeSelector?.setDisabled(
+            this.analysisMode,
+            this.analysisMode ? t('charts.options.analysisTypeLocked') : ''
+        );
+        this.chartOptionsPanel?.setAnalysisMode(this.analysisMode);
+    }
+
+    setAnalysisRerunBusy(busy) {
+        this.analysisRerunBusy = Boolean(busy);
+        this.chartChat?.setExternalBusy(this.analysisRerunBusy);
+    }
+
+    setInteractionEnabled(enabled) {
+        this.interactionEnabled = Boolean(enabled);
+        this._syncChartChatEnabled();
+    }
+
+    _syncChartChatEnabled() {
+        if (!this.chartChat) return;
+        if (this.interactionEnabled) this.chartChat.enable();
+        else this.chartChat.disable();
+    }
+
+    setCollapsed(collapsed) {
+        if (collapsed) {
+            this.chartTypeSelector?.close?.();
+            this.chartOptionsPanel?.closeDisclosures?.();
+            return;
+        }
+        requestAnimationFrame(() => {
+            this.chartContainer?.resize?.();
+            window.dispatchEvent(new Event('resize'));
+        });
     }
 
     async restoreSavedChart(echartsConfig, chartSpec = null) {
@@ -1817,6 +1865,8 @@ export class ChartManager {
      */
     dispose() {
         this._disposed = true;
+        this.chartChat?.disable?.();
+        this.chartChat?.reset?.();
         // Cancel any in-flight chart request so its late response can't render
         // into a node this engine no longer owns.
         if (this._chartAbort) {

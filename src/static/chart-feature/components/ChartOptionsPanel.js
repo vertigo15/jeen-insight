@@ -74,6 +74,7 @@ export class ChartOptionsPanel {
             Object.keys(this.mapMapping).map((key) => [key, false])
         );
         this.chartType = 'bar';
+        this.analysisMode = false;
         this.toggles = { dataLabels: false, legend: true, dataZoom: false, sortDesc: false };
         // The legend default is derived per chart (hidden when it would list a
         // single entry) until the user flips the pill themselves.
@@ -238,7 +239,8 @@ export class ChartOptionsPanel {
         container.innerHTML = `
             <button type="button" class="chart-cols-btn${this._columnsOpen ? ' is-open' : ''}" id="chart-cols-btn"
                     aria-expanded="${this._columnsOpen ? 'true' : 'false'}" aria-controls="chart-cols-expand"
-                    title="${esc(t('charts.options.columnsTitle'))}">
+                    title="${esc(this.analysisMode ? t('charts.options.analysisBindingLocked') : t('charts.options.columnsTitle'))}"
+                    ${this.analysisMode ? 'disabled aria-disabled="true" aria-describedby="chart-analysis-lock-note"' : ''}>
                 <span>${esc(t('charts.options.columns'))}</span>${caret}
             </button>
             <button type="button" class="chart-cols-btn chart-palette-btn${this._paletteOpen ? ' is-open' : ''}" id="chart-palette-btn"
@@ -248,6 +250,7 @@ export class ChartOptionsPanel {
             </button>
             <div class="chart-opts-divider" aria-hidden="true"></div>
             <div class="chart-opts-toggles" id="chart-opt-toggles"></div>
+            ${this.analysisMode ? `<span class="chart-analysis-lock-note" id="chart-analysis-lock-note" role="note">${esc(t('charts.options.analysisLockedHint'))}</span>` : ''}
             <div class="chart-cols-expand chart-palette-expand" id="chart-palette-expand" role="radiogroup"
                  aria-label="${esc(t('charts.options.paletteTitle'))}"${this._paletteOpen ? '' : ' hidden'}></div>
             <div class="chart-cols-expand" id="chart-cols-expand"${this._columnsOpen ? '' : ' hidden'}>
@@ -274,10 +277,14 @@ export class ChartOptionsPanel {
 
         const togglesHost = document.getElementById('chart-opt-toggles');
         if (togglesHost) {
-            togglesHost.innerHTML = TOGGLE_DEFS.map((def) =>
+            togglesHost.innerHTML = TOGGLE_DEFS.map((def) => {
+                const disabled = this.analysisMode && def.key === 'sortDesc';
+                const title = disabled ? t('charts.options.analysisSortLocked') : t(def.title);
+                return (
                 `<button type="button" class="chart-opt-toggle${this.toggles[def.key] ? ' is-on' : ''}"
-                    data-key="${def.key}" title="${esc(t(def.title))}">${esc(t(def.label))}</button>`
-            ).join('');
+                    data-key="${def.key}" title="${esc(title)}"${disabled ? ' disabled aria-disabled="true" aria-describedby="chart-analysis-lock-note"' : ''}>${esc(t(def.label))}</button>`
+                );
+            }).join('');
         }
 
         this._renderPaletteChips();
@@ -296,6 +303,7 @@ export class ChartOptionsPanel {
 
     /** Expand/collapse the X/Y/Series column pickers. */
     _toggleColumns() {
+        if (this.analysisMode) return;
         this._columnsOpen = !this._columnsOpen;
         if (this._columnsOpen && this._paletteOpen) this._togglePalette();
         const btn = document.getElementById('chart-cols-btn');
@@ -396,6 +404,7 @@ export class ChartOptionsPanel {
     }
 
     _onColumnChange(field, value) {
+        if (this.analysisMode) return;
         this.mapping[field] = value;
         if (field in this.userSet) this.userSet[field] = true;
         if (this.hooks.onColumnsChange) {
@@ -488,6 +497,7 @@ export class ChartOptionsPanel {
 
     _onToggle(key) {
         if (!(key in this.toggles)) return;
+        if (this.analysisMode && key === 'sortDesc') return;
         this.toggles[key] = !this.toggles[key];
         if (key === 'legend') this.legendUserSet = true;
         const btn = document.querySelector(`.chart-opt-toggle[data-key="${key}"]`);
@@ -508,6 +518,33 @@ export class ChartOptionsPanel {
     hide() {
         const el = document.getElementById(this.containerId);
         if (el) el.style.display = 'none';
+    }
+
+    setAnalysisMode(on) {
+        const next = Boolean(on);
+        if (this.analysisMode === next) return;
+        this.analysisMode = next;
+        if (next) this.closeDisclosures();
+        if (this._mounted) this.render();
+    }
+
+    closeDisclosures() {
+        this._columnsOpen = false;
+        this._paletteOpen = false;
+        const columnsButton = document.getElementById('chart-cols-btn');
+        const columnsPanel = document.getElementById('chart-cols-expand');
+        const paletteButton = document.getElementById('chart-palette-btn');
+        const palettePanel = document.getElementById('chart-palette-expand');
+        if (columnsButton) {
+            columnsButton.classList.remove('is-open');
+            columnsButton.setAttribute('aria-expanded', 'false');
+        }
+        if (columnsPanel) columnsPanel.hidden = true;
+        if (paletteButton) {
+            paletteButton.classList.remove('is-open');
+            paletteButton.setAttribute('aria-expanded', 'false');
+        }
+        if (palettePanel) palettePanel.hidden = true;
     }
 
     resetToggles() {

@@ -244,7 +244,7 @@ async def test_confirmed_reentry_runs_the_skill_and_narrates(prompt_loader):
     chips = {c["key"]: c for c in definition["chips"]}
     assert {"measure_column", "date_column", "grain", "window", "sensitivity", "method"} <= set(chips)
     assert chips["measure_column"]["value"] == "Profit" and chips["grain"]["value"] == "week"
-    assert chips["window"]["value"] == 130 and chips["method"]["options"] == ["auto", "sigma3"]
+    assert chips["window"]["value"] == 130 and chips["method"]["options"] == ["auto", "seasonal", "trend", "sigma3"]
     assert chips["method"]["label"] == "Model" and chips["method"]["option_labels"]["sigma3"] == "3-sigma"
     # The card's sections and bounds come from the contract, not the browser.
     assert chips["measure_column"]["group"] == "Data" and chips["method"]["group"] == "Model"

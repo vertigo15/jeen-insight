@@ -34,6 +34,9 @@ let sortColumn = null;
 let sortDirection = 'asc';
 let filterText = '';
 let chartManager = null;
+let chartAnalysisMode = false;
+let chartInteractionEnabled = true;
+let analysisRerunBusy = false;
 let insightsManager = null;
 
 // ── Developer Panel state ───────────────────────────────────────────────────
@@ -3913,6 +3916,9 @@ async function initializeChartFeature(results, options = {}) {
     chartManager = new ChartManager({
         workspaceMode: Boolean(document.getElementById('v3-shell')),
     });
+    chartManager.setAnalysisMode(chartAnalysisMode);
+    chartManager.setInteractionEnabled(chartInteractionEnabled);
+    chartManager.setAnalysisRerunBusy(analysisRerunBusy);
     await chartManager.initialize(results, options);
 }
 
@@ -4884,8 +4890,27 @@ window.JeenLegacyBridge = {
      * of editing the chart. Applied to whichever ChartManager is live.
      */
     setChartAnalysisMode(on) {
-        const chat = chartManager && chartManager.chartChat;
-        if (chat && typeof chat.setAnalysisMode === 'function') chat.setAnalysisMode(Boolean(on));
+        chartAnalysisMode = Boolean(on);
+        if (chartManager && typeof chartManager.setAnalysisMode === 'function') {
+            chartManager.setAnalysisMode(chartAnalysisMode);
+        }
+    },
+    setChartInteractionEnabled(enabled) {
+        chartInteractionEnabled = Boolean(enabled);
+        if (chartManager && typeof chartManager.setInteractionEnabled === 'function') {
+            chartManager.setInteractionEnabled(chartInteractionEnabled);
+        }
+    },
+    setChartCollapsed(collapsed) {
+        if (chartManager && typeof chartManager.setCollapsed === 'function') {
+            chartManager.setCollapsed(Boolean(collapsed));
+        }
+    },
+    setAnalysisRerunBusy(busy) {
+        analysisRerunBusy = Boolean(busy);
+        if (chartManager && typeof chartManager.setAnalysisRerunBusy === 'function') {
+            chartManager.setAnalysisRerunBusy(analysisRerunBusy);
+        }
     },
     async restoreChartState(state) {
         if (!state || !state.chart_config || !chartManager

@@ -30,6 +30,7 @@ from src.analysis.contracts import (
     DEFAULT_WINDOW_PERIODS,
     SKILLS,
     GuardExit,
+    method_options,
     parse_params,
 )
 from src.analysis.sql_builder import filters_from_grounder
@@ -291,6 +292,33 @@ def _coerce_date(value: Any) -> Optional[str]:
         return None
 
 
+# Spoken names the planner (or a user quoting a model) may use for a method,
+# mapped to the contract enum. The exact enum value always wins; these only
+# rescue a near-miss so "3 sigma" / "ETS" / "seasonal naive" still land.
+_METHOD_ALIASES: Dict[str, str] = {
+    "3-sigma": "sigma3", "3 sigma": "sigma3", "3sigma": "sigma3", "sigma": "sigma3", "sigma3": "sigma3",
+    "ets": "auto_ets", "arima": "auto_arima",
+    "seasonal-naive": "seasonal_naive", "seasonal naive": "seasonal_naive", "naive": "seasonal_naive",
+}
+
+
+def _method(plan: Dict[str, Any], skill: str) -> Optional[str]:
+    """A model override from the plan, only when it is a valid method of ``skill``.
+
+    Left unset (the card's default of ``auto``) when absent or unrecognised, so
+    a planner that omits or hallucinates a method never breaks the run.
+    """
+    raw = plan.get("method")
+    if not raw:
+        return None
+    key = str(raw).strip().lower()
+    options = method_options(skill)
+    if key in options:
+        return key
+    alias = _METHOD_ALIASES.get(key)
+    return alias if alias in options else None
+
+
 # Calendar-part column names. A forecast must not scope its *history* by the
 # period it is asked to project: the grounder turns "forecast for Jul-Dec 2008"
 # into year/month filters, which — applied to the training data — would empty
@@ -516,6 +544,9 @@ def build_params_from_plan(
         sens = _coerce_float(plan.get("sensitivity"), 0.80, 0.99)
         if sens is not None:
             params["sensitivity"] = round(sens, 3)
+        method = _method(plan, skill)
+        if method:
+            params["method"] = method
     elif skill == "forecast":
         horizon = _coerce_int(plan.get("horizon"), 1, 104)
         # A forecast projects FROM history INTO the future. A named target
@@ -560,6 +591,9 @@ def build_params_from_plan(
             params["interval"] = round(interval, 2)
         if window:
             params["window"] = window  # the guard fills the history range from it
+        method = _method(plan, skill)
+        if method:
+            params["method"] = method
     elif skill in ("changepoint", "seasonality"):
         if window:
             params["window"] = max(window, 24) if skill == "seasonality" else window

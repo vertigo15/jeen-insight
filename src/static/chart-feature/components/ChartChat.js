@@ -61,6 +61,7 @@ export class ChartChat {
         this.messages = [];     // [{ role, content }]
         this.mounted = false;
         this.enabled = false;
+        this.externalBusy = false;
         this.inFlight = null;   // AbortController
         this.idCounter = 0;
     }
@@ -160,13 +161,14 @@ export class ChartChat {
         this._appliedLabelEl = appliedLabel;
         this._resetBtnEl = resetBtn;
         this._statusEl = status;
+        this.setAnalysisMode(this._analysisMode);
     }
 
     enable() {
         this.enabled = true;
         if (!this.mounted) return;
-        this._inputEl.disabled = false;
-        this._applyBtnEl.disabled = false;
+        this._inputEl.disabled = this.externalBusy;
+        this._applyBtnEl.disabled = this.externalBusy;
     }
 
     disable() {
@@ -239,11 +241,21 @@ export class ChartChat {
 
     _setBusy(busy) {
         if (!this.mounted) return;
-        this._inputEl.disabled = busy || !this.enabled;
-        this._applyBtnEl.disabled = busy || !this.enabled;
-        this._applyBtnEl.classList.toggle('is-busy', !!busy);
+        const active = Boolean(busy || this.externalBusy || this.inFlight);
+        this._inputEl.disabled = active || !this.enabled;
+        this._applyBtnEl.disabled = active || !this.enabled;
+        this._applyBtnEl.classList.toggle('is-busy', active);
         const label = this._applyBtnEl.querySelector('span');
-        if (label) label.textContent = busy ? t('charts.chat.applying') : (this._analysisMode ? t('charts.chat.rerun') : t('charts.chat.apply'));
+        if (label) {
+            label.textContent = active
+                ? (this._analysisMode ? t('charts.chat.rerunningButton') : t('charts.chat.applying'))
+                : (this._analysisMode ? t('charts.chat.rerunAnalysis') : t('charts.chat.apply'));
+        }
+    }
+
+    setExternalBusy(busy) {
+        this.externalBusy = Boolean(busy);
+        this._setBusy(false);
     }
 
     /**
@@ -254,11 +266,12 @@ export class ChartChat {
     setAnalysisMode(on) {
         this._analysisMode = Boolean(on);
         if (!this.mounted) return;
-        this._inputEl.placeholder = this._analysisMode ? ANALYSIS_PLACEHOLDER : CHART_PLACEHOLDER;
+        this._inputEl.placeholder = this._analysisMode ? ANALYSIS_PLACEHOLDER() : CHART_PLACEHOLDER();
         this._inputEl.setAttribute('aria-label', this._analysisMode ? t('charts.chat.adjustAnalysis') : t('charts.chat.refine'));
+        this._applyBtnEl.title = this._analysisMode ? t('charts.chat.rerunTitle') : '';
         const label = this._applyBtnEl.querySelector('span');
         if (label && !this._applyBtnEl.classList.contains('is-busy')) {
-            label.textContent = this._analysisMode ? t('charts.chat.rerun') : t('charts.chat.apply');
+            label.textContent = this._analysisMode ? t('charts.chat.rerunAnalysis') : t('charts.chat.apply');
         }
     }
 
@@ -275,6 +288,7 @@ export class ChartChat {
                 this._inputEl.value = '';
                 this._setStatus('', null);
             } catch (error) {
+                if (error && error.name === 'AbortError') return;
                 this._setStatus(t('charts.chat.rerunFailed', { detail: String(error && error.message ? error.message : error) }), 'error');
             } finally {
                 this._setBusy(false);
@@ -371,8 +385,8 @@ export class ChartChat {
             this._setStatus(t('charts.chat.networkError', { detail: e && e.message ? e.message : t('common.unknownError') }), 'error');
         } finally {
             if (myRequestId === this.idCounter) {
-                this._setBusy(false);
                 this.inFlight = null;
+                this._setBusy(false);
             }
         }
     }

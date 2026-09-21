@@ -117,7 +117,7 @@ period — tier A), `experiment` (count + two moments per A/B arm — tier A).
 
 | Skill | Family | Engine |
 |---|---|---|
-| `anomaly_detection` | series | statsmodels MSTL (periodic seasonal, robust MAD scale, small-sample inflation) or LOWESS trend; band at the normal quantile implied by `sensitivity`; `sigma3` kept as a labelled non-robust option |
+| `anomaly_detection` | series | statsmodels MSTL (periodic seasonal, robust MAD scale, small-sample inflation) or LOWESS trend; `auto` picks per confirmed seasonality, `seasonal`/`trend` force the branch; band at the normal quantile implied by `sensitivity`; `sigma3` kept as a labelled non-robust option |
 | `forecast` | series | statsforecast shortlist [Naive, SeasonalNaive, AutoETS, AutoARIMA; MSTL+ETS/ARIMA for m > 24], rolling-origin CV at the horizon, native intervals with empirical coverage |
 | `changepoint` | series | ruptures PELT with a **piecewise-linear** cost on the de-seasonalised series (a ramp is one regime, a step is two); BIC penalty from the robust noise scale; seasonal-echo filter below four cycles |
 | `seasonality` | series | MSTL decomposition; noise-adjusted strength, peak/trough phase, trend growth once the cycle is removed |
@@ -204,10 +204,11 @@ Routes on: *anything weird / unusual / spikes / outliers / unexpected drop / is 
 | `series` | SeriesRequest | required |
 | `window` | int periods | 90 days / 26 weeks / 24 months |
 | `sensitivity` | float 0.80–0.99 | `0.95` — expected share of history inside the band |
-| `method` | auto \| sigma3 | `auto` |
+| `method` | auto \| seasonal \| trend \| sigma3 | `auto` |
 
 Rows: `ts, actual, expected, lower, upper, score, is_anomaly, observed`. Facts: flagged points with
-date, actual, expected, deviation %; band coverage; seasonal periods.
+date, actual, expected, deviation %; band coverage; seasonal periods; `seasonal_detected` /
+`seasonal_modelled` flags stating whether a season was found and used.
 
 ### FORECAST — tier A
 Routes on: *what will X be / project / next quarter / run rate / at this rate*.
