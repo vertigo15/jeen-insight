@@ -1,7 +1,7 @@
 """Per-user onboarding (FTUE) state service for Jeen Insights.
 
 Backed by a single table, `insights_user_onboarding` (one row per user_id):
-  * welcome_seen_at        — welcome dialog shown once
+  * welcome_seen_at        — welcome dialog opted out ("Don't show this again")
   * tour_completed_at      — guided tour finished/skipped
   * checklist (jsonb)      — flat {item: bool} map for the getting-started card
   * checklist_dismissed_at — checklist card dismissed
@@ -159,5 +159,9 @@ class OnboardingService:
                 )
                 return _row_to_dict(row) if row else _empty_state(user_id)
         except Exception:
-            logger.exception("Failed to merge onboarding state; returning defaults")
-            return _empty_state(user_id)
+            # Never return an empty row on a failed write: the client would treat
+            # a missing column / transient error as a brand-new user (HTTP 200)
+            # and re-show FTUE. Fall back to the current row, which SELECT * can
+            # still read even when a newer column is absent.
+            logger.exception("Failed to merge onboarding state; returning current row")
+            return await self.get_or_create(user_id)

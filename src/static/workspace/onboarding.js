@@ -74,6 +74,9 @@
   var checklistEl = null;
   var successCount = 0;
   var nudgeShown = false;
+  // Answers that arrive before GET /api/user/onboarding resolves. Flushed after
+  // boot so a returning user's dismissed nudge cannot flash on a fast first hit.
+  var pendingAnswers = 0;
   // In-memory "Skip for now" flag. Authoritative within this page even if
   // sessionStorage is unavailable (private mode, storage disabled, quota).
   var sessionMuted = false;
@@ -430,7 +433,7 @@
   }
 
   function maybeShowNudge() {
-    if (ftueMuted()) return;
+    if (!state.ready || ftueMuted()) return;
     if (nudgeShown || successCount !== 1) return;
     if (state.data && state.data.nudge_dismissed_at) return;
     var scroll = document.querySelector('.v3-workspace .v3-scroll');
@@ -795,6 +798,9 @@
 
   // ---------------------------------------------------------------- signals
   function onAnswer() {
+    // Queue until the server row is in: otherwise the first answer of a session
+    // mounts the nudge for a user who already dismissed it (GET still in flight).
+    if (!state.ready) { pendingAnswers++; return; }
     markItem('ask_first_question');
     successCount++;
     if (successCount >= 3) retireCards();
@@ -835,10 +841,19 @@
 
       // Skipped this session or permanently opted out: mount nothing. Progress
       // signals keep persisting server-side so a returning user resumes cleanly.
-      if (!ftueMuted()) {
+      if (ftueMuted()) {
+        hideAllSurfaces();
+      } else {
         mountChecklist();
         mountCards();
         if (!state.data.welcome_seen_at) showWelcome();
+      }
+      // Replay answers that landed while the GET was in flight, now that we
+      // know whether the nudge / cards are still in play.
+      if (pendingAnswers) {
+        var queued = pendingAnswers;
+        pendingAnswers = 0;
+        while (queued--) onAnswer();
       }
       // Boot decisions are final: a readiness marker for tests / integrations.
       document.body.classList.add('jo-ready');

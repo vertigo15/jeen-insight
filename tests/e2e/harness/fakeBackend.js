@@ -171,6 +171,9 @@
             // Specs set __ONBOARDING_GET_FAILS__ (via addInitScript) to exercise the
             // client's fail-soft boot path, where the row (and its user_id) is unknown.
             if (method === 'GET' && window.__ONBOARDING_GET_FAILS__) return json({ detail: 'down' }, 503);
+            if (method === 'GET' && window.__ONBOARDING_GET_DELAY_MS__) {
+                await new Promise((resolve) => setTimeout(resolve, Number(window.__ONBOARDING_GET_DELAY_MS__) || 0));
+            }
             return json(method === 'PATCH' ? mergeOnboarding(body) : onboardingRow);
         }
         if (url.indexOf('/api/last') >= 0) return json({});

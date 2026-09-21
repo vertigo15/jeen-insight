@@ -142,6 +142,37 @@ test('"Don\'t show this again" persists a dedicated permanent opt-out', async ({
   await ctx.close();
 });
 
+test('a previously dismissed nudge does not return on the next answer', async ({ page }) => {
+  await seedRow(page, {
+    welcome_seen_at: '2026-09-15T00:00:00+00:00',
+    checklist_dismissed_at: '2026-09-11T00:00:00+00:00',
+    nudge_dismissed_at: '2026-09-11T00:00:00+00:00',
+  });
+  await openFtue(page);
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('jeen:onboarding:ask_first_question'));
+  });
+  await expect(page.locator('.jo-nudge')).toHaveCount(0);
+});
+
+test('a dismissed nudge does not flash if the first answer races the onboarding GET', async ({ page }) => {
+  await seedRow(page, {
+    welcome_seen_at: '2026-09-15T00:00:00+00:00',
+    checklist_dismissed_at: '2026-09-11T00:00:00+00:00',
+    nudge_dismissed_at: '2026-09-11T00:00:00+00:00',
+  });
+  await page.addInitScript(() => { window.__ONBOARDING_GET_DELAY_MS__ = 1200; });
+  await page.goto(FTUE_HARNESS);
+  await page.waitForFunction(() => window.ChatController && document.body.classList.contains('v3-ready'));
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent('jeen:onboarding:ask_first_question'));
+  });
+  await expect(page.locator('.jo-nudge')).toHaveCount(0);
+  await page.waitForFunction(() => document.body.classList.contains('jo-ready'), null, { timeout: 10_000 });
+  await expect(page.locator('.jo-nudge')).toHaveCount(0);
+  await expect(welcome(page)).toHaveCount(0);
+});
+
 test('independent dismissals do not add up to a global opt-out', async ({ page }) => {
   // A user who saw the welcome, closed the checklist and dismissed the nudge
   // has not asked to lose onboarding entirely: quick-start cards still show.
