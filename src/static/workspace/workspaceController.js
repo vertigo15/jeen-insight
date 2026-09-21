@@ -249,6 +249,7 @@
         bell: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>',
         export: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3v12M7 8l5-5 5 5M5 14v6h14v-6"/></svg>',
         copy: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
+        star: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></svg>',
         code: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 5l-4 14"/></svg>',
     };
 
@@ -283,6 +284,8 @@
         _hydration: null,
         _analysisRerunInFlight: null,
         _analysisRerunAbort: null,
+        savedView: 'answers',
+        _favoriteList: null,
 
         init() {
             if (document.getElementById('v3-shell')) return;
@@ -326,7 +329,7 @@
                 <div class="v3-rail-divider"></div>
                 <button class="v3-rail-btn is-active" data-rail="conversation" aria-label="${h('shell.rail.conversation')}" data-tooltip="${h('shell.rail.conversation')}">${ICON.railConversation}</button>
                 <button class="v3-rail-btn" data-rail="tables" aria-label="${h('shell.rail.tables')}" data-tooltip="${h('shell.rail.tables')}">${ICON.table}</button>
-                <button class="v3-rail-btn" data-rail="pinned" aria-label="${h('shell.rail.pinnedLabel')}" data-tooltip="${h('shell.rail.pinned')}">${ICON.pin}</button>
+                <button class="v3-rail-btn" data-rail="saved" aria-label="${h('shell.rail.savedLabel')}" data-tooltip="${h('shell.rail.saved')}">${ICON.pin}</button>
                 <button class="v3-rail-btn" data-rail="history" aria-label="${h('shell.rail.historyLabel')}" data-tooltip="${h('shell.rail.history')}">${ICON.history}</button>
                 <div class="v3-rail-spacer"></div>
                 <button id="v3-settings-button" class="v3-rail-btn v3-rail-btn--settings" data-rail="settings" aria-label="${h('shell.rail.settings')}" data-tooltip="${h('shell.rail.settings')}">${ICON.settings}</button>
@@ -345,11 +348,15 @@
                 <div class="v3-body">
                   <div id="v3-drawer-overlay" class="v3-drawer-overlay"></div>
                   <aside id="v3-conversation" class="v3-conversation" aria-label="${h('shell.panels.workspaceLabel')}">
+                    <div class="v3-panel-head">
+                      <strong id="v3-panel-title">${h('shell.tabs.conversation')}</strong>
+                      <button id="v3-new-conversation" type="button" class="v3-new-conversation">${h('conversation.newConversation')}</button>
+                    </div>
                     <div class="v3-tabs-wrap">
                       <div class="v3-tabs" role="tablist" aria-label="${h('shell.tabs.sections')}">
                         <button id="v3-tab-conversation" class="v3-tab" data-tab="conversation" role="tab" aria-selected="true" aria-controls="v3-panel-conversation">${h('shell.tabs.conversation')}</button>
                         <button id="v3-tab-tables" class="v3-tab" data-tab="tables" role="tab" aria-selected="false" aria-controls="v3-panel-tables">${h('shell.tabs.tables')}</button>
-                        <button id="v3-tab-pinned" class="v3-tab" data-tab="pinned" role="tab" aria-selected="false" aria-controls="v3-panel-pinned">${h('shell.tabs.pinned')}</button>
+                        <button id="v3-tab-saved" class="v3-tab" data-tab="saved" role="tab" aria-selected="false" aria-controls="v3-panel-saved">${h('shell.tabs.saved')}</button>
                         <button id="v3-tab-conversations" class="v3-tab" data-tab="conversations" role="tab" aria-selected="false" aria-controls="v3-panel-conversations">${h('shell.tabs.history')}</button>
                       </div>
                     </div>
@@ -367,10 +374,19 @@
                       <div id="v3-table-search-slot" class="v3-panel-search"></div>
                       <div id="v3-tables-slot"></div>
                     </section>
-                    <section id="v3-panel-pinned" class="v3-panel v3-panel-list" data-panel="pinned" role="tabpanel" aria-labelledby="v3-tab-pinned" hidden>
-                      <div id="v3-question-search-slot" class="v3-panel-search"></div>
-                      <div class="v3-thread-empty-label">${h('shell.panels.pinnedRecent')}</div>
-                      <div id="v3-pinned-slot"></div>
+                    <section id="v3-panel-saved" class="v3-panel v3-panel-list" data-panel="saved" role="tabpanel" aria-labelledby="v3-tab-saved" hidden>
+                      <div class="v3-saved-switch" role="tablist" aria-label="${h('favorite.sections')}">
+                        <button id="v3-saved-tab-answers" type="button" data-saved-view="answers" role="tab" aria-selected="true" aria-controls="v3-saved-answers">${h('favorite.answers')}</button>
+                        <button id="v3-saved-tab-questions" type="button" data-saved-view="questions" role="tab" aria-selected="false" aria-controls="v3-saved-questions" tabindex="-1">${h('favorite.questions')}</button>
+                      </div>
+                      <div id="v3-saved-answers" data-saved-pane="answers" role="tabpanel" aria-labelledby="v3-saved-tab-answers">
+                        <div id="v3-favorites-list" class="v3-favorites-list"></div>
+                      </div>
+                      <div id="v3-saved-questions" data-saved-pane="questions" role="tabpanel" aria-labelledby="v3-saved-tab-questions" hidden>
+                        <div id="v3-question-search-slot" class="v3-panel-search"></div>
+                        <div class="v3-thread-empty-label">${h('shell.panels.pinnedRecent')}</div>
+                        <div id="v3-pinned-slot"></div>
+                      </div>
                     </section>
                     <div class="v3-composer-wrap">
                       <div class="v3-composer">
@@ -390,7 +406,9 @@
                         <h1 id="v3-result-title" class="v3-result-title">${h('shell.result.getStarted')}</h1>
                         <div id="v3-meta-row" class="v3-meta-row"></div>
                       </div>
-                      <div id="v3-actions" class="v3-actions"></div>
+                      <div id="v3-actions" class="v3-actions">
+                        <button id="v3-favorite-action" type="button" class="v3-favorite-action" hidden>${ICON.star}<span>${h('favorite.add')}</span></button>
+                      </div>
                     </header>
                     <div class="v3-scroll">
                       <div id="v3-placeholder" class="v3-placeholder">
@@ -548,6 +566,12 @@
                 this.renderDock();
             }));
             document.querySelectorAll('[data-rail]').forEach((button) => button.addEventListener('click', () => this._rail(button.dataset.rail)));
+            document.querySelectorAll('[data-saved-view]').forEach((button) => button.addEventListener('click', () => this.setSavedView(button.dataset.savedView)));
+            document.querySelector('.v3-saved-switch').addEventListener('keydown', (event) => {
+                this._tabKeydown(event, '[data-saved-view]', (button) => this.setSavedView(button.dataset.savedView));
+            });
+            document.getElementById('v3-new-conversation').addEventListener('click', () => this.newConversation());
+            document.getElementById('v3-favorite-action').addEventListener('click', () => this.toggleFavorite());
             document.getElementById('v3-conversation-toggle').addEventListener('click', () => this.toggleConversation());
             document.getElementById('v3-drawer-overlay').addEventListener('click', () => this.setConversation(false, true));
             document.getElementById('v3-dock-toggle').addEventListener('click', () => this.toggleDock(this.dockTab));
@@ -617,8 +641,8 @@
                 // setTab('tables') already refreshes the table list once.
                 this.setTab('tables');
                 this.setConversation(true);
-            } else if (action === 'pinned') {
-                this.setTab('pinned');
+            } else if (action === 'saved' || action === 'pinned') {
+                this.setTab('saved');
                 this.setConversation(true);
             } else if (action === 'history') {
                 this.setTab('conversations');
@@ -631,6 +655,14 @@
 
         setTab(tab) {
             this.activeTab = tab;
+            const panelTitles = {
+                conversation: t('shell.tabs.conversation'),
+                tables: t('shell.tabs.tables'),
+                saved: t('shell.tabs.saved'),
+                conversations: t('shell.tabs.history'),
+            };
+            const panelTitle = document.getElementById('v3-panel-title');
+            if (panelTitle) panelTitle.textContent = panelTitles[tab] || panelTitles.conversation;
             document.querySelectorAll('[data-tab]').forEach((button) => {
                 const active = button.dataset.tab === tab;
                 button.setAttribute('aria-selected', String(active));
@@ -639,11 +671,14 @@
             document.querySelectorAll('[data-panel]').forEach((panel) => { panel.hidden = panel.dataset.panel !== tab; });
             // Rail icon <-> panel tab mapping (the History icon opens the
             // 'conversations' panel; 'new' is the legacy id of the first icon).
-            const railForTab = { conversation: ['conversation', 'new'], tables: ['tables'], pinned: ['pinned'], conversations: ['history'] };
+            const railForTab = { conversation: ['conversation', 'new'], tables: ['tables'], saved: ['saved', 'pinned'], conversations: ['history'] };
             const activeRails = railForTab[tab] || [];
             document.querySelectorAll('[data-rail]').forEach((button) => button.classList.toggle('is-active', activeRails.includes(button.dataset.rail)));
             if (tab === 'tables' && typeof window.loadTables === 'function') window.loadTables();
-            if (tab === 'pinned' && typeof window.displayHistory === 'function') window.displayHistory();
+            if (tab === 'saved') {
+                if (this.savedView === 'answers') this.loadFavoriteAnswers();
+                else if (typeof window.displayHistory === 'function') window.displayHistory();
+            }
             if (tab === 'conversations') this.loadConversationList();
         },
 
@@ -961,6 +996,9 @@
             // Onboarding signal: a question was answered successfully.
             document.dispatchEvent(new CustomEvent('jeen:onboarding:ask_first_question'));
             turn.result = data;
+            turn.turnId = data.query_id || turn.turnId || null;
+            turn.conversationId = data.session_id || turn.conversationId || null;
+            turn.isFavorite = false;
             // ML skills: a confirm / clarify / guard stop is a result (a card),
             // not a table and not an error.
             turn.resultKind = data.proposal ? 'proposal' : turn.resultKind;
@@ -1066,10 +1104,92 @@
         /** Explicit "New conversation": clear the thread; the server creates the
          *  conversation row lazily on the first question. */
         newConversation() {
+            if (this.sending) return;
             this.reset();
             this.setTab('conversation');
             this.setConversation(true);
             if (this.input) this.input.focus();
+        },
+
+        _favoriteCoordinates(turn) {
+            if (!turn || turn.status !== 'success' || turn.result?.proposal) return null;
+            const conversationId = turn.conversationId || turn.result?.session_id || this.conversation?.id;
+            const turnId = turn.turnId || turn.result?.query_id;
+            return conversationId && turnId
+                ? { conversationId: String(conversationId), turnId: String(turnId) }
+                : null;
+        },
+
+        _renderFavoriteAction(turn) {
+            const button = document.getElementById('v3-favorite-action');
+            if (!button) return;
+            const coordinates = this._favoriteCoordinates(turn);
+            button.hidden = !coordinates;
+            if (!coordinates) return;
+            const active = Boolean(turn.isFavorite);
+            button.disabled = Boolean(turn.favoriteSaving);
+            button.classList.toggle('is-active', active);
+            button.setAttribute('aria-pressed', String(active));
+            button.setAttribute('aria-label', active ? t('favorite.remove') : t('favorite.add'));
+            button.title = active ? t('favorite.remove') : t('favorite.add');
+            const label = button.querySelector('span');
+            if (label) label.textContent = active ? t('favorite.saved') : t('favorite.add');
+        },
+
+        async toggleFavorite() {
+            const turn = this.turns.find((item) => item.id === this.selectedResultId);
+            const coordinates = this._favoriteCoordinates(turn);
+            if (!turn || !coordinates || turn.favoriteSaving) return;
+            await this.setFavoriteState(
+                coordinates.conversationId,
+                coordinates.turnId,
+                !turn.isFavorite,
+                turn,
+            );
+        },
+
+        async setFavoriteState(conversationId, turnId, favorite, knownTurn = null) {
+            this._favoriteSavingKeys = this._favoriteSavingKeys || new Set();
+            const mutationKey = `${conversationId}:${turnId}`;
+            if (this._favoriteSavingKeys.has(mutationKey)) return false;
+            this._favoriteSavingKeys.add(mutationKey);
+            const turn = knownTurn || this.turns.find((item) =>
+                String(item.turnId || item.result?.query_id || '') === String(turnId)
+            );
+            const currentSelection = () => this.turns.find((item) => item.id === this.selectedResultId);
+            const prior = Boolean(turn?.isFavorite);
+            if (turn) {
+                turn.isFavorite = favorite;
+                turn.favoriteSaving = true;
+            }
+            this._renderFavoriteAction(currentSelection());
+            this.renderConversation();
+            if (this.activeTab === 'saved' && this.savedView === 'answers') this.renderFavoriteAnswers();
+            try {
+                const response = await fetch(
+                    `/api/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/favorite`,
+                    { method: favorite ? 'PUT' : 'DELETE', headers: { 'Content-Type': 'application/json' }, body: favorite ? '{}' : undefined }
+                );
+                if (!response.ok) throw new Error(`favorite ${response.status}`);
+                if (turn) turn.isFavorite = favorite;
+                this._favoriteList = null;
+                if (this.activeTab === 'saved' && this.savedView === 'answers') await this.loadFavoriteAnswers();
+                if (typeof window.showToast === 'function') {
+                    window.showToast(favorite ? t('favorite.added') : t('favorite.removed'), 'success');
+                }
+                return true;
+            } catch (error) {
+                console.warn('[Workspace] favorite update failed', error);
+                if (turn) turn.isFavorite = prior;
+                if (typeof window.showToast === 'function') window.showToast(t('favorite.updateFailed'), 'error');
+                return false;
+            } finally {
+                this._favoriteSavingKeys.delete(mutationKey);
+                if (turn) turn.favoriteSaving = false;
+                this._renderFavoriteAction(currentSelection());
+                this.renderConversation();
+                if (this.activeTab === 'saved' && this.savedView === 'answers') this.renderFavoriteAnswers();
+            }
         },
 
         async _hydrationModule() {
@@ -1078,7 +1198,7 @@
                 this._hydration = window.ConversationHydration;
                 return this._hydration;
             }
-            const module = await import('./conversationHydration.js?v=2');
+            const module = await import('./conversationHydration.js?v=3');
             this._hydration = module;
             return module;
         },
@@ -1095,6 +1215,8 @@
             this._pendingOpen = null;
             const conversationId = options.conversationId
                 || (pendingOpen && pendingOpen.sourceKey === sourceKey ? pendingOpen.conversationId : null);
+            const targetTurnId = options.turnId
+                || (pendingOpen && pendingOpen.sourceKey === sourceKey ? pendingOpen.turnId : null);
             const readOnly = Boolean(options.readOnly);
             if (!sourceKey && !conversationId) return;
             this._generation += 1;
@@ -1145,16 +1267,44 @@
                     window._jeenSetSessionId(this.readOnly ? null : detail.conversation.id);
                 }
                 const newest = this.turns[this.turns.length - 1];
-                if (newest) {
-                    this.selectedTurnId = newest.id;
-                    this.selectedResultId = newest.status === 'success' ? newest.id : null;
+                let requested = targetTurnId
+                    ? this.turns.find((item) => String(item.turnId) === String(targetTurnId))
+                    : null;
+                // A favorite can outlive the normal hydration page. Fetch its
+                // metadata directly so Saved always opens the exact answer.
+                if (targetTurnId && !requested) {
+                    const turnResponse = await fetch(
+                        `/api/conversations/${encodeURIComponent(detail.conversation.id)}/turns/${encodeURIComponent(targetTurnId)}`,
+                        { signal: abort.signal }
+                    );
+                    if (stale()) return;
+                    if (turnResponse.ok) {
+                        requested = mod.turnFromServer(await turnResponse.json(), detail.conversation.id);
+                        this.turns.push(requested);
+                        this.turns.sort((a, b) => a.sequence - b.sequence);
+                    }
+                }
+                if (targetTurnId && !requested) {
+                    this.selectedTurnId = null;
+                    this.selectedResultId = null;
+                    this.render();
+                    if (typeof window.showToast === 'function') {
+                        window.showToast(t('favorite.answerUnavailable'), 'error');
+                    }
+                    return;
+                }
+                const initial = requested || newest;
+                if (initial) {
+                    this.selectedTurnId = initial.id;
+                    this.selectedResultId = initial.status === 'success' ? initial.id : null;
                     if (!this.selectedResultId) {
                         const lastOk = [...this.turns].reverse().find((item) => item.status === 'success');
                         this.selectedResultId = lastOk ? lastOk.id : null;
                     }
                 }
                 this.render();
-                this._scrollThread();
+                if (requested) this._scrollTurnIntoView(requested.id);
+                else this._scrollThread();
                 const target = this.turns.find((item) => item.id === this.selectedResultId);
                 if (target && target.artifactState === 'missing' && target.snapshotStatus === 'stored') {
                     await this._loadArtifact(target);
@@ -1262,6 +1412,118 @@
             return t('conversation.rerun.failedStatus', { status });
         },
 
+        setSavedView(view) {
+            this.savedView = view === 'questions' ? 'questions' : 'answers';
+            document.querySelectorAll('[data-saved-view]').forEach((button) => {
+                const active = button.dataset.savedView === this.savedView;
+                button.setAttribute('aria-selected', String(active));
+                button.tabIndex = active ? 0 : -1;
+            });
+            document.querySelectorAll('[data-saved-pane]').forEach((pane) => {
+                pane.hidden = pane.dataset.savedPane !== this.savedView;
+            });
+            if (this.savedView === 'answers') this.loadFavoriteAnswers();
+            else if (typeof window.displayHistory === 'function') window.displayHistory();
+        },
+
+        async loadFavoriteAnswers(options = {}) {
+            const host = document.getElementById('v3-favorites-list');
+            if (!host) return;
+            const append = Boolean(options.append);
+            const before = append ? this._favoriteNextCursor : null;
+            if (append && !before) return;
+            const requestId = (this._favoriteLoadSeq || 0) + 1;
+            this._favoriteLoadSeq = requestId;
+            this._favoritesLoading = true;
+            if (!append) host.innerHTML = `<div class="v3-thread-empty-label">${h('favorite.loading')}</div>`;
+            try {
+                const query = new URLSearchParams({ limit: '50' });
+                if (before) query.set('before', before);
+                const response = await fetch(`/api/conversations/favorites?${query.toString()}`);
+                if (!response.ok) throw new Error(`favorites ${response.status}`);
+                const data = await response.json();
+                if (requestId !== this._favoriteLoadSeq) return;
+                const incoming = Array.isArray(data.items) ? data.items : [];
+                if (append) {
+                    const seen = new Set((this._favoriteList || []).map((item) => String(item.turn_id)));
+                    this._favoriteList = [...(this._favoriteList || []), ...incoming.filter((item) => !seen.has(String(item.turn_id)))];
+                } else {
+                    this._favoriteList = incoming;
+                }
+                this._favoriteNextCursor = data.next_cursor || null;
+                this.renderFavoriteAnswers();
+            } catch (error) {
+                if (requestId !== this._favoriteLoadSeq) return;
+                console.warn('[Workspace] favorite answers failed', error);
+                if (!append) host.innerHTML = `<div class="v3-thread-empty-label">${h('favorite.loadFailed')}</div>`;
+                else if (typeof window.showToast === 'function') window.showToast(t('favorite.loadFailed'), 'error');
+            } finally {
+                if (requestId === this._favoriteLoadSeq) {
+                    this._favoritesLoading = false;
+                    const more = host.querySelector('[data-favorite-more]');
+                    if (more) more.disabled = false;
+                }
+            }
+        },
+
+        renderFavoriteAnswers() {
+            const host = document.getElementById('v3-favorites-list');
+            if (!host) return;
+            const items = this._favoriteList || [];
+            if (!items.length) {
+                host.innerHTML = `<div class="v3-saved-empty"><strong>${h('favorite.emptyTitle')}</strong><span>${h('favorite.emptyCopy')}</span></div>`;
+                return;
+            }
+            host.innerHTML = items.map((item) => {
+                const answer = textOf(item.answer);
+                const when = item.favorited_at ? this._formatWhen(item.favorited_at) : '';
+                const mutationKey = `${item.conversation_id}:${item.turn_id}`;
+                const saving = Boolean(this._favoriteSavingKeys?.has(mutationKey));
+                return `<article class="v3-favorite-item" data-favorite-open="${esc(item.turn_id)}" tabindex="0" role="button">
+                  <div class="v3-favorite-item-head">
+                    <strong dir="${directionOf(item.question)}">${esc(item.question)}</strong>
+                    <button type="button" data-favorite-remove="${esc(item.turn_id)}" aria-label="${h('favorite.remove')}" title="${h('favorite.remove')}"${saving ? ' disabled' : ''}>${ICON.star}</button>
+                  </div>
+                  ${answer ? `<p dir="${directionOf(answer)}">${esc(answer)}</p>` : ''}
+                  <div class="v3-favorite-meta"><bdi>${esc(item.source_label || item.source_key)}</bdi>${when ? ` · ${esc(when)}` : ''}</div>
+                </article>`;
+            }).join('') + (this._favoriteNextCursor
+                ? `<button type="button" class="v3-favorites-more" data-favorite-more${this._favoritesLoading ? ' disabled' : ''}>${h('favorite.loadMore')}</button>`
+                : '');
+            host.querySelectorAll('[data-favorite-open]').forEach((card) => {
+                const open = () => {
+                    const item = items.find((candidate) => String(candidate.turn_id) === card.dataset.favoriteOpen);
+                    if (item) this.openFavorite(item);
+                };
+                card.addEventListener('click', (event) => {
+                    if (!event.target.closest('[data-favorite-remove]')) open();
+                });
+                card.addEventListener('keydown', (event) => {
+                    if (event.target === card && (event.key === 'Enter' || event.key === ' ')) {
+                        event.preventDefault();
+                        open();
+                    }
+                });
+            });
+            host.querySelectorAll('[data-favorite-remove]').forEach((button) => button.addEventListener('click', async (event) => {
+                event.stopPropagation();
+                const item = items.find((candidate) => String(candidate.turn_id) === button.dataset.favoriteRemove);
+                if (item) await this.setFavoriteState(item.conversation_id, item.turn_id, false);
+            }));
+            host.querySelector('[data-favorite-more]')?.addEventListener('click', () => this.loadFavoriteAnswers({ append: true }));
+        },
+
+        openFavorite(item) {
+            if (!item) return;
+            this.openConversation({
+                id: item.conversation_id,
+                title: item.conversation_title,
+                source_key: item.source_key,
+                source_label: item.source_label,
+                connection_available: item.connection_available,
+            }, { turnId: item.turn_id });
+        },
+
         // ── History tab: browse / open / rename / delete conversations ──────
         _conversationList: null,
 
@@ -1332,23 +1594,23 @@
             </div>`;
         },
 
-        openConversation(item) {
+        openConversation(item, options = {}) {
             if (!item) return;
             const active = typeof window.getActiveConnection === 'function' ? window.getActiveConnection() : '';
             this.setTab('conversation');
             if (item.connection_available === false) {
                 // Connection is gone: open read-only without switching connections.
-                this.hydrate(item.source_key, { conversationId: item.id, readOnly: true });
+                this.hydrate(item.source_key, { conversationId: item.id, turnId: options.turnId, readOnly: true });
                 return;
             }
             if (item.source_key && item.source_key !== active && typeof window.onConnectionChange === 'function') {
                 // Switching connections triggers hydrate() via 'jeen:connection-resolved';
                 // remember which conversation to open instead of the newest one.
-                this._pendingOpen = { sourceKey: item.source_key, conversationId: item.id };
+                this._pendingOpen = { sourceKey: item.source_key, conversationId: item.id, turnId: options.turnId || null };
                 window.onConnectionChange(item.source_key);
                 return;
             }
-            this.hydrate(item.source_key || active, { conversationId: item.id });
+            this.hydrate(item.source_key || active, { conversationId: item.id, turnId: options.turnId });
         },
 
         async renameConversation(item) {
@@ -1398,6 +1660,11 @@
                 this.askButton.disabled = busy;
                 this.askButton.setAttribute('aria-busy', String(busy));
             }
+            const newConversation = document.getElementById('v3-new-conversation');
+            if (newConversation) {
+                newConversation.disabled = busy;
+                newConversation.title = busy ? t('conversation.newDisabledRunning') : t('conversation.newConversation');
+            }
         },
 
         _renderEmptySuggestions() {
@@ -1442,13 +1709,8 @@
                 : '';
             const head = `<div class="v3-thread-head">
                 <span class="v3-thread-title" dir="${directionOf(title)}" title="${esc(title)}">${esc(title)}</span>
-                <button class="v3-text-btn" data-new-conversation>${h('conversation.newConversation')}</button>
               </div>${readOnlyNote}`;
             thread.innerHTML = head + this.turns.map((turn) => this._turnHtml(turn)).join('');
-            thread.querySelector('[data-new-conversation]')?.addEventListener('click', (event) => {
-                event.stopPropagation();
-                this.newConversation();
-            });
             thread.querySelectorAll('[data-load-data]').forEach((button) => button.addEventListener('click', (event) => {
                 event.stopPropagation();
                 this.rerunTurn(button.dataset.loadData);
@@ -1499,7 +1761,7 @@
             const initials = this._initials();
             if (turn.status === 'running') {
                 return `<article class="v3-turn is-running${selected ? ' is-selected' : ''}" data-turn="${turn.id}">
-                  <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
+                  <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div>${turn.isFavorite ? `<span class="v3-turn-favorite" title="${h('favorite.saved')}">${ICON.star}</span>` : ''}</div>
                   <div class="v3-running-list">${PHASES.map((phase) => {
                     const status = turn.phaseState[phase.id];
                     const label = status === 'done' ? h('conversation.turn.statusOk') : status === 'running' ? h('conversation.turn.statusRunning') : status === 'error' ? h('conversation.turn.statusFailed') : '';
@@ -1562,7 +1824,7 @@
                 <button class="v3-text-btn" data-trace-toggle="${turn.id}">${turn.traceOpen ? h('conversation.turn.hideRun') : h('conversation.turn.runDetails')}</button>
               </div>`;
             return `<article class="v3-turn${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showAnswerBadge')}" data-route-path="${esc(routePath)}" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="${h('conversation.turn.showAnswer', { question: iso(turn.question) })}" aria-current="${selected ? 'true' : 'false'}">
-              <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
+              <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div>${turn.isFavorite ? `<span class="v3-turn-favorite" title="${h('favorite.saved')}">${ICON.star}</span>` : ''}</div>
               ${strip}
               ${!turn.restored && turn.traceOpen ? `<div class="v3-trace">${trace.map((item) => `<div class="v3-trace-row">
                 <span class="v3-dot ${item.status === 'node_failed' ? '' : 'is-ok'}"></span>
@@ -2039,6 +2301,9 @@
                 trace: (data.trace || []).map((raw) => ({ ...raw, status: 'node_finished' })),
                 traceOpen: false,
                 result: data,
+                turnId: data.query_id || null,
+                conversationId: data.session_id || null,
+                isFavorite: false,
                 error: null,
                 parentId: parent ? parent.id : null,
                 resultKind: data.proposal ? 'proposal' : undefined,
@@ -2186,6 +2451,7 @@
 
         renderWorkspace() {
             const turn = this.turns.find((item) => item.id === this.selectedResultId && item.status === 'success');
+            this._renderFavoriteAction(turn);
             const placeholder = document.getElementById('v3-placeholder');
             const chartBlock = document.getElementById('v3-chart-block');
             const tableBlock = document.getElementById('v3-table-block');
@@ -2656,6 +2922,14 @@
             requestAnimationFrame(() => {
                 const thread = document.getElementById('v3-thread');
                 if (thread) thread.scrollTop = thread.scrollHeight;
+            });
+        },
+
+        _scrollTurnIntoView(turnId) {
+            requestAnimationFrame(() => {
+                const card = [...document.querySelectorAll('#v3-thread [data-turn]')]
+                    .find((node) => node.dataset.turn === turnId);
+                card?.scrollIntoView({ block: 'nearest' });
             });
         },
     };

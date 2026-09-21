@@ -54,11 +54,16 @@
   -->
   <script>
     (function () {
+      var requested = new URLSearchParams(location.search).get('locale');
+      var locale = requested === 'he' ? 'he' : 'en';
+      var dir = locale === 'he' ? 'rtl' : 'ltr';
       var xhr = new XMLHttpRequest();
-      xhr.open('GET', '/src/i18n/messages/en.json', false);
+      xhr.open('GET', '/src/i18n/messages/' + locale + '.json', false);
       xhr.send(null);
+      document.documentElement.lang = locale;
+      document.documentElement.dir = dir;
       window.__I18N_BOOTSTRAP__ = {
-        locale: 'en', dir: 'ltr', formatLocale: 'en-US',
+        locale: locale, dir: dir, formatLocale: locale === 'he' ? 'he-IL' : 'en-US',
         locales: [{ tag: 'en', name: 'English', dir: 'ltr' }, { tag: 'he', name: 'עברית', dir: 'rtl' }],
         messages: JSON.parse(xhr.responseText),
       };

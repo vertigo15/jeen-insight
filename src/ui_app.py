@@ -357,6 +357,19 @@ def _proxy_patch(path: str, payload: Dict[str, Any], timeout: float = 30) -> Any
     return jsonify({"error": response.text}), response.status_code
 
 
+def _proxy_put(path: str, payload: Dict[str, Any] | None = None, timeout: float = 30) -> Any:
+    try:
+        response = requests.put(
+            f"{API_BASE_URL}{path}", json=payload or {}, timeout=timeout, headers=_internal_headers()
+        )
+    except requests.exceptions.RequestException as e:
+        logger.error("Backend PUT %s failed: %s", path, e)
+        return jsonify({"error": f"Backend unavailable: {e}", "code": "BACKEND_UNAVAILABLE"}), 503
+    if response.status_code == 200:
+        return jsonify(response.json())
+    return jsonify({"error": response.text}), response.status_code
+
+
 def _proxy_delete(path: str, params: Dict[str, Any] | None = None, timeout: float = 30) -> Any:
     try:
         response = requests.delete(
@@ -1384,6 +1397,16 @@ def list_conversations():
     return _proxy_get("/api/conversations", params=params, timeout=30)
 
 
+@app.route("/api/conversations/favorites", methods=["GET"])
+def list_favorite_answers():
+    params: Dict[str, Any] = {}
+    for key in ("connection", "limit", "before"):
+        value = request.args.get(key)
+        if value:
+            params[key] = value
+    return _proxy_get("/api/conversations/favorites", params=params, timeout=30)
+
+
 @app.route("/api/conversations/<conversation_id>", methods=["GET"])
 def get_conversation_detail(conversation_id: str):
     params: Dict[str, Any] = {}
@@ -1401,11 +1424,29 @@ def get_conversation_turn_artifact(conversation_id: str, turn_id: str):
     )
 
 
+@app.route("/api/conversations/<conversation_id>/turns/<turn_id>", methods=["GET"])
+def get_conversation_turn(conversation_id: str, turn_id: str):
+    return _proxy_get(
+        f"/api/conversations/{conversation_id}/turns/{turn_id}", timeout=30
+    )
+
+
 @app.route("/api/conversations/<conversation_id>/turns/<turn_id>/rerun", methods=["POST"])
 def rerun_conversation_turn(conversation_id: str, turn_id: str):
     return _proxy_post(
         f"/api/conversations/{conversation_id}/turns/{turn_id}/rerun", {}, timeout=180
     )
+
+
+@app.route(
+    "/api/conversations/<conversation_id>/turns/<turn_id>/favorite",
+    methods=["PUT", "DELETE"],
+)
+def set_conversation_turn_favorite(conversation_id: str, turn_id: str):
+    path = f"/api/conversations/{conversation_id}/turns/{turn_id}/favorite"
+    if request.method == "PUT":
+        return _proxy_put(path, {}, timeout=30)
+    return _proxy_delete(path, timeout=30)
 
 
 @app.route("/api/conversations/<conversation_id>", methods=["PATCH"])

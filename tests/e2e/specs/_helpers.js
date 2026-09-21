@@ -17,8 +17,8 @@ const Q = {
 };
 
 /** Load the harness and wait for the real controller to finish booting. */
-async function openHarness(page) {
-  await page.goto(HARNESS);
+async function openHarness(page, query = '') {
+  await page.goto(HARNESS + query);
   await page.waitForFunction(() => window.ChatController && document.body.classList.contains('v3-ready'));
 }
 
