@@ -390,7 +390,10 @@
     "chart": {
       "caption": "{columns} · {count, plural, one {נקודה אחת} two {# נקודות} other {# נקודות}}",
       "captionBy": "{first} לפי {second}",
-      "result": "תוצאה"
+      "result": "תוצאה",
+      "expandLabel": "הרחבת התרשים",
+      "collapseLabel": "כיווץ התרשים",
+      "unavailable": "לא ניתן היה לטעון את תרשים הניתוח."
     },
     "cap": {
       "banner": "התוצאה מוגבלת ל-{cap} שורות שנטענו.",
@@ -1423,6 +1426,11 @@
       "sortDescTitle": "מיון הקטגוריות מהגבוה לנמוך",
       "columns": "עמודות",
       "columnsTitle": "בחירת עמודות X / Y / סדרה",
+      "more": "אפשרויות תרשים",
+      "analysisBindingLocked": "שיוך העמודות נקבע על ידי הניתוח. השתמשו בכוונון הניתוח כדי לשנות אותו.",
+      "analysisTypeLocked": "סוג התרשים נקבע על ידי הניתוח.",
+      "analysisSortLocked": "תוצאות הניתוח שומרות על הסדר הסמנטי או הכרונולוגי שלהן.",
+      "analysisLockedHint": "פריסה שנקבעה על ידי הניתוח",
       "colors": "צבעים",
       "paletteTitle": "בחירת פלטת הצבעים של התרשים",
       "mapBindings": "קישורי מפה",
@@ -1458,6 +1466,7 @@
       "analysisPlaceholder": "כווננו את הניתוח — “שבועי במקום יומי”, “סמן פחות”",
       "refine": "חידוד התרשים",
       "adjustAnalysis": "כוונון הניתוח",
+      "adjustHelp": "מחשב מחדש את הניתוח כתוצאה חדשה. התוצאה הנוכחית נשמרת.",
       "enhance": "שיפור",
       "reset": "איפוס התרשים",
       "resetTitle": "חזרה לתרשים המקורי. העריכות תקפות לסשן זה בלבד — הנתונים שלכם לא משתנים לעולם.",
@@ -1471,7 +1480,12 @@
       "applying": "מחיל…",
       "apply": "החלה",
       "rerun": "הרצה מחדש",
+      "rerunAnalysis": "הרצת הניתוח מחדש",
+      "rerunningButton": "מריץ מחדש…",
+      "rerunTitle": "חישוב מחדש של הניתוח כתוצאה חדשה; התוצאה הנוכחית נשמרת.",
       "rerunning": "מריץ מחדש את הניתוח…",
+      "rerunAlreadyRunning": "הניתוח הזה כבר מורץ מחדש.",
+      "rerunCompleted": "ההרצה מחדש הסתיימה ותוצאה חדשה נוספה לשיחה.",
       "rerunFailed": "לא ניתן היה להריץ מחדש: {detail}",
       "networkError": "שגיאת רשת: {detail}."
     },

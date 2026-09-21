@@ -14,10 +14,11 @@ mutates the parent.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import ValidationError
 
 from src.api import state as api_state
@@ -255,6 +256,7 @@ async def run_analysis(request: AnalysisRunRequest, principal: Principal = Depen
 @router.post("/rerun", response_model=QueryResponse)
 async def rerun_analysis(request: AnalysisRerunRequest, principal: Principal = Depends(get_principal)):
     """Re-run a completed ML turn with adjusted parameters as a new child turn."""
+    rerun_started = time.monotonic()
     _require_enabled()
     store = _store()
     user_id = principal.user_id
@@ -278,9 +280,12 @@ async def rerun_analysis(request: AnalysisRerunRequest, principal: Principal = D
         raise HTTPException(status_code=409, detail="That turn is not a re-runnable analysis")
 
     patch: Dict[str, Any] = dict(request.params_patch or {})
+    instruction_ms = 0
     if request.instruction and not patch:
         agent = await resolve_agent(request.connection)
+        instruction_started = time.monotonic()
         patch = await _patch_from_instruction(agent, skill, base_params, request.instruction, parent.get("question") or "")
+        instruction_ms = int((time.monotonic() - instruction_started) * 1000)
         if not patch:
             raise HTTPException(status_code=422, detail="I couldn't turn that instruction into a parameter change. Try the chips instead.")
     if not patch:
@@ -310,11 +315,13 @@ async def rerun_analysis(request: AnalysisRerunRequest, principal: Principal = D
     if proposal_id is None and request.idempotency_key and getattr(store, "schema_ready", True):
         raise HTTPException(status_code=409, detail={"message": "This run was already executed."})
     try:
+        analysis_started = time.monotonic()
         result = await _run_confirmed(
             agent=agent, principal=principal, connection=request.connection, question=question,
             skill=skill, params=params, session_id=request.session_id, parent_query_id=request.parent_query_id,
             override_guards=request.override_guards, eval_analytics=request.eval_analytics, llm_timeout=request.llm_timeout,
         )
+        analysis_ms = int((time.monotonic() - analysis_started) * 1000)
     except Exception:
         if proposal_id:
             await store.release_proposal(UUID(proposal_id), user_id=user_id)
@@ -323,6 +330,31 @@ async def rerun_analysis(request: AnalysisRerunRequest, principal: Principal = D
         await store.record_result(UUID(proposal_id), user_id=user_id, query_id=result.get("query_id"))
     if isinstance(result.get("analysis"), dict):
         result["analysis"]["param_diff"] = diff_params(base_params, params)
+    trace = result.get("trace") if isinstance(result.get("trace"), list) else []
+    stage_nodes = {
+        "guard_ms": {"analysis_guard"},
+        "query_build_ms": {"analysis_sql"},
+        "data_extraction_ms": {"execute_query"},
+        "ml_execution_ms": {"analysis_run"},
+        "narration_ms": {"fused_eval_analytics"},
+    }
+    stages_ms = {
+        stage: sum(
+            int(event.get("elapsed_ms") or 0)
+            for event in trace
+            if isinstance(event, dict) and event.get("node") in nodes
+        )
+        for stage, nodes in stage_nodes.items()
+    }
+    metrics = dict(result.get("metrics") or {})
+    metrics["analysis_rerun"] = {
+        "instruction_ms": instruction_ms,
+        "analysis_ms": analysis_ms,
+        "total_ms": int((time.monotonic() - rerun_started) * 1000),
+        "structured_patch": bool(request.params_patch),
+        "stages_ms": stages_ms,
+    }
+    result["metrics"] = metrics
     return QueryResponse(**result)
 
 
@@ -383,13 +415,18 @@ async def _patch_from_instruction(agent: Any, skill: str, base_params: Dict[str,
 
 
 @router.post("/chart", response_model=GenerateChartResponse)
-async def analysis_chart(request: AnalysisChartRequest, principal: Principal = Depends(get_principal)):
+async def analysis_chart(
+    request: AnalysisChartRequest,
+    response: Response,
+    principal: Principal = Depends(get_principal),
+):
     """Build the role-based band chart for an ML result deterministically.
 
     Same persistence as ``/generate-chart`` (the chart baseline is stored on the
     turn so a restored conversation renders it without recomputation), but no
     model call: the envelope already says what to draw.
     """
+    chart_started = time.monotonic()
     _require_enabled()
     from src.api.chart_builder import build_band_option  # noqa: PLC0415
     from src.api.routes.charts import _persist_chart_baseline, _verify_query_owner  # noqa: PLC0415
@@ -407,6 +444,7 @@ async def analysis_chart(request: AnalysisChartRequest, principal: Principal = D
     if not dataset or not (dataset.get("rows") or dataset.get("data")):
         raise HTTPException(status_code=409, detail="Result rows are not cached; re-send them as `results`.")
     dataset = _apply_row_filter(dataset, spec.get("row_filter"))
+    build_started = time.monotonic()
     try:
         if spec["chart_type"] == "band":
             option = build_band_option(spec, dataset)
@@ -434,7 +472,21 @@ async def analysis_chart(request: AnalysisChartRequest, principal: Principal = D
                     s["jeenRole"] = "actual" if str(s.get("name", "")).lower() == "actual" else "expected"
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    build_ms = int((time.monotonic() - build_started) * 1000)
+    persist_started = time.monotonic()
     await _persist_chart_baseline(query_id=request.query_id, user_id=user_id, chart_spec=spec, chart_config=option)
+    persist_ms = int((time.monotonic() - persist_started) * 1000)
+    total_ms = int((time.monotonic() - chart_started) * 1000)
+    response.headers["Server-Timing"] = (
+        f"chart-build;dur={build_ms}, chart-persist;dur={persist_ms}, total;dur={total_ms}"
+    )
+    logger.info(
+        "analysis_chart_timing query_id=%s build_ms=%d persist_ms=%d total_ms=%d",
+        request.query_id,
+        build_ms,
+        persist_ms,
+        total_ms,
+    )
     return GenerateChartResponse(chart_config=option, chart_type=spec["chart_type"], chart_spec=spec)
 
 

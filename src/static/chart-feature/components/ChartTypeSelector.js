@@ -91,6 +91,8 @@ export class ChartTypeSelector {
         this.currentType = defaultType;
         this.onChange = onChange;
         this.llmRecommendation = null;
+        this.disabled = false;
+        this.disabledTitle = '';
 
         this.isOpen = false;
         this.activeIndex = -1;
@@ -137,6 +139,7 @@ export class ChartTypeSelector {
         this.btnEl = container.querySelector('.ctype-btn');
         this.btnEl.addEventListener('click', (e) => { e.preventDefault(); this.toggle(); });
         this.btnEl.addEventListener('keydown', this._onKeyDown);
+        this._syncDisabled();
 
         console.log('[ChartTypeSelector] Rendered');
     }
@@ -193,7 +196,7 @@ export class ChartTypeSelector {
     // ── Open / close ────────────────────────────────────────────────────────
 
     open() {
-        if (this.isOpen || !this.btnEl) return;
+        if (this.disabled || this.isOpen || !this.btnEl) return;
         this._ensureMenu();
         this.isOpen = true;
         this.btnEl.setAttribute('aria-expanded', 'true');
@@ -229,6 +232,23 @@ export class ChartTypeSelector {
     }
 
     toggle() { this.isOpen ? this.close() : this.open(); }
+
+    setDisabled(disabled, title = '') {
+        this.disabled = Boolean(disabled);
+        this.disabledTitle = this.disabled ? String(title || '') : '';
+        if (this.disabled) this.close();
+        this._syncDisabled();
+    }
+
+    _syncDisabled() {
+        if (!this.btnEl) return;
+        this.btnEl.disabled = this.disabled;
+        this.btnEl.setAttribute('aria-disabled', String(this.disabled));
+        if (this.disabled) this.btnEl.setAttribute('aria-describedby', 'chart-analysis-lock-note');
+        else this.btnEl.removeAttribute('aria-describedby');
+        if (this.disabledTitle) this.btnEl.title = this.disabledTitle;
+        else this.btnEl.title = t('charts.selector.label');
+    }
 
     _positionMenu() {
         const menu = this.menuEl;

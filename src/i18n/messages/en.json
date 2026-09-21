@@ -390,7 +390,10 @@
     "chart": {
       "caption": "{columns} · {count, plural, one {# point} other {# points}}",
       "captionBy": "{first} by {second}",
-      "result": "result"
+      "result": "result",
+      "expandLabel": "Expand chart",
+      "collapseLabel": "Collapse chart",
+      "unavailable": "The analysis chart could not be loaded."
     },
     "cap": {
       "banner": "Result capped at {cap} loaded rows.",
@@ -1423,6 +1426,11 @@
       "sortDescTitle": "Sort categories high to low",
       "columns": "Columns",
       "columnsTitle": "Choose X / Y / Series columns",
+      "more": "Chart options",
+      "analysisBindingLocked": "Column bindings are defined by this analysis. Use Adjust analysis to change them.",
+      "analysisTypeLocked": "Chart type is defined by this analysis.",
+      "analysisSortLocked": "Analysis results keep their semantic or chronological order.",
+      "analysisLockedHint": "Layout set by the analysis",
       "colors": "Colors",
       "paletteTitle": "Choose the chart colour palette",
       "mapBindings": "Map bindings",
@@ -1458,6 +1466,7 @@
       "analysisPlaceholder": "Adjust this analysis — “weekly instead of daily”, “flag fewer”",
       "refine": "Refine this chart",
       "adjustAnalysis": "Adjust this analysis",
+      "adjustHelp": "Recomputes the analysis as a new result. The current result is kept.",
       "enhance": "Enhance",
       "reset": "Reset chart",
       "resetTitle": "Revert to the original chart. Edits are session-only — your data is never changed.",
@@ -1471,7 +1480,12 @@
       "applying": "Applying…",
       "apply": "Apply",
       "rerun": "Re-run",
+      "rerunAnalysis": "Re-run analysis",
+      "rerunningButton": "Re-running…",
+      "rerunTitle": "Recompute this analysis into a new result; the current result is kept.",
       "rerunning": "Re-running the analysis…",
+      "rerunAlreadyRunning": "This analysis is already being re-run.",
+      "rerunCompleted": "The re-run finished and a new result was added to the conversation.",
       "rerunFailed": "Couldn't re-run: {detail}",
       "networkError": "Network error: {detail}."
     },

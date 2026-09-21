@@ -290,6 +290,13 @@ def test_rerun_with_patch_creates_a_child_turn_with_a_diff(client, ml_state):
     assert r.json()["analysis"]["param_diff"] == {"grain": {"from": "week", "to": "month"},
                                                  "start": {"from": "2026-03-02", "to": None},
                                                  "end": {"from": "2026-09-07", "to": None}}
+    timing = r.json()["metrics"]["analysis_rerun"]
+    assert timing["structured_patch"] is True
+    assert timing["instruction_ms"] == 0
+    assert timing["analysis_ms"] >= 0 and timing["total_ms"] >= timing["analysis_ms"]
+    assert set(timing["stages_ms"]) == {
+        "guard_ms", "query_build_ms", "data_extraction_ms", "ml_execution_ms", "narration_ms",
+    }
     # The re-run was recorded as a consumed proposal carrying its child turn.
     rerun = next(p for p in ml_state.store.proposals.values() if p["kind"] == "rerun")
     assert rerun["consumed_at"] and str(rerun["consumed_query_id"]) == r.json()["query_id"]
@@ -363,6 +370,7 @@ def test_chart_builds_band_from_cache_and_persists_baseline(client, ml_state, mo
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["chart_type"] == "band"
+    assert "chart-build;dur=" in r.headers["server-timing"]
     roles = [s.get("jeenRole") for s in body["chart_config"]["series"]]
     assert "actual" in roles and "flagged" in roles
     assert persisted["query_id"] == qid and persisted["chart_spec"]["chart_type"] == "band"

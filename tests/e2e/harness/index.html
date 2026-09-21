@@ -38,7 +38,12 @@
     <div id="describe-section"></div>
     <div id="chart-type-selector-container"></div>
     <div id="chart-options-panel-container"></div>
-    <div id="chart-view-container"></div>
+    <div id="chart-view-container">
+      <!-- Minimal chart-feature surface so disclosure tests exercise real focusable content. -->
+      <div id="chart-actions-toolbar"><button type="button">Save PNG</button></div>
+      <div id="chart-display-container"></div>
+      <div id="chart-chat-container"><input aria-label="Chart edit test control"></div>
+    </div>
   </div>
 
   <!--
