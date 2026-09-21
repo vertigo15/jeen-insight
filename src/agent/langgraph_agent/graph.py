@@ -67,6 +67,7 @@ from src.agent.langgraph_agent.nodes.analysis import (
 from src.agent.langgraph_agent.nodes.binder import make_prior_data_binder
 from src.agent.langgraph_agent.nodes.capability import make_capability_answer
 from src.agent.langgraph_agent.nodes.catalog import make_catalog_lookup, make_prompt_builder
+from src.agent.langgraph_agent.nodes.catalog_help import make_catalog_help_answer
 from src.agent.langgraph_agent.nodes.context import context_composer
 from src.agent.langgraph_agent.nodes.eval import make_fused_eval_analytics
 from src.agent.langgraph_agent.nodes.execution import make_execute_query, trivial_result_check
@@ -124,6 +125,7 @@ _NODE_META: dict[str, tuple[str, str]] = {
     "context_composer":        ("🧠", "logic"),
     "fused_router":            ("🔀", "llm"),
     "capability_answer":       ("💡", "llm"),
+    "catalog_help_answer":     ("📖", "logic"),
     "memory_answer_generator": ("💬", "llm"),
     "history_search":          ("🗂", "db"),
     "catalog_lookup":          ("📦", "db"),
@@ -326,6 +328,7 @@ def build_graph(
     n("context_composer",        context_composer)
     n("fused_router",            make_fused_router(router_llm, prompt_loader, ml_skills_enabled=ml_skills_enabled))
     n("capability_answer",       make_capability_answer(llm, prompt_loader))
+    n("catalog_help_answer",     make_catalog_help_answer(governed_columns=dlp_governed_columns))
     n("memory_answer_generator", make_memory_answer_generator(
         router_llm, prompt_loader, store=prior_results, engine=engine, max_rows=memory_compute_max_rows))
     n("history_search",          make_history_search(history_service))
@@ -399,6 +402,7 @@ def build_graph(
 
     builder.add_conditional_edges("fused_router", _route_from_router)
     builder.add_edge("capability_answer", "response_formatter")
+    builder.add_edge("catalog_help_answer", "response_formatter")
     builder.add_edge("history_search", "response_formatter")
     builder.add_conditional_edges("memory_answer_generator", _route_from_memory_answer)
 
@@ -448,6 +452,10 @@ def _route_from_router(state: AgentState) -> str:
         return "history_search"
     if route == "capability":
         return "capability_answer"
+    # catalog_help needs the metadata bundle first, so it goes through
+    # catalog_lookup and branches to catalog_help_answer from there.
+    if route == "catalog_help":
+        return "catalog_lookup"
     # clarify_route: the SQL-vs-ML choice was ambiguous — the router already set
     # the question + options as the answer, so go straight to formatting.
     if route in ("out_of_scope", "unsafe", "greeting", "clarify_route"):
@@ -471,6 +479,9 @@ def _route_from_catalog(state: AgentState) -> str:
     # entirely and return a clear error rather than querying blindly.
     if state.get("catalog_blocked"):
         return "response_formatter"
+    # A catalog-help question is answered deterministically from the bundle.
+    if state.get("route") == "catalog_help":
+        return "catalog_help_answer"
     # Re-entry from /api/analysis/run: params are already validated, so the
     # branch starts at the guard (planner and filter planning are skipped).
     if (state.get("analysis_resume") or state.get("analysis_confirmed")) and on_analysis_branch(state):

@@ -45,7 +45,12 @@
         const t = routingTruth()[question];
         if (!t) return result;
         const wr = t.would_route;
-        const path = wr === 'needs_analysis' ? 'ml' : wr === 'greeting' ? 'greeting' : 'sql';
+        // Mirror response_formatter: path is 'ml' for analysis, 'sql' for a data
+        // query, and the route name itself for everything else (capability,
+        // greeting, …) so the visible path badge matches production.
+        const path = wr === 'needs_analysis'
+            ? 'ml'
+            : (wr === 'needs_query' || wr === 'router_decides') ? 'sql' : wr;
         const route = wr === 'router_decides' ? 'needs_query' : wr;
         result.routing = { route, path, source: t.source, reason: t.reason, skill: t.skill_hint };
         return result;
@@ -104,6 +109,27 @@
         return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
     }
 
+    // ── Onboarding (FTUE) state: one row per "user", merged like the real service.
+    // Specs simulate a server that already persisted something by seeding
+    // window.__ONBOARDING_ROW__ via page.addInitScript() before navigation.
+    const STAMP_FOR = {
+        welcome_seen: 'welcome_seen_at', tour_completed: 'tour_completed_at',
+        checklist_dismissed: 'checklist_dismissed_at', nudge_dismissed: 'nudge_dismissed_at',
+        ftue_opted_out: 'ftue_opted_out_at',
+    };
+    let onboardingRow = Object.assign({
+        user_id: 'user-e2e', welcome_seen_at: null, tour_completed_at: null, checklist: {},
+        checklist_dismissed_at: null, nudge_dismissed_at: null, ftue_opted_out_at: null, updated_at: null,
+    }, window.__ONBOARDING_ROW__ || {});
+
+    function mergeOnboarding(body) {
+        const now = new Date().toISOString();
+        Object.keys(STAMP_FOR).forEach((flag) => { if (body[flag]) onboardingRow[STAMP_FOR[flag]] = now; });
+        if (body.checklist) onboardingRow.checklist = Object.assign({}, onboardingRow.checklist, body.checklist);
+        onboardingRow.updated_at = now;
+        return onboardingRow;
+    }
+
     const realFetch = window.fetch.bind(window);
 
     window.fetch = async function (input, init) {
@@ -139,6 +165,13 @@
         if (url.indexOf('/api/analysis/chart') >= 0) {
             // Return a chart_config so the controller caches it and stops asking.
             return json({ chart_spec: body.chart_spec || null, chart_config: { option: { series: [] } } });
+        }
+        if (url.indexOf('/api/user/onboarding') >= 0) {
+            const method = (opts.method || 'GET').toUpperCase();
+            // Specs set __ONBOARDING_GET_FAILS__ (via addInitScript) to exercise the
+            // client's fail-soft boot path, where the row (and its user_id) is unknown.
+            if (method === 'GET' && window.__ONBOARDING_GET_FAILS__) return json({ detail: 'down' }, 503);
+            return json(method === 'PATCH' ? mergeOnboarding(body) : onboardingRow);
         }
         if (url.indexOf('/api/last') >= 0) return json({});
         if (url.indexOf('/api/conversations') >= 0) return json({ conversations: [] });

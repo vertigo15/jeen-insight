@@ -79,6 +79,28 @@ class TestDaxCapabilityPrompt:
         assert await loader.model_override_for("fused_router") == "db-model"
 
 
+class TestDaxCapabilityCue:
+    async def test_capability_cue_reaches_dax_capability(self):
+        # The deterministic capability cue lives in the shared router node, so it
+        # rescues "which ML models can I use?" on the Power BI graph too and lands
+        # on the DAX capability answer (which explains ML is SQL-only).
+        from unittest.mock import AsyncMock
+
+        from src.agent.langgraph_agent.nodes.router import make_fused_router
+
+        llm = MagicMock()
+        llm.generate = AsyncMock(return_value={
+            "content": '{"route": "out_of_scope", "reason": "looks off-topic"}', "usage": {},
+        })
+        router = make_fused_router(llm, DaxPromptLoader(), ml_skills_enabled=False)
+        result = await router({
+            "question": "which ML models can I use?", "connection_display_name": "Sales PBI",
+            "llm_call_count": 0, "llm_latency_ms": 0, "token_usage": {},
+        })
+        assert result["route"] == "capability"
+        assert _route_from_router(result) == "capability_answer"
+
+
 class TestRouter:
     def test_from_memory(self):
         assert _route_from_router({"route": "from_memory"}) == "memory_answer_generator"

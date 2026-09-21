@@ -27,6 +27,7 @@ from src.metadata import (
     MetadataLoader, close_metadata_pool, get_metadata_pool,
     McpServerService, McpCacheService, McpCatalogClient,
 )
+from src.metadata.insights_schema import ensure_insights_baseline
 
 logger = logging.getLogger(__name__)
 
@@ -37,122 +38,21 @@ def get_agent():
 
 
 async def _ensure_schema(conn) -> None:
-    """Create app tables and indexes if they don't exist yet."""
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS app_settings (
-            key        VARCHAR PRIMARY KEY,
-            value      TEXT,
-            updated_at TIMESTAMPTZ DEFAULT NOW()
-        )
-    """)
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS insights_prompts (
-            id           SERIAL PRIMARY KEY,
-            prompt_place VARCHAR(100) NOT NULL,
-            content      TEXT        NOT NULL,
-            version      INTEGER     NOT NULL DEFAULT 1,
-            is_active    BOOLEAN     NOT NULL DEFAULT true,
-            is_custom    BOOLEAN     NOT NULL DEFAULT false,
-            model_id     INTEGER     NULL
-                             REFERENCES admin_models(id) ON DELETE SET NULL,
-            created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-    """)
-    await conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_insights_prompts_active
-            ON insights_prompts(prompt_place)
-            WHERE is_active = true
-    """)
-    await conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_insights_prompts_place
-            ON insights_prompts(prompt_place)
-    """)
-    # Additive columns — safe to run repeatedly via IF NOT EXISTS.
-    await conn.execute("""
-        ALTER TABLE insights_conversation_sessions
-            ADD COLUMN IF NOT EXISTS graph_time_ms INT
-    """)
-    # Durable result artifact for follow-up detection (see migration 011).
-    await conn.execute("""
-        ALTER TABLE insights_conversation_sessions
-            ADD COLUMN IF NOT EXISTS result_artifact JSONB
-    """)
-    # Slim per-node graph timings (see migration 020).
-    await conn.execute("""
-        ALTER TABLE insights_conversation_sessions
-            ADD COLUMN IF NOT EXISTS node_trace JSONB
-    """)
+    """Create — or, with SCHEMA_BOOTSTRAP_ON_START=false, only verify — the
+    Insights-owned baseline tables and columns.
 
-    # ── MCP tables ────────────────────────────────────────────────────────────
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS insights_mcp_servers (
-            id                  SERIAL PRIMARY KEY,
-            is_active           BOOLEAN     NOT NULL DEFAULT false,
-            server_name         TEXT        NOT NULL DEFAULT '',
-            endpoint            TEXT        NOT NULL DEFAULT '',
-            transport           VARCHAR(10) NOT NULL DEFAULT 'http'
-                                    CHECK (transport IN ('stdio', 'sse', 'http')),
-            auth_type           VARCHAR(20) NOT NULL DEFAULT 'none'
-                                    CHECK (auth_type IN ('none', 'bearer', 'oauth')),
-            bearer_token        TEXT,
-            cache_ttl_seconds   INT  NOT NULL DEFAULT 900
-                                    CHECK (cache_ttl_seconds IN (0,300,900,3600,86400)),
-            health              JSONB,
-            last_checked_at     TIMESTAMPTZ,
-            created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-    """)
-    await conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_insights_mcp_servers_active
-            ON insights_mcp_servers(is_active)
-            WHERE is_active = true
-    """)
-    # Envelope-encryption columns for the bearer token (migration 013). Added
-    # here too so a fresh DB bootstrapped by the API stays consistent with the
-    # SELECT column list before the migration script runs.
-    for _col in (
-        "token_algo", "token_kek_id", "token_ciphertext",
-        "token_nonce", "token_wrapped_dek", "token_dek_nonce",
-    ):
-        await conn.execute(
-            f"ALTER TABLE insights_mcp_servers ADD COLUMN IF NOT EXISTS {_col} TEXT"
-        )
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS insights_mcp_cache (
-            id              SERIAL PRIMARY KEY,
-            mcp_server_id   INT          NOT NULL
-                                REFERENCES insights_mcp_servers(id) ON DELETE CASCADE,
-            source_key      VARCHAR(255) NOT NULL,
-            -- Keep in sync with migration 016_mcp_cache_keys.sql. Includes the
-            -- structured autocomplete datasets (tables_rich / knowledge_questions
-            -- / columns_struct:<scope>) so fresh-DB bootstrap does not drift from
-            -- the migrated schema.
-            cache_key       VARCHAR(160) NOT NULL
-                                CHECK (
-                                    cache_key IN (
-                                        'connections','tables','columns',
-                                        'relationships','business_terms','knowledge_pairs',
-                                        'tables_rich','knowledge_questions','columns_struct'
-                                    )
-                                    OR starts_with(cache_key, 'columns_struct:')
-                                ),
-            payload         JSONB        NOT NULL,
-            fetched_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-            expires_at      TIMESTAMPTZ  NOT NULL,
-            is_stale        BOOLEAN      NOT NULL DEFAULT false,
-            CONSTRAINT uq_mcp_cache_entry UNIQUE (mcp_server_id, source_key, cache_key)
-        )
-    """)
-    await conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_mcp_cache_valid
-            ON insights_mcp_cache(mcp_server_id, source_key, cache_key)
-            WHERE is_stale = false
-    """)
-    # NOTE: insights_catalog_config was archived in migration 007. The catalog
-    # source is now a single global app_settings.catalog_source value and the
-    # cache TTL lives on the active MCP server, so no table is bootstrapped here.
+    Delegates to :func:`src.metadata.insights_schema.ensure_insights_baseline`,
+    which the migration runner shares, and fails with a clear message when the
+    database was not provisioned by Jeen Schema Modeler or (verify mode) the
+    migration Job has not run yet.
+    """
+    apply = bool(settings.SCHEMA_BOOTSTRAP_ON_START)
+    logger.info(
+        "startup: schema bootstrap %s",
+        "enabled (additive DDL if objects are missing)" if apply
+        else "disabled (verify only; schema changes go through the migration Job)",
+    )
+    await ensure_insights_baseline(conn, require_platform=True, apply=apply)
 
 
 async def _probe_conversation_persistence(conn, history_service: Any) -> None:

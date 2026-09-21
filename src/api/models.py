@@ -351,6 +351,8 @@ class OnboardingPatch(BaseModel):
     tour_completed: Optional[bool] = None
     checklist_dismissed: Optional[bool] = None
     nudge_dismissed: Optional[bool] = None
+    # Permanent opt-out of every FTUE surface ("Don't show this again").
+    ftue_opted_out: Optional[bool] = None
     checklist: Optional[Dict[str, Any]] = None
 
 

@@ -24,6 +24,7 @@ import requests
 from flask import (
     Flask,
     Response,
+    abort,
     g,
     jsonify,
     redirect,
@@ -221,8 +222,9 @@ def _handle_rate_limit(exc):
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://jeen-insights-api:8000")
 
-# Paths that never require a login check.
-_PUBLIC_PREFIXES = ("/static/", "/favicon")
+# Paths that never require a login check. /auth/<provider>[/callback] covers the
+# generic OIDC sign-in routes (Keycloak, Zitadel, ...); unknown providers 404.
+_PUBLIC_PREFIXES = ("/static/", "/favicon", "/auth/")
 _PUBLIC_EXACT    = {
     "/login",
     "/logout",
@@ -388,6 +390,13 @@ def _entra_sso_enabled() -> bool:
     return entra_auth.is_configured()
 
 
+def _oidc_providers() -> list:
+    """Enabled generic OIDC providers (Keycloak, Zitadel, ...) for the login page."""
+    from src import oidc_auth
+
+    return [{"key": p.key, "label": p.label} for p in oidc_auth.configured_providers()]
+
+
 def _public_base_url() -> str:
     """Public URL of the UI (for OAuth redirect). Prefer PUBLIC_APP_URL behind proxies."""
     explicit = os.getenv("PUBLIC_APP_URL", "").strip()
@@ -514,6 +523,7 @@ def _inject_i18n():
         "locale": locale,
         "dir": dir_for(locale),
         "t": _t,
+        "oidc_providers": _oidc_providers(),
         "ui_locales": [
             {"tag": tag, "name": native_name(tag), "dir": dir_for(tag)}
             for tag in LOCALES
@@ -763,6 +773,101 @@ def microsoft_callback():
     _write_user_session(user, provider="microsoft", directory=directory)
     touch_last_active(user["id"])
     logger.info("microsoft login: %s (%s) authenticated", user["email"], user["role"])
+    return _redirect_after_login(next_url, user)
+
+
+def _oidc_login_error(message: str, status: int = 401):
+    return render_template("login.html", error=message, entra_sso_enabled=_entra_sso_enabled()), status
+
+
+@app.route("/auth/<provider>")
+def oidc_login(provider: str):
+    """Start the authorization-code (PKCE) flow with a configured OIDC provider."""
+    from src import oidc_auth
+
+    prov = oidc_auth.get_provider(provider)
+    if prov is None:
+        abort(404)
+    state, nonce, verifier = oidc_auth.new_state(), oidc_auth.new_nonce(), oidc_auth.new_code_verifier()
+    session["oidc_state"] = state
+    session["oidc_nonce"] = nonce
+    session["oidc_verifier"] = verifier
+    session["oidc_provider"] = prov.key
+    session["oauth_next"] = _safe_next(request.args.get("next"))
+    try:
+        auth_url = oidc_auth.build_authorization_url(
+            prov,
+            redirect_uri=prov.redirect_uri(_public_base_url()),
+            state=state,
+            nonce=nonce,
+            code_verifier=verifier,
+        )
+    except oidc_auth.OidcError as exc:
+        logger.warning("oidc[%s] login: %s", prov.key, exc)
+        return _oidc_login_error(_t("login.errors.ssoFailed", provider=prov.label, reason=isolate(str(exc))), 503)
+    return redirect(auth_url)
+
+
+@app.route("/auth/<provider>/callback")
+def oidc_callback(provider: str):
+    """Finish the OIDC sign-in: validate state/nonce/ID token, provision, open a session."""
+    from src import oidc_auth
+    from src.auth_db import get_or_create_sso_user, touch_last_active, update_user_role
+
+    prov = oidc_auth.get_provider(provider)
+    if prov is None:
+        abort(404)
+
+    idp_error = request.args.get("error_description") or request.args.get("error")
+    if idp_error:
+        session.pop("oidc_state", None)
+        return _oidc_login_error(_t("login.errors.ssoFailed", provider=prov.label, reason=isolate(idp_error)))
+
+    state = request.args.get("state")
+    expected = session.pop("oidc_state", None)
+    nonce = session.pop("oidc_nonce", None)
+    verifier = session.pop("oidc_verifier", None)
+    started_with = session.pop("oidc_provider", None)
+    if not state or state != expected or started_with != prov.key or not nonce or not verifier:
+        return _oidc_login_error(_t("login.errors.invalidState"))
+
+    code = request.args.get("code")
+    if not code:
+        return _oidc_login_error(_t("login.errors.ssoCancelled", provider=prov.label))
+
+    next_url = session.pop("oauth_next", "/")
+    redirect_uri = prov.redirect_uri(_public_base_url())
+    try:
+        tokens = oidc_auth.exchange_code(prov, code=code, redirect_uri=redirect_uri, code_verifier=verifier)
+        claims = oidc_auth.validate_id_token(prov, tokens["id_token"], nonce=nonce)
+    except oidc_auth.OidcError as exc:
+        logger.warning("oidc[%s] callback: %s", prov.key, exc)
+        return _oidc_login_error(_t("login.errors.ssoFailed", provider=prov.label, reason=isolate(str(exc))))
+
+    profile = oidc_auth.profile_from_claims(claims)
+    if not profile["email"]:
+        return _oidc_login_error(_t("login.errors.ssoNoEmail", provider=prov.label))
+
+    role = oidc_auth.mapped_role(prov, claims)
+    try:
+        user = get_or_create_sso_user(profile["email"], profile["name"] or profile["email"], role=role or "viewer")
+        if role and user.get("role") != role:
+            update_user_role(user["id"], role)
+            logger.info("oidc[%s] login: %s role %s -> %s (provider roles)", prov.key, user["email"], user.get("role"), role)
+            user = {**user, "role": role}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("oidc[%s] login: user provision failed for %s", prov.key, profile["email"])
+        error = _t("login.errors.dbUnavailable")
+        if os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG":
+            error = f"{error} ({exc})"
+        return _oidc_login_error(error, 503)
+
+    if user["status"] != "active":
+        return _oidc_login_error(_t("login.errors.disabled"))
+
+    _write_user_session(user, provider=prov.key)
+    touch_last_active(user["id"])
+    logger.info("oidc[%s] login: %s (%s) authenticated", prov.key, user["email"], user["role"])
     return _redirect_after_login(next_url, user)
 
 

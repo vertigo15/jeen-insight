@@ -57,6 +57,18 @@ jeen-insights-api:
     repository: acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-api
     pullPolicy: IfNotPresent
   env:
+    # The metadata DB is shared with the live Schema Modeler: schema revisions
+    # are applied by the explicit migrate-job.template.yaml Job, never by an
+    # API pod at boot. SCHEMA_BOOTSTRAP_ON_START=false makes the API verify
+    # its baseline objects instead of creating them (no DDL from pods; it
+    # refuses to start with a clear message if the Job has not run). Prompt
+    # seeding at boot stays: rows in Insights' own insights_prompts table.
+    RUN_MIGRATIONS_ON_START: "false"
+    SCHEMA_BOOTSTRAP_ON_START: "false"
+    # Leave the env-var LLM fallback empty so a DB/model problem surfaces as
+    # "unconfigured" instead of silently routing to another environment.
+    AZURE_OPENAI_ENDPOINT: ""
+    AZURE_OPENAI_API_KEY: ""
     ML_SKILLS_ENABLED: "true"
     ANALYSIS_RUNNER: sandbox
     ANALYSIS_SANDBOX_URL: http://jeen-insights-analytics:8100
@@ -117,10 +129,33 @@ jeen-insights-ui:
     # must not be marked Secure.
     PUBLIC_APP_URL: http://jeen-insights.dev161.internal
     SESSION_COOKIE_SECURE: "false"
-    # Local accounts for the first deployment; Entra/Keycloak SSO later.
+    # Direct Entra (MSAL) sign-in is off; Entra users arrive through Keycloak.
     AZURE_AD_CLIENT_ID: ""
     AZURE_AD_TENANT_ID: ""
     AZURE_AD_REDIRECT_URI: ""
+    # SSO through the cluster's identity providers, the same two Schema Modeler
+    # uses. Client secrets live in jeen-insights-secrets
+    # (OIDC_KEYCLOAK_CLIENT_SECRET / OIDC_ZITADEL_CLIENT_SECRET). Keycloak realm
+    # "defence" brokers Entra ID; the IdP hint sends the button straight there.
+    OIDC_PROVIDERS: keycloak,zitadel
+    OIDC_KEYCLOAK_ISSUER: https://keycloak.dev161.internal/realms/defence
+    OIDC_KEYCLOAK_CLIENT_ID: jeen-insights
+    OIDC_KEYCLOAK_LABEL: Keycloak (Entra ID)
+    OIDC_KEYCLOAK_IDP_HINT: entra-id
+    OIDC_ZITADEL_ISSUER: https://zitadel.dev161.internal
+    OIDC_ZITADEL_CLIENT_ID: "391605544550400671"
+    OIDC_ZITADEL_LABEL: Zitadel
+    # Both providers present certificates from a private CA (see the
+    # jeen-insights-idp-ca ConfigMap, built from their TLS secrets).
+    OIDC_CA_BUNDLE: /etc/jeen/idp-ca/ca-bundle.pem
+  extraVolumes:
+    - name: idp-ca
+      configMap:
+        name: jeen-insights-idp-ca
+  extraVolumeMounts:
+    - name: idp-ca
+      mountPath: /etc/jeen/idp-ca
+      readOnly: true
   service:
     port: 80
     type: LoadBalancer

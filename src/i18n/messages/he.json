@@ -71,6 +71,7 @@
     "pageTitle": "התחברות — Jeen Insights",
     "subtitle": "התחברו לסביבת העבודה שלכם",
     "microsoft": "התחברות עם Microsoft",
+    "continueWith": "המשך עם {provider}",
     "or": "או",
     "emailLabel": "אימייל / שם משתמש",
     "emailPlaceholder": "admin",
@@ -91,7 +92,10 @@
       "dbUnavailable": "ההתחברות אינה זמינה כרגע (שגיאת מסד נתונים).",
       "dbUnreachable": "לא ניתן להגיע למסד הנתונים של המטא-דאטה. בדקו את הרשת או ה-VPN, וודאו שכתובת ה-IP שלכם מורשית בחומת האש של Azure Postgres.",
       "dbAuthFailed": "אימות מול מסד הנתונים נכשל. בדקו את METADATA_DB_USER / METADATA_DB_PASSWORD.",
-      "dbTablesMissing": "טבלאות ההתחברות חסרות. הריצו: python scripts/run_insights_migrations.py"
+      "dbTablesMissing": "טבלאות ההתחברות חסרות. הריצו: python scripts/run_insights_migrations.py",
+      "ssoFailed": "ההתחברות עם {provider} נכשלה: {reason}",
+      "ssoCancelled": "ההתחברות עם {provider} בוטלה.",
+      "ssoNoEmail": "לחשבון {provider} שלכם אין כתובת אימייל."
     }
   },
   "setup": {

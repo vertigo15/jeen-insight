@@ -72,4 +72,9 @@ autoscaling:
   maxReplicas: 3
   targetCPUUtilizationPercentage: 70
 
+# Extra pod volumes / container mounts, e.g. a ConfigMap holding the private-CA
+# bundle of internal identity providers (see OIDC_CA_BUNDLE).
+extraVolumes: []
+extraVolumeMounts: []
+
 env: {}

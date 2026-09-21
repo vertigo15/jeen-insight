@@ -112,6 +112,38 @@ the UI's streaming insight responses.
   a read-only root filesystem, bounded `/tmp`, and startup/liveness/readiness
   probes.
 
+## Schema migrations on a shared metadata DB
+
+The API image defaults to `RUN_MIGRATIONS_ON_START=false`, and the defence
+overlay pins it explicitly: on a metadata database shared with a live Schema
+Modeler, the Insights revisions (`db/migrations/insights/*.sql`) are applied
+once by an operator-run Job rather than by whichever API pod boots first.
+Render `migrate-job.template.yaml` with the release image and tag, apply it
+before the first `helm upgrade --install` of a new tag, and read its log:
+
+```sh
+IMAGE=acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-api
+TAG=<release-tag>
+sed -e "s|__IMAGE__|$IMAGE|g" -e "s|__TAG__|$TAG|g" \
+  deployment/k8s_dev/migrate-job.template.yaml > /tmp/migrate-job.yaml
+kubectl --namespace jeen-insights apply -f /tmp/migrate-job.yaml
+kubectl --namespace jeen-insights wait --for=condition=complete \
+  job/jeen-insights-migrate-$TAG --timeout=15m
+kubectl --namespace jeen-insights logs job/jeen-insights-migrate-$TAG
+```
+
+The runner bounds its own waits (`MIGRATION_LOCK_WAIT_SECONDS`,
+`MIGRATION_LOCK_TIMEOUT`, `MIGRATION_STATEMENT_TIMEOUT`, all validated as
+positive and finite) so it fails fast instead of queuing behind another
+session, pins `search_path` to `public`, and only ever creates or
+alters Insights-owned objects (`insights_*`, `connector*`, `auth_users`,
+`app_settings`).
+
+With `SCHEMA_BOOTSTRAP_ON_START=false` (set in the defence overlay) the API
+pods issue no DDL at all: at boot they verify the baseline tables and columns
+exist and refuse to start with a clear message when the Job has not run.
+Prompt seeding at boot stays (rows in Insights' own `insights_prompts`).
+
 ## Validate and deploy
 
 Override both images with the immutable tag built for the release:

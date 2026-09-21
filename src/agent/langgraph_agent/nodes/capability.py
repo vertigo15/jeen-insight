@@ -37,35 +37,115 @@ _SKILL_EXAMPLES: Dict[str, str] = {
     "experiment_test": "did variant B beat variant A?",
 }
 
+# One short "use when …" clause per skill — the guidance the user asked for
+# ("when to use them"). Keyed by skill name; kept in lockstep with the registry
+# (a test asserts the key set equals ``SKILLS``).
+_SKILL_WHEN: Dict[str, str] = {
+    "anomaly_detection": "a metric may have unusual spikes or drops you want flagged",
+    "forecast": "you want to project a measure into the future",
+    "changepoint": "you need to know when a trend shifted",
+    "seasonality": "you want to find recurring cycles or peak periods",
+    "correlation": "you want to see whether two measures move together (including at a lag)",
+    "contribution": "you need to explain what drove a change between two periods",
+    "clustering": "you want to segment entities into natural groups",
+    "driver_analysis": "you want to rank what predicts a target",
+    "regression": "you want a quantified, interpretable effect of features on a numeric outcome",
+    "classification": "you want to predict a yes/no outcome and see its drivers",
+    "cohort_retention": "you want to measure retention by signup cohort over time",
+    "experiment_test": "you want to compare two A/B arms for a significant difference",
+}
+
+# The algorithm behind each skill that has no user-selectable ``method`` field.
+# Skills that DO expose a method (forecast, anomaly_detection, clustering,
+# driver_analysis) derive their algorithm list from ``method_options`` +
+# ``METHOD_LABELS`` instead, so those never drift from the contract.
+_SKILL_ALGORITHM: Dict[str, str] = {
+    "changepoint": "PELT (ruptures) on the de-seasonalised trend",
+    "seasonality": "MSTL / STL decomposition",
+    "correlation": "Pearson correlation across lags + Granger (scipy)",
+    "contribution": "arithmetic delta decomposition (Adtributor-style)",
+    "regression": "OLS linear regression (statsmodels)",
+    "classification": "logistic regression (statsmodels Logit)",
+    "cohort_retention": "SQL aggregation (no model)",
+    "experiment_test": "two-proportion z-test / Welch's t-test (scipy)",
+}
+
+# ``family`` is a data-shape concept; these labels are the category we present it
+# as (it happens to align with how the skills group for a user).
+_CATEGORY_BY_FAMILY: Dict[str, str] = {
+    "series": "Time series",
+    "contribution": "Change decomposition",
+    "entity": "Entity / row-level",
+    "cohort": "Cohort",
+    "experiment": "Experiment (A/B)",
+}
+_CATEGORY_ORDER = ["Time series", "Change decomposition", "Cohort", "Experiment (A/B)", "Entity / row-level"]
+# Egress tier, shown so the user knows what leaves the database per category.
+_TIER_NOTE = {"A": "aggregates only", "B": "row-level, capped"}
+
+
+def _skill_algorithm(name: str) -> str:
+    """The algorithm(s) behind a skill.
+
+    For a skill with a selectable ``method``, the labels come straight from the
+    contract (``method_options`` + ``METHOD_LABELS``) so they never drift; for a
+    method-less skill they come from ``_SKILL_ALGORITHM``.
+    """
+    from src.analysis.contracts import METHOD_LABELS, method_options  # noqa: PLC0415
+
+    methods = method_options(name)
+    if methods:
+        return " / ".join(METHOD_LABELS.get(m, m) for m in methods)
+    return _SKILL_ALGORITHM.get(name, "")
+
 
 def build_skill_catalog() -> str:
-    """A markdown bullet per registered skill: title, description, an example.
+    """A markdown catalog grouped by category, one bullet per registered skill
+    with its algorithm and when to use it.
 
     Reads ``SKILLS`` at call time so a newly-registered skill appears here for
-    free (single source of truth).
+    free (single source of truth), and derives selectable methods from the
+    contract so the algorithm list cannot drift.
     """
     from src.analysis.contracts import SKILLS  # noqa: PLC0415
 
-    lines = []
+    groups: Dict[str, list] = {}
+    tier_of: Dict[str, str] = {}
     for name, spec in SKILLS.items():
-        line = f"- **{spec.title}** - {spec.description}"
+        category = _CATEGORY_BY_FAMILY.get(spec.family, "Other")
+        tier_of.setdefault(category, spec.tier)
+        when = _SKILL_WHEN.get(name, spec.description)
+        line = f"- **{spec.title}** — algorithm: {_skill_algorithm(name)}. Use when {when}"
         example = _SKILL_EXAMPLES.get(name)
         if example:
             line += f' e.g. "{example}"'
-        lines.append(line)
-    return "\n".join(lines)
+        groups.setdefault(category, []).append(line)
+
+    ordered = [c for c in _CATEGORY_ORDER if c in groups]
+    ordered += [c for c in groups if c not in ordered]
+    blocks = []
+    for category in ordered:
+        note = _TIER_NOTE.get(tier_of.get(category, ""), "")
+        header = f"**{category}**" + (f" ({note})" if note else "")
+        blocks.append(header + "\n" + "\n".join(groups[category]))
+    return "\n\n".join(blocks)
 
 
 def _static_answer(display: str) -> str:
-    """Fallback used only if the LLM call fails, so the user still gets help."""
+    """Fallback used only if the LLM call fails, so the user still gets help.
+
+    Built from ``build_skill_catalog`` so the enriched, grouped list (algorithm +
+    when to use) is shown even when the model call fails.
+    """
     return (
         f"I'm Jeen Insights, an AI data analyst for {display}. Ask a data question in "
         "plain language and I'll write and run a read-only SQL query, or run a validated "
-        "analytics/ML skill (anomaly detection, forecast, changepoint, seasonality, "
-        "correlation, contribution, clustering, driver analysis, regression, classification, "
-        "cohort retention, A/B test). Before an ML skill runs I show a confirm card where you "
-        "can change parameters and the model (for example anomaly detection: auto or 3-sigma; "
-        "forecast: ARIMA/ETS/theta/drift/seasonal-naive) - or just say it, e.g. \"flag anomalies in "
+        "analytics/ML skill. The skills, by category, with the algorithm behind each and "
+        "when to use it:\n\n"
+        f"{build_skill_catalog()}\n\n"
+        "Before an ML skill runs I show a confirm card where you can change parameters and the "
+        "model (for example anomaly detection: auto/seasonal/trend/3-sigma; forecast: "
+        "ARIMA/ETS/theta/drift/seasonal-naive) - or just say it, e.g. \"flag anomalies in "
         "profit using 3-sigma\". A finished analysis has Edit setup in its status strip to reopen "
         "that card and re-run with a different model or other parameters."
     )

@@ -37,7 +37,7 @@ from src.agent.langgraph_agent.nodes.memory_answer import (
     on_memory_branch,
 )
 from src.agent.langgraph_agent.nodes.output import response_formatter
-from src.agent.langgraph_agent.nodes.router import make_fused_router
+from src.agent.langgraph_agent.nodes.router import ROUTE_SOURCE_CAPABILITY_CUE, make_fused_router
 from src.agent.langgraph_agent.nodes.sql_gen import _extract_sql
 from src.agent.snapshot_sql import MEMORY_SQL_MARKER
 from src.agent.langgraph_agent.nodes.validation import make_dlp_check, make_sqlglot_validate
@@ -337,6 +337,86 @@ class TestFusedRouter:
                  "llm_call_count": 0, "llm_latency_ms": 0, "token_usage": {}}
         result = await router(state)
         assert result["route"] == "needs_query"
+
+    # ── capability cue: rescue a misrouted "which ML models can I use?" ─────────
+    @pytest.mark.asyncio
+    async def test_capability_cue_rescues_out_of_scope(self, mock_llm, prompt_loader):
+        mock_llm.generate.return_value = {
+            "content": json.dumps({"route": "out_of_scope", "reason": "looks off-topic"}),
+            "finish_reason": "stop", "usage": {},
+        }
+        router = make_fused_router(mock_llm, prompt_loader)
+        state = {"question": "which ML models can I use?", "connection_display_name": "DB",
+                 "llm_call_count": 0, "llm_latency_ms": 0, "token_usage": {}}
+        result = await router(state)
+        assert result["route"] == "capability"
+        assert result["route_source"] == ROUTE_SOURCE_CAPABILITY_CUE
+
+    @pytest.mark.asyncio
+    async def test_capability_cue_rescues_needs_query(self, mock_llm, prompt_loader):
+        mock_llm.generate.return_value = {
+            "content": json.dumps({"route": "needs_query", "reason": "thought it was data"}),
+            "finish_reason": "stop", "usage": {},
+        }
+        router = make_fused_router(mock_llm, prompt_loader)
+        state = {"question": "what analyses can you run?", "connection_display_name": "DB",
+                 "llm_call_count": 0, "llm_latency_ms": 0, "token_usage": {}}
+        result = await router(state)
+        assert result["route"] == "capability"
+        assert result["route_source"] == ROUTE_SOURCE_CAPABILITY_CUE
+
+    @pytest.mark.asyncio
+    async def test_capability_cue_rescues_bad_json_default(self, mock_llm, prompt_loader):
+        # A parse failure defaults to needs_query; the strict cue still rescues it.
+        mock_llm.generate.return_value = {"content": "not json at all", "finish_reason": "stop", "usage": {}}
+        router = make_fused_router(mock_llm, prompt_loader)
+        state = {"question": "which machine learning algorithms are available?", "connection_display_name": "DB",
+                 "llm_call_count": 0, "llm_latency_ms": 0, "token_usage": {}}
+        result = await router(state)
+        assert result["route"] == "capability"
+
+    @pytest.mark.asyncio
+    async def test_off_topic_stays_out_of_scope(self, mock_llm, prompt_loader):
+        mock_llm.generate.return_value = {
+            "content": json.dumps({"route": "out_of_scope", "reason": "unrelated"}),
+            "finish_reason": "stop", "usage": {},
+        }
+        router = make_fused_router(mock_llm, prompt_loader)
+        state = {"question": "what's the weather in Paris tomorrow?", "connection_display_name": "DB",
+                 "llm_call_count": 0, "llm_latency_ms": 0, "token_usage": {}}
+        result = await router(state)
+        assert result["route"] == "out_of_scope"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("question", [
+        "which product models sold best in 2008?",
+        "sales by product model",
+    ])
+    async def test_data_question_with_model_word_stays_query(self, mock_llm, prompt_loader, question):
+        # "model" is a product attribute here — the cue must NOT hijack it.
+        mock_llm.generate.return_value = {
+            "content": json.dumps({"route": "needs_query", "reason": "aggregate lookup"}),
+            "finish_reason": "stop", "usage": {},
+        }
+        router = make_fused_router(mock_llm, prompt_loader)
+        state = {"question": question, "connection_display_name": "DB",
+                 "llm_call_count": 0, "llm_latency_ms": 0, "token_usage": {}}
+        result = await router(state)
+        assert result["route"] == "needs_query"
+
+    @pytest.mark.asyncio
+    async def test_memory_about_models_not_hijacked(self, mock_llm, prompt_loader):
+        # A follow-up about a prior answer stays from_memory (not in the override set).
+        mock_llm.generate.return_value = {
+            "content": json.dumps({"route": "from_memory", "reason": "about a prior answer", "prior_refs": ["T1"]}),
+            "finish_reason": "stop", "usage": {},
+        }
+        router = make_fused_router(mock_llm, prompt_loader)
+        state = {"question": "what did you say about those models?", "connection_display_name": "DB",
+                 "conversation_history": self._HISTORY,
+                 "llm_call_count": 0, "llm_latency_ms": 0, "token_usage": {}}
+        result = await router(state)
+        assert result["route"] == "from_memory"
 
     _HISTORY = [
         {"id": "q1", "natural_language_query": "products and prices", "generated_sql": "SELECT p, price FROM p",

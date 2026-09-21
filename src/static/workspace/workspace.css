@@ -372,6 +372,29 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-trace-ms { color: var(--faint); text-align: end; font-variant-numeric: tabular-nums; direction: ltr; }
 .v3-answer { margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 11px; }
 .v3-summary { font-size: 14.5px; font-weight: 400; line-height: 1.6; text-align: start; text-wrap: pretty; }
+
+/* Rendered Markdown answers (capability/catalog help). Scoped so nothing here
+   leaks to the rest of the app. unicode-bidi keeps mixed Hebrew/English lines
+   and model names readable; code/pre are forced LTR. */
+.v3-markdown { font-size: 14.5px; line-height: 1.6; text-align: start; unicode-bidi: plaintext; }
+.v3-markdown > :first-child { margin-top: 0; }
+.v3-markdown > :last-child { margin-bottom: 0; }
+.v3-markdown h2, .v3-markdown h3, .v3-markdown h4 { margin: 14px 0 6px; font-weight: 600; line-height: 1.3; }
+.v3-markdown h2 { font-size: 15.5px; }
+.v3-markdown h3 { font-size: 14.5px; }
+.v3-markdown h4 { font-size: 13.5px; color: var(--muted); }
+.v3-markdown p { margin: 6px 0; }
+.v3-markdown ul, .v3-markdown ol { margin: 6px 0; padding-inline-start: 22px; }
+.v3-markdown li { margin: 3px 0; }
+.v3-markdown li::marker { color: var(--faint); }
+.v3-markdown strong { font-weight: 600; }
+.v3-markdown code { padding: 1px 5px; border-radius: 5px; background: var(--insight-bg); font: 12.5px var(--font-mono); direction: ltr; unicode-bidi: isolate; }
+.v3-markdown pre { margin: 8px 0; padding: 10px 12px; overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); direction: ltr; unicode-bidi: isolate; }
+.v3-markdown pre code { padding: 0; background: none; }
+.v3-markdown blockquote { margin: 8px 0; padding: 2px 12px; border-inline-start: 3px solid var(--border2); color: var(--muted); }
+.v3-markdown table { margin: 8px 0; border-collapse: collapse; display: block; max-width: 100%; overflow-x: auto; }
+.v3-markdown th, .v3-markdown td { padding: 5px 10px; border: 1px solid var(--border); text-align: start; unicode-bidi: plaintext; }
+.v3-markdown th { background: var(--insight-bg); font-weight: 600; }
 .v3-insights {
   overflow: hidden;
   padding: 11px 12px 5px;
@@ -490,6 +513,10 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-placeholder { padding: 44px 24px; border: 1px dashed var(--border2); border-radius: 16px; color: var(--muted); text-align: center; }
 .v3-placeholder strong { display: block; margin-bottom: 8px; color: var(--muted); font-size: 15px; font-weight: 400; }
 .v3-placeholder span { color: var(--faint); font-size: 13px; font-weight: 300; }
+/* A rendered Markdown answer in the result pane reads as a document, not a
+   centered hint: left/right-align it and give it normal body colour. */
+.v3-placeholder:has(.v3-markdown) { text-align: start; color: var(--text); }
+.v3-placeholder .v3-markdown { margin-top: 8px; color: var(--text); font-size: 14.5px; font-weight: 400; }
 .v3-placeholder .v3-load-data { display: inline-block; margin-top: 16px; padding: 7px 16px; border: 1px solid var(--text); border-radius: 9999px; background: var(--text); color: var(--bg); font-size: 12.5px; cursor: pointer; }
 .v3-placeholder .v3-load-data:hover { opacity: .9; }
 .v3-data-block[hidden] { display: none; }

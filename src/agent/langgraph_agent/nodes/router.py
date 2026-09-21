@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 _VALID_ROUTES = frozenset({
     "needs_query", "needs_analysis", "from_memory", "history_lookup",
-    "capability", "out_of_scope", "unsafe",
+    "capability", "catalog_help", "out_of_scope", "unsafe",
 })
 _MAX_PRIOR_REFS = 3
 _MAX_HISTORY_KEYWORDS = 6
@@ -83,6 +83,99 @@ _GREETING_ANSWER = (
     "Ask me anything about your data and I'll query it for you."
 )
 
+# ── Capability short-circuit ──────────────────────────────────────────────────
+# "which ML models can I use?", "what can you do?" are questions about THIS
+# assistant, not the data. The router LLM sometimes misfiles them as
+# ``out_of_scope`` (or defaults to ``needs_query`` on a parse failure), which
+# yields the canned refusal instead of the capability answer. A strict
+# deterministic cue corrects that with no extra LLM call.
+#
+# Strict on purpose: a direct "what can you do" phrase, OR *both* an
+# assistant/listing cue and an ML/analysis qualifier must appear. Bare "model"
+# is deliberately NOT a qualifier — in AdventureWorks it is a product attribute,
+# so "which models sold best in 2008?" and "sales by product model" stay data
+# questions. Skill names (forecast, anomaly, …) are not qualifiers either, so
+# "can you forecast revenue?" stays a data/analysis request.
+_CAP_DIRECT_RE = re.compile(
+    r"\bwhat\s+(can|do)\s+(you|this\s+(app|tool|assistant|bot)|jeen)\b(?:\s+\w+){0,3}?\s+do\b"
+    r"|\bwhat\s+are\s+your\s+(capabilit|abilit|feature)"
+    r"|מה\s+(אתה|את)\s+(יכול|יכולה)\s+לעשות",
+    re.IGNORECASE,
+)
+_CAP_OWNERSHIP_RE = re.compile(
+    r"\byou\b|\bthis\s+(app|tool|assistant|bot)\b|\bjeen\b"
+    r"|\bcan\s+(i|we|you|one)\s+(use|run|do|ask|choose|pick|select|try|apply)\b"
+    r"|\b(should|shall|do|does|can)\s+(i|we)\b"
+    r"|\bdo\s+you\s+(offer|support|have|provide)\b"
+    r"|\bavailable\b|\bsupported\b|\bi\s+can\s+use\b"
+    r"|\bאפשר\b|\bאתה\b|\bאני\s+יכול|\bנוכל\b|\bאנחנו\b",
+    re.IGNORECASE,
+)
+_CAP_QUALIFIER_RE = re.compile(
+    r"\bml\b|\bmachine\s+learning\b|\bai\b|\balgorithms?\b|\bskills?\b"
+    r"|\banalys[ie]s\b|\banalytics\b|\bstatistical\b|\bcapabilit"
+    r"|אלגוריתמ|ניתוח|יכולות|מודל",
+    re.IGNORECASE,
+)
+
+
+def detect_capability_intent(question: str) -> bool:
+    """True when the question is about THIS assistant — what it can do or which
+    ML skills/algorithms it offers. Deterministic, no LLM.
+
+    Strict: a direct "what can you do" phrase, or *both* an assistant/listing
+    cue and an ML/analysis qualifier. See the regexes above for why bare
+    "model" and skill names are excluded (they keep data questions data).
+    """
+    text = (question or "").strip()
+    if not text:
+        return False
+    if _CAP_DIRECT_RE.search(text):
+        return True
+    return bool(_CAP_OWNERSHIP_RE.search(text) and _CAP_QUALIFIER_RE.search(text))
+
+
+# ── Catalog-help short-circuit ────────────────────────────────────────────────
+# "what measures/dimensions/fields can I ask about?" is a question about the
+# CATALOG of the connected data source, not a data query. The router LLM tends
+# to send it to needs_query, where the SQL generator answers with unstructured
+# prose. A strict deterministic cue routes it to the catalog_help node, which
+# answers deterministically from the metadata bundle.
+_CATALOG_NOUN_RE = re.compile(
+    r"\b(measures?|metrics?|kpis?|dimensions?|columns?|fields?|tables?|attributes?)\b"
+    r"|מדד|מדדים|מימד|מימדים|עמודות|שדות|טבלאות|מדדים",
+    re.IGNORECASE,
+)
+_CATALOG_LIST_RE = re.compile(
+    r"\b(what|which|list|available|ask\s+about|can\s+i\s+(ask|query|use|see)|do\s+you\s+(have|offer|support)|what\s+can\s+i)\b"
+    r"|אילו|רשימה|אפשר\s+לשאול|מה\s+יש",
+    re.IGNORECASE,
+)
+# A concrete data ask ("… by month", "top 5", "total …") is never catalog help,
+# even if it mentions the word "measures".
+_CATALOG_DATA_RE = re.compile(
+    r"\bby\s+(day|week|month|quarter|year|region|product|customer|category|store)\b"
+    r"|\bper\s+\w+|\btop\s+\d|\b(sum|avg|average|total|count|max|min|median)\b"
+    r"|\blast\s+\d|\bbetween\b|\bin\s+20\d\d\b",
+    re.IGNORECASE,
+)
+
+
+def detect_catalog_help_intent(question: str) -> bool:
+    """True when the question asks which measures/dimensions/fields/tables are
+    available to ask about (catalog listing), not for the data itself.
+
+    Strict: a listing/availability cue AND a catalog noun, and never when the
+    question carries a concrete data ask (aggregation, grain, top-N, a year).
+    """
+    text = (question or "").strip()
+    if not text:
+        return False
+    if _CATALOG_DATA_RE.search(text):
+        return False
+    return bool(_CATALOG_NOUN_RE.search(text) and _CATALOG_LIST_RE.search(text))
+
+
 # Where the final ML-vs-SQL decision came from (surfaced as ``routing.source``).
 ROUTE_SOURCE_LLM = "router_llm"
 ROUTE_SOURCE_CUE = "keyword_cue"
@@ -91,6 +184,8 @@ ROUTE_SOURCE_OVERRIDE = "request_override"
 ROUTE_SOURCE_GREETING = "greeting"
 ROUTE_SOURCE_PLANNER_FALLBACK = "planner_fallback"
 ROUTE_SOURCE_UNCERTAIN = "route_uncertain"
+ROUTE_SOURCE_CAPABILITY_CUE = "capability_cue"
+ROUTE_SOURCE_CATALOG_CUE = "catalog_cue"
 
 # Below this router confidence — with no strong keyword cue — the SQL-vs-ML
 # choice is treated as genuinely ambiguous and the user is asked instead of
@@ -180,6 +275,17 @@ def explain_routing(question: str, *, ml_skills_enabled: bool, analysis_override
         return {"question": q, "would_route": "greeting", "source": ROUTE_SOURCE_GREETING, "skill_hint": None,
                 "ml_skills_enabled": bool(ml_skills_enabled), "analysis_override": analysis_override,
                 "reason": "greeting regex matched; no LLM call, no SQL"}
+    # A question about the assistant itself is neither SQL nor ML; the node's
+    # deterministic capability cue routes it to ``capability`` regardless of the
+    # ML gate, so the dry-run prediction must say the same (no drift).
+    if detect_capability_intent(q):
+        return {"question": q, "would_route": "capability", "source": ROUTE_SOURCE_CAPABILITY_CUE, "skill_hint": None,
+                "ml_skills_enabled": bool(ml_skills_enabled), "analysis_override": analysis_override,
+                "reason": "capability cue: a question about this assistant's own ML skills, not the data"}
+    if detect_catalog_help_intent(q):
+        return {"question": q, "would_route": "catalog_help", "source": ROUTE_SOURCE_CATALOG_CUE, "skill_hint": None,
+                "ml_skills_enabled": bool(ml_skills_enabled), "analysis_override": analysis_override,
+                "reason": "catalog cue: a question about which measures/dimensions/fields are available"}
     if not ml_skills_enabled:
         return {"question": q, "would_route": "needs_query", "source": ROUTE_SOURCE_DISABLED, "skill_hint": None,
                 "ml_skills_enabled": False, "analysis_override": analysis_override,
@@ -336,12 +442,35 @@ def make_fused_router(
         if route == "history_lookup" and history_query is None:
             route, reason = "needs_query", f"{reason} (history_lookup without a query)".strip()
 
-        decision = resolve_ml_route(
-            route, reason, question,
-            confidence=confidence,
-            ml_skills_enabled=ml_skills_enabled,
-            analysis_override=state.get("analysis_enabled_override"),
-        )
+        # Capability backstop: the router sometimes misfiles "which ML models can
+        # I use?" as out_of_scope (or defaults to needs_query on a parse failure),
+        # so a strict deterministic cue rescues it to the capability answer. Only
+        # these two routes are corrected; a data/analysis/memory/unsafe route is
+        # never touched. Handled here (not via resolve_ml_route) so the source is
+        # reported as capability_cue rather than router_llm.
+        if route in ("out_of_scope", "needs_query") and detect_capability_intent(question):
+            decision: Dict[str, Any] = {
+                "route": "capability",
+                "reason": "capability cue: a question about this assistant's own ML skills, not the data",
+                "source": ROUTE_SOURCE_CAPABILITY_CUE,
+                "skill_hint": None,
+                "confidence": confidence,
+            }
+        elif route in ("out_of_scope", "needs_query") and detect_catalog_help_intent(question):
+            decision = {
+                "route": "catalog_help",
+                "reason": "catalog cue: a question about which measures/dimensions/fields are available",
+                "source": ROUTE_SOURCE_CATALOG_CUE,
+                "skill_hint": None,
+                "confidence": confidence,
+            }
+        else:
+            decision = resolve_ml_route(
+                route, reason, question,
+                confidence=confidence,
+                ml_skills_enabled=ml_skills_enabled,
+                analysis_override=state.get("analysis_enabled_override"),
+            )
         route, reason = decision["route"], decision["reason"]
 
         logger.info(

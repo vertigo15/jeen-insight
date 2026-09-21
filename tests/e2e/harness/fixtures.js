@@ -20,6 +20,7 @@
         anomaly: 'Is anything unusual in weekly profit?',
         guard: 'Forecast weekly revenue for a brand-new product line',
         clarify: 'Show the correlation between marketing spend and revenue',
+        capability: 'which ML models can I use?',
         greeting: 'hello',
     };
 
@@ -33,6 +34,7 @@
         [Q.anomaly]: 'anomaly_confirm',
         [Q.guard]: 'forecast_guard',
         [Q.clarify]: 'correlation_clarify',
+        [Q.capability]: 'capability',
         [Q.greeting]: 'greeting',
     };
 
@@ -224,6 +226,36 @@
             ['shipped'], [[128]],
             '128 orders shipped yesterday.',
         ),
+
+        // A capability question ("which ML models can I use?") — no SQL, no ML
+        // run; the capability node answers it. The path is neither ml nor sql so
+        // no route pill renders (like a greeting). The answer is Markdown (the
+        // capability route is on MARKDOWN_ROUTES), and it deliberately embeds an
+        // HTML/XSS payload and a mixed Hebrew+English table row so the spec can
+        // prove the renderer escapes and keeps direction.
+        capability: () => ({
+            question: Q.capability,
+            query_id: 'cap-1', session_id: SESSION,
+            sql: null, results: null,
+            answer: [
+                '## Time Series (aggregates only)',
+                '- **Anomaly detection** Auto / Seasonal (MSTL) / Trend (LOWESS) / 3-sigma — flag unusual spikes or drops',
+                '- **Forecast** Auto ARIMA / Auto ETS / Theta — project a measure into the future',
+                '',
+                'A column like `sales_amount` stays intact. <script>alert(1)</script>',
+                '',
+                '| Skill | אלגוריתם |',
+                '|-------|----------|',
+                '| Clustering | K-means / HDBSCAN |',
+            ].join('\n'),
+            status: 'completed',
+            routing: { route: 'capability', path: 'capability', source: 'capability_cue', reason: 'question about this assistant\'s ML skills', skill: null },
+            metrics: { route: 'capability' },
+            trace: [
+                { node: 'fused_router', status: 'node_finished', route: 'capability' },
+                { node: 'capability_answer', status: 'node_finished' },
+            ],
+        }),
 
         // Forecast asked with `analysis:false` ("Answer with SQL instead"): the
         // same question comes back as a plain SQL answer.

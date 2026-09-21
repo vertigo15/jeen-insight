@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     METADATA_DB_USER: str
     METADATA_DB_PASSWORD: str
     METADATA_DB_SSL: bool = True
+    # True (default): the API creates/alters its own baseline tables at start-up
+    # so a fresh local database boots without a separate step. False: the API
+    # only verifies the baseline exists and refuses to start with a clear
+    # message when it does not — use this wherever the metadata DB is shared
+    # with a live Schema Modeler, so every schema change goes through the
+    # migration Job (scripts/run_insights_migrations.py).
+    SCHEMA_BOOTSTRAP_ON_START: bool = True
 
     # Application Settings
     APP_HOST: str = "0.0.0.0"
