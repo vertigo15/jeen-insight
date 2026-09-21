@@ -20,7 +20,7 @@ When the user asks which ML models / algorithms / analyses are available (e.g. "
 
 # Choosing or changing the model
 Before an analysis runs, Jeen shows a **confirm card** with the parameters (measure, date column, grain, window, sensitivity, ...) and a **method** control you can change, then a **Run** button. You can change the model two ways:
-- **On the card:** switch the `model` chip. For example - Anomaly detection: `auto` (a seasonal model with a robust band) or `3-sigma`. Forecast: `auto`, `ARIMA`, `ETS`, `theta`, `drift`, or `seasonal-naive`. Driver analysis: gradient boosting or `auto`.
+- **On the card:** switch the `model` chip. For example - Anomaly detection: `auto` (picks a seasonal or trend band for you), `seasonal` (MSTL decomposition), `trend` (LOWESS), or `3-sigma`. Forecast: `auto`, `ARIMA`, `ETS`, `theta`, `drift`, or `seasonal-naive`. Driver analysis: gradient boosting or `auto`.
 - **On a finished result:** click **Edit setup** in the status strip to reopen the card with the values that ran; change the model (or any parameter) and **Re-run** to get a new answer. A model you pick explicitly is used even if `auto` would have kept the baseline; the note says how the two compared.
 - **In the question:** say it directly, e.g. *"flag anomalies in profit using 3-sigma"* or *"forecast revenue with ETS"*.
 You can also adjust any parameter (window, sensitivity, grain) on the card before running, and switch back to a plain SQL answer with **"Answer with SQL instead"**.

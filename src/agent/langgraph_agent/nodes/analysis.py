@@ -198,7 +198,8 @@ _G_DATA, _G_MODEL, _G_OUTPUT, _G_COMPARE, _G_COHORT, _G_TEST = "Data", "Model", 
 _GRAIN_LABELS = {"day": "Day", "week": "Week", "month": "Month"}
 _METHOD_HELP = {
     "forecast": "Auto cross-validates the shortlist and keeps the baseline unless a model beats it.",
-    "anomaly_detection": "Auto is a robust seasonal band; 3-sigma is mean ± 3 standard deviations.",
+    "anomaly_detection": ("Auto picks a seasonal or trend band for you; Seasonal forces the MSTL "
+                          "decomposition, Trend forces the LOWESS trend, 3-sigma is mean ± 3 standard deviations."),
     "clustering": "K-means needs a segment count; HDBSCAN finds it from density.",
     "driver_analysis": "Auto fits every available engine and keeps the best held-out R².",
 }

@@ -80,7 +80,7 @@ def test_forecast_window_is_a_real_bounded_patchable_parameter():
 def test_method_options_come_from_the_params_model():
     # One source for the confirm-card chip and the result strip's model selector.
     assert method_options("forecast") == ["auto", "auto_arima", "auto_ets", "theta", "drift", "seasonal_naive"]
-    assert method_options("anomaly_detection") == ["auto", "sigma3"]
+    assert method_options("anomaly_detection") == ["auto", "seasonal", "trend", "sigma3"]
     assert method_options("clustering") == ["kmeans", "hdbscan"]
     assert method_options("driver_analysis") == ["hgb", "xgboost", "lightgbm", "auto"]
     assert method_options("changepoint") == [] and method_options("experiment_test") == []

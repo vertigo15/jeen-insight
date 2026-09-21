@@ -71,6 +71,47 @@ def test_anomaly_detection_sigma3_is_labelled_non_robust():
     assert env.details.params_used["k"] == 3.0
 
 
+def test_anomaly_detection_seasonal_method_forces_mstl_and_reports_it():
+    idx, y = seasonal_series(n=130, grain="week", anomalies=(40, 88))
+    env = _run("anomaly_detection", {"series": series_request(), "method": "seasonal"}, to_payload(idx, y))
+    assert "MSTL" in env.method_used
+    assert env.details.seasonal_periods == [52]
+    assert env.facts["seasonal_detected"] is True and env.facts["seasonal_modelled"] is True
+    assert {idx[40].date().isoformat(), idx[88].date().isoformat()} <= {f["ts"] for f in env.facts["flagged"]}
+    assert any("detected" in c and "modelled" in c for c in env.caveats)
+
+
+def test_anomaly_detection_trend_method_ignores_a_confirmed_season():
+    idx, y = seasonal_series(n=130, grain="week", anomalies=(40,))
+    env = _run("anomaly_detection", {"series": series_request(), "method": "trend"}, to_payload(idx, y))
+    assert "LOWESS" in env.method_used
+    # The season is still reported as detected, even though this model skips it.
+    assert env.details.seasonal_periods == [52]
+    assert env.facts["seasonal_detected"] is True and env.facts["seasonal_modelled"] is False
+    assert any("detected" in c and "ignores it" in c for c in env.caveats)
+
+
+def test_anomaly_detection_seasonal_method_uses_unconfirmed_candidate():
+    # White noise long enough to test the 52-week candidate but with no real
+    # season: an explicit seasonal choice still decomposes on the candidate.
+    idx, y = white_noise(n=110, grain="week")
+    env = _run("anomaly_detection", {"series": series_request(), "method": "seasonal"}, to_payload(idx, y))
+    assert "MSTL" in env.method_used
+    assert env.details.seasonal_periods == []  # nothing was confirmed
+    assert env.facts["seasonal_detected"] is False and env.facts["seasonal_modelled"] is True
+    assert any("candidate was used" in c for c in env.caveats)
+
+
+def test_anomaly_detection_seasonal_method_falls_back_without_a_testable_period():
+    # 30 weeks is below the 105 needed to test a 52-week season: no candidate,
+    # so the forced seasonal request degrades to a trend and says why.
+    idx, y = seasonal_series(n=30, grain="week", amplitude=0, anomalies=(12,), anomaly_factor=1.6)
+    env = _run("anomaly_detection", {"series": series_request(), "method": "seasonal"}, to_payload(idx, y))
+    assert "LOWESS" in env.method_used
+    assert env.facts["seasonal_modelled"] is False
+    assert any("no testable" in n for n in env.details.notes)
+
+
 def test_anomaly_detection_series_with_negatives_uses_no_wape():
     idx, y = seasonal_series(n=40, grain="week", level=0, amplitude=500, slope=0)
     assert (y < 0).any()

@@ -122,9 +122,16 @@ class AnomalyParams(BaseModel):
     """ANOMALY_DETECTION — tier A.
 
     ``sensitivity`` is the share of history expected to sit inside the band:
-    0.95 flags roughly one point in twenty. ``sigma3`` is kept as an explicit,
-    labelled non-robust alternative; ``auto`` is MSTL residuals with a robust
-    (MAD) scale thresholded at the empirical quantile implied by sensitivity.
+    0.95 flags roughly one point in twenty.
+
+    ``method`` picks the expected line the residual band is built around:
+    ``auto`` uses MSTL when a season is confirmed and a robust LOWESS trend
+    otherwise; ``seasonal`` forces the MSTL seasonal decomposition (falling back
+    to a trend only when no period is testable); ``trend`` forces the LOWESS
+    trend. All three scale the residuals with a robust (MAD) estimate and set
+    the band at the quantile implied by ``sensitivity``. ``sigma3`` is the
+    explicit, labelled non-robust alternative: ``±3σ`` on the same residuals,
+    ignoring ``sensitivity``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -132,7 +139,7 @@ class AnomalyParams(BaseModel):
     series: SeriesRequest
     window: Optional[int] = Field(default=None, ge=12, le=1500)
     sensitivity: float = Field(default=0.95, ge=0.80, le=0.99)
-    method: Literal["auto", "sigma3"] = "auto"
+    method: Literal["auto", "seasonal", "trend", "sigma3"] = "auto"
 
 
 class ForecastParams(BaseModel):
@@ -818,7 +825,8 @@ def method_options(skill: str) -> List[str]:
 # chip's ``help``, never in the option text (it has to fit a 190px control).
 METHOD_LABELS: Dict[str, str] = {
     "auto": "Auto", "auto_arima": "Auto ARIMA", "auto_ets": "Auto ETS", "theta": "Theta", "drift": "Drift",
-    "seasonal_naive": "Seasonal naive", "sigma3": "3-sigma", "kmeans": "K-means", "hdbscan": "HDBSCAN",
+    "seasonal_naive": "Seasonal naive", "seasonal": "Seasonal (MSTL)", "trend": "Trend (LOWESS)",
+    "sigma3": "3-sigma", "kmeans": "K-means", "hdbscan": "HDBSCAN",
     "hgb": "Gradient boosting", "xgboost": "XGBoost", "lightgbm": "LightGBM",
 }
 AGG_LABELS: Dict[str, str] = {"sum": "Sum", "count": "Count", "avg": "Average", "min": "Minimum", "max": "Maximum"}

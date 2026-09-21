@@ -29,7 +29,7 @@ Every skill declares how much data leaves the database into the sandboxed analyt
 
 | Skill | What it does | Say something like | Engine / algorithm | Tier |
 |-------|--------------|--------------------|--------------------|------|
-| **Anomaly detection** | Flags periods that fall outside the range a seasonal model expected. | "Flag unusual spikes or drops in daily sales" · "Is anything weird in profit?" | statsmodels **MSTL** decomposition + robust (MAD) residual band; `sigma3` alternative | A |
+| **Anomaly detection** | Flags periods that fall outside the range a seasonal or trend model expected. | "Flag unusual spikes or drops in daily sales" · "Is anything weird in profit?" | statsmodels **MSTL** decomposition or **LOWESS** trend + robust (MAD) residual band; `sigma3` alternative | A |
 | **Forecast** | Cross-validates a shortlist of models and projects the measure forward. | "Forecast revenue for the next 6 months" | **statsforecast** — AutoARIMA / AutoETS / Theta / Drift / SeasonalNaive, rolling-origin CV | A |
 | **Changepoint detection** | Finds where the series' underlying level shifted. | "When did the trend in orders shift?" | **ruptures PELT** on the de-seasonalised trend | A |
 | **Seasonality** | Decomposes into trend / seasonal cycle / remainder; reports strength, peaks, troughs. | "Is there a seasonal pattern in sales?" | statsmodels **MSTL/STL** decomposition | A |
@@ -48,7 +48,7 @@ Some skills expose a model you can pick — the **Model** field in the card's Mo
 
 | Skill | Parameter | Options (default first) — shown as |
 |-------|-----------|-------------------------------------|
-| Anomaly detection | `method` | `auto` (MSTL + robust MAD band) — Auto · `sigma3` (mean ± 3σ) — 3-sigma |
+| Anomaly detection | `method` | `auto` (MSTL or LOWESS + robust MAD band) — Auto · `seasonal` (force MSTL) — Seasonal (MSTL) · `trend` (force LOWESS) — Trend (LOWESS) · `sigma3` (mean ± 3σ) — 3-sigma |
 | Forecast | `method` | `auto` — Auto · `auto_arima` — Auto ARIMA · `auto_ets` — Auto ETS · `theta` — Theta · `drift` — Drift · `seasonal_naive` — Seasonal naive |
 | Clustering | `method` | `kmeans` — K-means · `hdbscan` — HDBSCAN |
 | Driver analysis | `method` | `hgb` — Gradient boosting · `xgboost` — XGBoost · `lightgbm` — LightGBM · `auto` — Auto |
