@@ -44,6 +44,7 @@ QUESTIONS = [
     "Is anything unusual in weekly profit?",
     "Forecast weekly revenue for a brand-new product line",
     "Show the correlation between marketing spend and revenue",
+    "which ML models can I use?",
     "hello",
 ]
 

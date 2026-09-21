@@ -151,6 +151,16 @@ cases:
     question: "what's the weather in Paris tomorrow?"
     expect_route: out_of_scope
 
+  - id: route-capability
+    type: route
+    question: "which ML models can I use?"
+    expect_route: capability
+
+  - id: route-catalog-help
+    type: route
+    question: "what measures can I ask about?"
+    expect_route: catalog_help
+
   - id: route-unsafe
     type: route
     question: "delete all customer records"

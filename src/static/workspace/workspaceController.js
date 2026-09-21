@@ -39,6 +39,7 @@
         history_search: 'memory',
         fused_router: 'router',
         capability_answer: 'router',
+        catalog_help_answer: 'catalog',
         catalog_lookup: 'catalog',
         prior_data_binder: 'catalog',
         prompt_builder: 'catalog',
@@ -91,6 +92,25 @@
         const rtlCount = (text.match(/[\u0590-\u05ff\u0600-\u08ff]/g) || []).length;
         const ltrCount = (text.match(/[A-Za-z\u00c0-\u02af]/g) || []).length;
         return rtlCount > ltrCount ? 'rtl' : 'ltr';
+    }
+
+    // Producers whose text answer is trusted to be Markdown (rendered as safe,
+    // formatted HTML). Everything else stays escaped plain text so a stray * or #
+    // from user/DB data is never reformatted. Keyed by the turn's route, which is
+    // present live (routing.route) and after reload (metrics.route).
+    const MARKDOWN_ROUTES = new Set(['capability', 'catalog_help']);
+    function routeOf(result) {
+        const r = result || {};
+        return (r.routing && r.routing.route) || (r.metrics && r.metrics.route) || '';
+    }
+    // A string answer from an allowlisted route is rendered as Markdown; fragment
+    // arrays (eval summaries) and every other producer keep the escaped path.
+    function wantsMarkdown(result) {
+        return !!(result && typeof result.answer === 'string'
+            && MARKDOWN_ROUTES.has(routeOf(result)) && window.MarkdownLite);
+    }
+    function markdownDiv(src) {
+        return `<div class="v3-markdown" dir="${directionOf(src)}">${window.MarkdownLite.render(src)}</div>`;
     }
 
     function formatMs(ms) {
@@ -1501,7 +1521,7 @@
                 <span>${esc(item.node)}</span><span class="v3-trace-note">${esc(safeTraceNote(item))}</span>
                 <span class="v3-trace-ms">${formatMs(item.elapsed_ms)}</span></div>`).join('')}</div>` : ''}
               <div class="v3-answer">
-                ${summary ? `<div class="v3-summary" dir="${directionOf(summary)}">${esc(summary)}</div>` : ''}
+                ${summary ? (wantsMarkdown(result) ? markdownDiv(summary) : `<div class="v3-summary" dir="${directionOf(summary)}">${esc(summary)}</div>`) : ''}
                 ${findings.length ? `<section class="v3-insights" aria-label="${h('conversation.turn.keyInsights')}" dir="${insightsDirection}">
                   <div class="v3-insights-title"><span class="v3-insights-mark" aria-hidden="true">✦</span>${h('conversation.turn.keyInsights')}</div>
                   <div class="v3-insights-list">${findings.map((finding, index) => `<div class="v3-finding">
@@ -2038,7 +2058,10 @@
                 document.getElementById('v3-meta-row').innerHTML = `
                   <span class="v3-status">${h('conversation.text.answered')}</span>
                   <span class="v3-result-meta">${h('conversation.text.textAnswer')}${turn.restored ? ` · ${h('conversation.restored.restored')}` : ''}</span>`;
-                placeholder.innerHTML = `<strong>${h('conversation.text.answer')}</strong><span dir="${directionOf(answer)}">${esc(answer || t('conversation.text.noDataNeeded'))}</span>`;
+                const answerBody = wantsMarkdown(data)
+                    ? markdownDiv(answer)
+                    : `<span dir="${directionOf(answer)}">${esc(answer || t('conversation.text.noDataNeeded'))}</span>`;
+                placeholder.innerHTML = `<strong>${h('conversation.text.answer')}</strong>${answerBody}`;
             }
             placeholder.hidden = false;
             this._hideDefinition();

@@ -45,7 +45,12 @@
         const t = routingTruth()[question];
         if (!t) return result;
         const wr = t.would_route;
-        const path = wr === 'needs_analysis' ? 'ml' : wr === 'greeting' ? 'greeting' : 'sql';
+        // Mirror response_formatter: path is 'ml' for analysis, 'sql' for a data
+        // query, and the route name itself for everything else (capability,
+        // greeting, …) so the visible path badge matches production.
+        const path = wr === 'needs_analysis'
+            ? 'ml'
+            : (wr === 'needs_query' || wr === 'router_decides') ? 'sql' : wr;
         const route = wr === 'router_decides' ? 'needs_query' : wr;
         result.routing = { route, path, source: t.source, reason: t.reason, skill: t.skill_hint };
         return result;

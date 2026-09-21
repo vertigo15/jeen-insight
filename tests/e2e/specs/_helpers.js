@@ -12,6 +12,7 @@ const Q = {
   anomaly: 'Is anything unusual in weekly profit?',
   guard: 'Forecast weekly revenue for a brand-new product line',
   clarify: 'Show the correlation between marketing spend and revenue',
+  capability: 'which ML models can I use?',
   greeting: 'hello',
 };
 

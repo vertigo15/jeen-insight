@@ -8,6 +8,7 @@ const { Q, openHarness, ask, lastTurn, routingTruth } = require('./_helpers');
 function expectedPath(wouldRoute) {
   if (wouldRoute === 'needs_analysis') return 'ml';
   if (wouldRoute === 'greeting') return 'greeting';
+  if (wouldRoute === 'capability') return 'capability';
   return 'sql'; // needs_query and router_decides both surface as SQL at run time
 }
 
@@ -20,6 +21,7 @@ const CASES = [
   ['ML: anomaly cue', Q.anomaly],
   ['ML: forecast cue (short history)', Q.guard],
   ['ML: correlation cue', Q.clarify],
+  ['capability: which ML models', Q.capability],
   ['greeting', Q.greeting],
 ];
 
@@ -37,7 +39,7 @@ for (const [name, question] of CASES) {
     } else if (predicted === 'sql') {
       await expect(turn.locator('.v3-route-pill.is-sql')).toHaveText('SQL');
     } else {
-      // Greetings never SQL and never an ML card: no path pill at all.
+      // Greetings and capability answers never SQL and never an ML card: no path pill.
       await expect(turn.locator('.v3-route-pill')).toHaveCount(0);
     }
   });

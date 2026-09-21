@@ -38,6 +38,12 @@ window.__ROUTING_TRUTH__ = {
       "skill_hint": "correlation",
       "reason": "strong keyword cue for correlation: routed to ML even if the router LLM says SQL (the planner may still hand it back to SQL when no catalog table fits)"
     },
+    "which ML models can I use?": {
+      "would_route": "capability",
+      "source": "capability_cue",
+      "skill_hint": null,
+      "reason": "capability cue: a question about this assistant's own ML skills, not the data"
+    },
     "hello": {
       "would_route": "greeting",
       "source": "greeting",
@@ -87,6 +93,12 @@ window.__ROUTING_TRUTH__ = {
       "source": "ml_disabled",
       "skill_hint": null,
       "reason": "ML_SKILLS_ENABLED is off on this deployment; every data question is text-to-SQL"
+    },
+    "which ML models can I use?": {
+      "would_route": "capability",
+      "source": "capability_cue",
+      "skill_hint": null,
+      "reason": "capability cue: a question about this assistant's own ML skills, not the data"
     },
     "hello": {
       "would_route": "greeting",
