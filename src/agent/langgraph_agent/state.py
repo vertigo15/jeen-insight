@@ -201,6 +201,20 @@ class AgentState(TypedDict, total=False):
     exec_error: Optional[str]
     execution_time_ms: Optional[int]
 
+    # ── Empty-result recheck ───────────────────────────────────────────────
+    # A genuinely empty (0-row) result is diagnosed at most once. A pure-Python
+    # heuristic decides whether the emptiness is *suspicious* (e.g. an aggregate
+    # over data that exists, dropped by an INNER JOIN on a nullable dimension,
+    # with no user-requested filter); only then does an LLM gate run and may set
+    # ``needs_sql_recheck`` to request one SQL regeneration. ``empty_hint`` is a
+    # short likely-cause note surfaced to the user with the "no records" answer.
+    # ``empty_result_diagnostics`` bounds the pass to one so the graph always
+    # terminates.
+    empty_result_diagnostics: int
+    needs_sql_recheck: bool
+    empty_recheck_context: Optional[str]
+    empty_hint: Optional[str]
+
     # ── Evaluation ────────────────────────────────────────────────────────
     is_trivial: bool
     # {answers_intent: bool, summary: str, insights: [...], follow_up_questions: [str, ...]}

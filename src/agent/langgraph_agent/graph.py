@@ -30,6 +30,9 @@ Graph topology (simplified; ``fmt`` = response_formatter):
                                                                        ├─(rows, ML path)─► analysis_run ─► trivial_result_check
                                                                        └─(rows)─► empty_filter_result_check
                                                                                   ├─(reground)─► feedback_classifier
+                                                                                  ├─(0 rows)─► empty_result_check
+                                                                                  │        ├─(recheck)─► feedback_classifier
+                                                                                  │        └─► trivial_result_check
                                                                                   └─► trivial_result_check
                                                                                          ├─(trivial | eval off)─► fmt
                                                                                          └─► fused_eval_analytics
@@ -70,7 +73,11 @@ from src.agent.langgraph_agent.nodes.catalog import make_catalog_lookup, make_pr
 from src.agent.langgraph_agent.nodes.catalog_help import make_catalog_help_answer
 from src.agent.langgraph_agent.nodes.context import context_composer
 from src.agent.langgraph_agent.nodes.eval import make_fused_eval_analytics
-from src.agent.langgraph_agent.nodes.execution import make_execute_query, trivial_result_check
+from src.agent.langgraph_agent.nodes.execution import (
+    make_empty_result_check,
+    make_execute_query,
+    trivial_result_check,
+)
 from src.agent.langgraph_agent.nodes.feedback import make_feedback_classifier
 from src.agent.langgraph_agent.nodes.filtering import (
     empty_filter_result_check,
@@ -104,19 +111,23 @@ logger = logging.getLogger(__name__)
 
 # Retry budgets — not LangGraph's default 25 supersteps — must be the effective
 # bound for a legitimate recovery path. The longest path that honours every
-# budget (max_retries=3, one filter reground) is:
+# budget (max_retries=3, one filter reground, one empty-result recheck) is:
 #   prefix   8  context_composer → fused_router → memory_answer_generator (escape
 #               hatch) → catalog_lookup → filter_planner → filter_grounder →
 #               prior_data_binder → prompt_builder
 #   reground 9  sql_generator … empty_filter_result_check → feedback_classifier →
 #               filter_grounder → prior_data_binder → prompt_builder
+#   recheck  7  sql_generator … execute_query → empty_filter_result_check →
+#               empty_result_check → feedback_classifier (0-row recheck; own
+#               budget, routes straight back to sql_generator)
 #   attempts 32 4 × (sql_generator, sqlglot_validate, dlp_check, execute_query,
 #               empty_filter_result_check, trivial_result_check,
 #               fused_eval_analytics, feedback_classifier)
 #   tail     3  response_formatter → save_to_memory → observability_log
-#   = 52 supersteps. 64 leaves headroom (the DAX graph uses the same value).
-_GRAPH_LONGEST_LEGAL_PATH = 52
-_GRAPH_RECURSION_LIMIT = 64
+#   = 59 supersteps (reground and recheck are mutually exclusive on a given empty
+#   result, so this over-counts). 72 leaves comfortable headroom.
+_GRAPH_LONGEST_LEGAL_PATH = 59
+_GRAPH_RECURSION_LIMIT = 72
 
 
 # ── Node metadata for the trace panel ────────────────────────────────────────
@@ -138,6 +149,7 @@ _NODE_META: dict[str, tuple[str, str]] = {
     "dlp_check":               ("🛡", "logic"),
     "execute_query":           ("▶", "db"),
     "empty_filter_result_check": ("🧭", "logic"),
+    "empty_result_check":       ("🩺", "llm"),
     "trivial_result_check":    ("⚡", "logic"),
     "fused_eval_analytics":    ("📊", "llm"),
     "feedback_classifier":     ("🔁", "logic"),
@@ -245,6 +257,7 @@ def build_graph(
     dlp_enabled: bool = True,
     sqlglot_validation_enabled: bool = True,
     eval_analytics_enabled: bool = True,
+    empty_recheck_enabled: bool = True,
     require_catalog_for_query: bool = True,
     enforce_schema_qualifier: bool = True,
     dlp_governed_columns: Optional[List[str]] = None,
@@ -364,6 +377,7 @@ def build_graph(
     n("dlp_check",               make_dlp_check(dlp_enabled, dlp_governed_columns))
     n("execute_query",           make_execute_query(sql_runner))
     n("empty_filter_result_check", empty_filter_result_check)
+    n("empty_result_check",      make_empty_result_check(router_llm, prompt_loader, enabled=empty_recheck_enabled))
     n("trivial_result_check",    trivial_result_check)
     n("fused_eval_analytics",    make_fused_eval_analytics(llm, prompt_loader))
     n("feedback_classifier",     make_feedback_classifier(max_retries))
@@ -422,6 +436,7 @@ def build_graph(
     builder.add_conditional_edges("dlp_check", _route_from_dlp)
     builder.add_conditional_edges("execute_query", _route_from_execute)
     builder.add_conditional_edges("empty_filter_result_check", _route_from_empty_filter)
+    builder.add_conditional_edges("empty_result_check", _route_from_empty_result)
     builder.add_conditional_edges(
         "trivial_result_check",
         _make_route_from_trivial(eval_analytics_enabled),
@@ -566,7 +581,20 @@ def _route_from_execute(state: AgentState) -> str:
 
 
 def _route_from_empty_filter(state: AgentState) -> str:
-    return "feedback_classifier" if state.get("needs_filter_reground") else "trivial_result_check"
+    if state.get("needs_filter_reground"):
+        return "feedback_classifier"
+    # A genuinely empty result is diagnosed for a likely SQL mistake before it is
+    # accepted; a non-empty result skips the new node entirely (zero added cost).
+    rows = (state.get("query_result") or {}).get("rows") or []
+    if not rows:
+        return "empty_result_check"
+    return "trivial_result_check"
+
+
+def _route_from_empty_result(state: AgentState) -> str:
+    # An implausible 0-row result regenerates SQL once (own budget); otherwise
+    # accept the empty result and format the "no records" answer.
+    return "feedback_classifier" if state.get("needs_sql_recheck") else "trivial_result_check"
 
 
 def _make_route_from_trivial(eval_enabled: bool):
@@ -603,7 +631,7 @@ def _route_from_feedback(state: AgentState) -> str:
         return "catalog_lookup"
     if feedback == "resolve_filters":
         return "filter_grounder"
-    return "sql_generator"  # syntax | exec | semantic
+    return "sql_generator"  # syntax | exec | semantic | empty_recheck
 
 
 # ── Standalone insights eval subgraph ────────────────────────────────────────────

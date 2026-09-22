@@ -135,8 +135,8 @@
       "navigation": "Primary navigation",
       "conversation": "Conversation",
       "tables": "Tables",
-      "pinned": "Pinned",
-      "pinnedLabel": "Pinned questions",
+      "pinned": "Saved",
+      "pinnedLabel": "Saved questions",
       "saved": "Saved",
       "savedLabel": "Saved answers and questions",
       "history": "History",
@@ -152,7 +152,7 @@
       "sections": "Conversation sections",
       "conversation": "Conversation",
       "tables": "Tables",
-      "pinned": "Pinned",
+      "pinned": "Saved",
       "saved": "Saved",
       "history": "History"
     },
@@ -161,7 +161,7 @@
       "previousConversations": "Previous conversations",
       "questionLog": "Question log",
       "questionLogTitle": "Flat log of every question asked",
-      "pinnedRecent": "Pinned & recent questions",
+      "pinnedRecent": "Saved & recent questions",
       "searchTables": "Search tables…",
       "refreshTables": "Refresh tables",
       "searchQuestions": "Search your questions…",
@@ -231,7 +231,8 @@
     "readOnlyNote": "Read-only: the connection “{connection}” is no longer available.",
     "readOnlySend": "This conversation belongs to a connection that is no longer available. Start a new conversation to ask questions.",
     "newConversation": "New conversation",
-    "newDisabledRunning": "Wait for the current answer before starting a new conversation",
+    "stopAndStartNew": "Stop current work and start a new conversation",
+    "cancelledForNew": "Current work cancelled",
     "list": {
       "loading": "Loading conversations…",
       "loadFailed": "Could not load conversations.",
@@ -241,6 +242,7 @@
       "unavailableConnections": "Unavailable connections",
       "readOnly": "read-only",
       "questionCount": "{count, plural, one {# question} other {# questions}}",
+      "savedCount": "{count, plural, one {# saved answer} other {# saved answers}}",
       "gone": "That conversation no longer exists"
     },
     "rename": {
@@ -249,6 +251,7 @@
     },
     "delete": {
       "confirm": "Delete “{title}”? This removes its questions and results.",
+      "confirmSaved": "Delete “{title}”? This also removes {count, plural, one {# saved answer} other {# saved answers}}.",
       "done": "Conversation deleted",
       "failed": "Delete failed"
     },
@@ -277,6 +280,7 @@
       "hideRun": "hide run",
       "runDetails": "run details",
       "keyInsights": "Key insights",
+      "emptyHintLoading": "Looking into why…",
       "routeMl": "ML skill",
       "routeSql": "SQL",
       "showAnswerBadge": "Show answer",
@@ -376,18 +380,22 @@
     "sections": "Saved items",
     "answers": "Answers",
     "questions": "Questions",
-    "add": "Favorite",
-    "saved": "Favorited",
-    "remove": "Remove from favorites",
-    "added": "Answer added to favorites",
-    "removed": "Answer removed from favorites",
-    "updateFailed": "Could not update favorites",
-    "loading": "Loading favorite answers…",
+    "add": "Save answer",
+    "saved": "Saved",
+    "remove": "Remove from Saved",
+    "added": "Answer saved",
+    "removed": "Answer removed from Saved",
+    "updateFailed": "Could not update Saved",
+    "loading": "Loading saved answers…",
     "loadMore": "Load more",
-    "loadFailed": "Could not load favorite answers.",
-    "answerUnavailable": "That saved answer is no longer available.",
-    "emptyTitle": "No favorite answers yet",
-    "emptyCopy": "Open an answer and select Favorite to keep it here."
+    "loadFailed": "Could not load saved answers.",
+    "answerUnavailable": "This saved answer is unavailable.",
+    "unavailableCopy": "It may have been deleted or the connection may be temporarily unavailable.",
+    "retry": "Retry",
+    "connectionUnavailable": "Connection unavailable",
+    "refreshRequired": "Data refresh required",
+    "emptyTitle": "No saved answers yet",
+    "emptyCopy": "Open an answer and select Save answer to keep it here."
   },
   "results": {
     "actions": {
@@ -432,6 +440,7 @@
       "filteredOf": "{shown} of {total} loaded",
       "loadedMatched": "{loaded} loaded · {total} matched",
       "rowsLoaded": "{count, plural, one {# row loaded} other {# rows loaded}}",
+      "noRecordsFromDb": "No records were returned from the database for this query.",
       "focusMap": "Focus map at this location"
     },
     "sql": {
@@ -595,7 +604,7 @@
       },
       "conversationTabs": {
         "label": "Conversation tabs",
-        "help": "Show the Conversation / Tables / Pinned / History tab bar above the chat. All of these are always available from the side rail.",
+        "help": "Show the Conversation / Tables / Saved / History tab bar above the chat. All of these are always available from the side rail.",
         "hidden": "Hidden (default)",
         "shown": "Shown"
       },
@@ -1245,7 +1254,7 @@
       "pickConnection": "Pick a connection",
       "askFirst": "Ask your first question",
       "openSql": "Open the SQL behind an answer",
-      "pinQuestion": "Pin a question you will reuse",
+      "pinQuestion": "Save a question you will reuse",
       "start": "Start",
       "showMe": "Show me"
     },
@@ -1256,12 +1265,12 @@
         "body": "Type a question in plain English or Hebrew — or click a suggestion to auto-fill one."
       },
       "pin": {
-        "title": "Pin a question",
-        "body": "Tap the star on any question to pin it. Pinned questions stay here for this connection."
+        "title": "Save a question",
+        "body": "Tap the star on any question to save it. Saved questions stay here for this connection."
       },
       "pinnedHere": {
-        "title": "Pinned lives here",
-        "body": "Ask a question, then tap its star to pin it — it will show up in this list to reuse."
+        "title": "Saved questions live here",
+        "body": "Ask a question, then tap its star to save it — it will show up in this list to reuse."
       }
     },
     "cards": {
@@ -1289,8 +1298,8 @@
     },
     "nudge": {
       "title": "Your answer is saved to this conversation.",
-      "body": "Pin it to reuse the question on this connection later, or open SQL & run details to see how it was produced.",
-      "pin": "Pin it",
+      "body": "Save the question to reuse it on this connection later, or open SQL & run details to see how the answer was produced.",
+      "pin": "Save question",
       "dismiss": "Dismiss"
     },
     "welcome": {
@@ -1374,11 +1383,11 @@
   "pinned": {
     "pickConnection": "Pick a connection to see your recent questions.",
     "empty": "No questions yet — ask one above and it’ll show up here.",
-    "pinnedQuestions": "Pinned questions",
-    "pinnedCount": "{count} pinned",
+    "pinnedQuestions": "Saved questions",
+    "pinnedCount": "{count} saved",
     "recentQuestions": "Recent questions",
-    "pin": "Pin question",
-    "unpin": "Unpin question",
+    "pin": "Save question",
+    "unpin": "Remove from Saved",
     "loadFailed": "Unable to load history right now.",
     "noMatch": "No matching questions."
   },

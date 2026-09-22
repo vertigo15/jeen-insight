@@ -271,14 +271,71 @@ def test_delete_conversation_cascades(history, pool):
                 """,
                 USER_A, SRC_A, qid,
             )
-        assert not await history.delete_conversation(conversation_id=session, user_id=USER_B), "foreign delete refused"
-        assert await history.delete_conversation(conversation_id=session, user_id=USER_A)
+        foreign = await history.delete_conversation(conversation_id=session, user_id=USER_B)
+        assert foreign["status"] == "missing", "foreign delete refused"
+        deleted = await history.delete_conversation(conversation_id=session, user_id=USER_A)
+        assert deleted["status"] == "deleted"
         async with history.pool.acquire() as conn:
             assert await conn.fetchval("SELECT COUNT(*) FROM insights_conversation_sessions WHERE session_id = $1", session) == 0
             assert await conn.fetchval("SELECT COUNT(*) FROM insights_turn_artifacts WHERE turn_id = $1", qid) == 0
             assert await conn.fetchval("SELECT COUNT(*) FROM insights_query_insights WHERE query_id = $1", qid) == 0
             assert await conn.fetchval("SELECT query_id FROM insights_saved_analyses WHERE id = $1", saved) is None
             await conn.execute("DELETE FROM insights_saved_analyses WHERE id = $1", saved)
+
+    _run(pool, scenario())
+
+
+def test_saved_answers_require_explicit_conversation_delete(history, pool):
+    async def scenario():
+        migration = Path(__file__).resolve().parents[2] / "db" / "migrations" / "insights" / "030_favorite_answers.sql"
+        async with history.pool.acquire() as conn:
+            await conn.execute(migration.read_text(encoding="utf-8"))
+        history.favorite_schema_ready = True
+
+        session = uuid.uuid4()
+        qid = await _turn(history, session=session)
+        assert await history.set_answer_favorite(
+            conversation_id=session, turn_id=qid, user_id=USER_A, favorite=True,
+        )
+        blocked = await history.delete_conversation(
+            conversation_id=session, user_id=USER_A,
+        )
+        assert blocked == {"status": "blocked", "saved_answer_count": 1}
+        assert await history.get_conversation(conversation_id=session, user_id=USER_A)
+
+        deleted = await history.delete_conversation(
+            conversation_id=session, user_id=USER_A, delete_saved=True,
+        )
+        assert deleted == {"status": "deleted", "saved_answer_count": 1}
+        assert await history.get_conversation(conversation_id=session, user_id=USER_A) is None
+        assert await history.list_favorite_answers(user_id=USER_A) == []
+
+    _run(pool, scenario())
+
+
+def test_favorite_and_manual_delete_are_serialized(history, pool):
+    async def scenario():
+        migration = Path(__file__).resolve().parents[2] / "db" / "migrations" / "insights" / "030_favorite_answers.sql"
+        async with history.pool.acquire() as conn:
+            await conn.execute(migration.read_text(encoding="utf-8"))
+        history.favorite_schema_ready = True
+
+        session = uuid.uuid4()
+        qid = await _turn(history, session=session)
+        favorite_result, delete_result = await asyncio.gather(
+            history.set_answer_favorite(
+                conversation_id=session, turn_id=qid, user_id=USER_A, favorite=True,
+            ),
+            history.delete_conversation(conversation_id=session, user_id=USER_A),
+        )
+        conversation = await history.get_conversation(conversation_id=session, user_id=USER_A)
+        if favorite_result is True:
+            assert delete_result["status"] == "blocked"
+            assert conversation is not None
+        else:
+            assert favorite_result is None
+            assert delete_result["status"] == "deleted"
+            assert conversation is None
 
     _run(pool, scenario())
 

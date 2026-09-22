@@ -99,6 +99,15 @@ def test_log_query_uses_legacy_path_when_schema_missing():
     assert "INSERT INTO insights_conversation_sessions" in sql
 
 
+def test_conversation_summary_saved_count_is_schema_gated():
+    svc = ConversationHistoryService(_FakePool(_FakeConn([])), conversation_schema_ready=True)
+    assert "insights_favorite_answers" not in svc._conversation_summary_sql()
+    assert "0::bigint" in svc._conversation_summary_sql()
+    svc.favorite_schema_ready = True
+    assert "insights_favorite_answers" in svc._conversation_summary_sql()
+    assert "saved_answer_count" in svc._conversation_summary_sql()
+
+
 def test_log_query_is_one_transaction_with_lock_when_schema_ready():
     conn = _FakeConn(responses=["INSERT 0 1", 1, 4, None, QID])
     svc = ConversationHistoryService(_FakePool(conn), conversation_schema_ready=True)
@@ -255,7 +264,9 @@ def test_new_schema_methods_short_circuit_without_schema():
     assert run(svc.clear_turn_chart(turn_id=QID, user_id="u")) is False
     assert run(svc.store_rerun_snapshot(turn_id=QID, user_id="u", result_snapshot=None, snapshot_status="too_large", snapshot_bytes=None)) is False
     assert run(svc.rename_conversation(conversation_id=SESSION, user_id="u", title="t")) is False
-    assert run(svc.delete_conversation(conversation_id=SESSION, user_id="u")) is False
+    assert run(svc.delete_conversation(conversation_id=SESSION, user_id="u")) == {
+        "status": "missing", "saved_answer_count": 0,
+    }
     assert run(svc.prune_user_conversations(user_id="u", source_key="s", keep_last=1, keep_last_turns=1, min_interval_seconds=0)) == {"skipped": "schema_missing"}
     assert pool.acquired == 0, "no query is attempted against missing tables"
 
@@ -325,6 +336,11 @@ def test_answer_favorite_refuses_foreign_turn_and_schema_missing():
         conversation_id=SESSION, turn_id=QID, user_id="intruder", favorite=True,
     )) is None
     assert "INSERT INTO insights_favorite_answers" not in _sql_of(conn)
+    missing_remove = ConversationHistoryService(_FakePool(_FakeConn([None])), conversation_schema_ready=True)
+    missing_remove.favorite_schema_ready = True
+    assert asyncio.run(missing_remove.set_answer_favorite(
+        conversation_id=SESSION, turn_id=QID, user_id="u", favorite=False,
+    )) is False
 
     unavailable = ConversationHistoryService(_FakePool(_FakeConn([])), conversation_schema_ready=True)
     assert asyncio.run(unavailable.list_favorite_answers(user_id="u")) == []
@@ -345,3 +361,24 @@ def test_favorite_schema_probe_sets_independent_flag():
     history = SimpleNamespace(favorite_schema_ready=None)
     assert asyncio.run(lifespan._probe_favorite_schema(conn, history)) is True
     assert history.favorite_schema_ready is True
+
+
+def test_delete_conversation_blocks_saved_answers_and_forced_delete_is_locked():
+    blocked_conn = _FakeConn(responses=["s", None, 1, 2])
+    blocked = ConversationHistoryService(_FakePool(blocked_conn), conversation_schema_ready=True)
+    blocked.favorite_schema_ready = True
+    outcome = asyncio.run(blocked.delete_conversation(
+        conversation_id=SESSION, user_id="u",
+    ))
+    assert outcome == {"status": "blocked", "saved_answer_count": 2}
+    assert "pg_advisory_xact_lock" in _sql_of(blocked_conn)
+    assert "DELETE FROM insights_conversations" not in _sql_of(blocked_conn)
+
+    forced_conn = _FakeConn(responses=["s", None, 1, 2, "DELETE 1"])
+    forced = ConversationHistoryService(_FakePool(forced_conn), conversation_schema_ready=True)
+    forced.favorite_schema_ready = True
+    outcome = asyncio.run(forced.delete_conversation(
+        conversation_id=SESSION, user_id="u", delete_saved=True,
+    ))
+    assert outcome == {"status": "deleted", "saved_answer_count": 2}
+    assert "DELETE FROM insights_conversations" in _sql_of(forced_conn)

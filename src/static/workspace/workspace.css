@@ -386,6 +386,19 @@ body.v3-ready > .app-layout { display: none !important; }
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
+.v3-favorite-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.v3-favorite-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.2;
+}
+.v3-favorite-badge.is-unavailable { background: var(--errsoft); color: var(--err); }
 .v3-favorite-meta { margin-top: 7px; color: var(--faint); font-size: 10.5px; }
 .v3-favorites-more {
   width: 100%;
@@ -631,6 +644,10 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-placeholder { padding: 44px 24px; border: 1px dashed var(--border2); border-radius: 16px; color: var(--muted); text-align: center; }
 .v3-placeholder strong { display: block; margin-bottom: 8px; color: var(--muted); font-size: 15px; font-weight: 400; }
 .v3-placeholder span { color: var(--faint); font-size: 13px; font-weight: 300; }
+.v3-saved-unavailable { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.v3-saved-unavailable strong { margin: 0; color: var(--text); }
+.v3-saved-unavailable-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 4px; }
+.v3-saved-unavailable-actions .v3-text-btn { min-height: 32px; padding-inline: 12px; border: 1px solid var(--border); }
 /* A rendered Markdown answer in the result pane reads as a document, not a
    centered hint: left/right-align it and give it normal body colour. */
 .v3-placeholder:has(.v3-markdown) { text-align: start; color: var(--text); }

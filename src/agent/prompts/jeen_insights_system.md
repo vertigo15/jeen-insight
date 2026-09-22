@@ -34,6 +34,12 @@ Use only tables and columns from the active connection catalog below.
 For Trino or Databricks, qualify table names with the active catalog/schema when those values are specified above.
 For PostgreSQL, query tables in the active schema when one is specified above.
 
+Result Completeness (avoid empty results):
+An aggregate over a fact table that is known to contain data must not return zero rows. If a query would, the JOINs or WHERE filters are almost certainly wrong — re-examine them before answering.
+Use the Column Statistics below to reason about NULLs: a dimension column shown as `nulls N%` (or not marked `NOT NULL`) can be NULL or empty for some rows.
+When grouping or reporting by such a dimension, prefer `LEFT JOIN` over `INNER JOIN` so rows whose dimension value is NULL are not silently dropped, and surface the NULL/empty group explicitly (e.g. `COALESCE(dimension, 'Unknown')`) rather than filtering it out — unless the user's question explicitly excludes those rows.
+Only add a WHERE predicate the user actually asked for; never narrow a "total by X" question with an unrequested filter that could eliminate every row.
+
 Filter Contract:
 The verified filter plan below is authoritative. For every filter marked
 `resolved: true`, use its table/column, operator, and canonical value exactly
