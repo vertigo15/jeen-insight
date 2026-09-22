@@ -137,6 +137,8 @@
       "tables": "Tables",
       "pinned": "Pinned",
       "pinnedLabel": "Pinned questions",
+      "saved": "Saved",
+      "savedLabel": "Saved answers and questions",
       "history": "History",
       "historyLabel": "Conversation history",
       "settings": "Settings"
@@ -151,6 +153,7 @@
       "conversation": "Conversation",
       "tables": "Tables",
       "pinned": "Pinned",
+      "saved": "Saved",
       "history": "History"
     },
     "panels": {
@@ -228,6 +231,7 @@
     "readOnlyNote": "Read-only: the connection “{connection}” is no longer available.",
     "readOnlySend": "This conversation belongs to a connection that is no longer available. Start a new conversation to ask questions.",
     "newConversation": "New conversation",
+    "newDisabledRunning": "Wait for the current answer before starting a new conversation",
     "list": {
       "loading": "Loading conversations…",
       "loadFailed": "Could not load conversations.",
@@ -367,6 +371,23 @@
       "notVerified": "not verified",
       "unverified": "unverified"
     }
+  },
+  "favorite": {
+    "sections": "Saved items",
+    "answers": "Answers",
+    "questions": "Questions",
+    "add": "Favorite",
+    "saved": "Favorited",
+    "remove": "Remove from favorites",
+    "added": "Answer added to favorites",
+    "removed": "Answer removed from favorites",
+    "updateFailed": "Could not update favorites",
+    "loading": "Loading favorite answers…",
+    "loadMore": "Load more",
+    "loadFailed": "Could not load favorite answers.",
+    "answerUnavailable": "That saved answer is no longer available.",
+    "emptyTitle": "No favorite answers yet",
+    "emptyCopy": "Open an answer and select Favorite to keep it here."
   },
   "results": {
     "actions": {

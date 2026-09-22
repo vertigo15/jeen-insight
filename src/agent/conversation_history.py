@@ -8,6 +8,7 @@ Backed by:
   * insights_conversations              (one row per conversation; id == session_id)
   * insights_conversation_sessions      (one row per turn)
   * insights_turn_artifacts             (answer / snapshot / chart per turn)
+  * insights_favorite_answers            (per-user saved turns)
   * insights_conversation_prune_state   (per user+connection retention claim)
   * insights_query_insights
   * insights_pinned_questions
@@ -102,6 +103,10 @@ class ConversationHistoryService:
         # turn artifact. Probed by the lifespan; off by default so a database
         # without the columns keeps persisting ordinary turns.
         self.analysis_schema_ready = False
+        # Whether migration 030 added answer-level favorites. This stays
+        # independent from migration 022 so rolling upgrades keep conversation
+        # hydration working before the new table has been applied.
+        self.favorite_schema_ready = False
 
     async def initialize(self) -> None:
         # Pool is already initialized by `get_metadata_pool()`. This method is
@@ -938,6 +943,7 @@ class ConversationHistoryService:
             "snapshot_at": _iso(row["snapshot_at"]),
             "analysis": _jsonb(ConversationHistoryService._row_get(row, "analysis")),
             "low_confidence": bool(ConversationHistoryService._row_get(row, "low_confidence", False)),
+            "is_favorite": bool(ConversationHistoryService._row_get(row, "is_favorite", False)),
         }
 
     def _analysis_select(self, alias: str = "a") -> str:
@@ -945,6 +951,16 @@ class ConversationHistoryService:
         if not self.analysis_schema_ready:
             return ""
         return f", {alias}.analysis, {alias}.low_confidence"
+
+    def _favorite_select(self, turn_alias: str = "cs", conversation_alias: str = "c") -> str:
+        """Favorite state without touching migration 030 on older databases."""
+        if not self.favorite_schema_ready:
+            return ", FALSE AS is_favorite"
+        return (
+            ", EXISTS (SELECT 1 FROM insights_favorite_answers f "
+            f"WHERE f.user_id = {conversation_alias}.user_id "
+            f"AND f.turn_id = {turn_alias}.id) AS is_favorite"
+        )
 
     async def get_conversation_turns(
         self,
@@ -967,7 +983,8 @@ class ConversationHistoryService:
                            a.result_kind, a.answer, a.error AS artifact_error,
                            a.metrics, a.findings, a.suggestions, a.followups,
                            a.snapshot_status, a.snapshot_at,
-                           (a.chart_config IS NOT NULL) AS has_chart{self._analysis_select()}
+                           (a.chart_config IS NOT NULL) AS has_chart
+                           {self._analysis_select()}{self._favorite_select()}
                     FROM insights_conversation_sessions cs
                     JOIN insights_conversations c ON c.id = cs.session_id
                     LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id
@@ -986,6 +1003,38 @@ class ConversationHistoryService:
         except Exception:
             logger.exception("Failed to get conversation turns")
             return []
+
+    async def get_conversation_turn(
+        self, *, conversation_id: UUID, turn_id: UUID, user_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Metadata for one owned turn, including its favorite state."""
+        if not self.conversation_schema_ready:
+            return None
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    f"""
+                    SELECT cs.id, cs.sequence_number, cs.natural_language_query,
+                           cs.generated_sql, cs.execution_status, cs.row_count,
+                           cs.error_message, cs.created_at,
+                           a.result_kind, a.answer, a.error AS artifact_error,
+                           a.metrics, a.findings, a.suggestions, a.followups,
+                           a.snapshot_status, a.snapshot_at,
+                           (a.chart_config IS NOT NULL) AS has_chart
+                           {self._analysis_select()}{self._favorite_select()}
+                    FROM insights_conversation_sessions cs
+                    JOIN insights_conversations c ON c.id = cs.session_id
+                    LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id
+                    WHERE cs.id = $1 AND cs.session_id = $2 AND c.user_id = $3
+                    """,
+                    turn_id,
+                    conversation_id,
+                    user_id,
+                )
+            return self._turn_row(row) if row else None
+        except Exception:
+            logger.exception("Failed to get conversation turn")
+            return None
 
     async def get_turn_artifact(
         self, *, conversation_id: UUID, turn_id: UUID, user_id: str
@@ -1332,6 +1381,155 @@ class ConversationHistoryService:
             logger.exception("Failed to delete conversation")
             return False
 
+    # ------------------------------------------------------------------
+    # Favorite answers
+    # ------------------------------------------------------------------
+    async def set_answer_favorite(
+        self,
+        *,
+        conversation_id: UUID,
+        turn_id: UUID,
+        user_id: str,
+        favorite: bool,
+    ) -> Optional[bool]:
+        """Set one owned successful turn's favorite state.
+
+        ``None`` means the turn is missing/not owned. Returning the requested
+        state makes PUT/DELETE idempotent for optimistic clients.
+        """
+        if not (self.conversation_schema_ready and self.favorite_schema_ready):
+            return None
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    source_key = await conn.fetchval(
+                        """
+                        SELECT c.source_key
+                        FROM insights_conversation_sessions cs
+                        JOIN insights_conversations c ON c.id = cs.session_id
+                        WHERE cs.id = $1
+                          AND cs.session_id = $2
+                          AND c.user_id = $3
+                          AND cs.execution_status = 'success'
+                        """,
+                        turn_id,
+                        conversation_id,
+                        user_id,
+                    )
+                    if not source_key:
+                        return None
+                    # Serialize favorite mutations with retention for this user
+                    # and connection. Re-check ownership after acquiring the
+                    # lock because a prune may have won between the first lookup
+                    # and this lock.
+                    await conn.fetchval(
+                        "SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))",
+                        user_id,
+                        source_key,
+                    )
+                    owned = await conn.fetchval(
+                        """
+                        SELECT 1
+                        FROM insights_conversation_sessions cs
+                        JOIN insights_conversations c ON c.id = cs.session_id
+                        WHERE cs.id = $1
+                          AND cs.session_id = $2
+                          AND c.user_id = $3
+                          AND cs.execution_status = 'success'
+                        """,
+                        turn_id,
+                        conversation_id,
+                        user_id,
+                    )
+                    if not owned:
+                        return None
+                    if favorite:
+                        await conn.execute(
+                            """
+                            INSERT INTO insights_favorite_answers (user_id, turn_id)
+                            VALUES ($1, $2)
+                            ON CONFLICT (user_id, turn_id) DO NOTHING
+                            """,
+                            user_id,
+                            turn_id,
+                        )
+                    else:
+                        await conn.execute(
+                            """
+                            DELETE FROM insights_favorite_answers
+                            WHERE user_id = $1 AND turn_id = $2
+                            """,
+                            user_id,
+                            turn_id,
+                        )
+            return favorite
+        except Exception:
+            logger.exception("Failed to update answer favorite for %s", turn_id)
+            return None
+
+    @staticmethod
+    def _favorite_row(row: Any) -> Dict[str, Any]:
+        return {
+            "conversation_id": str(row["conversation_id"]),
+            "turn_id": str(row["turn_id"]),
+            "sequence_number": int(row["sequence_number"]),
+            "conversation_title": row["conversation_title"],
+            "question": row["question"],
+            "answer": _jsonb(row["answer"]),
+            "result_kind": row["result_kind"] or RESULT_KIND_TEXT,
+            "snapshot_status": row["snapshot_status"] or SNAPSHOT_NOT_APPLICABLE,
+            "source_key": row["source_key"],
+            "source_label": row["source_label"],
+            "created_at": _iso(row["created_at"]),
+            "favorited_at": _iso(row["favorited_at"]),
+        }
+
+    async def list_favorite_answers(
+        self,
+        *,
+        user_id: str,
+        source_key: Optional[str] = None,
+        limit: int = 100,
+        before: Optional[Tuple[datetime, UUID]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Favorited answers, newest favorite first, with enough metadata to reopen."""
+        if not (self.conversation_schema_ready and self.favorite_schema_ready):
+            return []
+        try:
+            before_ts = before[0] if before else None
+            before_id = before[1] if before else None
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT cs.session_id AS conversation_id, cs.id AS turn_id,
+                           cs.sequence_number, cs.natural_language_query AS question,
+                           cs.created_at, c.title AS conversation_title,
+                           c.source_key, c.source_label,
+                           a.answer, a.result_kind, a.snapshot_status,
+                           f.created_at AS favorited_at
+                    FROM insights_favorite_answers f
+                    JOIN insights_conversation_sessions cs ON cs.id = f.turn_id
+                    JOIN insights_conversations c ON c.id = cs.session_id
+                    LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id
+                    WHERE f.user_id = $1
+                      AND c.user_id = $1
+                      AND ($2::text IS NULL OR c.source_key = $2)
+                      AND ($3::timestamptz IS NULL
+                           OR (f.created_at, f.turn_id) < ($3::timestamptz, $4::uuid))
+                    ORDER BY f.created_at DESC, f.turn_id DESC
+                    LIMIT $5
+                    """,
+                    user_id,
+                    source_key,
+                    before_ts,
+                    before_id,
+                    max(1, min(int(limit), 200)),
+                )
+            return [self._favorite_row(row) for row in rows]
+        except Exception:
+            logger.exception("Failed to list favorite answers")
+            return []
+
     async def prune_user_conversations(
         self,
         *,
@@ -1347,17 +1545,40 @@ class ConversationHistoryService:
         1. Claim the ``(user_id, source_key)`` prune-state row; if another
            replica pruned within *min_interval_seconds* the whole run is skipped.
         2. Delete conversations ranked beyond *keep_last* (never the protected
-           one). FK cascades remove their turns, insights and artifacts.
-        3. Drop the blobs of turns ranked beyond *keep_last_turns* across all of
-           the user's turns on this connection (no conversation is exempt; the
-           newest turn is rank 1 by construction), marking them ``pruned``.
+           one or a conversation containing a favorite). FK cascades remove
+           their turns, insights and artifacts.
+        3. Drop the blobs of non-favorite turns ranked beyond *keep_last_turns*
+           across all of the user's turns on this connection, marking them
+           ``pruned``. Favorites do not consume the ordinary retention budget.
         """
         if not self.conversation_schema_ready:
             return {"skipped": "schema_missing"}
         started = time.monotonic()
+        favorite_conversation_guard = ""
+        favorite_turn_guard = ""
+        if self.favorite_schema_ready:
+            favorite_conversation_guard = """
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM insights_conversation_sessions ft
+                              JOIN insights_favorite_answers f ON f.turn_id = ft.id
+                              WHERE ft.session_id = c.id AND f.user_id = $1
+                          )
+            """
+            favorite_turn_guard = """
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM insights_favorite_answers f
+                                  WHERE f.user_id = $1 AND f.turn_id = cs.id
+                              )
+            """
         try:
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
+                    await conn.fetchval(
+                        "SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))",
+                        user_id,
+                        source_key,
+                    )
                     claimed = await conn.fetchval(
                         """
                         INSERT INTO insights_conversation_prune_state
@@ -1377,7 +1598,7 @@ class ConversationHistoryService:
                         return {"skipped": "recently_pruned"}
 
                     deleted = await conn.fetch(
-                        """
+                        f"""
                         WITH ranked AS (
                             SELECT id,
                                    ROW_NUMBER() OVER (
@@ -1391,6 +1612,7 @@ class ConversationHistoryService:
                         WHERE c.id = r.id
                           AND r.rn > $3
                           AND c.id IS DISTINCT FROM $4::uuid
+                          {favorite_conversation_guard}
                         RETURNING c.id
                         """,
                         user_id,
@@ -1399,7 +1621,7 @@ class ConversationHistoryService:
                         protect_conversation_id,
                     )
                     pruned = await conn.fetch(
-                        """
+                        f"""
                         WITH ranked AS (
                             SELECT a.turn_id,
                                    ROW_NUMBER() OVER (
@@ -1411,6 +1633,7 @@ class ConversationHistoryService:
                               AND cs.source_key = $2
                               AND (a.result_snapshot IS NOT NULL
                                    OR a.chart_config IS NOT NULL)
+                              {favorite_turn_guard}
                         )
                         UPDATE insights_turn_artifacts a
                         SET result_snapshot  = NULL,

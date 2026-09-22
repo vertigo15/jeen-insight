@@ -104,6 +104,24 @@ async def _probe_analysis_schema(conn) -> bool:
         return False
 
 
+async def _probe_favorite_schema(conn, history_service: Any) -> bool:
+    """Enable answer favorites only after migration 030 is present."""
+    try:
+        present = bool(await conn.fetchval(
+            "SELECT to_regclass('insights_favorite_answers') IS NOT NULL"
+        ))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("startup: answer favorites schema probe failed: %s", exc)
+        present = False
+    history_service.favorite_schema_ready = present
+    if not present:
+        logger.warning(
+            "startup: migration 030_favorite_answers is not applied; "
+            "answer favorites are unavailable."
+        )
+    return present
+
+
 def _build_analysis_runtime(pool, history_service: Any, analysis_schema_ready: bool) -> None:
     """Wire the ML-skills store and runner into ``state`` (or disable cleanly)."""
     from src.agent.analysis_store import AnalysisStore
@@ -305,6 +323,7 @@ async def lifespan(_app: FastAPI):
         await _ensure_schema(conn)
         await _seed_prompts(conn)
         await _probe_conversation_persistence(conn, state.history_service)
+        await _probe_favorite_schema(conn, state.history_service)
         analysis_schema_ready = await _probe_analysis_schema(conn)
     _build_analysis_runtime(pool, state.history_service, analysis_schema_ready)
 

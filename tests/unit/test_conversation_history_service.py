@@ -247,6 +247,7 @@ def test_new_schema_methods_short_circuit_without_schema():
     assert run(svc.get_conversation(conversation_id=SESSION, user_id="u")) is None
     assert run(svc.list_conversations(user_id="u")) == []
     assert run(svc.get_conversation_turns(conversation_id=SESSION, user_id="u")) == []
+    assert run(svc.get_conversation_turn(conversation_id=SESSION, turn_id=QID, user_id="u")) is None
     assert run(svc.get_turn_artifact(conversation_id=SESSION, turn_id=QID, user_id="u")) is None
     assert run(svc.get_turn_for_rerun(conversation_id=SESSION, turn_id=QID, user_id="u")) is None
     assert run(svc.upsert_turn_artifact(turn_id=QID, result_kind="text")) is False
@@ -279,3 +280,68 @@ def test_lifespan_probe_sets_schema_and_kill_switch_independently(
     asyncio.run(lifespan._probe_conversation_persistence(conn, history))
     assert history.conversation_schema_ready is expect_ready
     assert history.persistence_enabled is expect_enabled
+
+
+def test_answer_favorite_is_owned_idempotent_and_listed():
+    conn = _FakeConn(responses=[
+        "s", None, 1, "INSERT 0 1",
+        [{
+            "conversation_id": SESSION,
+            "turn_id": QID,
+            "sequence_number": 3,
+            "conversation_title": "Revenue",
+            "question": "Revenue by month",
+            "answer": '"Revenue rose"',
+            "result_kind": "table",
+            "snapshot_status": "stored",
+            "source_key": "s",
+            "source_label": "Sales",
+            "created_at": "2026-09-01T10:00:00+00:00",
+            "favorited_at": "2026-09-01T10:01:00+00:00",
+        }],
+    ])
+    svc = ConversationHistoryService(_FakePool(conn), conversation_schema_ready=True)
+    svc.favorite_schema_ready = True
+
+    state = asyncio.run(svc.set_answer_favorite(
+        conversation_id=SESSION, turn_id=QID, user_id="u", favorite=True,
+    ))
+    items = asyncio.run(svc.list_favorite_answers(user_id="u", source_key="s"))
+
+    assert state is True
+    assert items[0]["answer"] == "Revenue rose"
+    sql = _sql_of(conn)
+    assert "cs.execution_status = 'success'" in sql
+    assert "pg_advisory_xact_lock" in sql
+    assert "ON CONFLICT (user_id, turn_id) DO NOTHING" in sql
+    assert "c.user_id = $1" in sql
+
+
+def test_answer_favorite_refuses_foreign_turn_and_schema_missing():
+    conn = _FakeConn(responses=[None])
+    svc = ConversationHistoryService(_FakePool(conn), conversation_schema_ready=True)
+    svc.favorite_schema_ready = True
+    assert asyncio.run(svc.set_answer_favorite(
+        conversation_id=SESSION, turn_id=QID, user_id="intruder", favorite=True,
+    )) is None
+    assert "INSERT INTO insights_favorite_answers" not in _sql_of(conn)
+
+    unavailable = ConversationHistoryService(_FakePool(_FakeConn([])), conversation_schema_ready=True)
+    assert asyncio.run(unavailable.list_favorite_answers(user_id="u")) == []
+    assert asyncio.run(unavailable.set_answer_favorite(
+        conversation_id=SESSION, turn_id=QID, user_id="u", favorite=True,
+    )) is None
+
+
+def test_favorite_schema_probe_sets_independent_flag():
+    from src.api import lifespan
+
+    conn = MagicMock()
+
+    async def fetchval(_sql):
+        return True
+
+    conn.fetchval = fetchval
+    history = SimpleNamespace(favorite_schema_ready=None)
+    assert asyncio.run(lifespan._probe_favorite_schema(conn, history)) is True
+    assert history.favorite_schema_ready is True

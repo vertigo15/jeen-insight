@@ -202,8 +202,12 @@
     } else if (key === 'pin_question') {
       // Reveal the Pinned / recent-questions panel, where each question has a
       // pin control, then spotlight a real star.
-      if (ctrl) { ctrl.setConversation(true); ctrl.setTab('pinned'); }
-      else { var tab = document.getElementById('v3-tab-pinned'); if (tab) tab.click(); }
+      if (ctrl) {
+        ctrl.setConversation(true);
+        ctrl.setTab('saved');
+        if (typeof ctrl.setSavedView === 'function') ctrl.setSavedView('questions');
+      }
+      else { var tab = document.getElementById('v3-tab-saved'); if (tab) tab.click(); }
       spotlightPin(0);
     }
   }
@@ -212,7 +216,7 @@
   // for a real "pin" star, then spotlight it. Fall back to the Pinned tab if the
   // list is still empty (no questions asked yet).
   function spotlightPin(attempt) {
-    var panel = document.getElementById('v3-panel-pinned');
+    var panel = document.getElementById('v3-panel-saved');
     var star = panel && panel.querySelector('.pin-icon[data-pin-action="pin"]');
     if (star) {
       showHint(star, {
@@ -223,9 +227,9 @@
       return;
     }
     if (attempt < 8) { setTimeout(function () { spotlightPin(attempt + 1); }, 150); return; }
-    var tab = document.getElementById('v3-tab-pinned');
+    var tab = document.getElementById('v3-tab-saved');
     var placement = 'below-left';
-    if (!isVisible(tab)) { tab = document.querySelector('[data-rail="pinned"]'); placement = 'right'; }
+    if (!isVisible(tab)) { tab = document.querySelector('[data-rail="saved"]'); placement = 'right'; }
     if (tab) showHint(tab, {
       placement: placement,
       title: t('onboarding.hints.pinnedHere.title'),

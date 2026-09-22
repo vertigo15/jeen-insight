@@ -422,6 +422,7 @@ class ConversationTurn(BaseModel):
     # a live one.
     analysis: Optional[Dict[str, Any]] = None
     low_confidence: bool = False
+    is_favorite: bool = False
 
 
 class ConversationDetail(BaseModel):
@@ -435,6 +436,27 @@ class ConversationDetail(BaseModel):
 class ConversationList(BaseModel):
     items: List[ConversationSummary] = Field(default_factory=list)
     # Opaque "<last_activity_at>|<id>" cursor for the next page.
+    next_cursor: Optional[str] = None
+
+
+class FavoriteAnswer(BaseModel):
+    conversation_id: str
+    turn_id: str
+    sequence_number: int
+    conversation_title: str
+    question: str
+    answer: Any = None
+    result_kind: str
+    snapshot_status: str
+    source_key: str
+    source_label: str
+    connection_available: bool = True
+    created_at: Optional[str] = None
+    favorited_at: Optional[str] = None
+
+
+class FavoriteAnswerList(BaseModel):
+    items: List[FavoriteAnswer] = Field(default_factory=list)
     next_cursor: Optional[str] = None
 
 

@@ -57,6 +57,7 @@ export function turnFromServer(dto, conversationId) {
         snapshotStatus: dto.snapshot_status || SNAPSHOT_NOT_APPLICABLE,
         snapshotAt: dto.snapshot_at || null,
         hasChart: Boolean(dto.has_chart),
+        isFavorite: Boolean(dto.is_favorite),
         canLoadData,
         artifactState: needsArtifact ? ARTIFACT_MISSING : ARTIFACT_LOADED,
         startedAt: 0,

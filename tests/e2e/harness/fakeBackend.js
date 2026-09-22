@@ -31,6 +31,9 @@
 
     const F = window.__FIXTURES__;
     const enc = new TextEncoder();
+    const conversationResults = [];
+    let favoriteItems = [];
+    window.__seedFavoriteItems = (items) => { favoriteItems = Array.isArray(items) ? items.slice() : []; };
     const json = (obj, status) => new Response(JSON.stringify(obj), {
         status: status || 200, headers: { 'Content-Type': 'application/json' },
     });
@@ -86,7 +89,32 @@
         const name = F.QUESTION_TO_SCENARIO[question];
         const build = name && F.SCENARIOS[name];
         const result = build ? build(body) : sqlFallback(question);
-        return withExpiry(stampRouting(result, question));
+        const stamped = withExpiry(stampRouting(result, question));
+        if (stamped && stamped.query_id && !conversationResults.some((item) => item.query_id === stamped.query_id)) {
+            conversationResults.push(stamped);
+        }
+        return stamped;
+    }
+
+    function turnDto(result, index) {
+        return {
+            turn_id: result.query_id,
+            sequence_number: index + 1,
+            question: result.question,
+            sql: result.sql || null,
+            execution_status: 'success',
+            result_kind: result.results ? 'table' : 'text',
+            answer: result.answer || null,
+            metrics: result.metrics || {},
+            findings: result.findings || [],
+            suggestions: result.suggestions || [],
+            followups: result.followups || [],
+            snapshot_status: result.results ? 'stored' : 'not_applicable',
+            row_count: result.results?.row_count || 0,
+            has_chart: false,
+            has_rerunnable_query: Boolean(result.sql),
+            is_favorite: favoriteItems.some((item) => item.turn_id === result.query_id),
+        };
     }
 
     function sseStream(result) {
@@ -177,7 +205,78 @@
             return json(method === 'PATCH' ? mergeOnboarding(body) : onboardingRow);
         }
         if (url.indexOf('/api/last') >= 0) return json({});
-        if (url.indexOf('/api/conversations') >= 0) return json({ conversations: [] });
+        if (url.indexOf('/api/conversations/favorites') >= 0) {
+            const params = new URL(url, location.origin).searchParams;
+            const limit = Math.max(1, Number(params.get('limit')) || 50);
+            const offset = Math.max(0, Number(params.get('before')) || 0);
+            const items = favoriteItems.slice(offset, offset + limit);
+            const next = offset + items.length < favoriteItems.length ? String(offset + items.length) : null;
+            return json({ items, next_cursor: next });
+        }
+        const favoriteMatch = url.match(/\/api\/conversations\/([^/]+)\/turns\/([^/]+)\/favorite/);
+        if (favoriteMatch) {
+            const method = (opts.method || 'GET').toUpperCase();
+            const turnId = decodeURIComponent(favoriteMatch[2]);
+            const result = conversationResults.find((item) => String(item.query_id) === turnId);
+            if (method === 'PUT' && result) {
+                favoriteItems = favoriteItems.filter((item) => item.turn_id !== turnId);
+                favoriteItems.unshift({
+                    conversation_id: F.SESSION,
+                    turn_id: turnId,
+                    sequence_number: Math.max(1, conversationResults.indexOf(result) + 1),
+                    conversation_title: conversationResults[0]?.question || result.question,
+                    question: result.question,
+                    answer: result.answer || null,
+                    result_kind: result.results ? 'table' : 'text',
+                    snapshot_status: result.results ? 'stored' : 'not_applicable',
+                    source_key: 'sales_db',
+                    source_label: 'Sales DB',
+                    connection_available: true,
+                    created_at: new Date().toISOString(),
+                    favorited_at: new Date().toISOString(),
+                });
+                return json({ success: true, is_favorite: true });
+            }
+            if (method === 'DELETE') {
+                favoriteItems = favoriteItems.filter((item) => item.turn_id !== turnId);
+                return json({ success: true, is_favorite: false });
+            }
+            return json({ detail: 'not found' }, 404);
+        }
+        const artifactMatch = url.match(/\/api\/conversations\/([^/]+)\/turns\/([^/]+)\/artifact/);
+        if (artifactMatch) {
+            const result = conversationResults.find((item) => String(item.query_id) === decodeURIComponent(artifactMatch[2]));
+            return result ? json({
+                turn_id: result.query_id,
+                results: result.results || null,
+                chart_spec: null,
+                chart_config: null,
+                snapshot_status: result.results ? 'stored' : 'not_applicable',
+                snapshot_at: new Date().toISOString(),
+            }) : json({ detail: 'not found' }, 404);
+        }
+        const turnMatch = url.match(/\/api\/conversations\/([^/]+)\/turns\/([^/?]+)(?:\?|$)/);
+        if (turnMatch) {
+            const turnId = decodeURIComponent(turnMatch[2]);
+            const index = conversationResults.findIndex((item) => String(item.query_id) === turnId);
+            return index >= 0 ? json(turnDto(conversationResults[index], index)) : json({ detail: 'not found' }, 404);
+        }
+        const detailMatch = url.match(/\/api\/conversations\/([^/?]+)(?:\?|$)/);
+        if (detailMatch && decodeURIComponent(detailMatch[1]) === F.SESSION) {
+            return json({
+                conversation: {
+                    id: F.SESSION,
+                    title: conversationResults[0]?.question || 'Conversation',
+                    source_key: 'sales_db',
+                    source_label: 'Sales DB',
+                    connection_available: true,
+                    turn_count: conversationResults.length,
+                },
+                turns: conversationResults.map(turnDto).reverse(),
+                next_cursor: null,
+            });
+        }
+        if (url.indexOf('/api/conversations') >= 0) return json({ items: [], next_cursor: null });
 
         // Anything else that is same-origin gets a benign empty object; let true
         // cross-origin requests (none expected) fall through to the real fetch.
