@@ -33,7 +33,9 @@
     const enc = new TextEncoder();
     const conversationResults = [];
     let favoriteItems = [];
+    let conversationItems = [];
     window.__seedFavoriteItems = (items) => { favoriteItems = Array.isArray(items) ? items.slice() : []; };
+    window.__seedConversations = (items) => { conversationItems = Array.isArray(items) ? items.slice() : []; };
     const json = (obj, status) => new Response(JSON.stringify(obj), {
         status: status || 200, headers: { 'Content-Type': 'application/json' },
     });
@@ -261,8 +263,28 @@
             const index = conversationResults.findIndex((item) => String(item.query_id) === turnId);
             return index >= 0 ? json(turnDto(conversationResults[index], index)) : json({ detail: 'not found' }, 404);
         }
+        const conversationUrl = new URL(url, location.origin);
+        if (conversationUrl.pathname === '/api/conversations' && (opts.method || 'GET').toUpperCase() === 'GET') {
+            return json({ items: conversationItems, next_cursor: null });
+        }
         const detailMatch = url.match(/\/api\/conversations\/([^/?]+)(?:\?|$)/);
         if (detailMatch && decodeURIComponent(detailMatch[1]) === F.SESSION) {
+            if ((opts.method || 'GET').toUpperCase() === 'DELETE') {
+                const conversationId = decodeURIComponent(detailMatch[1]);
+                const savedCount = favoriteItems.filter((item) => item.conversation_id === conversationId).length;
+                const deleteSaved = conversationUrl.searchParams.get('delete_saved') === 'true';
+                if (savedCount && !deleteSaved) {
+                    return json({
+                        detail: {
+                            code: 'conversation_has_saved_answers',
+                            saved_answer_count: savedCount,
+                        },
+                    }, 409);
+                }
+                conversationItems = conversationItems.filter((item) => item.id !== conversationId);
+                if (deleteSaved) favoriteItems = favoriteItems.filter((item) => item.conversation_id !== conversationId);
+                return json({ success: true, deleted_saved_answer_count: deleteSaved ? savedCount : 0 });
+            }
             return json({
                 conversation: {
                     id: F.SESSION,
@@ -276,7 +298,7 @@
                 next_cursor: null,
             });
         }
-        if (url.indexOf('/api/conversations') >= 0) return json({ items: [], next_cursor: null });
+        if (url.indexOf('/api/conversations') >= 0) return json({ items: conversationItems, next_cursor: null });
 
         // Anything else that is same-origin gets a benign empty object; let true
         // cross-origin requests (none expected) fall through to the real fetch.

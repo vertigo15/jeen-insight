@@ -380,7 +380,11 @@ def _proxy_delete(path: str, params: Dict[str, Any] | None = None, timeout: floa
         return jsonify({"error": f"Backend unavailable: {e}", "code": "BACKEND_UNAVAILABLE"}), 503
     if response.status_code == 200:
         return jsonify(response.json())
-    return jsonify({"error": response.text}), response.status_code
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"error": response.text}
+    return jsonify(payload), response.status_code
 
 
 def _session_user_id() -> str:
@@ -1459,7 +1463,9 @@ def rename_conversation(conversation_id: str):
 
 @app.route("/api/conversations/<conversation_id>", methods=["DELETE"])
 def delete_conversation(conversation_id: str):
-    return _proxy_delete(f"/api/conversations/{conversation_id}", timeout=30)
+    delete_saved = request.args.get("delete_saved")
+    params = {"delete_saved": delete_saved} if delete_saved else None
+    return _proxy_delete(f"/api/conversations/{conversation_id}", params=params, timeout=30)
 
 
 # ----------------------------------------------------------------------

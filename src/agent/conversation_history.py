@@ -792,18 +792,30 @@ class ConversationHistoryService:
     # ------------------------------------------------------------------
     # Conversations (restore / browse)
     # ------------------------------------------------------------------
-    _CONVERSATION_SUMMARY_SQL = """
-        SELECT c.id, c.title, c.source_key, c.source_label,
-               c.created_at, c.last_activity_at,
-               (SELECT COUNT(*) FROM insights_conversation_sessions t
-                 WHERE t.session_id = c.id) AS turn_count,
-               (SELECT t.natural_language_query
-                  FROM insights_conversation_sessions t
-                 WHERE t.session_id = c.id
-                 ORDER BY t.sequence_number DESC
-                 LIMIT 1) AS last_question
-        FROM insights_conversations c
-    """
+    def _conversation_summary_sql(self) -> str:
+        saved_count = (
+            """
+            (SELECT COUNT(*)
+               FROM insights_favorite_answers f
+               JOIN insights_conversation_sessions ft ON ft.id = f.turn_id
+              WHERE f.user_id = c.user_id AND ft.session_id = c.id)
+            """
+            if self.favorite_schema_ready
+            else "0::bigint"
+        )
+        return f"""
+            SELECT c.id, c.title, c.source_key, c.source_label,
+                   c.created_at, c.last_activity_at,
+                   (SELECT COUNT(*) FROM insights_conversation_sessions t
+                     WHERE t.session_id = c.id) AS turn_count,
+                   (SELECT t.natural_language_query
+                      FROM insights_conversation_sessions t
+                     WHERE t.session_id = c.id
+                     ORDER BY t.sequence_number DESC
+                     LIMIT 1) AS last_question,
+                   {saved_count} AS saved_answer_count
+            FROM insights_conversations c
+        """
 
     @staticmethod
     def _summary_row(row: Any) -> Dict[str, Any]:
@@ -813,6 +825,9 @@ class ConversationHistoryService:
             "source_key": row["source_key"],
             "source_label": row["source_label"],
             "turn_count": int(row["turn_count"] or 0),
+            "saved_answer_count": int(
+                ConversationHistoryService._row_get(row, "saved_answer_count", 0) or 0
+            ),
             "last_question": row["last_question"],
             "created_at": _iso(row["created_at"]),
             "last_activity_at": _iso(row["last_activity_at"]),
@@ -826,7 +841,7 @@ class ConversationHistoryService:
         try:
             async with self.pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    self._CONVERSATION_SUMMARY_SQL
+                    self._conversation_summary_sql()
                     + """
                     WHERE c.user_id = $1 AND c.source_key = $2
                     ORDER BY c.last_activity_at DESC, c.id DESC
@@ -848,7 +863,7 @@ class ConversationHistoryService:
         try:
             async with self.pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    self._CONVERSATION_SUMMARY_SQL
+                    self._conversation_summary_sql()
                     + " WHERE c.id = $1 AND c.user_id = $2",
                     conversation_id,
                     user_id,
@@ -875,7 +890,7 @@ class ConversationHistoryService:
             before_id = before[1] if before else None
             async with self.pool.acquire() as conn:
                 rows = await conn.fetch(
-                    self._CONVERSATION_SUMMARY_SQL
+                    self._conversation_summary_sql()
                     + """
                     WHERE c.user_id = $1
                       AND ($2::text IS NULL OR c.source_key = $2)
@@ -1364,22 +1379,71 @@ class ConversationHistoryService:
             return False
 
     async def delete_conversation(
-        self, *, conversation_id: UUID, user_id: str
-    ) -> bool:
-        """Hard delete; FK cascades remove turns, insights and artifacts."""
+        self,
+        *,
+        conversation_id: UUID,
+        user_id: str,
+        delete_saved: bool = False,
+    ) -> Dict[str, Any]:
+        """Hard delete an owned conversation after protecting saved answers.
+
+        Favorite mutations, retention and deletion share one advisory lock per
+        user + connection, so a concurrent Save cannot slip between the count
+        and the cascading DELETE.
+        """
         if not self.conversation_schema_ready:
-            return False
+            return {"status": "missing", "saved_answer_count": 0}
         try:
             async with self.pool.acquire() as conn:
-                result = await conn.execute(
-                    "DELETE FROM insights_conversations WHERE id = $1 AND user_id = $2",
-                    conversation_id,
-                    user_id,
-                )
-                return result.endswith(" 1")
+                async with conn.transaction():
+                    source_key = await conn.fetchval(
+                        "SELECT source_key FROM insights_conversations WHERE id = $1 AND user_id = $2",
+                        conversation_id,
+                        user_id,
+                    )
+                    if not source_key:
+                        return {"status": "missing", "saved_answer_count": 0}
+                    if self.favorite_schema_ready:
+                        await conn.fetchval(
+                            "SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))",
+                            user_id,
+                            source_key,
+                        )
+                        still_owned = await conn.fetchval(
+                            "SELECT 1 FROM insights_conversations WHERE id = $1 AND user_id = $2",
+                            conversation_id,
+                            user_id,
+                        )
+                        if not still_owned:
+                            return {"status": "missing", "saved_answer_count": 0}
+                        saved_count = int(await conn.fetchval(
+                            """
+                            SELECT COUNT(*)
+                            FROM insights_favorite_answers f
+                            JOIN insights_conversation_sessions cs ON cs.id = f.turn_id
+                            WHERE f.user_id = $1 AND cs.session_id = $2
+                            """,
+                            user_id,
+                            conversation_id,
+                        ) or 0)
+                        if saved_count and not delete_saved:
+                            return {
+                                "status": "blocked",
+                                "saved_answer_count": saved_count,
+                            }
+                    else:
+                        saved_count = 0
+                    result = await conn.execute(
+                        "DELETE FROM insights_conversations WHERE id = $1 AND user_id = $2",
+                        conversation_id,
+                        user_id,
+                    )
+                    if not result.endswith(" 1"):
+                        return {"status": "missing", "saved_answer_count": saved_count}
+                    return {"status": "deleted", "saved_answer_count": saved_count}
         except Exception:
             logger.exception("Failed to delete conversation")
-            return False
+            return {"status": "error", "saved_answer_count": 0}
 
     # ------------------------------------------------------------------
     # Favorite answers
@@ -1394,8 +1458,9 @@ class ConversationHistoryService:
     ) -> Optional[bool]:
         """Set one owned successful turn's favorite state.
 
-        ``None`` means the turn is missing/not owned. Returning the requested
-        state makes PUT/DELETE idempotent for optimistic clients.
+        ``None`` means a favorite request targets a missing/not-owned turn.
+        Removing a missing turn returns ``False`` because its cascaded favorite
+        row is already gone, keeping DELETE idempotent for stale clients.
         """
         if not (self.conversation_schema_ready and self.favorite_schema_ready):
             return None
@@ -1417,7 +1482,7 @@ class ConversationHistoryService:
                         user_id,
                     )
                     if not source_key:
-                        return None
+                        return None if favorite else False
                     # Serialize favorite mutations with retention for this user
                     # and connection. Re-check ownership after acquiring the
                     # lock because a prune may have won between the first lookup
@@ -1442,7 +1507,7 @@ class ConversationHistoryService:
                         user_id,
                     )
                     if not owned:
-                        return None
+                        return None if favorite else False
                     if favorite:
                         await conn.execute(
                             """

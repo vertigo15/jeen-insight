@@ -375,12 +375,28 @@ async def rename_conversation(
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(
     conversation_id: UUID,
+    delete_saved: bool = Query(False),
     principal: Principal = Depends(get_principal),
 ):
     history = get_history_service()
-    ok = await history.delete_conversation(
-        conversation_id=conversation_id, user_id=principal.user_id
+    outcome = await history.delete_conversation(
+        conversation_id=conversation_id,
+        user_id=principal.user_id,
+        delete_saved=delete_saved,
     )
-    if not ok:
+    if outcome["status"] == "missing":
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return {"success": True}
+    if outcome["status"] == "blocked":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "conversation_has_saved_answers",
+                "saved_answer_count": outcome["saved_answer_count"],
+            },
+        )
+    if outcome["status"] != "deleted":
+        raise HTTPException(status_code=500, detail="Conversation deletion failed")
+    return {
+        "success": True,
+        "deleted_saved_answer_count": outcome["saved_answer_count"],
+    }

@@ -35,9 +35,11 @@ test.describe('conversation and favorite actions', () => {
 
     const favorite = page.locator('#v3-favorite-action');
     await expect(favorite).toBeVisible();
+    await expect(favorite).toContainText('Save answer');
     await expect(favorite).toHaveAttribute('aria-pressed', 'false');
     await favorite.click();
     await expect(favorite).toHaveAttribute('aria-pressed', 'true');
+    await expect(favorite).toContainText('Saved');
     await expect(page.locator('#v3-thread .v3-turn-favorite')).toHaveCount(1);
 
     await page.locator('[data-rail="saved"]').click();
@@ -58,6 +60,113 @@ test.describe('conversation and favorite actions', () => {
     await page.locator('.v3-favorite-item [data-favorite-remove]').click();
     await expect(page.locator('.v3-favorite-item')).toHaveCount(0);
     await expect(page.locator('.v3-saved-empty')).toBeVisible();
+  });
+
+  test('New conversation cancels an active answer and ignores its late response', async ({ page }) => {
+    await openHarness(page);
+    await page.evaluate(async () => {
+      const baseFetch = window.fetch;
+      window.__answerRequestAborted = false;
+      window.fetch = (input, init) => {
+        const url = typeof input === 'string' ? input : input.url;
+        if (url.includes('/api/ask/stream')) {
+          return new Promise((resolve, reject) => {
+            init.signal.addEventListener('abort', () => {
+              window.__answerRequestAborted = true;
+              reject(new DOMException('Aborted', 'AbortError'));
+            }, { once: true });
+          });
+        }
+        return baseFetch(input, init);
+      };
+      void window.ChatController.send('A deliberately delayed answer');
+    });
+    await expect.poll(() => page.evaluate(() => window.ChatController.sending)).toBe(true);
+    const button = page.locator('#v3-new-conversation');
+    await expect(button).toBeEnabled();
+    await expect(button).toHaveAttribute('title', 'Stop current work and start a new conversation');
+    await button.click();
+    await expect.poll(() => page.evaluate(() => window.__answerRequestAborted)).toBe(true);
+    await expect(page.locator('#v3-thread article.v3-turn')).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => window.ChatController.sending)).toBe(false);
+  });
+
+  test('New conversation aborts a restored-data rerun', async ({ page }) => {
+    await openHarness(page);
+    await page.evaluate(async () => {
+      const dto = {
+        turn_id: '22222222-2222-2222-2222-222222222222',
+        sequence_number: 1,
+        question: 'Restored answer',
+        sql: 'SELECT 1',
+        execution_status: 'success',
+        result_kind: 'table',
+        answer: 'one',
+        metrics: {},
+        findings: [],
+        suggestions: [],
+        followups: [],
+        snapshot_status: 'pruned',
+        has_chart: false,
+        has_rerunnable_query: true,
+      };
+      const ctrl = window.ChatController;
+      const hydration = await import('/src/static/workspace/conversationHydration.js');
+      const turn = hydration.turnFromServer(dto, '11111111-1111-1111-1111-111111111111');
+      ctrl.turns = [turn];
+      ctrl.conversation = { id: turn.conversationId, title: turn.question, source_key: 'sales_db' };
+      ctrl.selectedTurnId = turn.id;
+      ctrl.selectedResultId = turn.id;
+      ctrl.render();
+
+      const baseFetch = window.fetch;
+      window.__rerunRequestAborted = false;
+      window.fetch = (input, init) => {
+        const url = typeof input === 'string' ? input : input.url;
+        if (/\/rerun$/.test(url)) {
+          return new Promise((resolve, reject) => {
+            init.signal.addEventListener('abort', () => {
+              window.__rerunRequestAborted = true;
+              reject(new DOMException('Aborted', 'AbortError'));
+            }, { once: true });
+          });
+        }
+        return baseFetch(input, init);
+      };
+      void ctrl.rerunTurn(turn.id);
+    });
+    await expect.poll(() => page.evaluate(() => window.ChatController.turns[0]?.rerunning)).toBe(true);
+    await page.locator('#v3-new-conversation').click();
+    await expect.poll(() => page.evaluate(() => window.__rerunRequestAborted)).toBe(true);
+    await expect(page.locator('#v3-thread article.v3-turn')).toHaveCount(0);
+  });
+
+  test('New conversation aborts an ML analysis rerun', async ({ page }) => {
+    await openHarness(page);
+    await ask(page, Q.forecast);
+    await page.locator('#v3-placeholder [data-run]').click();
+    await expect(page.locator('#v3-meta-row .v3-skill-chip')).toHaveText('forecast');
+    await page.evaluate(() => {
+      const baseFetch = window.fetch;
+      window.__analysisRerunAborted = false;
+      window.fetch = (input, init) => {
+        const url = typeof input === 'string' ? input : input.url;
+        if (url.includes('/api/analysis/rerun')) {
+          return new Promise((resolve, reject) => {
+            init.signal.addEventListener('abort', () => {
+              window.__analysisRerunAborted = true;
+              reject(new DOMException('Aborted', 'AbortError'));
+            }, { once: true });
+          });
+        }
+        return baseFetch(input, init);
+      };
+      void window.ChatController.rerunAnalysis('extend the horizon');
+    });
+    await expect.poll(() => page.evaluate(() => Boolean(window.ChatController._analysisRerunInFlight))).toBe(true);
+    await page.locator('#v3-new-conversation').click();
+    await expect.poll(() => page.evaluate(() => window.__analysisRerunAborted)).toBe(true);
+    await expect(page.locator('#v3-thread article.v3-turn')).toHaveCount(0);
   });
 
   test('mobile RTL drawer keeps localized New conversation and Saved controls visible', async ({ page }) => {
@@ -88,6 +197,16 @@ test.describe('conversation and favorite actions', () => {
     await expect(button).toBeVisible();
   });
 
+  test('Hebrew answer actions use Save and Saved terminology', async ({ page }) => {
+    await openHarness(page, '?locale=he');
+    await ask(page, Q.sqlAggregate);
+    const save = page.locator('#v3-favorite-action');
+    await expect(save).toContainText('שמירת התשובה');
+    await save.click();
+    await expect(save).toContainText('נשמר');
+    await expect.poll(() => page.evaluate(() => (window.__toasts || []).at(-1)?.msg)).toBe('התשובה נשמרה');
+  });
+
   test('a delayed favorite response cannot overwrite another selected answer', async ({ page }) => {
     await openHarness(page);
     await ask(page, Q.sqlAggregate);
@@ -115,7 +234,7 @@ test.describe('conversation and favorite actions', () => {
     await expect(page.locator('#v3-favorite-action')).toHaveAttribute('aria-pressed', 'false');
   });
 
-  test('an unavailable saved turn never falls back to the newest answer', async ({ page }) => {
+  test('an unavailable saved turn shows persistent recovery and can be removed', async ({ page }) => {
     await openHarness(page);
     await ask(page, Q.sqlAggregate);
     await page.locator('#v3-favorite-action').click();
@@ -142,7 +261,97 @@ test.describe('conversation and favorite actions', () => {
     });
     await page.locator('.v3-favorite-item').click();
     await expect.poll(() => page.evaluate(() => window.ChatController.selectedResultId)).toBeNull();
-    await expect.poll(() => page.evaluate(() => (window.__toasts || []).at(-1)?.msg)).toBe('That saved answer is no longer available.');
+    const unavailable = page.locator('.v3-saved-unavailable');
+    await expect(unavailable).toBeVisible();
+    await expect(unavailable).toContainText('This saved answer is unavailable.');
+    await unavailable.locator('[data-saved-remove]').click();
+    await expect(page.locator('[data-panel="saved"]')).toBeVisible();
+    await expect(page.locator('.v3-favorite-item')).toHaveCount(0);
+  });
+
+  test('Saved cards expose unavailable connections and refresh requirements', async ({ page }) => {
+    await openHarness(page);
+    await page.evaluate(() => {
+      window.__seedFavoriteItems([
+        {
+          conversation_id: '11111111-1111-1111-1111-111111111111',
+          turn_id: 'saved-unavailable',
+          sequence_number: 1,
+          conversation_title: 'Saved conversation',
+          question: 'Unavailable answer',
+          answer: 'Saved text',
+          result_kind: 'text',
+          snapshot_status: 'not_applicable',
+          source_key: 'gone',
+          source_label: 'Removed source',
+          connection_available: false,
+          favorited_at: new Date().toISOString(),
+        },
+        {
+          conversation_id: '11111111-1111-1111-1111-111111111111',
+          turn_id: 'saved-refresh',
+          sequence_number: 2,
+          conversation_title: 'Saved conversation',
+          question: 'Refresh answer',
+          answer: 'Saved table',
+          result_kind: 'table',
+          snapshot_status: 'pruned',
+          source_key: 'sales_db',
+          source_label: 'Sales DB',
+          connection_available: true,
+          favorited_at: new Date().toISOString(),
+        },
+      ]);
+    });
+    await page.locator('[data-rail="saved"]').click();
+    await expect(page.locator('.v3-favorite-badge', { hasText: 'Connection unavailable' })).toBeVisible();
+    await expect(page.locator('.v3-favorite-badge', { hasText: 'Data refresh required' })).toBeVisible();
+  });
+
+  test('deleting a conversation with stale saved count requires explicit confirmation', async ({ page }) => {
+    await openHarness(page);
+    await page.evaluate(() => {
+      const conversationId = '11111111-1111-1111-1111-111111111111';
+      window.__seedConversations([{
+        id: conversationId,
+        title: 'Conversation with saved answer',
+        source_key: 'sales_db',
+        source_label: 'Sales DB',
+        connection_available: true,
+        turn_count: 1,
+        saved_answer_count: 0,
+      }]);
+      window.__seedFavoriteItems([{
+        conversation_id: conversationId,
+        turn_id: 'saved-turn',
+        sequence_number: 1,
+        conversation_title: 'Conversation with saved answer',
+        question: 'Saved question',
+        answer: 'Saved answer',
+        result_kind: 'text',
+        snapshot_status: 'not_applicable',
+        source_key: 'sales_db',
+        source_label: 'Sales DB',
+        connection_available: true,
+        favorited_at: new Date().toISOString(),
+      }]);
+      window.__confirmMessages = [];
+      window.confirm = (message) => {
+        window.__confirmMessages.push(message);
+        return true;
+      };
+    });
+    await page.locator('[data-rail="history"]').click();
+    await page.locator('[data-conv-action="delete"]').click();
+    await expect(page.locator('.v3-conv-item')).toHaveCount(0);
+    const messages = await page.evaluate(() => window.__confirmMessages);
+    expect(messages).toHaveLength(2);
+    expect(messages[1]).toContain('saved answer');
+    const deletes = await page.evaluate(() => (window.__calls || []).filter((call) =>
+      call.method === 'DELETE' && /\/api\/conversations\/[^/]+/.test(call.url)
+    ).map((call) => call.url));
+    expect(deletes).toHaveLength(2);
+    expect(deletes[1]).toContain('delete_saved=true');
   });
 
   test('Saved answers paginate without hiding older favorites', async ({ page }) => {

@@ -23,6 +23,7 @@ def _summary(**overrides):
         "source_key": "sales_db",
         "source_label": "Sales",
         "turn_count": 2,
+        "saved_answer_count": 1,
         "last_question": "and by region?",
         "created_at": "2026-09-01T10:00:00+00:00",
         "last_activity_at": "2026-09-01T10:05:00+00:00",
@@ -105,6 +106,7 @@ def test_last_returns_hydration_payload_without_rows(client, fake_state, monkeyp
     body = resp.json()
     assert body["conversation"]["id"] == CONV_ID
     assert body["conversation"]["connection_available"] is True
+    assert body["conversation"]["saved_answer_count"] == 1
     assert [t["sequence_number"] for t in body["turns"]] == [2, 1]
     # Metadata-first: no rows, no chart config on the hydration payload.
     assert all("results" not in t and "chart_config" not in t for t in body["turns"])
@@ -188,13 +190,35 @@ def test_rename_and_delete_are_user_scoped(client, fake_state):
     h = _history_with(
         fake_state,
         rename_conversation=AsyncMock(return_value=False),
-        delete_conversation=AsyncMock(return_value=False),
+        delete_conversation=AsyncMock(return_value={"status": "missing", "saved_answer_count": 0}),
     )
     assert client.patch(f"/api/conversations/{CONV_ID}", json={"title": "x"}).status_code == 404
     assert client.delete(f"/api/conversations/{CONV_ID}").status_code == 404
     assert h.rename_conversation.await_args.kwargs["user_id"] == "user-a"
     assert h.delete_conversation.await_args.kwargs["user_id"] == "user-a"
+    assert h.delete_conversation.await_args.kwargs["delete_saved"] is False
     assert client.patch(f"/api/conversations/{CONV_ID}", json={"title": ""}).status_code == 422
+
+
+def test_delete_requires_explicit_confirmation_for_saved_answers(client, fake_state):
+    h = _history_with(
+        fake_state,
+        delete_conversation=AsyncMock(side_effect=[
+            {"status": "blocked", "saved_answer_count": 2},
+            {"status": "deleted", "saved_answer_count": 2},
+        ]),
+    )
+    blocked = client.delete(f"/api/conversations/{CONV_ID}")
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"] == {
+        "code": "conversation_has_saved_answers",
+        "saved_answer_count": 2,
+    }
+
+    deleted = client.delete(f"/api/conversations/{CONV_ID}?delete_saved=true")
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted_saved_answer_count"] == 2
+    assert h.delete_conversation.await_args.kwargs["delete_saved"] is True
 
 
 def test_favorite_answers_are_user_scoped_and_reopenable(client, fake_state):
@@ -247,8 +271,11 @@ def test_favorite_routes_fail_closed_when_schema_or_turn_is_missing(client, fake
     assert client.put(f"/api/conversations/{CONV_ID}/turns/{TURN_ID}/favorite").status_code == 503
 
     h.favorite_schema_ready = True
-    h.set_answer_favorite = AsyncMock(return_value=None)
+    h.set_answer_favorite = AsyncMock(side_effect=[None, False])
     assert client.put(f"/api/conversations/{CONV_ID}/turns/{TURN_ID}/favorite").status_code == 404
+    removed = client.delete(f"/api/conversations/{CONV_ID}/turns/{TURN_ID}/favorite")
+    assert removed.status_code == 200
+    assert removed.json()["is_favorite"] is False
 
 
 # ── on-open prune trigger ───────────────────────────────────────────────────

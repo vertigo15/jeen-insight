@@ -284,8 +284,10 @@
         _hydration: null,
         _analysisRerunInFlight: null,
         _analysisRerunAbort: null,
+        _turnRerunAborts: new Set(),
         savedView: 'answers',
         _favoriteList: null,
+        _unavailableSavedAnswer: null,
 
         init() {
             if (document.getElementById('v3-shell')) return;
@@ -1065,6 +1067,7 @@
         selectTurn(id) {
             const turn = this.turns.find((item) => item.id === id);
             if (!turn) return;
+            this._unavailableSavedAnswer = null;
             this._captureSelectedChart();
             const selection = selectionForTurn(this.selectedResultId, turn);
             this.selectedTurnId = selection.selectedTurnId;
@@ -1105,8 +1108,31 @@
                 try { this._analysisRerunAbort.abort(); } catch (_) { /* already settled */ }
                 this._analysisRerunAbort = null;
             }
+            this._turnRerunAborts.forEach((abort) => {
+                try { abort.abort(); } catch (_) { /* already settled */ }
+            });
+            this._turnRerunAborts.clear();
             this._analysisRerunInFlight = null;
             window.JeenLegacyBridge?.setAnalysisRerunBusy?.(false);
+        },
+
+        _hasActiveWork() {
+            return Boolean(
+                this.sending
+                || this.hydrating
+                || this._analysisRerunInFlight
+                || this.turns.some((turn) => turn.rerunning)
+            );
+        },
+
+        _syncNewConversationAction() {
+            const button = document.getElementById('v3-new-conversation');
+            if (!button) return;
+            const busy = this._hasActiveWork();
+            const label = t(busy ? 'conversation.stopAndStartNew' : 'conversation.newConversation');
+            button.disabled = false;
+            button.title = label;
+            button.setAttribute('aria-label', label);
         },
 
         reset() {
@@ -1114,6 +1140,7 @@
             this._abortInFlight();
             this.turns = [];
             this.conversation = null;
+            this._unavailableSavedAnswer = null;
             this.hydrating = false;
             this.readOnly = false;
             this.selectedTurnId = null;
@@ -1129,11 +1156,14 @@
         /** Explicit "New conversation": clear the thread; the server creates the
          *  conversation row lazily on the first question. */
         newConversation() {
-            if (this.sending) return;
+            const cancelledWork = this._hasActiveWork();
             this.reset();
             this.setTab('conversation');
             this.setConversation(true);
             if (this.input) this.input.focus();
+            if (cancelledWork && typeof window.showToast === 'function') {
+                window.showToast(t('conversation.cancelledForNew'), 'info');
+            }
         },
 
         _favoriteCoordinates(turn) {
@@ -1195,7 +1225,9 @@
                     `/api/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/favorite`,
                     { method: favorite ? 'PUT' : 'DELETE', headers: { 'Content-Type': 'application/json' }, body: favorite ? '{}' : undefined }
                 );
-                if (!response.ok) throw new Error(`favorite ${response.status}`);
+                if (!response.ok && !(favorite === false && response.status === 404)) {
+                    throw new Error(`favorite ${response.status}`);
+                }
                 if (turn) turn.isFavorite = favorite;
                 this._favoriteList = null;
                 if (this.activeTab === 'saved' && this.savedView === 'answers') await this.loadFavoriteAnswers();
@@ -1242,6 +1274,8 @@
                 || (pendingOpen && pendingOpen.sourceKey === sourceKey ? pendingOpen.conversationId : null);
             const targetTurnId = options.turnId
                 || (pendingOpen && pendingOpen.sourceKey === sourceKey ? pendingOpen.turnId : null);
+            const favoriteItem = options.favoriteItem
+                || (pendingOpen && pendingOpen.sourceKey === sourceKey ? pendingOpen.favoriteItem : null);
             const readOnly = Boolean(options.readOnly);
             if (!sourceKey && !conversationId) return;
             this._generation += 1;
@@ -1251,6 +1285,7 @@
             this._hydrateAbort = abort;
             this.turns = [];
             this.conversation = null;
+            this._unavailableSavedAnswer = null;
             this.readOnly = readOnly;
             this.selectedTurnId = null;
             this.selectedResultId = null;
@@ -1270,8 +1305,15 @@
                 if (stale()) return;
                 if (response.status === 401) return;
                 if (response.status === 404 && conversationId) {
-                    if (typeof window.showToast === 'function') window.showToast(t('conversation.list.gone'), 'error');
                     this.hydrating = false;
+                    if (favoriteItem) {
+                        this._unavailableSavedAnswer = {
+                            item: favoriteItem,
+                            retryable: false,
+                        };
+                    } else if (typeof window.showToast === 'function') {
+                        window.showToast(t('conversation.list.gone'), 'error');
+                    }
                     this.render();
                     return;
                 }
@@ -1280,6 +1322,9 @@
                 if (stale()) return;
                 this.hydrating = false;
                 if (!detail || !detail.conversation) {
+                    if (favoriteItem) {
+                        this._unavailableSavedAnswer = { item: favoriteItem, retryable: true };
+                    }
                     this.render();
                     return;
                 }
@@ -1307,15 +1352,23 @@
                         requested = mod.turnFromServer(await turnResponse.json(), detail.conversation.id);
                         this.turns.push(requested);
                         this.turns.sort((a, b) => a.sequence - b.sequence);
+                    } else {
+                        this._unavailableSavedAnswer = {
+                            item: favoriteItem || {
+                                conversation_id: detail.conversation.id,
+                                turn_id: targetTurnId,
+                                question: detail.conversation.title,
+                                source_key: detail.conversation.source_key,
+                                source_label: detail.conversation.source_label,
+                            },
+                            retryable: turnResponse.status !== 404,
+                        };
                     }
                 }
                 if (targetTurnId && !requested) {
                     this.selectedTurnId = null;
                     this.selectedResultId = null;
                     this.render();
-                    if (typeof window.showToast === 'function') {
-                        window.showToast(t('favorite.answerUnavailable'), 'error');
-                    }
                     return;
                 }
                 const initial = requested || newest;
@@ -1338,6 +1391,9 @@
                 if (stale() || abort.signal.aborted) return;
                 console.warn('[Workspace] conversation restore failed', error);
                 this.hydrating = false;
+                if (favoriteItem) {
+                    this._unavailableSavedAnswer = { item: favoriteItem, retryable: true };
+                }
                 this.render();
             } finally {
                 if (this._hydrateAbort === abort) this._hydrateAbort = null;
@@ -1389,6 +1445,8 @@
                 return;
             }
             const generation = this._generation;
+            const abort = new AbortController();
+            this._turnRerunAborts.add(abort);
             turn.rerunning = true;
             turn.rerunError = null;
             this.render();
@@ -1396,7 +1454,7 @@
                 const mod = await this._hydrationModule();
                 const response = await fetch(
                     `/api/conversations/${encodeURIComponent(turn.conversationId)}/turns/${encodeURIComponent(turn.turnId)}/rerun`,
-                    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+                    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: abort.signal }
                 );
                 if (generation !== this._generation) return;
                 if (!response.ok) {
@@ -1418,10 +1476,11 @@
                 this.lastAppliedResultId = null;
                 if (typeof window.showToast === 'function') window.showToast(t('conversation.rerun.refreshed'), 'success');
             } catch (error) {
-                if (generation !== this._generation) return;
+                if (generation !== this._generation || abort.signal.aborted) return;
                 turn.rerunError = error && error.message ? error.message : String(error);
                 if (typeof window.showToast === 'function') window.showToast(turn.rerunError, 'error');
             } finally {
+                this._turnRerunAborts.delete(abort);
                 turn.rerunning = false;
                 if (generation === this._generation) this.render();
             }
@@ -1504,12 +1563,20 @@
                 const when = item.favorited_at ? this._formatWhen(item.favorited_at) : '';
                 const mutationKey = `${item.conversation_id}:${item.turn_id}`;
                 const saving = Boolean(this._favoriteSavingKeys?.has(mutationKey));
+                const badges = [];
+                if (item.connection_available === false) {
+                    badges.push(`<span class="v3-favorite-badge is-unavailable">${h('favorite.connectionUnavailable')}</span>`);
+                }
+                if (item.result_kind === 'table' && item.snapshot_status !== 'stored') {
+                    badges.push(`<span class="v3-favorite-badge">${h('favorite.refreshRequired')}</span>`);
+                }
                 return `<article class="v3-favorite-item" data-favorite-open="${esc(item.turn_id)}" tabindex="0" role="button">
                   <div class="v3-favorite-item-head">
                     <strong dir="${directionOf(item.question)}">${esc(item.question)}</strong>
                     <button type="button" data-favorite-remove="${esc(item.turn_id)}" aria-label="${h('favorite.remove')}" title="${h('favorite.remove')}"${saving ? ' disabled' : ''}>${ICON.star}</button>
                   </div>
                   ${answer ? `<p dir="${directionOf(answer)}">${esc(answer)}</p>` : ''}
+                  ${badges.length ? `<div class="v3-favorite-badges">${badges.join('')}</div>` : ''}
                   <div class="v3-favorite-meta"><bdi>${esc(item.source_label || item.source_key)}</bdi>${when ? ` · ${esc(when)}` : ''}</div>
                 </article>`;
             }).join('') + (this._favoriteNextCursor
@@ -1546,7 +1613,7 @@
                 source_key: item.source_key,
                 source_label: item.source_label,
                 connection_available: item.connection_available,
-            }, { turnId: item.turn_id });
+            }, { turnId: item.turn_id, favoriteItem: item });
         },
 
         // ── History tab: browse / open / rename / delete conversations ──────
@@ -1605,10 +1672,11 @@
         _conversationItemHtml(c, readOnly) {
             const current = this.conversation && this.conversation.id === c.id;
             const when = c.last_activity_at ? this._formatWhen(c.last_activity_at) : '';
+            const savedCount = Number(c.saved_answer_count) || 0;
             return `<div class="v3-conv-item${current ? ' is-current' : ''}" data-open-conversation="${esc(c.id)}" role="button" tabindex="0">
               <div class="v3-conv-title" dir="${directionOf(c.title)}" title="${esc(c.title)}">${esc(c.title)}</div>
               <div class="v3-conv-meta">
-                <span><bdi>${esc(c.source_label || c.source_key)}</bdi>${readOnly ? ` · ${h('conversation.list.readOnly')}` : ''}</span>
+                <span><bdi>${esc(c.source_label || c.source_key)}</bdi>${readOnly ? ` · ${h('conversation.list.readOnly')}` : ''}${savedCount ? ` · ${h('conversation.list.savedCount', { count: savedCount })}` : ''}</span>
                 <span>${h('conversation.list.questionCount', { count: Number(c.turn_count) || 0 })}${when ? ` · ${esc(when)}` : ''}</span>
               </div>
               ${c.last_question && c.last_question !== c.title ? `<div class="v3-conv-last" dir="${directionOf(c.last_question)}">${esc(c.last_question)}</div>` : ''}
@@ -1625,17 +1693,31 @@
             this.setTab('conversation');
             if (item.connection_available === false) {
                 // Connection is gone: open read-only without switching connections.
-                this.hydrate(item.source_key, { conversationId: item.id, turnId: options.turnId, readOnly: true });
+                this.hydrate(item.source_key, {
+                    conversationId: item.id,
+                    turnId: options.turnId,
+                    favoriteItem: options.favoriteItem,
+                    readOnly: true,
+                });
                 return;
             }
             if (item.source_key && item.source_key !== active && typeof window.onConnectionChange === 'function') {
                 // Switching connections triggers hydrate() via 'jeen:connection-resolved';
                 // remember which conversation to open instead of the newest one.
-                this._pendingOpen = { sourceKey: item.source_key, conversationId: item.id, turnId: options.turnId || null };
+                this._pendingOpen = {
+                    sourceKey: item.source_key,
+                    conversationId: item.id,
+                    turnId: options.turnId || null,
+                    favoriteItem: options.favoriteItem || null,
+                };
                 window.onConnectionChange(item.source_key);
                 return;
             }
-            this.hydrate(item.source_key || active, { conversationId: item.id, turnId: options.turnId });
+            this.hydrate(item.source_key || active, {
+                conversationId: item.id,
+                turnId: options.turnId,
+                favoriteItem: options.favoriteItem,
+            });
         },
 
         async renameConversation(item) {
@@ -1663,13 +1745,40 @@
         },
 
         async deleteConversation(item) {
-            if (!window.confirm(t('conversation.delete.confirm', { title: iso(item.title) }))) return;
+            let savedCount = Number(item.saved_answer_count) || 0;
+            let deleteSaved = savedCount > 0;
+            const confirmed = window.confirm(deleteSaved
+                ? t('conversation.delete.confirmSaved', { title: iso(item.title), count: savedCount })
+                : t('conversation.delete.confirm', { title: iso(item.title) }));
+            if (!confirmed) return;
             try {
-                const response = await fetch(`/api/conversations/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+                let url = `/api/conversations/${encodeURIComponent(item.id)}`;
+                if (deleteSaved) url += '?delete_saved=true';
+                let response = await fetch(url, { method: 'DELETE' });
+                if (response.status === 409 && !deleteSaved) {
+                    let payload = {};
+                    try { payload = await response.json(); } catch (_) { /* plain text */ }
+                    const detail = payload.detail || payload;
+                    if (detail.code !== 'conversation_has_saved_answers') {
+                        throw new Error('unexpected delete conflict');
+                    }
+                    savedCount = Number(detail.saved_answer_count) || 0;
+                    if (!window.confirm(t('conversation.delete.confirmSaved', {
+                        title: iso(item.title),
+                        count: savedCount,
+                    }))) return;
+                    deleteSaved = true;
+                    response = await fetch(
+                        `/api/conversations/${encodeURIComponent(item.id)}?delete_saved=true`,
+                        { method: 'DELETE' }
+                    );
+                }
                 if (!response.ok && response.status !== 404) throw new Error(`delete ${response.status}`);
                 this._conversationList = (this._conversationList || []).filter((c) => c.id !== item.id);
+                this._favoriteList = (this._favoriteList || []).filter((favorite) => favorite.conversation_id !== item.id);
                 if (this.conversation && this.conversation.id === item.id) this.reset();
                 this.renderConversationList();
+                if (this.activeTab === 'saved' && this.savedView === 'answers') this.renderFavoriteAnswers();
                 if (typeof window.showToast === 'function') window.showToast(t('conversation.delete.done'), 'success');
             } catch (error) {
                 console.warn('[Workspace] delete failed', error);
@@ -1685,11 +1794,7 @@
                 this.askButton.disabled = busy;
                 this.askButton.setAttribute('aria-busy', String(busy));
             }
-            const newConversation = document.getElementById('v3-new-conversation');
-            if (newConversation) {
-                newConversation.disabled = busy;
-                newConversation.title = busy ? t('conversation.newDisabledRunning') : t('conversation.newConversation');
-            }
+            this._syncNewConversationAction();
         },
 
         _renderEmptySuggestions() {
@@ -1698,6 +1803,7 @@
         },
 
         render() {
+            this._syncNewConversationAction();
             this.renderConversation();
             this.renderWorkspace();
         },
@@ -2307,6 +2413,7 @@
             this._analysisRerunInFlight = run;
             this._analysisRerunAbort = abort;
             window.JeenLegacyBridge?.setAnalysisRerunBusy?.(true);
+            this._syncNewConversationAction();
             try {
                 const data = await this._postJson('/api/analysis/rerun', body, {
                     signal: abort.signal,
@@ -2324,6 +2431,7 @@
                 if (this._analysisRerunInFlight === run) {
                     this._analysisRerunInFlight = null;
                     window.JeenLegacyBridge?.setAnalysisRerunBusy?.(false);
+                    this._syncNewConversationAction();
                 }
             }
         },
@@ -2487,6 +2595,42 @@
             title.setAttribute('dir', directionOf(text));
         },
 
+        _renderUnavailableSavedAnswer(state) {
+            const item = state && state.item;
+            if (!item) return;
+            const placeholder = document.getElementById('v3-placeholder');
+            const chartBlock = document.getElementById('v3-chart-block');
+            const tableBlock = document.getElementById('v3-table-block');
+            this._placeChartInteraction(false);
+            this._hideDefinition();
+            this._setResultTitle(item.question || item.conversation_title || t('favorite.answerUnavailable'));
+            document.getElementById('v3-meta-row').innerHTML = `
+              <span class="v3-status is-empty">${h('favorite.answerUnavailable')}</span>`;
+            placeholder.innerHTML = `<div class="v3-saved-unavailable" role="status">
+              <strong>${h('favorite.answerUnavailable')}</strong>
+              <span>${h('favorite.unavailableCopy')}</span>
+              <div class="v3-saved-unavailable-actions">
+                <button type="button" class="v3-text-btn" data-saved-retry>${h('favorite.retry')}</button>
+                <button type="button" class="v3-text-btn" data-saved-remove>${h('favorite.remove')}</button>
+              </div>
+            </div>`;
+            placeholder.hidden = false;
+            chartBlock.hidden = true;
+            tableBlock.hidden = true;
+            document.getElementById('v3-dock-meta').textContent = t('shell.dock.noRunYet');
+            this._setActionsEnabled(false);
+            this.renderDock();
+            placeholder.querySelector('[data-saved-retry]')?.addEventListener('click', () => this.openFavorite(item));
+            placeholder.querySelector('[data-saved-remove]')?.addEventListener('click', async () => {
+                const removed = await this.setFavoriteState(item.conversation_id, item.turn_id, false);
+                if (!removed) return;
+                this._unavailableSavedAnswer = null;
+                this.setTab('saved');
+                this.setSavedView('answers');
+                this.render();
+            });
+        },
+
         renderWorkspace() {
             const turn = this.turns.find((item) => item.id === this.selectedResultId && item.status === 'success');
             this._renderFavoriteAction(turn);
@@ -2495,6 +2639,10 @@
             const tableBlock = document.getElementById('v3-table-block');
             const chartStatus = document.getElementById('v3-chart-status');
             if (chartStatus) chartStatus.hidden = true;
+            if (this._unavailableSavedAnswer) {
+                this._renderUnavailableSavedAnswer(this._unavailableSavedAnswer);
+                return;
+            }
             if (!turn) {
                 this._placeChartInteraction(false);
                 this._restorePlaceholder();

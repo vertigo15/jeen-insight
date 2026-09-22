@@ -407,6 +407,7 @@ class ConversationSummary(BaseModel):
     # conversations open read-only (no re-run, no new turns).
     connection_available: bool = True
     turn_count: int = 0
+    saved_answer_count: int = 0
     last_question: Optional[str] = None
     last_activity_at: Optional[str] = None
     created_at: Optional[str] = None
