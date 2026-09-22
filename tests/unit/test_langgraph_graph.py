@@ -76,6 +76,15 @@ def _text_resp(content: str) -> Dict[str, Any]:
     return {"content": content, "finish_reason": "stop", "usage": {}}
 
 
+def _empty_diag_resp(plausible: bool, reason: str = "reason", hint: str = "hint") -> Dict[str, Any]:
+    """empty_result_check gate reply: is a 0-row result plausible, plus a hint."""
+    return {
+        "content": json.dumps({"plausible": plausible, "reason": reason, "hint": hint}),
+        "finish_reason": "stop",
+        "usage": {"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150},
+    }
+
+
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="module")
@@ -494,6 +503,103 @@ class TestTrivialResult:
         assert resp["metrics"]["llm_call_count"] == 2
 
 
+class TestEmptyResultRecheck:
+    _EMPTY = {"columns": ["OrderYear", "total"], "rows": [], "row_count": 0}
+    _ROWS = {
+        "columns": ["OrderYear", "total"],
+        "rows": [{"OrderYear": 2007, "total": 25000000}, {"OrderYear": 2008, "total": 29000000}],
+        "row_count": 2,
+    }
+    _SQL = "SELECT OrderYear, SUM(SalesAmount) AS total FROM FactSales JOIN DimProduct ON true GROUP BY OrderYear"
+
+    @pytest.mark.asyncio
+    async def test_suspicious_empty_regenerates_sql_then_returns_rows(self, mock_services, prompt_loader):
+        """A suspicious 0-row aggregate is rechecked once; the fixed SQL returns rows."""
+        mock_services.llm.generate.side_effect = [
+            _router_resp("needs_query"),
+            _sql_tool_resp(self._SQL),          # 1st SQL → empty
+            _empty_diag_resp(False),            # gate: implausible → recheck
+            _sql_tool_resp(self._SQL + " -- fixed"),  # regenerated SQL → rows
+            _eval_resp("Sales by year."),       # eval on the non-empty result
+        ]
+        mock_services.sql_runner.run_sql.side_effect = [self._EMPTY, self._ROWS]
+
+        graph = _build(mock_services, prompt_loader)
+        resp = (await graph.ainvoke(_initial_state()))["formatted_response"]
+
+        assert resp["results"]["row_count"] == 2
+        assert resp.get("empty_result") is None  # the retry produced rows
+        assert resp["metrics"]["llm_call_count"] == 5
+        assert mock_services.sql_runner.run_sql.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_plausible_empty_gets_deterministic_answer_and_hint(self, mock_services, prompt_loader):
+        """When the gate deems the empty result plausible, no SQL retry — the user
+        gets an explicit 'no records' answer plus the likely-cause hint."""
+        mock_services.llm.generate.side_effect = [
+            _router_resp("needs_query"),
+            _sql_tool_resp(self._SQL),
+            _empty_diag_resp(True, hint="No sales fall in the requested range."),
+        ]
+        mock_services.sql_runner.run_sql.return_value = self._EMPTY
+
+        graph = _build(mock_services, prompt_loader)
+        resp = (await graph.ainvoke(_initial_state()))["formatted_response"]
+
+        assert resp["empty_result"] is True
+        assert resp["empty_hint"] == "No sales fall in the requested range."
+        assert resp["answer"] == "No records were returned from the database for this query."
+        assert resp.get("findings") is None and resp.get("followups") is None
+        assert resp["results"]["row_count"] == 0
+        assert resp["metrics"]["llm_call_count"] == 3
+        assert mock_services.sql_runner.run_sql.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_recheck_is_bounded_to_one_pass(self, mock_services, prompt_loader):
+        """If the regenerated SQL is still empty, the graph accepts it and stops —
+        the diagnostics counter prevents a second gate call or any loop."""
+        mock_services.llm.generate.side_effect = [
+            _router_resp("needs_query"),
+            _sql_tool_resp(self._SQL),
+            _empty_diag_resp(False),            # first (and only) gate call
+            _sql_tool_resp(self._SQL + " -- v2"),
+            # No further LLM calls: the second empty result is accepted directly.
+        ]
+        mock_services.sql_runner.run_sql.side_effect = [self._EMPTY, self._EMPTY]
+
+        graph = _build(mock_services, prompt_loader)
+        resp = (await graph.ainvoke(_initial_state()))["formatted_response"]
+
+        assert resp["empty_result"] is True
+        assert resp["metrics"]["llm_call_count"] == 4  # router + 2 sql + 1 gate
+        assert mock_services.sql_runner.run_sql.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_disabled_flag_accepts_empty_without_gate(self, mock_services, prompt_loader):
+        """With the recheck disabled, a 0-row result is accepted with no LLM gate."""
+        mock_services.llm.generate.side_effect = [
+            _router_resp("needs_query"),
+            _sql_tool_resp(self._SQL),
+        ]
+        mock_services.sql_runner.run_sql.return_value = self._EMPTY
+
+        graph = build_graph(
+            llm=mock_services.llm,
+            router_llm=mock_services.llm,
+            sql_runner=mock_services.sql_runner,
+            metadata_loader=mock_services.metadata_loader,
+            history_service=mock_services.history_service,
+            prompt_loader=prompt_loader,
+            deployment_name="test-deployment",
+            empty_recheck_enabled=False,
+        )
+        resp = (await graph.ainvoke(_initial_state()))["formatted_response"]
+
+        assert resp["empty_result"] is True
+        assert resp.get("empty_hint") is None
+        assert resp["metrics"]["llm_call_count"] == 2  # router + sql only
+
+
 class TestRecursionLimit:
     def test_limit_covers_the_longest_budget_legal_path(self):
         """A request that exhausts every retry budget must end with an 'exhausted'
@@ -505,12 +611,16 @@ class TestRecursionLimit:
                   "filter_planner", "filter_grounder", "prior_data_binder", "prompt_builder"]
         reground = ["sql_generator", "sqlglot_validate", "dlp_check", "execute_query", "empty_filter_result_check",
                     "feedback_classifier", "filter_grounder", "prior_data_binder", "prompt_builder"]
+        recheck = ["sql_generator", "sqlglot_validate", "dlp_check", "execute_query", "empty_filter_result_check",
+                   "empty_result_check", "feedback_classifier"]
         attempt = ["sql_generator", "sqlglot_validate", "dlp_check", "execute_query", "empty_filter_result_check",
                    "trivial_result_check", "fused_eval_analytics", "feedback_classifier"]
         tail = ["response_formatter", "save_to_memory", "observability_log"]
         max_retries = 3
-        longest = len(prefix) + len(reground) + (1 + max_retries) * len(attempt) + len(tail)
-        assert longest == _GRAPH_LONGEST_LEGAL_PATH == 52
+        # reground and recheck are mutually exclusive on a given empty result, so
+        # counting both is a conservative over-estimate of the true longest path.
+        longest = len(prefix) + len(reground) + len(recheck) + (1 + max_retries) * len(attempt) + len(tail)
+        assert longest == _GRAPH_LONGEST_LEGAL_PATH == 59
         assert _GRAPH_RECURSION_LIMIT > longest
 
 

@@ -4,15 +4,22 @@ execute_query         Async node.  Runs the SQL via SqlRunner and records
                       execution time.  The runner already enforces read-only safety.
 trivial_result_check  Sync node.  Flags single-value / small result sets so the
                       expensive eval/analytics LLM call is skipped.
+empty_result_check    Async node.  Diagnoses a genuinely empty (0-row) result: a
+                      pure-Python heuristic gates a single fast LLM call that may
+                      request one SQL regeneration and produces a likely-cause hint.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
+from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
+from src.agent.llm_service import LangChainLlmService
+from src.agent.token_usage import merge_usage
 from src.connectors import SqlRunner
 
 logger = logging.getLogger(__name__)
@@ -90,3 +97,158 @@ def trivial_result_check(state: AgentState) -> Dict[str, Any]:
         trivial,
     )
     return {"is_trivial": trivial}
+
+
+# ── empty_result_check ─────────────────────────────────────────────────────────
+
+# One diagnosis pass per request keeps the graph bounded and terminating.
+_EMPTY_RECHECK_MAX = 1
+
+
+def _is_suspicious_empty(sql: str, state: AgentState) -> bool:
+    """Heuristic pre-gate: is a 0-row result unexpected for this query?
+
+    Cheap (pure Python, no LLM). Suspicious only when the user did not ask to
+    restrict the data AND the SQL shape can silently drop rows that exist —
+    i.e. an aggregate / ``GROUP BY`` or an ``INNER`` join to a dimension. A
+    query the user explicitly filtered ("sales in Antarctica", a future date
+    range) can legitimately be empty, so it is left alone.
+    """
+    # An explicit user-intended filter makes emptiness plausible: skip the LLM.
+    if state.get("resolved_filters") or state.get("unresolved_filters"):
+        return False
+
+    try:
+        import sqlglot
+        from sqlglot import expressions as exp
+
+        expr = sqlglot.parse_one(sql, error_level=sqlglot.ErrorLevel.IGNORE)
+    except Exception:  # noqa: BLE001 — parsing is best-effort; fail safe
+        return False
+    if expr is None:
+        return False
+
+    has_group = expr.find(exp.Group) is not None
+    has_agg = expr.find(exp.AggFunc) is not None
+    # A join without an explicit LEFT/RIGHT/FULL side is INNER (or CROSS): it can
+    # drop fact rows whose dimension key is NULL/absent.
+    has_inner_join = any(
+        not (j.args.get("side") or "").strip()
+        for j in expr.find_all(exp.Join)
+    )
+    return bool(has_group or has_agg or has_inner_join)
+
+
+def _column_stats_for(state: AgentState) -> str:
+    """Catalog column statistics (null ratios) available before execution."""
+    structured = state.get("structured_prompt") or {}
+    stats = structured.get("column_statistics")
+    if stats:
+        return str(stats)
+    bundle = state.get("metadata_bundle") or {}
+    return str(bundle.get("column_statistics") or "")
+
+
+def parse_empty_diagnosis(content: str) -> Optional[Dict[str, Any]]:
+    """Extract the ``{plausible, reason, hint}`` object from the LLM reply."""
+    if not content:
+        return None
+    text = content.strip()
+    # Tolerate a fenced or prose-wrapped object by slicing the outermost braces.
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        parsed = json.loads(text[start : end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+_EMPTY_RECHECK_FALLBACK = (
+    "The query returned no rows, which is unexpected for this question. "
+    "Re-examine the JOINs and WHERE filters — an INNER JOIN on a nullable "
+    "dimension or an over-restrictive filter can drop rows that exist. Prefer "
+    "LEFT JOIN and surface NULL/empty groups explicitly, then regenerate the "
+    "query."
+)
+
+
+def make_empty_result_check(
+    router_llm: LangChainLlmService,
+    prompt_loader: PromptLoader,
+    *,
+    enabled: bool = True,
+):
+    """Return an async ``empty_result_check`` node.
+
+    Runs only on a genuinely empty (0-row) result. A pure-Python heuristic
+    decides whether the emptiness is suspicious; if so, a single fast LLM call
+    judges plausibility. When the model says the empty result does not answer
+    the question, ``needs_sql_recheck`` is set so the feedback classifier routes
+    one regeneration. Either way the counter is spent so the pass runs at most
+    once and the graph terminates.
+    """
+
+    async def empty_result_check(state: AgentState) -> Dict[str, Any]:
+        if not enabled:
+            return {}
+        result = state.get("query_result") or {}
+        rows = result.get("rows") or []
+        if rows:
+            return {}  # not empty — routing normally prevents this
+        if state.get("needs_filter_reground"):
+            return {}  # filter re-grounding owns this empty result
+        if int(state.get("empty_result_diagnostics") or 0) >= _EMPTY_RECHECK_MAX:
+            return {}
+        sql = state.get("generated_sql") or ""
+        if not sql or not _is_suspicious_empty(sql, state):
+            return {}
+
+        prompt = await prompt_loader.arender(
+            "empty_result_diagnosis",
+            question=state.get("question", ""),
+            sql=sql,
+            column_statistics=_column_stats_for(state) or "(none available)",
+        )
+        # Spending the budget here (even on error) guarantees the pass is
+        # attempted at most once regardless of the LLM outcome.
+        updates: Dict[str, Any] = {
+            "empty_result_diagnostics": int(state.get("empty_result_diagnostics") or 0) + 1,
+            "node_prompts": {**(state.get("node_prompts") or {}), "empty_result_check": prompt},
+        }
+        try:
+            t0 = time.monotonic()
+            response = await router_llm.generate(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                max_tokens=400,
+                timeout=state.get("llm_timeout_seconds"),
+            )
+            latency_ms = int((time.monotonic() - t0) * 1000)
+        except Exception:  # noqa: BLE001 — never fail the answer over the gate
+            logger.warning("empty_result_check: LLM gate failed", exc_info=True)
+            return updates
+
+        updates["llm_call_count"] = (state.get("llm_call_count") or 0) + 1
+        updates["llm_latency_ms"] = (state.get("llm_latency_ms") or 0) + latency_ms
+        updates["token_usage"] = merge_usage(
+            state.get("token_usage") or {}, response.get("usage") or {}
+        )
+
+        parsed = parse_empty_diagnosis(response.get("content") or "")
+        reason = (parsed or {}).get("reason") if parsed else None
+        hint = (parsed or {}).get("hint") if parsed else None
+        if hint or reason:
+            updates["empty_hint"] = str(hint or reason)
+
+        if parsed is not None and parsed.get("plausible") is False:
+            updates["needs_sql_recheck"] = True
+            updates["empty_recheck_context"] = str(reason or _EMPTY_RECHECK_FALLBACK)
+            logger.info("empty_result_check: implausible empty result — requesting SQL recheck")
+        else:
+            logger.info("empty_result_check: empty result accepted as plausible")
+        return updates
+
+    return empty_result_check

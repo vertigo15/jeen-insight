@@ -277,6 +277,7 @@
       "hideRun": "הסתרת הריצה",
       "runDetails": "פרטי הריצה",
       "keyInsights": "תובנות מרכזיות",
+      "emptyHintLoading": "בודק מדוע…",
       "routeMl": "מיומנות ML",
       "routeSql": "SQL",
       "showAnswerBadge": "הצגת התשובה",
@@ -432,6 +433,7 @@
       "filteredOf": "{shown} מתוך {total} שנטענו",
       "loadedMatched": "{loaded} נטענו · {total} תאמו",
       "rowsLoaded": "{count, plural, one {שורה אחת נטענה} two {# שורות נטענו} other {# שורות נטענו}}",
+      "noRecordsFromDb": "לא הוחזרו רשומות ממסד הנתונים עבור שאילתה זו.",
       "focusMap": "מיקוד המפה במיקום זה"
     },
     "sql": {

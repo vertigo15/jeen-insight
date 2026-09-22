@@ -7,6 +7,7 @@ This is a pure-Python sync node.  It increments ``retry_count`` and sets
   missing_table sqlglot found an unknown table → retry catalog_lookup + sql_generator.
   exec          PostgreSQL returned an execution error → retry sql_generator.
   semantic      fused_eval_analytics said answers_intent=False → retry sql_generator.
+  empty_recheck a suspicious 0-row result → regenerate SQL once (own budget).
   exhausted     retry_count has reached max_retries → route to response_formatter.
 
 The graph routing function in graph.py reads ``feedback_type`` to decide the
@@ -39,6 +40,22 @@ def make_feedback_classifier(max_retries: int):
                 "error_context": (
                     "The query returned no rows and one or more filter values "
                     "could not be verified. Re-check those values before retrying."
+                ),
+            }
+
+        # A suspicious empty result (an aggregate over data that exists dropped by
+        # a bad JOIN/filter) regenerates SQL once. This runs BEFORE the retry
+        # counter is touched so it uses its own one-pass budget
+        # (``empty_result_diagnostics``); the flag is cleared here so a stale
+        # value can never route back into this branch forever.
+        if state.get("needs_sql_recheck"):
+            return {
+                "feedback_type": "empty_recheck",
+                "retry_count": retry_count,
+                "needs_sql_recheck": False,
+                "error_context": state.get("empty_recheck_context") or (
+                    "The query returned no rows, which is unexpected. Re-examine "
+                    "the JOINs and WHERE filters and regenerate a corrected query."
                 ),
             }
 

@@ -15,6 +15,7 @@ from src.api.models import (
     GenerateInsightsRequest,
     GenerateInsightsResponse,
     GenerateProfileRequest,
+    EmptyResultHintRequest,
 )
 from src.api.chart_builder import profile_dataset, summarize_profile
 from src.api.result_cache import result_cache
@@ -356,6 +357,63 @@ async def generate_insights_endpoint(
             findings=[],
             suggestions=[],
         )
+
+
+@router.post("/empty-result-hint")
+async def empty_result_hint_endpoint(
+    request: EmptyResultHintRequest,
+    principal: Principal = Depends(get_principal),
+):
+    """One-line likely-cause hint for a query that returned zero rows.
+
+    Deliberately does NOT touch the result cache (an empty result would raise
+    ``409 cache_miss``): the hint is reasoned from the question, the SQL and the
+    catalog's column statistics only. Best-effort — returns an empty hint rather
+    than an error so the client can quietly drop it.
+    """
+    user_id = principal.user_id
+    # ``query_id`` (when supplied) only proves ownership; the hint uses no rows.
+    await _verify_query_owner(
+        query_id=request.query_id, user_id=user_id, connection=request.connection
+    )
+    question = (request.question or "").strip()
+    sql = (request.sql or "").strip()
+    if not sql or not question:
+        return {"hint": ""}
+
+    agent = await resolve_agent(request.connection)
+    try:
+        from src.api import state as app_state
+        from src.agent.langgraph_agent import PromptLoader
+        from src.agent.langgraph_agent.nodes.execution import parse_empty_diagnosis
+
+        stats = ""
+        try:
+            bundle = await agent.metadata_loader.load_all(agent.source_key)
+            stats = bundle.get("column_statistics", "")
+        except Exception:  # noqa: BLE001 — stats are optional context
+            logger.debug("empty-result-hint: stats load failed", exc_info=True)
+
+        loader = PromptLoader()
+        if app_state.prompt_cache:
+            loader.attach_cache(app_state.prompt_cache)
+        prompt = await loader.arender(
+            "empty_result_diagnosis",
+            question=question,
+            sql=sql,
+            column_statistics=stats or "(none available)",
+        )
+        response = await agent.llm.generate(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=400,
+        )
+        parsed = parse_empty_diagnosis(response.get("content") or "") or {}
+        hint = parsed.get("hint") or parsed.get("reason") or ""
+        return {"hint": str(hint)}
+    except Exception:  # noqa: BLE001
+        logger.exception("empty-result-hint generation failed")
+        return {"hint": ""}
 
 
 @router.post("/generate-insights/stream")

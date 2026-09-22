@@ -85,6 +85,11 @@ class QueryResponse(BaseModel):
     findings: Optional[List[str]] = None
     suggestions: Optional[List[str]] = None
     followups: Optional[List[str]] = None
+    # A successful query that returned zero rows. The UI shows an explicit
+    # "no records" state instead of a silent empty grid; ``empty_hint`` is a
+    # short likely-cause note (may arrive later via /api/empty-result-hint).
+    empty_result: Optional[bool] = None
+    empty_hint: Optional[str] = None
     # Opaque handle to a durable, server-held encrypted snapshot of this result.
     # Present only when the connector platform is enabled; used as the sole
     # authorization source for outbound actions (send/share).
@@ -319,6 +324,20 @@ class GenerateProfileRequest(BaseModel):
     connection: Optional[str] = None
     query_id: Optional[str] = None
     user_id: Optional[str] = None
+
+
+class EmptyResultHintRequest(BaseModel):
+    """Ask for a one-line likely-cause hint for a 0-row result.
+
+    No rows are needed: the hint is reasoned from the question, the SQL and the
+    catalog's column statistics. ``query_id`` (when present) is used only to
+    verify the caller owns the turn.
+    """
+
+    connection: str
+    query_id: Optional[UUID] = None
+    question: Optional[str] = None
+    sql: Optional[str] = None
 
 
 # ----------------------------------------------------------------------

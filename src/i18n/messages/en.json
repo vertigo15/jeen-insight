@@ -277,6 +277,7 @@
       "hideRun": "hide run",
       "runDetails": "run details",
       "keyInsights": "Key insights",
+      "emptyHintLoading": "Looking into why…",
       "routeMl": "ML skill",
       "routeSql": "SQL",
       "showAnswerBadge": "Show answer",
@@ -432,6 +433,7 @@
       "filteredOf": "{shown} of {total} loaded",
       "loadedMatched": "{loaded} loaded · {total} matched",
       "rowsLoaded": "{count, plural, one {# row loaded} other {# rows loaded}}",
+      "noRecordsFromDb": "No records were returned from the database for this query.",
       "focusMap": "Focus map at this location"
     },
     "sql": {

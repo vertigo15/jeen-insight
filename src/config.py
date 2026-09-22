@@ -93,6 +93,10 @@ class Settings(BaseSettings):
 
     # LangGraph agent settings
     LANGGRAPH_MAX_RETRIES: int = 3
+    # When True, a genuinely empty (0-row) result is diagnosed once: a heuristic
+    # gates a single LLM call that may regenerate the SQL when the emptiness
+    # looks like a JOIN/filter mistake, and produces a likely-cause hint.
+    LANGGRAPH_EMPTY_RECHECK: bool = True
     # Optional cheaper deployment for the router, filter planner and memory nodes.
     # Defaults to AZURE_OPENAI_DEPLOYMENT_NAME when empty.
     AZURE_OPENAI_ROUTER_DEPLOYMENT: str = ""

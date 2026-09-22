@@ -1016,6 +1016,31 @@
                 this.conversation = { id: String(data.session_id), title: turn.question, source_key: null };
             }
             this.render();
+            // A 0-row result shows its "no records" answer immediately; the
+            // likely-cause hint (when the server did not already include one)
+            // arrives shortly after via a background call, so the user is not
+            // kept waiting for it.
+            if (data.empty_result && !data.empty_hint) this._fetchEmptyHint(turn);
+        },
+
+        /** Background likely-cause hint for an empty (0-row) result. Best-effort. */
+        async _fetchEmptyHint(turn) {
+            const data = turn.result || {};
+            if (!data || !data.sql || data.empty_hint) return;
+            const connection = typeof getActiveConnection === 'function' ? getActiveConnection() : '';
+            if (!connection) return;
+            try {
+                const res = await this._postJson('/api/empty-result-hint', {
+                    connection,
+                    query_id: data.query_id ? String(data.query_id) : null,
+                    question: turn.question,
+                    sql: data.sql,
+                });
+                if (res && res.hint && turn.result) {
+                    turn.result.empty_hint = res.hint;
+                    this.render();
+                }
+            } catch (_) { /* the hint is optional — drop it silently */ }
         },
 
         _onError(turn, error, data) {
@@ -1794,6 +1819,16 @@
             const summary = textOf(result.answer);
             const findings = result.findings || [];
             const followups = result.followups || [];
+            // A successful query that returned no rows: show an explicit,
+            // localized "no records" line plus a likely-cause hint, and never
+            // paint findings/followups (which only make sense for real rows).
+            // Restored turns can have unloaded rows, so trust only the server's
+            // empty_result flag for them (never the row-count heuristic).
+            const emptyRows = normalizeRows(result.results);
+            const hasRows = emptyRows.length > 0;
+            const isEmpty = Boolean(result.empty_result)
+                || (!turn.restored && Boolean(result.sql && !result.error && !result.proposal && !hasRows));
+            const emptyMessage = isEmpty ? h('results.grid.noRecordsFromDb') : '';
             const skillLabel = window.JeenAnalysisUI ? window.JeenAnalysisUI.SKILL_LABEL : {};
             if (result.proposal) {
                 // A stopped ML run: the card lives in the answer pane; the thread
@@ -1831,15 +1866,18 @@
                 <span>${esc(item.node)}</span><span class="v3-trace-note">${esc(safeTraceNote(item))}</span>
                 <span class="v3-trace-ms">${formatMs(item.elapsed_ms)}</span></div>`).join('')}</div>` : ''}
               <div class="v3-answer">
-                ${summary ? (wantsMarkdown(result) ? markdownDiv(summary) : `<div class="v3-summary" dir="${directionOf(summary)}">${esc(summary)}</div>`) : ''}
-                ${findings.length ? `<section class="v3-insights" aria-label="${h('conversation.turn.keyInsights')}" dir="${insightsDirection}">
+                ${isEmpty
+                    ? `<div class="v3-summary" dir="${directionOf(emptyMessage)}">${esc(emptyMessage)}</div>
+                       <div class="v3-empty-hint${result.empty_hint ? '' : ' is-loading'}" dir="${directionOf(textOf(result.empty_hint || emptyMessage))}">${result.empty_hint ? esc(textOf(result.empty_hint)) : h('conversation.turn.emptyHintLoading')}</div>`
+                    : (summary ? (wantsMarkdown(result) ? markdownDiv(summary) : `<div class="v3-summary" dir="${directionOf(summary)}">${esc(summary)}</div>`) : '')}
+                ${(findings.length && hasRows) ? `<section class="v3-insights" aria-label="${h('conversation.turn.keyInsights')}" dir="${insightsDirection}">
                   <div class="v3-insights-title"><span class="v3-insights-mark" aria-hidden="true">✦</span>${h('conversation.turn.keyInsights')}</div>
                   <div class="v3-insights-list">${findings.map((finding, index) => `<div class="v3-finding">
                     <span class="v3-insight-index" aria-hidden="true">${index + 1}</span>
                     <span dir="${directionOf(finding)}">${esc(textOf(finding))}</span>
                   </div>`).join('')}</div>
                 </section>` : ''}
-                ${followups.length ? `<div class="v3-followups">${followups.map((question) => `<button class="v3-chip" dir="${directionOf(question)}" data-followup="${esc(textOf(question))}">${esc(textOf(question))}</button>`).join('')}</div>` : ''}
+                ${(followups.length && hasRows) ? `<div class="v3-followups">${followups.map((question) => `<button class="v3-chip" dir="${directionOf(question)}" data-followup="${esc(textOf(question))}">${esc(textOf(question))}</button>`).join('')}</div>` : ''}
               </div>
             </article>`;
         },
