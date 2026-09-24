@@ -40,6 +40,38 @@
         status: status || 200, headers: { 'Content-Type': 'application/json' },
     });
 
+    /**
+     * Opt-in chart API script used by chart component specs. Keeping it behind
+     * `__CHART_FIXTURES__` means the normal SQL/ML harness still exercises its
+     * existing static chart disclosure surface without starting ChartManager.
+     *
+     * Shape:
+     * {
+     *   capabilities: { ... },
+     *   generate: [{ response: { ... }, status?: 200, delayMs?: 0 }],
+     *   edit: [{ response: { ... }, status?: 200, delayMs?: 0 }]
+     * }
+     */
+    async function scriptedChartResponse(kind, body) {
+        const fixtures = window.__CHART_FIXTURES__;
+        if (!fixtures || typeof fixtures !== 'object') return null;
+        if (kind === 'capabilities') {
+            return json(fixtures.capabilities || {
+                map: { enabled: false },
+                osm_map: { enabled: false },
+            });
+        }
+        const queue = Array.isArray(fixtures[kind]) ? fixtures[kind] : [];
+        const entry = queue.shift();
+        if (!entry) return json({ detail: `No scripted ${kind} response` }, 500);
+        const delay = Math.max(0, Number(entry.delayMs) || 0);
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+        const payload = typeof entry.response === 'function'
+            ? entry.response(body)
+            : entry.response;
+        return json(payload || {}, entry.status || 200);
+    }
+
     function routingTruth() {
         return (window.__ROUTING_TRUTH__ && window.__ROUTING_TRUTH__.enabled) || {};
     }
@@ -189,6 +221,15 @@
             const q = new URL(url, location.origin).searchParams.get('q') || '';
             const t = routingTruth()[q] || { would_route: 'router_decides', source: 'router_llm', skill_hint: null, reason: '' };
             return json(Object.assign({ question: q, contract_version: 'e2e' }, t));
+        }
+        if (url.indexOf('/api/chart-capabilities') >= 0 && window.__CHART_FIXTURES__) {
+            return scriptedChartResponse('capabilities', body);
+        }
+        if (url.indexOf('/api/generate-chart') >= 0 && window.__CHART_FIXTURES__) {
+            return scriptedChartResponse('generate', body);
+        }
+        if (url.indexOf('/api/edit-chart') >= 0 && window.__CHART_FIXTURES__) {
+            return scriptedChartResponse('edit', body);
         }
         if (url.indexOf('/api/analysis/suggestions') >= 0) return json({ suggestions: [] });
         if (url.indexOf('/api/analysis/skills') >= 0) return json({ skills: [], contract_version: 'e2e' });

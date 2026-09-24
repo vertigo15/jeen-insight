@@ -25,6 +25,60 @@
         greeting: 'hello',
     };
 
+    const CHART = {
+        results: {
+            columns: ['region', 'sales'],
+            rows: [['North', 10], ['South', 30], ['West', 20]],
+            row_count: 3,
+        },
+        barSpec: {
+            chart_type: 'bar',
+            x: 'region',
+            y: ['sales'],
+            series: null,
+            aggregate: 'sum',
+            sort: 'none',
+            title: 'Sales by region',
+            x_label: 'Region',
+            y_label: 'Sales',
+            value_format: 'number',
+            stacked: false,
+            smooth: false,
+        },
+        barConfig: {
+            grid: { left: '3%', right: '4%', bottom: '8%', top: 32, containLabel: true },
+            xAxis: { type: 'category', data: ['North', 'South', 'West'], name: 'Region' },
+            yAxis: { type: 'value', name: 'Sales', axisLabel: {} },
+            series: [{ name: 'sales', type: 'bar', data: [10, 30, 20], label: { show: false } }],
+        },
+        lineEdit: {
+            chart_type: 'line',
+            chart_spec: {
+                chart_type: 'line',
+                x: 'region',
+                y: ['sales'],
+                series: null,
+                aggregate: 'sum',
+                sort: 'none',
+                title: 'Sales by region',
+                x_label: 'Region',
+                y_label: 'Sales',
+                value_format: 'number',
+                stacked: false,
+                smooth: false,
+            },
+            chart_config: {
+                grid: { left: '3%', right: '4%', bottom: '8%', top: 32, containLabel: true },
+                xAxis: { type: 'category', data: ['North', 'South', 'West'], name: 'Region' },
+                yAxis: { type: 'value', name: 'Sales', axisLabel: {} },
+                series: [{ name: 'sales', type: 'line', data: [10, 30, 20], label: { show: true } }],
+            },
+            derived_series: [],
+            notes: 'Changed the chart to a line and enabled labels.',
+            out_of_scope: false,
+        },
+    };
+
     // Which fixture a typed question streams back. Routing (ML vs SQL) is decided
     // by routing.generated.js; the *outcome* (confirm vs guard vs clarify) is a
     // planner/guard decision and is fixed per question here.
@@ -369,5 +423,5 @@
         },
     };
 
-    window.__FIXTURES__ = { SESSION, Q, QUESTION_TO_SCENARIO, SCENARIOS };
+    window.__FIXTURES__ = { SESSION, Q, CHART, QUESTION_TO_SCENARIO, SCENARIOS };
 })();
