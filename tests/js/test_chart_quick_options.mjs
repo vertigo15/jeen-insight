@@ -110,29 +110,18 @@ function labelledBarConfig() {
     assert.equal(out.legend.show, false);
 }
 
-// sort=false is ordinary state, not an instruction to overwrite a later axis
-// binding. Baseline order is restored only on an explicit sort-off transition.
+// sort=false is ordinary state. The chart session supplies a fresh semantic
+// config for every render, so leaving sorting off preserves that config.
 {
-    const baseline = {
-        xAxis: { type: 'category', data: ['A', 'B'] },
-        series: [{ type: 'bar', data: [1, 2] }],
-    };
     const rebound = {
         xAxis: { type: 'category', data: ['January', 'February'] },
         series: [{ type: 'bar', data: [1, 2] }],
     };
-    const preserved = applyQuickOptions(rebound, { sortDesc: false }, baseline);
+    const preserved = applyQuickOptions(rebound, { sortDesc: false });
     assert.deepEqual(preserved.xAxis.data, ['January', 'February']);
-    const restored = applyQuickOptions(
-        rebound,
-        { sortDesc: false },
-        baseline,
-        { restoreSort: true },
-    );
-    assert.deepEqual(restored.xAxis.data, ['January', 'February']);
 }
 
-// Duplicate category labels must retain row identity through sort and restore.
+// Duplicate category labels must retain row identity through a stable sort.
 {
     const baseline = {
         xAxis: { type: 'category', data: ['Jan', 'Jan', 'Feb'] },
@@ -141,14 +130,6 @@ function labelledBarConfig() {
     const sorted = applyQuickOptions(baseline, { sortDesc: true });
     assert.deepEqual(sorted.xAxis.data, ['Jan', 'Feb', 'Jan']);
     assert.deepEqual(sorted.series[0].data, [5, 3, 1]);
-    const restored = applyQuickOptions(
-        sorted,
-        { sortDesc: false },
-        baseline,
-        { restoreSort: true },
-    );
-    assert.deepEqual(restored.xAxis.data, ['Jan', 'Jan', 'Feb']);
-    assert.deepEqual(restored.series[0].data, [1, 5, 3]);
 }
 
 console.log('chart_quick_options JS tests passed');

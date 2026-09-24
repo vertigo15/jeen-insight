@@ -245,9 +245,9 @@ export class ChartOptionsPanel {
         this._syncToggleButtons();
     }
 
-    /** Apply current toggles to a config copy (uses baseline for sort restore). */
-    applyTogglesTo(config, baselineConfig = null, options = {}) {
-        return applyQuickOptions(config, this.toggles, baselineConfig, options);
+    /** Apply current toggles to a fresh semantic config copy. */
+    applyTogglesTo(config) {
+        return applyQuickOptions(config, this.toggles);
     }
 
     render() {
@@ -557,7 +557,7 @@ export class ChartOptionsPanel {
         if (this.hooks.onQuickToggle) {
             this.hooks.onQuickToggle(
                 this.getToggles(),
-                (cfg, baseline, options) => this.applyTogglesTo(cfg, baseline, options),
+                (cfg) => this.applyTogglesTo(cfg),
                 { key, value: this.toggles[key] },
             );
         }
