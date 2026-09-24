@@ -16,6 +16,7 @@
     const Q = {
         sqlAggregate: 'Show me total sales by region last month',
         sqlCount: 'How many orders shipped yesterday?',
+        sqlByYear: 'Total sales for the Bikes category by year',
         forecast: 'Forecast profit for the next 8 weeks',
         anomaly: 'Is anything unusual in weekly profit?',
         guard: 'Forecast weekly revenue for a brand-new product line',
@@ -30,6 +31,7 @@
     const QUESTION_TO_SCENARIO = {
         [Q.sqlAggregate]: 'sql_region',
         [Q.sqlCount]: 'sql_count',
+        [Q.sqlByYear]: 'sql_by_year',
         [Q.forecast]: 'forecast_confirm',
         [Q.anomaly]: 'anomaly_confirm',
         [Q.guard]: 'forecast_guard',
@@ -226,6 +228,22 @@
             ['shipped'], [[128]],
             '128 orders shipped yesterday.',
         ),
+
+        // Year and key columns are labels, not quantities: the grid must show
+        // them without thousands separators. One long follow-up exercises wrapping.
+        sql_by_year: () => ({
+            ...sqlResult(
+                Q.sqlByYear,
+                'SELECT d.CalendarYear, MIN(d.DateKey) AS FirstDateKey, SUM(s.SalesAmount) AS total_sales\nFROM sales s JOIN dates d ON d.DateKey = s.OrderDateKey\nGROUP BY d.CalendarYear ORDER BY 1',
+                ['CalendarYear', 'FirstDateKey', 'total_sales'],
+                [[2005, 20050701, 3266373.86], [2006, 20060101, 6530343.49], [2007, 20070101, 9359103.12], [2008, 20080101, 9162324.85]],
+                'Bikes sales grew from $3.27M in 2005 to a peak of $9.36M in 2007.',
+            ),
+            followups: [
+                'What were the sales trends for other product categories by year, and how do they compare with Bikes over the same period?',
+                'Which regions drove the most Bikes sales?',
+            ],
+        }),
 
         // A capability question ("which ML models can I use?") — no SQL, no ML
         // run; the capability node answers it. The path is neither ml nor sql so

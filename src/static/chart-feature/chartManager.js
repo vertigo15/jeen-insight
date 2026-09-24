@@ -20,10 +20,27 @@ import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.j
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
 import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=8';
 import { CHART_TYPE_VALUES } from './chartTypes.js?v=79';
+import { localizeSeriesLabels } from './utils/seriesLabels.js?v=1';
 
 // Interface strings come from the locale catalog (static/i18n/i18n.js, loaded first).
 const t = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
 const th = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.h === 'function' ? window.I18n.h(key, args) : String(key));
+
+/**
+ * On a right-to-left page the chart canvas lays text out right-to-left too, so
+ * a leading minus drifts to the end ("20K-"). Bidi isolates keep numbers intact.
+ */
+function isolateInRtl(format) {
+    const i18n = typeof window !== 'undefined' ? window.I18n : null;
+    if (!i18n || !i18n.isRtl || typeof i18n.isolate !== 'function') return format;
+    return (value) => i18n.isolate(format(value));
+}
+
+/** Catalog lookup that yields null (not the raw key) when a message is missing. */
+const tOrNull = (key, args) => {
+    const i18n = typeof window !== 'undefined' ? window.I18n : null;
+    return i18n && typeof i18n.has === 'function' && i18n.has(key) ? i18n.t(key, args) : null;
+};
 
 /**
  * Main chart manager class
@@ -750,12 +767,13 @@ export class ChartManager {
     }
 
     /**
-     * Last step before an ECharts render: restore the function formatters that
-     * the JSON deep-clones in the palette / theme / toggle steps drop.
+     * Last step before an ECharts render: translate the ML series names and
+     * restore the function formatters that the JSON deep-clones in the
+     * palette / theme / toggle steps drop.
      */
     _finalizeForRender(displayConfig) {
         if (!displayConfig || this._isOsmMapOption(displayConfig)) return displayConfig;
-        return this._applyValueFormatting(displayConfig);
+        return this._applyValueFormatting(localizeSeriesLabels(displayConfig, tOrNull));
     }
 
     /** Render an already-prepared option and record it as the current state. */
@@ -784,8 +802,7 @@ export class ChartManager {
         // The chosen palette (or the theme tokens for the default) drives both
         // the option palette and the per-series colours below.
         const colors = this._paletteColors() || this._themeTokenColors();
-        const faint = token('--faint', '#b8b8bf');
-        const muted = token('--muted', '#98989f');
+        const muted = token('--muted', '#6b6b73');
         const border = token('--border', '#e9e9ec');
         themed.backgroundColor = 'transparent';
         themed.textStyle = {
@@ -799,7 +816,7 @@ export class ChartManager {
             axes.forEach((axis) => {
                 axis.axisLabel = {
                     ...(axis.axisLabel || {}),
-                    color: key === 'xAxis' ? muted : faint,
+                    color: muted,
                     fontFamily: key === 'xAxis' ? 'Outfit, system-ui, sans-serif' : 'Geist Mono, monospace',
                     fontSize: key === 'xAxis' ? 11 : 10.5,
                 };
@@ -1723,7 +1740,7 @@ export class ChartManager {
             };
         }
         const primaryMeta = this._valueFormat || { kind: 'number', compact: true, symbol: '' };
-        const primaryFmt = makeValueFormatter(primaryMeta);
+        const primaryFmt = isolateInRtl(makeValueFormatter(primaryMeta));
 
         // Pull the numeric value out of a point regardless of shape: plain
         // number, {value}, or [x, y] / time-axis pairs.
@@ -1738,7 +1755,7 @@ export class ChartManager {
             if (!axis) return;
             if (Array.isArray(axis)) { axis.forEach(applyAxis); return; }
             if (axis.type === 'value') {
-                const f = axis.jeenFormat ? makeValueFormatter(axis.jeenFormat) : primaryFmt;
+                const f = axis.jeenFormat ? isolateInRtl(makeValueFormatter(axis.jeenFormat)) : primaryFmt;
                 axis.axisLabel = { ...(axis.axisLabel || {}), formatter: f };
             }
         };
@@ -1758,7 +1775,7 @@ export class ChartManager {
             let meta = primaryMeta;
             if (s.jeenFormat) {
                 meta = s.jeenFormat;
-                f = makeValueFormatter(meta);
+                f = isolateInRtl(makeValueFormatter(meta));
                 perSeriesDiff = true;
             }
             seriesFmts[i] = f;
@@ -1767,7 +1784,7 @@ export class ChartManager {
                 // On-chart labels use one shared unit per series (all-K or all
                 // full numbers with thousands separators), unlike the axis,
                 // which may abbreviate freely.
-                const labelFmt = makeLabelFormatter(meta, collectNumericValues(s.data));
+                const labelFmt = isolateInRtl(makeLabelFormatter(meta, collectNumericValues(s.data)));
                 s.label = (s.label && typeof s.label === 'object') ? s.label : {};
                 s.label.formatter = (p) => labelFmt(pickValue(p));
                 if (s.label.fontSize == null) s.label.fontSize = 11;
@@ -1819,9 +1836,10 @@ export class ChartManager {
                 };
                 delete tip.valueFormatter;
             } else if (isAxis && (perSeriesDiff || hasPairs)) {
+                const headFmt = isolateInRtl((value) => String(value));
                 tip.formatter = (params) => {
                     const arr = Array.isArray(params) ? params : [params];
-                    const head = arr.length ? (arr[0].axisValueLabel ?? arr[0].name ?? '') : '';
+                    const head = arr.length ? headFmt(arr[0].axisValueLabel ?? arr[0].name ?? '') : '';
                     const rows = arr.map((p) => {
                         const f = seriesFmts[p.seriesIndex] || primaryFmt;
                         return `${p.marker || ''} ${p.seriesName}: ${f(pickValue(p))}`;

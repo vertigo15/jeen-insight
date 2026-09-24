@@ -70,6 +70,9 @@ test('a fresh user sees the welcome dialog, checklist and quick-start cards', as
   await expect(welcome(page)).toBeVisible();
   await expect(checklist(page)).toHaveCount(1);
   await expect(cards(page)).toHaveCount(1);
+  // Card copy keeps its own sizes inside the result pane (not the pane's caption style).
+  await expect(cards(page).locator('.jo-card-title').first()).toHaveCSS('font-size', '16px');
+  await expect(cards(page).locator('.jo-card-eyebrow').first()).toHaveCSS('font-size', '11px');
 });
 
 test('"Skip for now" mutes every surface for the session and survives a reload', async ({ page, browser }) => {

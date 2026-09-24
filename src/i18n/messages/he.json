@@ -145,8 +145,7 @@
     },
     "topbar": {
       "hideConversation": "הסתרת השיחה",
-      "showConversation": "שיחה",
-      "notifications": "התראות"
+      "showConversation": "שיחה"
     },
     "tabs": {
       "sections": "מקטעי השיחה",
@@ -1542,6 +1541,19 @@
       "label": "שיפור עם AI",
       "loading": "משפר…",
       "done": "שופר!"
+    },
+    "series": {
+      "actual": "בפועל",
+      "expected": "צפוי",
+      "forecast": "תחזית",
+      "flagged": "חריגה",
+      "segmentLevel": "רמת מקטע",
+      "changepoint": "נקודת שינוי",
+      "lower": "גבול תחתון",
+      "upper": "גבול עליון",
+      "band": "טווח צפוי {percent}%",
+      "interval": "טווח חיזוי {percent}%",
+      "forecastStart": "תחזית"
     },
     "errors": {
       "rerunUnavailable": "הרצה מחדש של הניתוח אינה זמינה כאן",

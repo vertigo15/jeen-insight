@@ -24,6 +24,15 @@ test('forecast stops on a confirm card with egress notice and chips', async ({ p
   await expect(card.locator('[data-run]')).toBeEnabled();
 });
 
+test('the confirm card keeps its own type styles inside the answer pane', async ({ page }) => {
+  await ask(page, Q.forecast);
+  const card = page.locator('#v3-placeholder .v3-ml-card.is-confirm');
+  // The pane's caption rule must not reach nested spans (it once turned these faint).
+  await expect(card.locator('.v3-skill-chip').first()).toHaveCSS('font-size', '11px');
+  await expect(card.locator('.v3-skill-chip').first()).toHaveCSS('color', 'rgb(255, 255, 255)');
+  await expect(card.locator('.v3-ml-summary')).toHaveCSS('font-size', '12.5px');
+});
+
 test('running the confirm card appends a completed ML result with Model details', async ({ page }) => {
   await ask(page, Q.forecast);
   await page.click('#v3-placeholder .v3-ml-card [data-run]');

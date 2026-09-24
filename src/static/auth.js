@@ -50,6 +50,7 @@
     }
 
     window._currentUser = user;
+    document.dispatchEvent(new CustomEvent('jeen:current-user', { detail: user }));
 
     // ── Topbar avatar ──────────────────────────────────────────────────────
     const btn    = document.getElementById('user-avatar-btn');
