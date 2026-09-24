@@ -48,9 +48,18 @@ _METRIC_KEYS = (
 
 
 def json_safe_value(value: Any) -> Any:
-    """Convert common DB driver values into JSON-serialisable equivalents."""
+    """Convert common DB driver values into JSON-serialisable equivalents.
+
+    ``Decimal`` becomes a string, not a float: a stored result may later be
+    recomputed over (``SnapshotSqlEngine``) or re-displayed, and ``float`` would
+    silently drop precision on high-scale NUMERICs so recomputed sums/money could
+    disagree with the live answer in the last digits. The string round-trips
+    losslessly — the memory engine's ``prepare_table`` re-types it back to
+    NUMERIC, and every consumer of these rows (the result table, the chart
+    profiler, sorting) already coerces cells with ``Number()`` / ``_to_number``.
+    """
     if isinstance(value, decimal.Decimal):
-        return float(value)
+        return str(value)
     if isinstance(value, (datetime, date, dt_time, UUID)):
         return str(value)
     if isinstance(value, (bytes, bytearray, memoryview)):

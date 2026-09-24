@@ -568,7 +568,10 @@
       ro: null,
       prevFocus: document.activeElement,
       prevTab: window.ChatController ? window.ChatController.activeTab : 'conversation',
-      prevConversationOpen: !document.getElementById('v3-conversation').hidden
+      // `.hidden` is always false at <=1100px (drawer mode), so ask the controller.
+      prevConversationOpen: window.ChatController && typeof window.ChatController.isConversationOpen === 'function'
+        ? window.ChatController.isConversationOpen()
+        : !document.getElementById('v3-conversation').hidden
     };
     document.body.appendChild(tour.scrim);
     window.addEventListener('resize', reposition);

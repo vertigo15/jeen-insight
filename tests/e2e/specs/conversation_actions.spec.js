@@ -172,7 +172,7 @@ test.describe('conversation and favorite actions', () => {
   test('mobile RTL drawer keeps localized New conversation and Saved controls visible', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await openHarness(page, '?locale=he');
-    await page.locator('#v3-conversation-toggle').click();
+    await page.locator('[data-rail="conversation"]').click();
 
     const panel = page.locator('#v3-conversation');
     const button = page.locator('#v3-new-conversation');
@@ -378,5 +378,53 @@ test.describe('conversation and favorite actions', () => {
     await page.locator('[data-favorite-more]').click();
     await expect(page.locator('.v3-favorite-item')).toHaveCount(51);
     await expect(page.locator('[data-favorite-more]')).toHaveCount(0);
+  });
+
+  test('rail Conversation icon toggles the panel and dots a collapsed thread', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openHarness(page);
+    const rail = page.locator('[data-rail="conversation"]');
+    const panel = page.locator('#v3-conversation');
+    const dot = rail.locator('.v3-rail-dot');
+    await expect(rail).toHaveClass(/is-active/);
+    await expect(panel).toBeVisible();
+
+    await ask(page, Q.sqlAggregate);
+    // Clicking the active Conversation icon collapses the panel; the rail shows
+    // the collapsed state plus an unread-style dot because the thread has a turn.
+    await rail.click();
+    await expect(panel).toBeHidden();
+    await expect(rail).toHaveClass(/is-collapsed/);
+    await expect(rail).not.toHaveClass(/is-active/);
+    await expect(dot).toBeVisible();
+
+    // Clicking again reopens it and clears the dot.
+    await rail.click();
+    await expect(panel).toBeVisible();
+    await expect(rail).toHaveClass(/is-active/);
+    await expect(dot).toBeHidden();
+  });
+
+  test('editing a sent question reruns it in place and marks it edited', async ({ page }) => {
+    await openHarness(page);
+    await ask(page, Q.sqlAggregate);
+    await ask(page, Q.sqlCount);
+    const turns = page.locator('#v3-thread article.v3-turn');
+    await expect(turns).toHaveCount(2);
+
+    const first = turns.first();
+    await first.locator('[data-edit]').click();
+    const input = first.locator('.v3-edit-input');
+    await expect(input).toBeFocused();
+    await input.fill('Edited: show revenue by product');
+    await first.locator('.v3-edit-save').click();
+
+    // In-place replacement: still two cards, the later turn is untouched, and the
+    // first turn now carries the new question with an "edited" meta.
+    await expect(page.locator('#v3-thread article.v3-turn')).toHaveCount(2);
+    await expect(turns.nth(1)).toContainText(Q.sqlCount);
+    await expect.poll(() => page.evaluate(() => window.ChatController.turns[0].question)).toBe('Edited: show revenue by product');
+    await expect.poll(() => page.evaluate(() => window.ChatController.turns[0].edited)).toBe(true);
+    await expect(turns.first().locator('.v3-turn-meta')).toContainText('edited');
   });
 });

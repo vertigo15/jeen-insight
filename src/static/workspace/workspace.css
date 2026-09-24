@@ -24,10 +24,12 @@ body.v3-ready > .app-layout { display: none !important; }
   inset: 0;
   z-index: 1;
   display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
   background: var(--bg);
 }
+.v3-main-row { flex: 1; min-height: 0; display: flex; }
 
 .v3-rail {
   width: 60px;
@@ -40,8 +42,7 @@ body.v3-ready > .app-layout { display: none !important; }
   border-inline-end: 1px solid var(--border);
   background: var(--bg);
 }
-.v3-logo { width: 26px; height: 26px; object-fit: contain; }
-.v3-rail-divider { width: 24px; height: 1px; margin: 6px 0; background: var(--border); }
+.v3-logo { width: 26px; height: 26px; object-fit: contain; flex: 0 0 auto; }
 .v3-rail-btn {
   width: 34px;
   height: 34px;
@@ -55,6 +56,21 @@ body.v3-ready > .app-layout { display: none !important; }
 }
 .v3-rail-btn:hover { background: var(--soft); color: var(--muted); }
 .v3-rail-btn.is-active { background: var(--rosesoft); color: var(--rose); }
+/* Collapsed conversation toggle: neutral fill, and it must win over the plain
+   hover/active rules above so the state reads clearly. */
+.v3-rail-btn.is-collapsed,
+.v3-rail-btn.is-collapsed:hover { background: var(--soft); color: var(--text); }
+.v3-rail-dot {
+  position: absolute;
+  top: 5px;
+  inset-inline-end: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--rose);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.v3-rail-dot[hidden] { display: none; }
 .v3-rail-spacer { flex: 1; }
 
 /* Rail tooltips: shown on the trailing side of the icon (right in LTR, left in
@@ -76,23 +92,19 @@ body.v3-ready > .app-layout { display: none !important; }
   inset-inline-start: calc(100% + 12px);
   padding: 5px 9px;
   border-radius: 7px;
-  background: var(--text);
-  color: var(--bg);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border2);
   font-size: 11.5px;
   font-weight: 500;
   line-height: 1.2;
   white-space: nowrap;
   transform: translate(-4px, -50%);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, .18);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .08);
 }
-.v3-rail-btn[data-tooltip]::before {
-  content: '';
-  inset-inline-start: calc(100% + 6px);
-  border: 5px solid transparent;
-  border-inline-start: 0;
-  border-inline-end-color: var(--text);
-  transform: translate(-4px, -50%);
-}
+/* No tooltip arrow — the light bubble matches the mockups, and a bordered
+   wedge reads as a solid grey triangle. */
+.v3-rail-btn[data-tooltip]::before { display: none; }
 [dir="rtl"] .v3-rail-btn[data-tooltip]::after,
 [dir="rtl"] .v3-rail-btn[data-tooltip]::before { transform: translate(4px, -50%); }
 .v3-rail-btn[data-tooltip]:hover::after,
@@ -122,26 +134,11 @@ body.v3-ready > .app-layout { display: none !important; }
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 22px;
-  border-bottom: 1px solid transparent;
+  padding: 0;
+  padding-inline: 17px 16px;
+  border-bottom: 1px solid var(--border);
 }
-.v3-conversation-toggle {
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 13px;
-  border: 1px solid transparent;
-  border-radius: 9999px;
-  background: var(--rosesoft);
-  color: var(--rose);
-  font-size: 13px;
-}
-.v3-conversation-toggle[aria-expanded="false"] {
-  border-color: var(--border);
-  background: var(--bg);
-  color: var(--muted);
-}
+.v3-topbar-divider { flex: 0 0 auto; width: 1px; height: 22px; margin-inline: 5px 3px; background: var(--border); }
 .v3-connection-slot .connection-switcher { width: auto; }
 .v3-connection-slot .connection-pill-wrap {
   min-width: 0;
@@ -433,21 +430,23 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-turn {
   position: relative;
   flex: 0 0 auto;
-  padding: 15px;
+  padding: 0;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 16px;
-  background: var(--soft);
+  background: var(--bg);
+  box-shadow: var(--shadow);
   cursor: pointer;
-  transition: border-color .12s ease, background .12s ease, box-shadow .12s ease, transform .12s ease;
+  transition: border-color .12s ease, box-shadow .12s ease, transform .12s ease;
 }
 .v3-turn:hover { border-color: var(--border2); }
-/* Unselected answers are clickable: lift them on hover and say what a click does. */
-.v3-turn:not(.is-selected):not(.is-running):hover {
-  background: var(--bg);
+.v3-turn.is-editing:hover { border-color: var(--rose); }
+/* Unselected answers are clickable: lift them on hover and say what a click does.
+   Not while editing — the rose ring / no-lift state must win. */
+.v3-turn:not(.is-selected):not(.is-running):not(.is-editing):hover {
   box-shadow: var(--shadow);
   transform: translateY(-1px);
 }
-.v3-turn:not(.is-selected):not(.is-running):hover .v3-question { color: var(--link); }
 .v3-turn::after {
   content: attr(data-show-label);
   position: absolute;
@@ -464,8 +463,8 @@ body.v3-ready > .app-layout { display: none !important; }
   pointer-events: none;
   transition: opacity .12s ease;
 }
-.v3-turn:not(.is-selected):not(.is-running):hover::after,
-.v3-turn:not(.is-selected):not(.is-running):focus-visible::after { opacity: 1; }
+.v3-turn:not(.is-selected):not(.is-running):not(.is-editing):hover::after,
+.v3-turn:not(.is-selected):not(.is-running):not(.is-editing):focus-visible::after { opacity: 1; }
 .v3-turn:focus-visible { outline: 2px solid var(--rose); outline-offset: 2px; }
 .v3-turn.is-selected, .v3-turn.is-running {
   border-color: var(--border2);
@@ -473,18 +472,87 @@ body.v3-ready > .app-layout { display: none !important; }
   box-shadow: var(--shadow);
 }
 .v3-turn.is-selected { cursor: default; }
-.v3-turn .v3-question { transition: color .12s ease; }
 .v3-turn.is-running { animation: v3-rise .2s ease; }
 @keyframes v3-rise { from { opacity: 0; transform: translateY(6px); } }
-.v3-question-row { display: flex; align-items: flex-start; gap: 10px; }
 .v3-mini-avatar {
   width: 22px; height: 22px; flex: 0 0 22px; display: grid; place-items: center;
   border-radius: 50%; background: var(--plum); color: #fff; font-size: 9.5px; font-weight: 500;
 }
 .v3-question { font-size: 15px; line-height: 1.4; letter-spacing: -.005em; text-align: start; text-wrap: pretty; }
-.v3-question-row .v3-question { flex: 1; min-width: 0; }
 .v3-turn-favorite { flex: 0 0 auto; color: var(--rose); line-height: 1; }
 .v3-turn-favorite svg { fill: currentColor; }
+/* Split turn card: grey question header + white answer body. */
+.v3-turn-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  padding-inline-start: 14px;
+  background: var(--soft);
+  border-bottom: 1px solid var(--border);
+}
+.v3-turn-headmain { flex: 1; min-width: 0; }
+.v3-turn-meta { margin-bottom: 2px; font-size: 11px; color: var(--muted-strong); unicode-bidi: plaintext; }
+.v3-turn-head .v3-question { font-size: 15px; line-height: 1.4; }
+.v3-turn-edit {
+  flex: 0 0 auto;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 11.5px;
+  line-height: 1;
+}
+.v3-turn-edit:hover { background: var(--soft); }
+.v3-turn-edit-icon { display: inline-flex; line-height: 0; }
+.v3-turn-body {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 13px 14px 14px;
+  background: var(--bg);
+}
+/* The body's flex gap replaces the per-block top margins the flat card used. */
+.v3-turn-body > .v3-run-strip,
+.v3-turn-body > .v3-running-list,
+.v3-turn-body > .v3-trace,
+.v3-turn-body > .v3-error-actions,
+.v3-turn-body > .v3-error-block { margin-top: 0; }
+.v3-turn-agent { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--text); }
+.v3-agent-mark { width: 16px; height: 16px; flex: 0 0 auto; object-fit: contain; }
+/* Edit mode (mockup 3b): rose ring on the card, a textarea in the header and a
+   Cancel / Save & rerun row; the old answer body dims behind it. These rules sit
+   after the hover/selected rules so .is-editing wins on equal specificity. */
+.v3-turn.is-editing { border-color: var(--rose); box-shadow: 0 0 0 3px var(--rosesoft); cursor: default; }
+.v3-turn.is-editing:hover { border-color: var(--rose); transform: none; box-shadow: 0 0 0 3px var(--rosesoft); }
+/* The old answer dims behind the editor and must not swallow clicks. */
+.v3-turn.is-editing .v3-turn-body { opacity: .4; pointer-events: none; }
+.v3-edit-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 15px/1.4 var(--font-sans);
+  resize: none;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.v3-edit-input:focus { outline: none; }
+.v3-edit-actions { margin-top: 10px; display: flex; justify-content: flex-end; gap: 6px; }
+.v3-edit-cancel, .v3-edit-save { height: 28px; padding: 0 12px; border-radius: 9999px; font-size: 12.5px; line-height: 1; }
+.v3-edit-cancel { border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+.v3-edit-cancel:hover { background: var(--soft); }
+.v3-edit-save { border: 1px solid var(--edit-border); background: var(--rosesoft); color: var(--edit-text); font-weight: 500; }
+.v3-edit-save[disabled] { opacity: .5; pointer-events: none; }
 .v3-run-strip { margin-top: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .v3-dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--soft2); }
 .v3-dot.is-done { background: var(--rose); }
@@ -498,7 +566,6 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-trace-row:last-child { border-bottom: 0; }
 .v3-trace-note { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .v3-trace-ms { color: var(--muted); text-align: end; font-variant-numeric: tabular-nums; direction: ltr; }
-.v3-answer { margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 11px; }
 .v3-summary { font-size: 14.5px; font-weight: 400; line-height: 1.6; text-align: start; text-wrap: pretty; }
 
 /* Rendered Markdown answers (capability/catalog help). Scoped so nothing here

@@ -141,11 +141,9 @@
       "savedLabel": "תשובות ושאלות שמורות",
       "history": "היסטוריה",
       "historyLabel": "היסטוריית שיחות",
-      "settings": "הגדרות"
-    },
-    "topbar": {
+      "settings": "הגדרות",
       "hideConversation": "הסתרת השיחה",
-      "showConversation": "שיחה"
+      "showConversation": "הצגת השיחה"
     },
     "tabs": {
       "sections": "מקטעי השיחה",
@@ -283,7 +281,14 @@
       "routeMl": "מיומנות ML",
       "routeSql": "SQL",
       "showAnswerBadge": "הצגת התשובה",
-      "showCardBadge": "הצגת הכרטיס"
+      "showCardBadge": "הצגת הכרטיס",
+      "you": "את/ה",
+      "agent": "Jeen",
+      "edit": "עריכה",
+      "editAgain": "עריכה מחדש",
+      "editing": "בעריכה",
+      "edited": "נערכה",
+      "saveRerun": "שמירה והרצה מחדש"
     },
     "trace": {
       "modelStep": "שלב המודל הושלם",

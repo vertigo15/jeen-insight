@@ -68,6 +68,7 @@ export function turnFromServer(dto, conversationId) {
         executionStatus: dto.execution_status || 'pending',
         snapshotStatus: dto.snapshot_status || SNAPSHOT_NOT_APPLICABLE,
         snapshotAt: dto.snapshot_at || null,
+        askedAt: dto.created_at || null,
         hasChart: Boolean(dto.has_chart),
         isFavorite: Boolean(dto.is_favorite),
         canLoadData,

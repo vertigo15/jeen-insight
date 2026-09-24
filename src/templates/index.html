@@ -15,10 +15,8 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>{{ t('app.title') }}</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
-    <!-- Jeen fonts: Urbanist + Noto Sans Hebrew -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Hebrew:wght@400;500;600&family=Urbanist:ital,wght@0,300;0,400;0,500;0,600;0,700;0,900&display=swap" rel="stylesheet">
+    <!-- Jeen fonts: Urbanist + Noto Sans Hebrew, self-hosted (no internet egress needed) -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='fonts/fonts.css') }}?v=1">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=106">
     <link rel="stylesheet" href="{{ url_for('static', filename='workspace/workspace.css') }}?v=21">
     <link rel="stylesheet" href="{{ url_for('static', filename='workspace/onboarding.css') }}?v=7">
@@ -443,7 +441,7 @@
 <script src="{{ url_for('static', filename='analysis/analysisPanel.js') }}?v=3"></script>
 <!-- Escape-first Markdown renderer for trusted text answers; MUST load before the controller. -->
 <script src="{{ url_for('static', filename='workspace/markdownLite.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='workspace/workspaceController.js') }}?v=20"></script>
+<script src="{{ url_for('static', filename='workspace/workspaceController.js') }}?v=21"></script>
 <!-- FTUE overlay: loads AFTER workspaceController.js so window.ChatController exists. -->
 <script src="{{ url_for('static', filename='workspace/onboarding.js') }}?v=10"></script>
 <!-- Settings page (full-screen) -->

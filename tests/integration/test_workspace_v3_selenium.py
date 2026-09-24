@@ -149,7 +149,7 @@ def test_workspace_structure_empty_and_responsive(driver):
 
     driver.set_window_size(899, 900)
     time.sleep(0.25)
-    driver.execute_script("document.getElementById('v3-conversation-toggle').click()")
+    driver.execute_script("document.querySelector('[data-rail=\"conversation\"]').click()")
     WebDriverWait(driver, 3).until(
         lambda d: d.find_element(By.ID, "v3-conversation").value_of_css_property("display")
         == "flex"

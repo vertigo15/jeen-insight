@@ -6,6 +6,7 @@ __pycache__/
 .Python
 env/
 venv/
+.venv/
 ENV/
 build/
 develop-eggs/
@@ -41,6 +42,16 @@ Thumbs.db
 # Docker
 .dockerignore
 docker-compose.override.yml
+# Image tarballs and the OpenShift delivery bundle
+dist/
+*.tar
+*.tar.gz
+
+# Not needed inside any image
+deployment/
+evals/
+.github/
+node_modules/
 
 # Runtime secrets
 .env

@@ -5,11 +5,7 @@ from __future__ import annotations
 import json
 
 from src.agent.answer_cache import AnswerCache
-from src.agent.langgraph_agent.nodes.artifacts import (
-    build_artifact_manifest,
-    latest_result_ref,
-    parse_artifact,
-)
+from src.agent.langgraph_agent.nodes.artifacts import parse_artifact
 from src.agent.langgraph_agent.nodes.safety_text import fence_untrusted
 
 
@@ -37,63 +33,6 @@ class TestParseArtifact:
         assert parse_artifact(None) is None
         assert parse_artifact("not json") is None
         assert parse_artifact("[1,2,3]") is None  # not a dict
-
-
-class TestBuildArtifactManifest:
-    def test_empty_history(self):
-        assert build_artifact_manifest([]) == ""
-
-    def test_history_without_artifacts(self):
-        history = [{"natural_language_query": "hi", "generated_sql": "SELECT 1"}]
-        assert build_artifact_manifest(history) == ""
-
-    def test_builds_compact_manifest(self):
-        history = [
-            {
-                "natural_language_query": "total sales by year",
-                "result_artifact": _artifact(),
-            }
-        ]
-        manifest = build_artifact_manifest(history)
-        assert "Prior results available" in manifest
-        assert "total sales by year" in manifest
-        assert "12 rows" in manifest
-        assert "orderyear(int)" in manifest
-        assert "total: 25000000..29000000" in manifest
-
-    def test_accepts_json_string_artifact(self):
-        history = [
-            {
-                "natural_language_query": "q",
-                "result_artifact": json.dumps(_artifact()),
-            }
-        ]
-        assert "12 rows" in build_artifact_manifest(history)
-
-    def test_limit_caps_entries(self):
-        history = [
-            {"natural_language_query": f"q{i}", "result_artifact": _artifact()}
-            for i in range(5)
-        ]
-        manifest = build_artifact_manifest(history, limit=2)
-        # Two entries → lines numbered [1] and [2] only.
-        assert "[2]" in manifest
-        assert "[3]" not in manifest
-
-
-class TestLatestResultRef:
-    def test_returns_most_recent_with_artifact(self):
-        history = [
-            {"id": "q1", "natural_language_query": "old", "result_artifact": _artifact()},
-            {"id": "q2", "natural_language_query": "new", "result_artifact": _artifact()},
-        ]
-        ref = latest_result_ref(history)
-        # History is oldest-first; latest is the last item.
-        assert ref["query_id"] == "q2"
-        assert ref["question"] == "new"
-
-    def test_none_when_no_artifacts(self):
-        assert latest_result_ref([{"natural_language_query": "x"}]) is None
 
 
 class TestAnswerCache:

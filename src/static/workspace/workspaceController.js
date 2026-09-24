@@ -384,6 +384,7 @@
         copy: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
         star: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></svg>',
         code: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 5l-4 14"/></svg>',
+        pencil: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
     };
 
     const WorkspaceController = {
@@ -402,6 +403,10 @@
         mapSelectedRows: new Set(),
         desktopPreference: true,
         autoCollapsed: false,
+        // Inline "edit a sent message": the turn currently in edit mode and the
+        // working draft of its question. Only one turn edits at a time.
+        editingTurnId: null,
+        editDraft: '',
         lastAppliedResultId: null,
         // Conversation persistence: the restored conversation header, the
         // hydration state and the generation guard that lets a connection
@@ -451,8 +456,14 @@
             this.setTabsVisible(conversationTabsPreferred());
             this.setTab('conversation');
             this._renderEmptySuggestions();
+            // Restore the persisted desktop open/closed preference before the
+            // responsive pass so a wide reload honours the last explicit toggle.
+            const storedOpen = this._readConversationOpen();
+            if (storedOpen !== null) this.desktopPreference = storedOpen;
             this._applyResponsive();
+            if (window.innerWidth > 1100) this.setConversation(this.desktopPreference);
             this.render();
+            this.syncRail();
             document.body.classList.add('v3-ready');
             document.body.classList.remove('v3-booting');
             window.askQuestion = () => this.submitComposer();
@@ -466,26 +477,24 @@
             shell.id = 'v3-shell';
             shell.className = 'v3-shell';
             shell.innerHTML = `
-              <nav class="v3-rail" aria-label="${h('shell.rail.navigation')}">
+              <header class="v3-topbar">
                 <img class="v3-logo" src="/static/images/jeen-mark.png" alt="Jeen">
-                <div class="v3-rail-divider"></div>
-                <button class="v3-rail-btn is-active" data-rail="conversation" aria-label="${h('shell.rail.conversation')}" data-tooltip="${h('shell.rail.conversation')}">${ICON.railConversation}</button>
-                <button class="v3-rail-btn" data-rail="tables" aria-label="${h('shell.rail.tables')}" data-tooltip="${h('shell.rail.tables')}">${ICON.table}</button>
-                <button class="v3-rail-btn" data-rail="saved" aria-label="${h('shell.rail.savedLabel')}" data-tooltip="${h('shell.rail.saved')}">${ICON.pin}</button>
-                <button class="v3-rail-btn" data-rail="history" aria-label="${h('shell.rail.historyLabel')}" data-tooltip="${h('shell.rail.history')}">${ICON.history}</button>
-                <div class="v3-rail-spacer"></div>
-                <button id="v3-settings-button" class="v3-rail-btn v3-rail-btn--settings" data-rail="settings" aria-label="${h('shell.rail.settings')}" data-tooltip="${h('shell.rail.settings')}">${ICON.settings}</button>
-              </nav>
-              <div class="v3-app">
-                <header class="v3-topbar">
-                  <button id="v3-conversation-toggle" class="v3-conversation-toggle" aria-expanded="true" aria-controls="v3-conversation">
-                    ${ICON.conversation}<span>${h('shell.topbar.hideConversation')}</span>
-                  </button>
-                  <div id="v3-connection-slot" class="v3-connection-slot"></div>
-                  <div class="v3-topbar-spacer"></div>
-                  <div id="v3-theme-slot"></div>
-                  <div id="v3-user-slot"></div>
-                </header>
+                <span class="v3-topbar-divider" aria-hidden="true"></span>
+                <div id="v3-connection-slot" class="v3-connection-slot"></div>
+                <div class="v3-topbar-spacer"></div>
+                <div id="v3-theme-slot"></div>
+                <div id="v3-user-slot"></div>
+              </header>
+              <div class="v3-main-row">
+                <nav class="v3-rail" aria-label="${h('shell.rail.navigation')}">
+                  <button class="v3-rail-btn is-active" data-rail="conversation" aria-label="${h('shell.rail.conversation')}" data-tooltip="${h('shell.rail.hideConversation')}" aria-controls="v3-conversation" aria-expanded="true">${ICON.railConversation}<span class="v3-rail-dot" hidden></span></button>
+                  <button class="v3-rail-btn" data-rail="tables" aria-label="${h('shell.rail.tables')}" data-tooltip="${h('shell.rail.tables')}">${ICON.table}</button>
+                  <button class="v3-rail-btn" data-rail="saved" aria-label="${h('shell.rail.savedLabel')}" data-tooltip="${h('shell.rail.saved')}">${ICON.pin}</button>
+                  <button class="v3-rail-btn" data-rail="history" aria-label="${h('shell.rail.historyLabel')}" data-tooltip="${h('shell.rail.history')}">${ICON.history}</button>
+                  <div class="v3-rail-spacer"></div>
+                  <button id="v3-settings-button" class="v3-rail-btn v3-rail-btn--settings" data-rail="settings" aria-label="${h('shell.rail.settings')}" data-tooltip="${h('shell.rail.settings')}">${ICON.settings}</button>
+                </nav>
+                <div class="v3-app">
                 <div class="v3-body">
                   <div id="v3-drawer-overlay" class="v3-drawer-overlay"></div>
                   <aside id="v3-conversation" class="v3-conversation" aria-label="${h('shell.panels.workspaceLabel')}">
@@ -614,6 +623,7 @@
                     </section>
                   </main>
                 </div>
+                </div>
               </div>`;
             document.body.insertBefore(shell, document.body.firstChild);
         },
@@ -713,7 +723,6 @@
             });
             document.getElementById('v3-new-conversation').addEventListener('click', () => this.newConversation());
             document.getElementById('v3-favorite-action').addEventListener('click', () => this.toggleFavorite());
-            document.getElementById('v3-conversation-toggle').addEventListener('click', () => this.toggleConversation());
             document.getElementById('v3-drawer-overlay').addEventListener('click', () => this.setConversation(false, true));
             document.getElementById('v3-dock-toggle').addEventListener('click', () => this.toggleDock(this.dockTab));
             document.querySelector('[data-question-log]')?.addEventListener('click', () => document.getElementById('history-btn')?.click());
@@ -775,8 +784,17 @@
         _rail(action) {
             // 'new' is kept as an alias so older callers (onboarding) still work.
             if (action === 'conversation' || action === 'new') {
+                // The Conversation icon is the panel toggle: when its own tab is
+                // already showing, a click collapses the panel; otherwise it
+                // switches to Conversation and opens the panel.
+                if (this.activeTab === 'conversation' && this.isConversationOpen()) {
+                    this.setConversation(false, true);
+                    this._persistConversationOpen(false);
+                    return;
+                }
                 this.setTab('conversation');
                 this.setConversation(true);
+                this._persistConversationOpen(true);
                 if (this.input) this.input.focus();
             } else if (action === 'tables') {
                 // setTab('tables') already refreshes the table list once.
@@ -810,11 +828,9 @@
                 button.tabIndex = active ? 0 : -1;
             });
             document.querySelectorAll('[data-panel]').forEach((panel) => { panel.hidden = panel.dataset.panel !== tab; });
-            // Rail icon <-> panel tab mapping (the History icon opens the
-            // 'conversations' panel; 'new' is the legacy id of the first icon).
-            const railForTab = { conversation: ['conversation', 'new'], tables: ['tables'], saved: ['saved', 'pinned'], conversations: ['history'] };
-            const activeRails = railForTab[tab] || [];
-            document.querySelectorAll('[data-rail]').forEach((button) => button.classList.toggle('is-active', activeRails.includes(button.dataset.rail)));
+            // syncRail() owns the rail's active/collapsed visuals: it lights the
+            // matching icon only when the panel is actually open.
+            this.syncRail();
             if (tab === 'tables' && typeof window.loadTables === 'function') window.loadTables();
             if (tab === 'saved') {
                 if (this.savedView === 'answers') this.loadFavoriteAnswers();
@@ -835,10 +851,18 @@
             document.getElementById('v3-conversation')?.classList.toggle('v3-tabs-hidden', !visible);
         },
 
-        toggleConversation() {
+        /** True when the conversation panel is visible (desktop) or forced open (drawer). */
+        isConversationOpen() {
             const panel = document.getElementById('v3-conversation');
-            const open = panel.hidden || (!panel.classList.contains('v3-force-open') && window.innerWidth <= 1100);
+            if (!panel || panel.hidden) return false;
+            if (window.innerWidth <= 1100) return panel.classList.contains('v3-force-open');
+            return true;
+        },
+
+        toggleConversation() {
+            const open = !this.isConversationOpen();
             this.setConversation(open, !open);
+            this._persistConversationOpen(open);
         },
 
         setConversation(open, restoreFocus = false) {
@@ -855,11 +879,51 @@
             overlay.classList.toggle('is-open', open && window.innerWidth < 900);
             overlay.setAttribute('aria-hidden', String(!(open && window.innerWidth < 900)));
             panel.setAttribute('aria-hidden', String(!open));
-            const toggle = document.getElementById('v3-conversation-toggle');
-            toggle.setAttribute('aria-expanded', String(open));
-            toggle.querySelector('span').textContent = open ? t('shell.topbar.hideConversation') : t('shell.topbar.showConversation');
-            if (!open && restoreFocus) toggle.focus();
+            this.syncRail();
+            if (!open && restoreFocus) document.querySelector('[data-rail="conversation"]')?.focus();
             setTimeout(() => window.dispatchEvent(new Event('resize')), 0);
+        },
+
+        /**
+         * Single owner of the rail's active/collapsed visuals. A section icon is
+         * "active" (rose) only when its panel is actually open; the Conversation
+         * icon additionally shows a collapsed state + an unread-style dot (when
+         * the panel is closed and the thread has turns) and carries the toggle's
+         * aria/tooltip. Called from setTab, setConversation and after render.
+         */
+        syncRail() {
+            const railForTab = { conversation: ['conversation', 'new'], tables: ['tables'], saved: ['saved', 'pinned'], conversations: ['history'] };
+            const activeRails = railForTab[this.activeTab] || [];
+            const open = this.isConversationOpen();
+            document.querySelectorAll('[data-rail]').forEach((button) => {
+                button.classList.toggle('is-active', open && activeRails.includes(button.dataset.rail));
+            });
+            const convo = document.querySelector('[data-rail="conversation"]');
+            if (!convo) return;
+            const conversationActive = activeRails.includes('conversation');
+            const collapsed = !open;
+            convo.classList.toggle('is-collapsed', collapsed);
+            // The button controls the whole panel (aria-controls="v3-conversation"),
+            // so expanded reflects panel visibility regardless of which tab shows.
+            convo.setAttribute('aria-expanded', String(open));
+            const label = (open && conversationActive) ? t('shell.rail.hideConversation') : t('shell.rail.showConversation');
+            convo.setAttribute('data-tooltip', label);
+            convo.setAttribute('aria-label', label);
+            const dot = convo.querySelector('.v3-rail-dot');
+            if (dot) dot.hidden = !(collapsed && this.turns.length >= 1);
+        },
+
+        /** Persist the explicit desktop open/closed choice (never the responsive auto-collapse). */
+        _persistConversationOpen(open) {
+            if (window.innerWidth <= 1100) return;
+            try { window.localStorage.setItem('v3.conversationOpen', open ? 'true' : 'false'); } catch (_) { /* storage may be unavailable */ }
+        },
+
+        _readConversationOpen() {
+            try {
+                const raw = window.localStorage.getItem('v3.conversationOpen');
+                return raw === null ? null : raw === 'true';
+            } catch (_) { return null; }
         },
 
         _applyResponsive() {
@@ -896,6 +960,14 @@
                 if (typeof window.showToast === 'function') window.showToast(t('errors.selectConnectionFirst'), 'error');
                 return;
             }
+            // A brand-new question (from the composer, a follow-up chip or a
+            // programmatic send) leaves any open inline edit; re-running an
+            // edited turn (replaceTurnId) is the edit committing itself.
+            const replaceTurn = options.replaceTurnId ? this.turns.find((item) => item.id === options.replaceTurnId) : null;
+            // A stale rerun target (turn gone) must never fall through to
+            // appending a brand-new turn.
+            if (options.replaceTurnId && !replaceTurn) return;
+            if (!replaceTurn) this._cancelEdit();
 
             this.sending = true;
             this.setTab('conversation');
@@ -906,18 +978,29 @@
             const generation = this._generation;
             const abort = new AbortController();
             this._streamAbort = abort;
-            const turn = {
+            if (replaceTurn) {
+                // Re-run an existing turn in place (edit / edited-retry): wipe every
+                // result-derived field and bump its revision so late async
+                // writebacks from the previous run are dropped.
+                this._resetTurnForRerun(replaceTurn);
+                replaceTurn.question = q;
+                this.lastAppliedResultId = null;
+                this.selectedResultId = replaceTurn.id;
+            }
+            const turn = replaceTurn || {
                 id: `turn-${Date.now()}-${++this.seq}`,
                 question: q,
                 status: 'running',
                 startedAt: performance.now(),
+                askedAt: Date.now(),
+                rev: 0,
                 phaseState: Object.fromEntries(PHASES.map((phase) => [phase.id, 'pending'])),
                 trace: [],
                 traceOpen: false,
                 result: null,
                 error: null,
             };
-            this.turns.push(turn);
+            if (!replaceTurn) this.turns.push(turn);
             this.selectedTurnId = turn.id;
             this._setComposerBusy(true);
             this.render();
@@ -1170,6 +1253,8 @@
             if (!data || !data.sql || data.empty_hint) return;
             const connection = typeof getActiveConnection === 'function' ? getActiveConnection() : '';
             if (!connection) return;
+            // Drop a late hint if the turn was re-run (edited) meanwhile.
+            const rev = turn.rev || 0;
             try {
                 const res = await this._postJson('/api/empty-result-hint', {
                     connection,
@@ -1177,7 +1262,7 @@
                     question: turn.question,
                     sql: data.sql,
                 });
-                if (res && res.hint && turn.result) {
+                if (res && res.hint && turn.result === data && (turn.rev || 0) === rev) {
                     turn.result.empty_hint = res.hint;
                     this.render();
                 }
@@ -1207,7 +1292,14 @@
             const turn = this.turns.find((item) => item.id === id);
             if (!turn) return;
             this._unavailableSavedAnswer = null;
+            const switchingResult = this.selectedResultId !== turn.id;
             this._captureSelectedChart();
+            if (switchingResult) {
+                // The previous manager may remain mounted while the destination
+                // turn hydrates (or may be a text-only turn). Invalidate its
+                // chat/export/save surface immediately after capturing it.
+                window.JeenLegacyBridge?.setChartInteractionEnabled?.(false);
+            }
             const selection = selectionForTurn(this.selectedResultId, turn);
             this.selectedTurnId = selection.selectedTurnId;
             this.selectedResultId = selection.selectedResultId;
@@ -1230,7 +1322,16 @@
                 || current.chartLoading || current.chartUnavailable) return;
             if (current && current.result?.results && window.JeenLegacyBridge?.getChartState) {
                 const state = window.JeenLegacyBridge.getChartState();
-                if (state && state.chart_config) current.chartState = state;
+                if (state && state.chart_config) {
+                    // Keep the versioned page snapshot (baseline + working +
+                    // view), not a reference to manager-owned state. The legacy
+                    // top-level config/spec remain for server artifacts.
+                    try {
+                        current.chartState = JSON.parse(JSON.stringify(state));
+                    } catch (_) {
+                        current.chartState = state;
+                    }
+                }
             }
         },
 
@@ -1278,6 +1379,9 @@
             this._generation += 1;
             this._abortInFlight();
             this.turns = [];
+            this.editingTurnId = null;
+            this.editDraft = '';
+            this._editSel = null;
             this.conversation = null;
             this._unavailableSavedAnswer = null;
             this.hydrating = false;
@@ -1423,6 +1527,8 @@
             const abort = new AbortController();
             this._hydrateAbort = abort;
             this.turns = [];
+            this.editingTurnId = null;
+            this.editDraft = '';
             this.conversation = null;
             this._unavailableSavedAnswer = null;
             this.readOnly = readOnly;
@@ -1544,6 +1650,7 @@
             if (!turn || !turn.restored || !turn.conversationId || !turn.turnId) return;
             if (turn.artifactState === 'loading' || turn.artifactState === 'loaded') return;
             const generation = this._generation;
+            const rev = turn.rev || 0;
             turn.artifactState = 'loading';
             this.renderWorkspace();
             try {
@@ -1551,10 +1658,12 @@
                 const response = await fetch(
                     `/api/conversations/${encodeURIComponent(turn.conversationId)}/turns/${encodeURIComponent(turn.turnId)}/artifact`
                 );
-                if (generation !== this._generation) return;
+                // Drop stale rows if the connection reset (generation) or the turn
+                // was re-run in place (rev) while the fetch was open.
+                if (generation !== this._generation || (turn.rev || 0) !== rev) return;
                 if (!response.ok) throw new Error(`artifact ${response.status}`);
                 const artifact = await response.json();
-                if (generation !== this._generation) return;
+                if (generation !== this._generation || (turn.rev || 0) !== rev) return;
                 mod.applyArtifact(turn, artifact);
                 if (!turn.result.results) {
                     // Snapshot vanished between listing and fetch (pruned); offer Load data.
@@ -1945,6 +2054,7 @@
             this._syncNewConversationAction();
             this.renderConversation();
             this.renderWorkspace();
+            this.syncRail();
         },
 
         renderConversation() {
@@ -1980,6 +2090,12 @@
             const head = `<div class="v3-thread-head">
                 <span class="v3-thread-title" dir="${directionOf(title)}" title="${esc(title)}">${esc(title)}</span>
               </div>${readOnlyNote}`;
+            // Capture edit focus BEFORE the rebuild so a re-render (enrichment,
+            // empty-hint, etc.) restores focus only when the field actually had
+            // it — never yanking it back from the composer (README §5).
+            const editHadFocus = Boolean(this.editingTurnId)
+                && document.activeElement instanceof HTMLElement
+                && document.activeElement.matches('[data-edit-input]');
             thread.innerHTML = head + this.turns.map((turn) => this._turnHtml(turn)).join('');
             thread.querySelectorAll('[data-load-data]').forEach((button) => button.addEventListener('click', (event) => {
                 event.stopPropagation();
@@ -2011,7 +2127,11 @@
             thread.querySelectorAll('[data-retry]').forEach((button) => button.addEventListener('click', (event) => {
                 event.stopPropagation();
                 const turn = this.turns.find((item) => item.id === button.dataset.retry);
-                if (turn) this.send(turn.question);
+                if (!turn) return;
+                // An edited turn retries in place (keeping its "edited" mark); a
+                // normal turn retries as an ordinary re-ask.
+                if (turn.edited) this.send(turn.question, { replaceTurnId: turn.id });
+                else this.send(turn.question);
             }));
             thread.querySelectorAll('[data-report-gap]').forEach((button) => button.addEventListener('click', async (event) => {
                 event.stopPropagation();
@@ -2024,19 +2144,257 @@
                     button.textContent = t('conversation.turn.retryReport');
                 }
             }));
+            thread.querySelectorAll('[data-edit]').forEach((button) => button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                this.startEdit(button.dataset.edit);
+            }));
+            const editHead = thread.querySelector('.v3-turn-head--editing');
+            const editInput = thread.querySelector('[data-edit-input]');
+            if (editHead) {
+                // Esc anywhere in the editing header (textarea, Cancel, Save)
+                // leaves edit mode and never reaches the document Escape handler
+                // that closes the mobile drawer.
+                editHead.addEventListener('keydown', (event) => {
+                    if (event.key === 'Escape') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        this._cancelEdit();
+                    }
+                });
+            }
+            if (editInput) {
+                editInput.addEventListener('click', (event) => event.stopPropagation());
+                const trackSel = () => { this._editSel = [editInput.selectionStart, editInput.selectionEnd]; };
+                editInput.addEventListener('input', () => {
+                    this.editDraft = editInput.value;
+                    trackSel();
+                    editInput.style.height = 'auto';
+                    editInput.style.height = `${Math.min(editInput.scrollHeight, 200)}px`;
+                    const save = thread.querySelector('[data-edit-save]');
+                    if (save) save.disabled = !this._editDirty(editInput.dataset.editInput);
+                });
+                editInput.addEventListener('keyup', trackSel);
+                editInput.addEventListener('select', trackSel);
+                editInput.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+                        event.preventDefault();
+                        this._saveEdit(editInput.dataset.editInput);
+                    }
+                });
+            }
+            thread.querySelectorAll('[data-edit-cancel]').forEach((button) => button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                this._cancelEdit();
+            }));
+            thread.querySelectorAll('[data-edit-save]').forEach((button) => button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                this._saveEdit(button.dataset.editSave);
+            }));
+            // A re-render (enrichment, trace toggle, …) rebuilds the thread and
+            // would drop an open edit field; restore focus + the prior selection,
+            // but only if the field actually had focus (don't grab it back from
+            // the composer).
+            if (this.editingTurnId && editInput && editHadFocus) {
+                this._focusEditInput(this.editingTurnId, !this._editSel);
+            }
+        },
+
+        /**
+         * Whether the "Edit" affordance is offered on a completed turn. Hidden
+         * while any turn is streaming, on read-only conversations, on an ML
+         * proposal (paused run), a running/rerunning turn, or a restored answer
+         * with no rerunnable query behind it.
+         */
+        _editAvailable(turn) {
+            if (this.readOnly || this.sending || turn.rerunning) return false;
+            if (turn.status === 'running') return false;
+            if (turn.result && turn.result.proposal) return false;
+            if (turn.restored && !(turn.result && turn.result.sql)) return false;
+            return true;
+        },
+
+        /** "You · {time}" (or the edit time) · edited — the grey header meta line. */
+        _turnMetaHtml(turn) {
+            const bits = [h('conversation.turn.you')];
+            if (turn.edited && turn.editedAt != null) {
+                // Mockup 3c: edited turns show only the edit time (no date).
+                bits.push(esc(this._formatStamp(turn.editedAt, 'time')));
+                bits.push(h('conversation.turn.edited'));
+            } else if (turn.askedAt != null) {
+                // Mockup 3a: "Sep 21, 5:47 PM" — month/day/time, no year.
+                bits.push(esc(this._formatStamp(turn.askedAt, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })));
+            }
+            return `<div class="v3-turn-meta">${bits.join(' · ')}</div>`;
+        },
+
+        /** Localized timestamp for the turn header; falls back to the OS locale. */
+        _formatStamp(value, style) {
+            if (window.I18n && typeof window.I18n.formatDate === 'function') return window.I18n.formatDate(value, style) || '';
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return '';
+            const opts = typeof style === 'object' ? style : { hour: '2-digit', minute: '2-digit' };
+            return date.toLocaleString(undefined, opts);
+        },
+
+        /** Grey question header: avatar, meta, question, favorite star, Edit. */
+        _turnHeadHtml(turn) {
+            if (this.editingTurnId === turn.id) return this._turnEditHeadHtml(turn);
+            const star = turn.isFavorite ? `<span class="v3-turn-favorite" title="${h('favorite.saved')}">${ICON.star}</span>` : '';
+            // On an already-edited error turn the body's "Edit again" covers it,
+            // so the header pill would be a duplicate.
+            const showEdit = this._editAvailable(turn) && !(turn.status === 'error' && turn.edited);
+            const edit = showEdit
+                ? `<button type="button" class="v3-turn-edit" data-edit="${turn.id}"><span class="v3-turn-edit-icon" aria-hidden="true">${ICON.pencil}</span>${h('conversation.turn.edit')}</button>`
+                : '';
+            return `<div class="v3-turn-head">
+              <span class="v3-mini-avatar">${esc(this._initials())}</span>
+              <div class="v3-turn-headmain">
+                ${this._turnMetaHtml(turn)}
+                <div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div>
+              </div>
+              ${star}${edit}
+            </div>`;
+        },
+
+        /** Edit-mode header (mockup 3b): meta "Editing", a textarea, then Cancel / Save & rerun. */
+        _turnEditHeadHtml(turn) {
+            const draft = this.editDraft != null ? this.editDraft : String(turn.question || '');
+            const dirty = this._editDirty(turn.id);
+            return `<div class="v3-turn-head v3-turn-head--editing">
+              <span class="v3-mini-avatar">${esc(this._initials())}</span>
+              <div class="v3-turn-headmain">
+                <div class="v3-turn-meta">${h('conversation.turn.editing')}</div>
+                <textarea class="v3-edit-input" data-edit-input="${turn.id}" dir="auto" rows="1" aria-label="${h('conversation.turn.editing')}">${esc(draft)}</textarea>
+                <div class="v3-edit-actions">
+                  <button type="button" class="v3-edit-cancel" data-edit-cancel="${turn.id}">${h('common.cancel')}</button>
+                  <button type="button" class="v3-edit-save" data-edit-save="${turn.id}"${dirty ? '' : ' disabled'}>${h('conversation.turn.saveRerun')}</button>
+                </div>
+              </div>
+            </div>`;
+        },
+
+        /** Agent label row that opens every answer body: Jeen mark + "Jeen". */
+        _agentLabelHtml() {
+            return `<div class="v3-turn-agent"><img class="v3-agent-mark" src="/static/images/jeen-mark.png" alt="">${h('conversation.turn.agent')}</div>`;
+        },
+
+        /** The trimmed draft differs from the stored question (Save is enabled). */
+        _editDirty(turnId) {
+            const turn = this.turns.find((item) => item.id === turnId);
+            if (!turn) return false;
+            const draft = String(this.editDraft || '').trim();
+            return Boolean(draft) && draft !== String(turn.question || '').trim();
+        },
+
+        /** Enter edit mode for one turn, cancelling any edit already open. */
+        startEdit(turnId) {
+            const turn = this.turns.find((item) => item.id === turnId);
+            if (!turn || !this._editAvailable(turn)) return;
+            this.editingTurnId = turnId;
+            this.editDraft = String(turn.question || '');
+            this._editSel = null;
+            this.renderConversation();
+            this._focusEditInput(turnId, true);
+        },
+
+        /** Leave edit mode without changes and hand focus back to the Edit button. */
+        _cancelEdit() {
+            if (!this.editingTurnId) return;
+            const id = this.editingTurnId;
+            this.editingTurnId = null;
+            this.editDraft = '';
+            this._editSel = null;
+            this.renderConversation();
+            document.querySelector(`[data-edit="${id}"]`)?.focus();
+        },
+
+        /**
+         * Commit an edit: replace the turn's question, mark it edited, wipe every
+         * result-derived field so it renders as a fresh running answer, then
+         * re-run it in place (later turns are kept). Frontend-only for now — the
+         * rerun goes through /api/ask/stream with the full conversation as
+         * context and the server appends a new turn (see the handoff open
+         * questions), so a reload shows the edit as an appended turn.
+         */
+        _saveEdit(turnId) {
+            const turn = this.turns.find((item) => item.id === turnId);
+            if (!turn || !this._editDirty(turnId)) return;
+            const draft = String(this.editDraft || '').trim();
+            // Mark the edit; send() (via _resetTurnForRerun) wipes the old result
+            // and re-runs the turn in place, keeping later turns.
+            turn.edited = true;
+            turn.editedAt = Date.now();
+            this.editingTurnId = null;
+            this.editDraft = '';
+            this._editSel = null;
+            this.selectedTurnId = turn.id;
+            this.selectedResultId = turn.id;
+            this.send(draft, { replaceTurnId: turn.id });
+            if (this.input) this.input.focus();
+        },
+
+        /**
+         * Wipe every result-derived field on a turn that is about to be re-run in
+         * place (edit / edited-retry) and bump its revision so any late async
+         * writeback (empty-hint, artifact, analysis chart) from the previous run
+         * is dropped instead of landing on the new answer. Question / edited /
+         * editedAt are set by the caller.
+         */
+        _resetTurnForRerun(turn) {
+            turn.rev = (turn.rev || 0) + 1;
+            turn.status = 'running';
+            turn.startedAt = performance.now();
+            turn.durationMs = null;
+            turn.phaseState = Object.fromEntries(PHASES.map((phase) => [phase.id, 'pending']));
+            turn.trace = [];
+            turn.traceOpen = false;
+            turn.result = null;
+            turn.error = null;
+            turn.restored = false;
+            turn.snapshotAt = null;
+            turn.resultKind = undefined;
+            turn.hasChart = false;
+            turn.canLoadData = false;
+            turn.artifactState = undefined;
+            turn.rerunError = null;
+            turn.chartState = null;
+            turn.chartLoading = false;
+            turn.chartUnavailable = false;
+            turn.chartCollapsed = undefined;
+            turn.isFavorite = false;
+        },
+
+        /** Focus the edit textarea (after a render), size it, and restore the caret. */
+        _focusEditInput(turnId, toEnd) {
+            requestAnimationFrame(() => {
+                const input = document.querySelector(`[data-edit-input="${turnId}"]`);
+                if (!input) return;
+                input.style.height = 'auto';
+                input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
+                input.focus();
+                if (!toEnd && Array.isArray(this._editSel)) {
+                    const [start, end] = this._editSel;
+                    try { input.setSelectionRange(start, end); } catch (_) { /* not focusable yet */ }
+                } else {
+                    const len = input.value.length;
+                    try { input.setSelectionRange(len, len); } catch (_) { /* not focusable yet */ }
+                }
+            });
         },
 
         _turnHtml(turn) {
             const selected = turn.id === this.selectedTurnId;
-            const initials = this._initials();
             if (turn.status === 'running') {
                 return `<article class="v3-turn is-running${selected ? ' is-selected' : ''}" data-turn="${turn.id}">
-                  <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div>${turn.isFavorite ? `<span class="v3-turn-favorite" title="${h('favorite.saved')}">${ICON.star}</span>` : ''}</div>
-                  <div class="v3-running-list">${PHASES.map((phase) => {
+                  ${this._turnHeadHtml(turn)}
+                  <div class="v3-turn-body">
+                    ${this._agentLabelHtml()}
+                    <div class="v3-running-list">${PHASES.map((phase) => {
                     const status = turn.phaseState[phase.id];
                     const label = status === 'done' ? h('conversation.turn.statusOk') : status === 'running' ? h('conversation.turn.statusRunning') : status === 'error' ? h('conversation.turn.statusFailed') : '';
                     return `<div class="v3-running-row is-${status}"><span class="v3-dot is-${status === 'done' ? 'ok' : status}"></span><span>${esc(phase.label)}</span><span class="v3-running-status">${label}</span></div>`;
                 }).join('')}</div>
+                  </div>
                 </article>`;
             }
             if (turn.status === 'error') {
@@ -2045,16 +2403,20 @@
                 const meta = turn.restored
                     ? `${esc(turn.executionStatus || t('conversation.turn.error'))} · ${h('conversation.turn.restoredFromHistory')}`
                     : h('conversation.turn.failedAt', { node: iso(failed?.node || t('conversation.turn.query')), duration: formatMs(turn.durationMs) });
-                return `<article class="v3-turn${selected || (!turn.restored && isNewest) ? ' is-selected' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showAnswerBadge')}" tabindex="0" aria-label="${h('conversation.turn.showAnswer', { question: iso(turn.question) })}">
-                  <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
-                  <div class="v3-error-block" dir="auto">${esc(turn.error)}
-                    <div class="v3-error-meta">${meta}</div>
-                  </div>
-                  ${isNewest ? `<div class="v3-summary" style="margin-top:12px;color:var(--muted)">${h('conversation.turn.newestFailed')}</div>` : ''}
-                  <div class="v3-error-actions">
-                    <button data-retry="${turn.id}">${h('common.retry')}</button>
-                    ${turn.restored ? '' : `<button title="${h('conversation.turn.editSqlTitle')}">${h('conversation.turn.editSql')}</button>`}
-                    <button data-report-gap="${turn.id}">${h('conversation.turn.reportGap')}</button>
+                return `<article class="v3-turn${selected || (!turn.restored && isNewest) ? ' is-selected' : ''}${this.editingTurnId === turn.id ? ' is-editing' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showAnswerBadge')}" tabindex="0" aria-label="${h('conversation.turn.showAnswer', { question: iso(turn.question) })}">
+                  ${this._turnHeadHtml(turn)}
+                  <div class="v3-turn-body">
+                    ${this._agentLabelHtml()}
+                    <div class="v3-error-block" dir="auto">${esc(turn.error)}
+                      <div class="v3-error-meta">${meta}</div>
+                    </div>
+                    ${isNewest ? `<div class="v3-summary" style="color:var(--muted)">${h('conversation.turn.newestFailed')}</div>` : ''}
+                    <div class="v3-error-actions">
+                      <button data-retry="${turn.id}">${h('common.retry')}</button>
+                      ${turn.edited ? `<button data-edit="${turn.id}">${h('conversation.turn.editAgain')}</button>` : ''}
+                      ${turn.restored ? '' : `<button title="${h('conversation.turn.editSqlTitle')}">${h('conversation.turn.editSql')}</button>`}
+                      <button data-report-gap="${turn.id}">${h('conversation.turn.reportGap')}</button>
+                    </div>
                   </div>
                 </article>`;
             }
@@ -2082,9 +2444,12 @@
                 const kind = proposal.kind || result.status;
                 const waiting = kind === 'guard' ? t('conversation.turn.waitingGuard') : kind === 'clarify' ? t('conversation.turn.waitingChoice') : t('conversation.turn.waitingConfirm');
                 return `<article class="v3-turn is-proposal${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showCardBadge')}" data-route-path="ml" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="${h('conversation.turn.showCard', { question: iso(turn.question) })}" aria-current="${selected ? 'true' : 'false'}">
-                  <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
-                  <div class="v3-run-strip">${this._routePillHtml(result)}<span class="v3-skill-chip">${esc(skillLabel[proposal.skill] || proposal.skill || t('conversation.empty.analysis'))}</span><span class="v3-run-meta">${esc(waiting)}</span></div>
-                  <div class="v3-answer"><div class="v3-summary" dir="${directionOf(summary)}">${esc(summary || proposal.message || '')}</div></div>
+                  ${this._turnHeadHtml(turn)}
+                  <div class="v3-turn-body">
+                    ${this._agentLabelHtml()}
+                    <div class="v3-run-strip">${this._routePillHtml(result)}<span class="v3-skill-chip">${esc(skillLabel[proposal.skill] || proposal.skill || t('conversation.empty.analysis'))}</span><span class="v3-run-meta">${esc(waiting)}</span></div>
+                    <div class="v3-summary" dir="${directionOf(summary)}">${esc(summary || proposal.message || '')}</div>
+                  </div>
                 </article>`;
             }
             const analysis = result.analysis && result.analysis.skill ? result.analysis : null;
@@ -2103,14 +2468,15 @@
             const strip = turn.restored ? this._restoredStripHtml(turn) : `<div class="v3-run-strip">${dots}${this._routePillHtml(result)}${mlPill}<span class="v3-run-meta">${h('conversation.turn.runMeta', { duration: formatMs(turn.durationMs), count: trace.length })}</span>
                 <button class="v3-text-btn" data-trace-toggle="${turn.id}">${turn.traceOpen ? h('conversation.turn.hideRun') : h('conversation.turn.runDetails')}</button>
               </div>`;
-            return `<article class="v3-turn${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showAnswerBadge')}" data-route-path="${esc(routePath)}" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="${h('conversation.turn.showAnswer', { question: iso(turn.question) })}" aria-current="${selected ? 'true' : 'false'}">
-              <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div>${turn.isFavorite ? `<span class="v3-turn-favorite" title="${h('favorite.saved')}">${ICON.star}</span>` : ''}</div>
-              ${strip}
-              ${!turn.restored && turn.traceOpen ? `<div class="v3-trace">${trace.map((item) => `<div class="v3-trace-row">
+            return `<article class="v3-turn${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}${this.editingTurnId === turn.id ? ' is-editing' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showAnswerBadge')}" data-route-path="${esc(routePath)}" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="${h('conversation.turn.showAnswer', { question: iso(turn.question) })}" aria-current="${selected ? 'true' : 'false'}">
+              ${this._turnHeadHtml(turn)}
+              <div class="v3-turn-body">
+                ${this._agentLabelHtml()}
+                ${strip}
+                ${!turn.restored && turn.traceOpen ? `<div class="v3-trace">${trace.map((item) => `<div class="v3-trace-row">
                 <span class="v3-dot ${item.status === 'node_failed' ? '' : 'is-ok'}"></span>
                 <span>${esc(item.node)}</span><span class="v3-trace-note">${esc(safeTraceNote(item))}</span>
                 <span class="v3-trace-ms">${formatMs(item.elapsed_ms)}</span></div>`).join('')}</div>` : ''}
-              <div class="v3-answer">
                 ${isEmpty
                     ? `<div class="v3-summary" dir="${directionOf(emptyMessage)}">${esc(emptyMessage)}</div>
                        <div class="v3-empty-hint${result.empty_hint ? '' : ' is-loading'}" dir="${directionOf(textOf(result.empty_hint || emptyMessage))}">${result.empty_hint ? esc(textOf(result.empty_hint)) : h('conversation.turn.emptyHintLoading')}</div>`
@@ -2577,11 +2943,14 @@
 
         /** Append a completed turn returned by /api/analysis/run|rerun (never mutates the parent). */
         _appendServerTurn(data, { question, parent, select = true } = {}) {
+            // Appending a new turn leaves any open inline edit.
+            if (this.editingTurnId) { this.editingTurnId = null; this.editDraft = ''; this._editSel = null; }
             const turn = {
                 id: `turn-${Date.now()}-${++this.seq}`,
                 question: question || data.question || (parent && parent.question) || '',
                 status: 'success',
                 startedAt: performance.now(),
+                askedAt: Date.now(),
                 phaseState: Object.fromEntries(PHASES.map((phase) => [phase.id, 'done'])),
                 trace: (data.trace || []).map((raw) => ({ ...raw, status: 'node_finished' })),
                 traceOpen: false,
@@ -2619,6 +2988,8 @@
                 turn.chartUnavailable = true;
                 return;
             }
+            // Drop a late chart if the turn was re-run (edited) meanwhile.
+            const rev = turn.rev || 0;
             const body = { connection, query_id: String(data.query_id), chart_spec: spec };
             try {
                 let payload;
@@ -2628,6 +2999,7 @@
                     if (!/cached|re-send/i.test(String(error && error.message))) throw error;
                     payload = await this._postJson('/api/analysis/chart', { ...body, results: data.results });
                 }
+                if ((turn.rev || 0) !== rev) return;
                 if (payload && payload.chart_config) {
                     turn.chartState = { chart_spec: payload.chart_spec || spec, chart_config: payload.chart_config };
                     turn.hasChart = true;
@@ -2636,6 +3008,7 @@
                     turn.chartUnavailable = true;
                 }
             } catch (error) {
+                if ((turn.rev || 0) !== rev) return;
                 turn.chartUnavailable = true;
                 console.warn('[Workspace] analysis chart failed', error);
             }
@@ -2871,7 +3244,10 @@
             // baseline, and rendered through the restore path.
             if (isAnalysis && !turn.chartState && !turn.chartLoading && !turn.chartUnavailable && rows.length) {
                 turn.chartLoading = true;
+                const chartRev = turn.rev || 0;
                 this._loadAnalysisChart(turn).finally(() => {
+                    // A re-run (edit) since this load started owns its own flags now.
+                    if ((turn.rev || 0) !== chartRev) return;
                     turn.chartLoading = false;
                     if (this.selectedResultId === turn.id) {
                         this.lastAppliedResultId = null;
@@ -2912,14 +3288,24 @@
                     // restore path and wait for the chart machinery instead of
                     // guessing with a timer. No LLM chart call when a baseline exists.
                     const applied = turn.id;
-                    window.JeenLegacyBridge.applyRestoredResult(data, turn.chartState).then(() => {
-                        if (this.selectedResultId === applied) showChart();
-                    });
+                    const appliedRev = turn.rev || 0;
+                    window.JeenLegacyBridge.applyRestoredResult(data, turn.chartState)
+                        .then(() => {
+                            if (this.selectedResultId === applied && (turn.rev || 0) === appliedRev) showChart();
+                        })
+                        .catch((error) => {
+                            console.warn('[Workspace] chart apply failed', error);
+                            if (this.selectedResultId === applied && (turn.rev || 0) === appliedRev) {
+                                this.lastAppliedResultId = null;
+                                window.JeenLegacyBridge?.setChartInteractionEnabled?.(false);
+                            }
+                        });
                 } else {
                     const applied = turn.id;
+                    const appliedRev = turn.rev || 0;
                     window.JeenLegacyBridge.applyResult(data);
                     requestAnimationFrame(() => {
-                        if (this.selectedResultId === applied) showChart();
+                        if (this.selectedResultId === applied && (turn.rev || 0) === appliedRev) showChart();
                     });
                 }
             }
