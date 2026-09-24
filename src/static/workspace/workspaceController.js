@@ -2436,6 +2436,10 @@
             const isEmpty = Boolean(result.empty_result)
                 || (!turn.restored && Boolean(result.sql && !result.error && !result.proposal && !hasRows));
             const emptyMessage = isEmpty ? h('results.grid.noRecordsFromDb') : '';
+            // Findings + follow-ups are authoritative text saved with the turn, so
+            // a restored answer shows them even before its rows are (re)loaded; a
+            // live turn still needs real rows, and neither paints on an empty result.
+            const showAnalytics = (hasRows || turn.restored) && !isEmpty;
             const skillLabel = window.JeenAnalysisUI ? window.JeenAnalysisUI.SKILL_LABEL : {};
             if (result.proposal) {
                 // A stopped ML run: the card lives in the answer pane; the thread
@@ -2481,14 +2485,14 @@
                     ? `<div class="v3-summary" dir="${directionOf(emptyMessage)}">${esc(emptyMessage)}</div>
                        <div class="v3-empty-hint${result.empty_hint ? '' : ' is-loading'}" dir="${directionOf(textOf(result.empty_hint || emptyMessage))}">${result.empty_hint ? esc(textOf(result.empty_hint)) : h('conversation.turn.emptyHintLoading')}</div>`
                     : (summary ? (wantsMarkdown(result) ? markdownDiv(summary) : `<div class="v3-summary" dir="${directionOf(summary)}">${esc(summary)}</div>`) : '')}
-                ${(findings.length && hasRows) ? `<section class="v3-insights" aria-label="${h('conversation.turn.keyInsights')}" dir="${insightsDirection}">
+                ${(findings.length && showAnalytics) ? `<section class="v3-insights" aria-label="${h('conversation.turn.keyInsights')}" dir="${insightsDirection}">
                   <div class="v3-insights-title"><span class="v3-insights-mark" aria-hidden="true">✦</span>${h('conversation.turn.keyInsights')}</div>
                   <div class="v3-insights-list">${findings.map((finding, index) => `<div class="v3-finding">
                     <span class="v3-insight-index" aria-hidden="true">${index + 1}</span>
                     <span dir="${directionOf(finding)}">${esc(textOf(finding))}</span>
                   </div>`).join('')}</div>
                 </section>` : ''}
-                ${(followups.length && hasRows) ? `<div class="v3-followups">${followups.map((question) => `<button class="v3-chip" dir="${directionOf(question)}" data-followup="${esc(textOf(question))}">${esc(textOf(question))}</button>`).join('')}</div>` : ''}
+                ${(followups.length && showAnalytics) ? `<div class="v3-followups">${followups.map((question) => `<button class="v3-chip" dir="${directionOf(question)}" data-followup="${esc(textOf(question))}">${esc(textOf(question))}</button>`).join('')}</div>` : ''}
               </div>
             </article>`;
         },
