@@ -1,19 +1,54 @@
+# jeen-insights-ui — the Flask UI served by gunicorn.
+#
+# Same shape as the API image: compilers only in the builder, numeric non-root
+# USER with files owned 1001:0 (OpenShift restricted-v2: arbitrary UID in GID 0),
+# /tmp as the only writable path, no package managers in the runtime layer.
+
+FROM python:3.11-slim AS builder
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+
+COPY requirements.txt .
+# Ownership/permissions are set here so COPY --from carries them over without
+# duplicating the venv into a second layer (see Dockerfile for the rationale).
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install -r requirements.txt \
+    && pip freeze --all > /opt/venv/requirements.lock \
+    && pip uninstall -y pip wheel \
+    && chown -R 1001:0 /opt/venv \
+    && chmod -R g=u /opt/venv
+
+
 FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH=/opt/venv/bin:$PATH \
+    HOME=/tmp \
+    MPLCONFIGDIR=/tmp/mpl
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+RUN /usr/local/bin/python -m pip uninstall -y pip setuptools wheel
 
-# Copy requirements first for caching
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY --from=builder /opt/venv /opt/venv
 
-# Copy application code
-COPY src/ ./src/
+COPY --chown=1001:0 src/ ./src/
+
+RUN python -m compileall -q src \
+    && chown -R 1001:0 /app \
+    && chmod -R g=u /app
+
+USER 1001:0
 
 # Expose UI port
 EXPOSE 8501

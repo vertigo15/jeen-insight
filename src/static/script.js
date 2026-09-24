@@ -34,6 +34,7 @@ let sortColumn = null;
 let sortDirection = 'asc';
 let filterText = '';
 let chartManager = null;
+let chartManagerEpoch = 0;
 let chartAnalysisMode = false;
 let chartInteractionEnabled = true;
 let analysisRerunBusy = false;
@@ -1956,7 +1957,7 @@ async function saveCurrentAnalysis() {
     let succeeded = false;
     try {
         const chartState = (chartManager && typeof chartManager.getSaveState === 'function')
-            ? chartManager.getSaveState()
+            ? (chartManager.getSaveState() || {})
             : {};
         let insightsState = (insightsManager && typeof insightsManager.getSaveState === 'function')
             ? insightsManager.getSaveState()
@@ -1981,6 +1982,7 @@ async function saveCurrentAnalysis() {
                 results: currentResults,
                 chart_spec: chartState.chart_spec || null,
                 chart_config: chartState.chart_config || null,
+                chart_state: chartState.chart_session ? chartState : null,
                 insights: insightsState,
             }),
         });
@@ -2324,11 +2326,8 @@ async function restoreSavedAnalysis(savedId) {
         }
         if (item.chart_config) {
             try {
-                await initializeChartFeature(results);
-                if (!chartManager || typeof chartManager.restoreSavedChart !== 'function') {
-                    throw new Error('Chart manager unavailable');
-                }
-                await chartManager.restoreSavedChart(item.chart_config, item.chart_spec || null);
+                const restore = item.chart_state?.chart_config ? item.chart_state : item;
+                await initializeChartFeature(results, { restore });
             } catch (chartErr) {
                 console.warn('[SavedAnalyses] chart restore failed', chartErr);
             }
@@ -3909,11 +3908,14 @@ window._toggleTraceEvent = _toggleTraceEvent;
 
 // Chart Feature Initialization
 async function initializeChartFeature(results, options = {}) {
+    const epoch = ++chartManagerEpoch;
     // Dynamically import ChartManager if not already loaded
     if (!ChartManager) {
-        const module = await import('./chart-feature/chartManager.js?v=115');
+        const module = await import('./chart-feature/chartManager.js?v=118');
+        if (epoch !== chartManagerEpoch) return;
         ChartManager = module.ChartManager;
     }
+    if (epoch !== chartManagerEpoch) return;
 
     // Dispose previous chart manager if exists
     if (chartManager) {
@@ -3921,13 +3923,18 @@ async function initializeChartFeature(results, options = {}) {
     }
 
     // Create new chart manager
-    chartManager = new ChartManager({
+    const manager = new ChartManager({
         workspaceMode: Boolean(document.getElementById('v3-shell')),
     });
-    chartManager.setAnalysisMode(chartAnalysisMode);
-    chartManager.setInteractionEnabled(chartInteractionEnabled);
-    chartManager.setAnalysisRerunBusy(analysisRerunBusy);
-    await chartManager.initialize(results, options);
+    chartManager = manager;
+    manager.setAnalysisMode(chartAnalysisMode);
+    manager.setInteractionEnabled(chartInteractionEnabled);
+    manager.setAnalysisRerunBusy(analysisRerunBusy);
+    await manager.initialize(results, options);
+    if (epoch !== chartManagerEpoch && chartManager === manager) {
+        manager.dispose();
+        chartManager = null;
+    }
 }
 
 // Insights Feature
@@ -4877,6 +4884,7 @@ window.JeenLegacyBridge = {
             await initializeChartFeature(results, restore ? { restore } : {});
         } catch (err) {
             console.warn('[Workspace] chart restore failed', err);
+            throw err;
         }
     },
     getState() {
@@ -4923,7 +4931,7 @@ window.JeenLegacyBridge = {
     async restoreChartState(state) {
         if (!state || !state.chart_config || !chartManager
             || typeof chartManager.restoreSavedChart !== 'function') return;
-        await chartManager.restoreSavedChart(state.chart_config, state.chart_spec || null);
+        await chartManager.restoreSavedChart(state);
     },
     getTablePresentation() {
         return {

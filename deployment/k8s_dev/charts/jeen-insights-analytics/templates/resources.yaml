@@ -1,6 +1,7 @@
 {{- if .Values.enabled }}
 {{- $env := mergeOverwrite (deepCopy (default dict .Values.global.env)) (default dict .Values.env) }}
 {{- $nodeSelector := default (default dict .Values.global.nodeSelector) .Values.nodeSelector }}
+{{- $sc := default dict .Values.securityContext }}
 {{- if .Values.serviceAccount.create }}
 apiVersion: v1
 kind: ServiceAccount
@@ -84,9 +85,15 @@ spec:
         seccompProfile:
           type: RuntimeDefault
         runAsNonRoot: true
-        runAsUser: 10001
-        runAsGroup: 10001
-        fsGroup: 10001
+        {{- with $sc.runAsUser }}
+        runAsUser: {{ . }}
+        {{- end }}
+        {{- with $sc.runAsGroup }}
+        runAsGroup: {{ . }}
+        {{- end }}
+        {{- with $sc.fsGroup }}
+        fsGroup: {{ . }}
+        {{- end }}
       containers:
         - name: analytics
           image: "{{ required "jeen-insights-analytics.image.repository is required" .Values.image.repository }}:{{ required "jeen-insights-analytics.image.tag is required" .Values.image.tag }}"
@@ -141,8 +148,12 @@ spec:
                 - ALL
             readOnlyRootFilesystem: true
             runAsNonRoot: true
-            runAsUser: 10001
-            runAsGroup: 10001
+            {{- with $sc.runAsUser }}
+            runAsUser: {{ . }}
+            {{- end }}
+            {{- with $sc.runAsGroup }}
+            runAsGroup: {{ . }}
+            {{- end }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Jeen Insights — ML e2e harness</title>
   <link rel="stylesheet" href="/src/static/design-tokens.css">
+  <link rel="stylesheet" href="/src/static/style.css">
   <link rel="stylesheet" href="/src/static/workspace/workspace.css">
   <style>
     /* The harness has no login/topbar; give the shell a viewport to fill. */
@@ -54,11 +55,18 @@
   -->
   <script>
     (function () {
+      var requested = new URLSearchParams(location.search).get('locale');
+      var requestedDateFormat = new URLSearchParams(location.search).get('dateFormat');
+      var locale = requested === 'he' ? 'he' : 'en';
+      var dir = locale === 'he' ? 'rtl' : 'ltr';
       var xhr = new XMLHttpRequest();
-      xhr.open('GET', '/src/i18n/messages/en.json', false);
+      xhr.open('GET', '/src/i18n/messages/' + locale + '.json', false);
       xhr.send(null);
+      document.documentElement.lang = locale;
+      document.documentElement.dir = dir;
       window.__I18N_BOOTSTRAP__ = {
-        locale: 'en', dir: 'ltr', formatLocale: 'en-US',
+        locale: locale, dir: dir, formatLocale: locale === 'he' ? 'he-IL' : 'en-US',
+        dateFormat: ['auto', 'dmy', 'mdy', 'iso'].includes(requestedDateFormat) ? requestedDateFormat : 'iso',
         locales: [{ tag: 'en', name: 'English', dir: 'ltr' }, { tag: 'he', name: 'עברית', dir: 'rtl' }],
         messages: JSON.parse(xhr.responseText),
       };
@@ -66,6 +74,7 @@
   </script>
   <script src="/src/static/vendor/intl-messageformat/intl-messageformat.iife.js"></script>
   <script src="/src/static/i18n/i18n.js"></script>
+  <script src="/src/static/vendor/echarts/echarts.min.js"></script>
 
   <!-- 1) real routing truth  2) scenario shapes  3) fake network + env stubs -->
   <script src="/tests/e2e/harness/routing.generated.js"></script>

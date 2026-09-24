@@ -148,4 +148,57 @@ function lineOption() {
     assert.equal(osm.tooltip, undefined);
 }
 
+// ── right-to-left: formatted numbers are wrapped in bidi isolates ────────────
+// Otherwise the RTL canvas moves a leading minus to the end ("20K-").
+{
+    globalThis.I18n = { isRtl: true, isolate: (s) => (s ? `\u2068${s}\u2069` : s) };
+    try {
+        const out = bareManager()._finalizeForRender(lineOption());
+        assert.equal(out.yAxis.axisLabel.formatter(-20000), '\u2068-20K\u2069');
+        assert.equal(out.series[0].label.formatter({ value: 4147192.9 }), '\u20684.1M\u2069');
+        assert.equal(out.tooltip.valueFormatter(2762527.53), '\u20682.8M\u2069');
+        assert.equal(out.yAxis.axisLabel.formatter(null), '', 'empty stays empty');
+
+        // Time-series tooltips build their own rows; the date header is isolated too.
+        const band = bareManager()._finalizeForRender({
+            jeenFormat: { kind: 'number', compact: true },
+            tooltip: { trigger: 'axis' },
+            yAxis: { type: 'value' },
+            series: [{ type: 'line', name: 'Actual', data: [['2026-06-21', -38000]] }],
+        });
+        const html = band.tooltip.formatter([
+            { seriesIndex: 0, seriesName: 'Actual', axisValueLabel: '2026-06-21 00:00:00', marker: '', value: ['2026-06-21', -38000] },
+        ]);
+        assert.equal(html, '\u20682026-06-21 00:00:00\u2069<br/> Actual: \u2068-38K\u2069');
+    } finally {
+        delete globalThis.I18n;
+    }
+    const ltr = bareManager()._finalizeForRender(lineOption());
+    assert.equal(ltr.yAxis.axisLabel.formatter(-20000), '-20K', 'no isolates outside RTL');
+}
+
+// ── band charts: series names follow the interface language on every render ─
+{
+    const catalog = { 'charts.series.actual': 'בפועל', 'charts.series.band': 'טווח צפוי {percent}%' };
+    globalThis.I18n = {
+        isRtl: false,
+        has: (key) => key in catalog,
+        t: (key, args) => catalog[key].replace('{percent}', args?.percent ?? ''),
+    };
+    try {
+        const out = bareManager()._finalizeForRender({
+            legend: { data: ['95% band', 'Actual'] },
+            yAxis: { type: 'value' },
+            series: [
+                { name: '95% band', type: 'line', jeenRole: 'interval', data: [1, 2] },
+                { name: 'Actual', type: 'line', jeenRole: 'actual', data: [1, 2] },
+            ],
+        });
+        assert.deepEqual(out.legend.data, ['טווח צפוי 95%', 'בפועל']);
+        assert.deepEqual(out.series.map((s) => s.name), ['טווח צפוי 95%', 'בפועל']);
+    } finally {
+        delete globalThis.I18n;
+    }
+}
+
 console.log('test_chart_value_formatting: all assertions passed');

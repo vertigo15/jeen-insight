@@ -99,9 +99,9 @@ function _sortCategorySeriesDesc(config) {
     if (!primary) return;
 
     const pairs = categories.map((cat, i) => ({
+        index: i,
         cat,
         val: _seriesValue(primary.data[i]),
-        index: i,
     }));
     pairs.sort((a, b) => (b.val - a.val) || (a.index - b.index));
 

@@ -10,6 +10,7 @@ negotiation agree between the Python registry and the client runtime.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -20,8 +21,16 @@ IIFE = ROOT / "src/static/vendor/intl-messageformat/intl-messageformat.iife.js"
 RUNTIME = ROOT / "src/static/i18n/i18n.js"
 
 
-def _run(locale: str, script: str) -> dict:
+def _run(
+    locale: str,
+    script: str,
+    *,
+    date_format: str = "iso",
+    browser_locale: str = "en-US",
+    timezone: str = "UTC",
+) -> dict:
     bootstrap = i18n.client_bootstrap(locale)
+    bootstrap["dateFormat"] = date_format
     prelude = f"""
       const fs = require('fs');
       const vm = require('vm');
@@ -30,12 +39,30 @@ def _run(locale: str, script: str) -> dict:
       vm.createContext(ctx);
       vm.runInContext(fs.readFileSync({str(IIFE)!r}, 'utf8'), ctx);
       ctx.window.IntlMessageFormat = ctx.IntlMessageFormat;
+      vm.runInContext(`
+        const NativeDateTimeFormat = Intl.DateTimeFormat;
+        Intl.DateTimeFormat = function(locales, options) {{
+          return new NativeDateTimeFormat(
+            locales === undefined ? {json.dumps(browser_locale)} : locales,
+            options
+          );
+        }};
+        Intl.DateTimeFormat.prototype = NativeDateTimeFormat.prototype;
+      `, ctx);
       vm.runInContext(fs.readFileSync({str(RUNTIME)!r}, 'utf8'), ctx);
       const I18n = ctx.window.I18n;
       const out = {{}};
     """
     code = prelude + script + "\nprocess.stdout.write(JSON.stringify(out));"
-    result = subprocess.run(["node", "-e", code], cwd=ROOT, check=True, capture_output=True, text=True)
+    env = {**os.environ, "TZ": timezone}
+    result = subprocess.run(
+        ["node", "-e", code],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
     return json.loads(result.stdout)
 
 
@@ -84,6 +111,62 @@ def test_hebrew_runtime_plurals_direction_and_formatting():
     assert "3" in out["rel"] and "דקות" in out["rel"]
     assert out["names"] == ["English", "עברית"]
     assert out["nativeHe"] == "עברית"
+
+
+def test_calendar_date_format_defaults_to_iso_and_auto_uses_browser_region():
+    default = _run("en", """
+      out.preference = I18n.dateFormat;
+      out.resolved = I18n.resolvedDateFormat;
+      out.date = I18n.formatCalendarDate('2026-09-24');
+    """)
+    auto_us = _run(
+        "he",
+        "out.resolved = I18n.resolvedDateFormat; out.date = I18n.formatCalendarDate('2026-09-24');",
+        date_format="auto",
+        browser_locale="en-US",
+    )
+    auto_gb = _run(
+        "en",
+        "out.resolved = I18n.resolvedDateFormat; out.date = I18n.formatCalendarDate('2026-09-24');",
+        date_format="auto",
+        browser_locale="en-GB",
+    )
+    iso = _run("en", "out.date = I18n.formatCalendarDate('2026-09-24');", date_format="iso")
+    dmy = _run("en", "out.date = I18n.formatCalendarDate('2026-09-24');", date_format="dmy")
+
+    assert default == {"preference": "iso", "resolved": "iso", "date": "2026-09-24"}
+    assert auto_us == {"resolved": "mdy", "date": "09/24/2026"}
+    assert auto_gb == {"resolved": "dmy", "date": "24/09/2026"}
+    assert iso["date"] == "2026-09-24"
+    assert dmy["date"] == "24/09/2026"
+
+
+def test_calendar_date_format_changes_live_rejects_invalid_and_is_timezone_safe():
+    script = """
+      out.before = [I18n.dateFormat, I18n.formatCalendarDate('2026-01-02')];
+      out.changed = I18n.setDateFormat('dmy');
+      out.after = [I18n.dateFormat, I18n.resolvedDateFormat, I18n.formatCalendarDate('2026-01-02')];
+      out.rejected = I18n.setDateFormat('browser');
+      out.final = [I18n.dateFormat, I18n.formatCalendarDate('2026-01-02')];
+    """
+    west = _run("en", script, timezone="Pacific/Honolulu")
+    east = _run("en", script, timezone="Pacific/Kiritimati")
+    invalid_boot = _run(
+        "en",
+        "out.preference = I18n.dateFormat; out.date = I18n.formatCalendarDate('2026-01-02');",
+        date_format="invalid",
+    )
+
+    expected = {
+        "before": ["iso", "2026-01-02"],
+        "changed": True,
+        "after": ["dmy", "dmy", "02/01/2026"],
+        "rejected": False,
+        "final": ["dmy", "02/01/2026"],
+    }
+    assert west == expected
+    assert east == expected
+    assert invalid_boot == {"preference": "iso", "date": "2026-01-02"}
 
 
 def test_translations_are_inert_text_and_isolation_is_explicit():

@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -14,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from src.agent.conversation_artifacts import measure_chart_payload
 from src.api.chart_builder import build_chart_option, profile_dataset
+from src.api.chart_edit_validation import validate_chart_edit
 from src.api.dependencies import get_history_service, get_principal, resolve_agent
 from src.security.internal_auth import Principal
 from src.api.llm_json import (
@@ -38,6 +40,7 @@ from src.api.map_layers import browser_map_layers, configured_map_layers, valid_
 from src.api.map_tile_cache import map_tile_cache
 from src.api.models import (
     ChatMessage,
+    ChartEditError,
     DerivedSeriesSpec,
     EditChartRequest,
     EditChartResponse,
@@ -215,12 +218,23 @@ async def _verify_query_owner(*, query_id: Optional[str], user_id: str, connecti
         raise HTTPException(status_code=404, detail="Query not found for this user")
 
 
+async def _chart_request_watermark() -> Optional[datetime]:
+    """Use PostgreSQL's clock for cross-replica chart write ordering."""
+    history = get_history_service()
+    method = getattr(history, "get_chart_request_watermark", None)
+    if not callable(method):
+        return None
+    value = await method()
+    return value if isinstance(value, datetime) else None
+
+
 async def _persist_chart_baseline(
     *,
     query_id: Optional[str],
     user_id: str,
     chart_spec: Optional[dict],
     chart_config: Optional[dict],
+    request_started_at: Optional[datetime] = None,
 ) -> None:
     """Best-effort: store the server-built chart for conversation restore.
 
@@ -249,7 +263,11 @@ async def _persist_chart_baseline(
             )
             # The user now sees this (unpersisted) chart; an older stored
             # baseline would be restored in its place, so drop it.
-            await history.clear_turn_chart(turn_id=turn_id, user_id=user_id)
+            await history.clear_turn_chart(
+                turn_id=turn_id,
+                user_id=user_id,
+                request_started_at=request_started_at,
+            )
             return
 
         await history.upsert_turn_chart(
@@ -258,6 +276,7 @@ async def _persist_chart_baseline(
             chart_spec=chart_spec,
             chart_config=chart_config,
             chart_bytes=size,
+            request_started_at=request_started_at,
         )
     except Exception:  # noqa: BLE001
         logger.debug("chart baseline persistence failed", exc_info=True)
@@ -1014,6 +1033,9 @@ async def generate_chart(
     await _verify_query_owner(
         query_id=request.query_id, user_id=user_id, connection=request.connection
     )
+    request_started_at = (
+        await _chart_request_watermark() if request.query_id else None
+    )
     agent = await resolve_agent(request.connection)
     chart_type_param = (request.chart_type or "auto").strip().lower()
     if chart_type_param == "osm_map" and not osm_maps_enabled():
@@ -1106,7 +1128,7 @@ async def generate_chart(
             max_tokens=GENERATE_CHART_PARAMS.max_tokens,
         )
         raw = response.get("content") or ""
-        parsed = extract_json_object(raw)
+        parsed = extract_json_object(raw, reject_non_finite=True)
         if parsed is None:
             logger.error(
                 "Chart-spec LLM response was not parseable JSON. First 500 chars: %s",
@@ -1157,6 +1179,7 @@ async def generate_chart(
             user_id=user_id,
             chart_spec=spec,
             chart_config=chart_config,
+            request_started_at=request_started_at,
         )
         return GenerateChartResponse(
             chart_config=chart_config,
@@ -1180,6 +1203,26 @@ _MAP_EDIT_SPEC_FIELDS = {
     "aggregate", "value_format", "currency_symbol", "show_unmatched", "title",
     "y_label", "map_palette", "data_layer_mode",
 }
+_STANDARD_EDIT_SPEC_FIELDS = {
+    "chart_type", "x", "y", "series", "stacked", "stack", "sort",
+}
+_STANDARD_EDIT_CHART_TYPES = {
+    "bar", "line", "area", "pie", "donut", "scatter", "horizontal_bar",
+    "stacked_bar", "stacked_area", "combo", "heatmap", "gauge",
+}
+_STANDARD_EDIT_CONTRACT_APPENDIX = """
+
+ADDITIONAL SAFE EDIT CONTRACT:
+- For a semantic change to chart type, x/y bindings, series grouping, stacking,
+  or sort order, include a top-level "spec_patch" object containing only:
+  chart_type, x, y, series, stacked, sort.
+- Names in x, y, and series must be exact names from COLUMN NAMES.
+- Do not directly rewrite data arrays for semantic changes. The server rebuilds
+  them from the cached full result set.
+- For view/style-only changes, omit spec_patch and preserve every category and
+  value. Never emit dataset, transform, graphic, map/geo, HTML, URLs, images,
+  JavaScript formatters, NaN, or Infinity.
+"""
 
 
 def _is_osm_map_edit(request: EditChartRequest) -> bool:
@@ -1194,6 +1237,179 @@ def _dataset_from_edit_request(request: EditChartRequest) -> Optional[dict]:
     if request.all_data and request.column_names:
         return {"columns": list(request.column_names), "rows": request.all_data}
     return None
+
+
+def _active_derived_series(request: EditChartRequest) -> list[DerivedSeriesSpec]:
+    return list(request.active_derived_series or [])
+
+
+def _edit_rejection(
+    request: EditChartRequest,
+    *,
+    code: str,
+    message: str,
+    details: Optional[dict[str, Any]] = None,
+    prompt: Optional[str] = None,
+) -> EditChartResponse:
+    return EditChartResponse(
+        chart_config=request.current_config,
+        chart_type=extract_chart_type(request.current_config),
+        chart_spec=request.chart_spec if isinstance(request.chart_spec, dict) else None,
+        derived_series=_active_derived_series(request),
+        notes=message,
+        out_of_scope=True,
+        error=ChartEditError(code=code, message=message, details=details or {}),
+        prompt=prompt,
+    )
+
+
+def _canonical_column(value: Any, columns: list[str]) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    lowered = {column.casefold(): column for column in columns}
+    return lowered.get(value.strip().casefold())
+
+
+def _semantic_type_from_config(config: dict) -> Optional[str]:
+    series = config.get("series")
+    if not isinstance(series, list) or not series:
+        return None
+    items = [item for item in series if isinstance(item, dict)]
+    if (
+        isinstance(config.get("jeenMap"), dict)
+        or any(item.get("coordinateSystem") == "geo" for item in items)
+        or any(str(item.get("type") or "").lower() == "map" for item in items)
+    ):
+        return "map"
+    types = {str(item.get("type") or "").lower() for item in items}
+    if not types:
+        return None
+    if types == {"pie"}:
+        radius = items[0].get("radius")
+        return "donut" if isinstance(radius, list) and len(radius) >= 2 else "pie"
+    if len(types) > 1:
+        return "combo"
+    series_type = next(iter(types))
+    if series_type == "bar":
+        _, y_categories = _category_axis_for_route(config, "yAxis")
+        if y_categories:
+            return "horizontal_bar"
+        return "stacked_bar" if any(item.get("stack") for item in items) else "bar"
+    if series_type == "line":
+        if any(item.get("stack") for item in items):
+            return "stacked_area"
+        return "area" if any(isinstance(item.get("areaStyle"), dict) for item in items) else "line"
+    return series_type if series_type in _STANDARD_EDIT_CHART_TYPES else None
+
+
+def _category_axis_for_route(config: dict, key: str) -> tuple[Optional[dict], list[Any]]:
+    axis = config.get(key)
+    if isinstance(axis, list):
+        axis = next((item for item in axis if isinstance(item, dict)), None)
+    if not isinstance(axis, dict):
+        return None, []
+    data = axis.get("data")
+    return axis, data if isinstance(data, list) else []
+
+
+def _validate_standard_spec_patch(
+    raw_patch: Any,
+    *,
+    column_names: list[str],
+    numeric_cols: list[str],
+) -> tuple[Optional[dict[str, Any]], Optional[tuple[str, str, dict[str, Any]]]]:
+    if not isinstance(raw_patch, dict) or not raw_patch:
+        return None, None
+    unknown = sorted(set(raw_patch) - _STANDARD_EDIT_SPEC_FIELDS)
+    if unknown:
+        return None, (
+            "invalid_spec_patch",
+            "The semantic chart edit contained unsupported fields.",
+            {"fields": unknown},
+        )
+
+    patch: dict[str, Any] = {}
+    if "chart_type" in raw_patch:
+        chart_type = str(raw_patch.get("chart_type") or "").strip().lower()
+        if chart_type not in _STANDARD_EDIT_CHART_TYPES:
+            return None, (
+                "unsupported_chart_type",
+                "That chart type is not supported for a deterministic chat edit.",
+                {"chart_type": chart_type},
+            )
+        patch["chart_type"] = chart_type
+
+    if "x" in raw_patch:
+        x = _canonical_column(raw_patch.get("x"), column_names)
+        if not x:
+            return None, (
+                "unknown_column",
+                "The requested X-axis column is not in this result set.",
+                {"column": raw_patch.get("x")},
+            )
+        patch["x"] = x
+
+    if "y" in raw_patch:
+        raw_y = raw_patch.get("y")
+        raw_y = [raw_y] if isinstance(raw_y, str) else raw_y
+        if not isinstance(raw_y, list) or not raw_y:
+            return None, ("invalid_y_binding", "A Y-axis edit needs at least one measure.", {})
+        y = [_canonical_column(value, column_names) for value in raw_y]
+        if any(value is None for value in y) or any(value not in numeric_cols for value in y):
+            return None, (
+                "unknown_measure",
+                "Every requested Y-axis field must be a numeric column in this result set.",
+                {"columns": raw_y},
+            )
+        patch["y"] = list(dict.fromkeys(y))
+
+    if "series" in raw_patch:
+        if raw_patch.get("series") is None:
+            patch["series"] = None
+        else:
+            series = _canonical_column(raw_patch.get("series"), column_names)
+            if not series:
+                return None, (
+                    "unknown_column",
+                    "The requested series column is not in this result set.",
+                    {"column": raw_patch.get("series")},
+                )
+            patch["series"] = series
+
+    stack_value = raw_patch.get("stacked", raw_patch.get("stack"))
+    if "stacked" in raw_patch or "stack" in raw_patch:
+        if not isinstance(stack_value, bool):
+            return None, ("invalid_stack", "The stacked field must be true or false.", {})
+        patch["stacked"] = stack_value
+
+    if "sort" in raw_patch:
+        sort = str(raw_patch.get("sort") or "").strip().lower()
+        if sort not in _ALLOWED_SORTS:
+            return None, (
+                "invalid_sort",
+                "Sort must be asc, desc, or none.",
+                {"sort": sort},
+            )
+        patch["sort"] = sort
+    return patch, None
+
+
+def _merge_active_derived(
+    request: EditChartRequest, parsed_items: Any
+) -> list[DerivedSeriesSpec]:
+    existing = [item.model_dump(mode="json") for item in _active_derived_series(request)]
+    generated = normalise_derived_series(parsed_items, request.column_names)
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for item in [*existing, *generated]:
+        key = (item.get("operator"), item.get("source_column"), item.get("label"))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+        if len(merged) >= 4:
+            break
+    return [DerivedSeriesSpec(**item) for item in merged]
 
 
 def _validate_map_view_commands(commands: Any) -> list[dict[str, Any]]:
@@ -1302,7 +1518,9 @@ async def _edit_osm_map_chart(
             prompt=system_prompt,
         )
 
-    parsed = extract_json_object(response.get("content") or "")
+    parsed = extract_json_object(
+        response.get("content") or "", reject_non_finite=True
+    )
     if not isinstance(parsed, dict):
         return EditChartResponse(
             chart_config=request.current_config,
@@ -1417,15 +1635,10 @@ async def edit_chart(
     )
     agent = await resolve_agent(request.connection)
     instruction = instruction[:_CHART_EDITOR_MAX_INSTRUCTION_CHARS]
-    response_model = await _edit_chart_impl(request, instruction, agent, user_id=user_id)
-    if not response_model.out_of_scope:
-        await _persist_chart_baseline(
-            query_id=request.query_id,
-            user_id=user_id,
-            chart_spec=response_model.chart_spec,
-            chart_config=response_model.chart_config,
-        )
-    return response_model
+    # Natural-language edits are intentionally session-only. Generated,
+    # selector-rebound and deterministic analysis charts establish the durable
+    # baseline; chart chat never mutates it.
+    return await _edit_chart_impl(request, instruction, agent, user_id=user_id)
 
 
 async def _edit_chart_impl(
@@ -1467,6 +1680,9 @@ async def _edit_chart_impl(
             current_config=config_blob,
             recent_messages=recent_blob,
         )
+        # Admin-customized prompts remain valid even when they predate
+        # spec_patch: no new format placeholders are required.
+        system_prompt += _STANDARD_EDIT_CONTRACT_APPENDIX
     except (KeyError, IndexError, ValueError):
         logger.exception("Failed to format chart_editor prompt")
         raise HTTPException(status_code=500, detail="Chart editor prompt is malformed")
@@ -1483,34 +1699,126 @@ async def _edit_chart_impl(
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("Chart edit LLM call failed")
-        return EditChartResponse(
-            chart_config=request.current_config,
-            chart_type=extract_chart_type(request.current_config),
-            derived_series=[],
-            notes=f"Sorry, the chart-edit service is unavailable right now ({e}).",
-            out_of_scope=True,
+        return _edit_rejection(
+            request,
+            code="edit_service_unavailable",
+            message=f"Sorry, the chart-edit service is unavailable right now ({e}).",
             prompt=system_prompt,
-            system_message=None,
         )
 
     raw = response.get("content") or ""
-    parsed = extract_json_object(raw)
+    parsed = extract_json_object(raw, reject_non_finite=True)
     if not isinstance(parsed, dict):
         logger.warning("Chart-edit LLM returned unparseable JSON (%d chars)", len(raw))
-        return EditChartResponse(
-            chart_config=request.current_config,
-            chart_type=extract_chart_type(request.current_config),
-            derived_series=[],
-            notes="I couldn't apply that edit. Please rephrase, or try one of the suggestions.",
-            out_of_scope=True,
+        return _edit_rejection(
+            request,
+            code="invalid_model_json",
+            message="I couldn't apply that edit. Please rephrase, or try one of the suggestions.",
             prompt=system_prompt,
         )
 
-    out_of_scope = bool(parsed.get("out_of_scope"))
+    notes = parsed.get("notes")
+    notes = notes.strip()[:300] if isinstance(notes, str) and notes.strip() else None
+    if bool(parsed.get("out_of_scope")):
+        return _edit_rejection(
+            request,
+            code="out_of_scope",
+            message=notes or "That change needs a new chart or query.",
+            prompt=system_prompt,
+        )
+
+    raw_patch = parsed.get("spec_patch")
+    if isinstance(raw_patch, dict) and raw_patch:
+        base_spec = request.chart_spec if isinstance(request.chart_spec, dict) else None
+        if not base_spec:
+            return _edit_rejection(
+                request,
+                code="semantic_rebuild_unavailable",
+                message="That semantic edit needs the chart specification. Regenerate the chart and try again.",
+                prompt=system_prompt,
+            )
+        dataset = result_cache.get(
+            user_id=user_id,
+            connection=request.connection,
+            query_id=request.query_id,
+        ) or _dataset_from_edit_request(request)
+        if dataset is None:
+            # Match /generate-chart and OSM edit semantics: the browser retries
+            # once with the full rows when this replica no longer has the result.
+            raise HTTPException(status_code=409, detail="cache_miss")
+        profile = profile_dataset(dataset)
+        column_names, numeric_cols, date_cols = _columns_from_profile(profile)
+        patch, patch_error = _validate_standard_spec_patch(
+            raw_patch,
+            column_names=column_names,
+            numeric_cols=numeric_cols,
+        )
+        if patch_error:
+            code, message, details = patch_error
+            return _edit_rejection(
+                request,
+                code=code,
+                message=message,
+                details=details,
+                prompt=system_prompt,
+            )
+        merged = {**base_spec, **(patch or {})}
+        if "stacked" in (patch or {}):
+            stacked = bool(patch["stacked"])
+            chart_type = str(merged.get("chart_type") or "bar").lower()
+            if stacked and chart_type in {"bar", "stacked_bar"}:
+                merged["chart_type"] = "stacked_bar"
+            elif stacked and chart_type in {"line", "area", "stacked_area"}:
+                merged["chart_type"] = "stacked_area"
+            elif not stacked and chart_type == "stacked_bar":
+                merged["chart_type"] = "bar"
+            elif not stacked and chart_type == "stacked_area":
+                merged["chart_type"] = "area"
+        spec = _validate_chart_spec(
+            merged,
+            column_names=column_names,
+            numeric_cols=numeric_cols,
+            date_cols=date_cols,
+            osm_enabled=False,
+        )
+        try:
+            chart_config = build_chart_option(spec, dataset)
+        except (TypeError, ValueError) as exc:
+            return _edit_rejection(
+                request,
+                code="semantic_rebuild_failed",
+                message="That semantic edit could not be rebuilt from the result set.",
+                details={"reason": str(exc)},
+                prompt=system_prompt,
+            )
+        safe_rebuild = validate_chart_edit(chart_config, chart_config)
+        if not safe_rebuild.ok:
+            return _edit_rejection(
+                request,
+                code=safe_rebuild.code or "invalid_rebuild",
+                message=safe_rebuild.message or "The rebuilt chart was not safe to apply.",
+                details=safe_rebuild.details,
+                prompt=system_prompt,
+            )
+        return EditChartResponse(
+            chart_config=chart_config,
+            chart_type=spec["chart_type"],
+            chart_spec=spec,
+            derived_series=_merge_active_derived(request, parsed.get("derived_series")),
+            notes=notes,
+            out_of_scope=False,
+            rebuild_required=True,
+            prompt=system_prompt,
+        )
+
     chart_config = parsed.get("chart_config")
     if not isinstance(chart_config, dict):
-        chart_config = request.current_config
-        out_of_scope = True
+        return _edit_rejection(
+            request,
+            code="missing_chart_config",
+            message="The chart editor did not return a chart configuration.",
+            prompt=system_prompt,
+        )
 
     # If the user asked to change value formatting, carry the hint into the
     # config so the client applies it (compact K/M, currency, percent).
@@ -1525,26 +1833,45 @@ async def _edit_chart_impl(
             "symbol": symbol,
         }
 
-    derived = normalise_derived_series(
-        parsed.get("derived_series"), request.column_names
+    validation = validate_chart_edit(request.current_config, chart_config)
+    if not validation.ok:
+        return _edit_rejection(
+            request,
+            code=validation.code or "invalid_chart_config",
+            message=validation.message or "The proposed chart edit was rejected.",
+            details=validation.details,
+            prompt=system_prompt,
+        )
+
+    current_semantic_type = (
+        str(request.chart_spec.get("chart_type") or "").lower()
+        if isinstance(request.chart_spec, dict)
+        else _semantic_type_from_config(request.current_config)
     )
-
-    chart_type = parsed.get("chart_type")
-    if not isinstance(chart_type, str) or not chart_type.strip():
-        chart_type = extract_chart_type(chart_config)
-
-    notes = parsed.get("notes")
-    if isinstance(notes, str):
-        notes = notes.strip()[:300] or None
-    else:
-        notes = None
+    candidate_semantic_type = _semantic_type_from_config(chart_config)
+    if (
+        current_semantic_type
+        and candidate_semantic_type
+        and current_semantic_type != candidate_semantic_type
+    ):
+        return _edit_rejection(
+            request,
+            code="semantic_patch_required",
+            message="Chart-type changes require a deterministic spec rebuild.",
+            details={
+                "current_chart_type": current_semantic_type,
+                "requested_chart_type": candidate_semantic_type,
+            },
+            prompt=system_prompt,
+        )
 
     return EditChartResponse(
         chart_config=chart_config,
-        chart_type=chart_type,
-        derived_series=[DerivedSeriesSpec(**d) for d in derived],
+        chart_type=candidate_semantic_type or extract_chart_type(chart_config),
+        chart_spec=request.chart_spec if isinstance(request.chart_spec, dict) else None,
+        derived_series=_merge_active_derived(request, parsed.get("derived_series")),
         notes=notes,
-        out_of_scope=out_of_scope,
+        out_of_scope=False,
         prompt=system_prompt,
     )
 
@@ -1586,7 +1913,7 @@ async def enhance_chart_endpoint(
             max_tokens=ENHANCE_CHART_PARAMS.max_tokens,
         )
         raw = response.get("content") or ""
-        enhanced_config = extract_json_object(raw)
+        enhanced_config = extract_json_object(raw, reject_non_finite=True)
         if enhanced_config is None or not isinstance(enhanced_config, dict):
             logger.error(
                 "Enhance-chart LLM response was not parseable JSON. First 500 chars: %s",

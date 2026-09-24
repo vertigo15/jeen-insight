@@ -12,20 +12,42 @@ import { collectNumericValues, makeLabelFormatter, makeValueFormatter } from './
 import { ChartContainer } from './components/ChartContainer.js?v=80';
 import { ChartToggle } from './components/ChartToggle.js?v=3';
 import { ChartTypeSelector } from './components/ChartTypeSelector.js?v=79';
-import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=77';
-import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v=2';
+import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=76';
+import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v=3';
 import { DEFAULT_PALETTE_ID, applyPalette, getPalette, isKnownPalette } from './utils/chartPalettes.js?v=1';
 import { ChartChat } from './components/ChartChat.js?v=107';
-import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js';
+import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js?v=1';
 import { parseChartQuickIntent } from './utils/chartQuickIntents.js?v=2';
-import { applyQuickOptions, detectToggles, restoreChartSortState } from './utils/chartQuickOptions.js?v=73';
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
-import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=8';
+import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=9';
 import { CHART_TYPE_VALUES } from './chartTypes.js?v=79';
+import { localizeSeriesLabels } from './utils/seriesLabels.js?v=1';
+import { applyQuickOptions } from './utils/chartQuickOptions.js?v=4';
+import {
+    applyStyleOverrides,
+    createChartSession,
+    extractStyleOverrides,
+} from './utils/chartSession.js?v=2';
 
 // Interface strings come from the locale catalog (static/i18n/i18n.js, loaded first).
 const t = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
 const th = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.h === 'function' ? window.I18n.h(key, args) : String(key));
+
+/**
+ * On a right-to-left page the chart canvas lays text out right-to-left too, so
+ * a leading minus drifts to the end ("20K-"). Bidi isolates keep numbers intact.
+ */
+function isolateInRtl(format) {
+    const i18n = typeof window !== 'undefined' ? window.I18n : null;
+    if (!i18n || !i18n.isRtl || typeof i18n.isolate !== 'function') return format;
+    return (value) => i18n.isolate(format(value));
+}
+
+/** Catalog lookup that yields null (not the raw key) when a message is missing. */
+const tOrNull = (key, args) => {
+    const i18n = typeof window !== 'undefined' ? window.I18n : null;
+    return i18n && typeof i18n.has === 'function' && i18n.has(key) ? i18n.t(key, args) : null;
+};
 
 /**
  * Main chart manager class
@@ -62,6 +84,7 @@ export class ChartManager {
         this.originalConfig = null;
         // The current ECharts options object actually rendered.
         this.currentEchartsOptions = null;
+        this.chartSession = null;
         // User-chosen colour palette (a preference, so it follows the user across
         // charts). 'jeen' means "no override": theme tokens / server palette.
         this.paletteId = this._readPalettePreference();
@@ -81,6 +104,8 @@ export class ChartManager {
         // In-flight chart request control so a superseded / disposed engine
         // cannot render a late response into a relocated or returned-home node.
         this._chartAbort = null;
+        this._chartEpoch = 0;
+        this._renderReady = false;
         this._disposed = false;
         this._themeObserver = null;
         this._onOsmTableFocus = (event) => {
@@ -113,6 +138,115 @@ export class ChartManager {
         }
     }
 
+    _beginOperation({ invalidate = true } = {}) {
+        if (this._chartAbort) {
+            try { this._chartAbort.abort(); } catch (_) { /* already settled */ }
+        }
+        const controller = new AbortController();
+        const owner = { epoch: ++this._chartEpoch, controller };
+        this._chartAbort = controller;
+        if (invalidate) this._invalidateRenderedChart();
+        return owner;
+    }
+
+    _owns(owner) {
+        return Boolean(
+            owner
+            && !this._disposed
+            && owner.epoch === this._chartEpoch
+            && this._chartAbort === owner.controller
+            && !owner.controller.signal.aborted
+        );
+    }
+
+    _assertOwner(owner) {
+        if (!this._owns(owner)) {
+            const error = new Error(t('charts.errors.staleOperation'));
+            error.name = 'AbortError';
+            throw error;
+        }
+    }
+
+    _finishOperation(owner) {
+        if (this._chartAbort === owner?.controller) this._chartAbort = null;
+    }
+
+    _invalidateRenderedChart() {
+        this._renderReady = false;
+        this.currentEchartsOptions = null;
+        this.state.currentConfig = null;
+        this._enableChartActions(false);
+        this.chartChat?.disable?.();
+    }
+
+    _setChartSession(snapshot, defaults = {}) {
+        this.chartSession = createChartSession(snapshot, defaults);
+        this._syncLegacySessionAliases();
+        this._syncPanelFromSession();
+    }
+
+    _syncLegacySessionAliases() {
+        const baseline = this.chartSession?.baseline || {};
+        const working = this.chartSession?.working || {};
+        this.originalConfig = baseline.config || null;
+        this.originalChartSpec = baseline.spec || null;
+        this.currentChartSpec = working.spec || null;
+    }
+
+    _syncPanelFromSession() {
+        if (!this.chartSession || !this.chartOptionsPanel) return;
+        const { working, view } = this.chartSession;
+        this.chartOptionsPanel.toggles = { ...view.toggles };
+        this.chartOptionsPanel.legendUserSet = Boolean(view.legendUserSet);
+        if (working.spec) {
+            try { this.chartOptionsPanel.syncFromSpec(working.spec); } catch (_) { /* unmounted */ }
+        }
+        if (typeof this.chartOptionsPanel.render === 'function') this.chartOptionsPanel.render();
+    }
+
+    _semanticConfig() {
+        return this.chartSession?.working?.config || null;
+    }
+
+    _baselineMapView(config) {
+        if (this._isOsmMapOption(config)) return {};
+        if (!isMapOption(config)) return {};
+        const meta = config?.jeenMap || {};
+        const target = config?.geo || config?.series?.find((series) => (
+            series?.type === 'map' || series?.coordinateSystem === 'geo'
+        )) || {};
+        const defaultView = meta.defaultView || Object.fromEntries(
+            ['layoutCenter', 'layoutSize', 'aspectScale', 'zoom', 'scaleLimit']
+                .filter((key) => target[key] !== undefined)
+                .map((key) => [key, target[key]]),
+        );
+        return {
+            echarts: JSON.parse(JSON.stringify(defaultView)),
+            controls: {
+                labels: Boolean(meta.showLabels),
+                roam: target.roam !== false,
+                noData: target.itemStyle?.areaColor !== 'rgba(0,0,0,0)',
+                palette: meta.palette || 'blue',
+            },
+        };
+    }
+
+    _adoptBaseline(config, spec = null, extras = {}) {
+        this._valueFormat = null;
+        if (this.chartOptionsPanel && !this._isOsmMapOption(config) && !isMapOption(config)) {
+            this.chartOptionsPanel.applyLegendDefault(config);
+        }
+        const toggles = extras.toggles || this.chartOptionsPanel?.getToggles?.();
+        this._setChartSession({
+            chart_config: config,
+            chart_spec: spec,
+            chart_toggles: toggles,
+            derived_specs: extras.derivedSpecs || [],
+            legend_user_set: extras.legendUserSet ?? this.chartOptionsPanel?.legendUserSet,
+            map_view: extras.mapView || this._baselineMapView(config),
+        });
+    }
+
     /**
      * Initializes chart feature for given query results
      *
@@ -120,37 +254,34 @@ export class ChartManager {
      */
     async initialize(results, options = {}) {
         console.log('[ChartManager] Initializing with results');
+        const owner = this._beginOperation({ invalidate: true });
+        try {
+            this.state.currentData = results;
+            const restore = options && options.restore;
+            this._pendingRestore = restore && restore.chart_config ? restore : null;
+            await this._loadChartCapabilities(owner);
+            this._assertOwner(owner);
 
-        this.state.currentData = results;
-        // A restored conversation turn arrives with its server-built chart
-        // baseline. Render that instead of asking the LLM again; the pending
-        // restore is consumed by the first chart view change.
-        const restore = options && options.restore;
-        this._pendingRestore = restore && restore.chart_config
-            ? { chart_config: restore.chart_config, chart_spec: restore.chart_spec || null }
-            : null;
-        await this._loadChartCapabilities();
+            this.dataAnalysis = analyzeData(results);
+            console.log('[ChartManager] Data analysis complete:', this.dataAnalysis);
+            this.initializeComponents();
+            this._assertOwner(owner);
 
-        // Analyze data (for type detection only)
-        this.dataAnalysis = analyzeData(results);
-        console.log('[ChartManager] Data analysis complete:', this.dataAnalysis);
-
-        // Initialize UI components
-        this.initializeComponents();
-
-        // Check if data can be charted
-        if (!this.dataAnalysis.canChart) {
-            console.log('[ChartManager] Data cannot be charted:', this.dataAnalysis.reason);
-            if (this.chartToggle) this.chartToggle.disableChartButton();
-            this.showNotChartableMessage(this.dataAnalysis.reason);
-            this._devTrace('skipped', { detail: `Not chartable: ${this.dataAnalysis.reason}` });
-            return;
+            if (!this.dataAnalysis.canChart) {
+                console.log('[ChartManager] Data cannot be charted:', this.dataAnalysis.reason);
+                if (this.chartToggle) this.chartToggle.disableChartButton();
+                this.showNotChartableMessage(this.dataAnalysis.reason);
+                this._devTrace('skipped', { detail: `Not chartable: ${this.dataAnalysis.reason}` });
+                return;
+            }
+        } finally {
+            this._finishOperation(owner);
         }
 
-        if (this.workspaceMode) {
+        if (this.workspaceMode && !this._disposed) {
             await this.handleViewChange('chart');
             console.log('[ChartManager] Initialization complete - workspace chart visible');
-        } else {
+        } else if (!this._disposed) {
             console.log('[ChartManager] Initialization complete - defaulting to table view');
         }
     }
@@ -193,7 +324,7 @@ export class ChartManager {
                         this.handleChartTypeChange(selectedType);
                     }
                 },
-                onQuickToggle: (_toggles, _apply, change) => this._reapplyQuickToggles(change),
+                onQuickToggle: () => this._reapplyQuickToggles(),
                 onPaletteChange: (id) => this.setPalette(id),
                 getThemeColors: () => this._themeTokenColors(),
                 initialPalette: this.paletteId,
@@ -240,10 +371,13 @@ export class ChartManager {
         // container exists in the DOM, so omitting it from the page is fine.
         if (document.getElementById('chart-chat-container')) {
             this.chartChat = new ChartChat('chart-chat-container', {
-                getCurrentConfig: () => this.currentEchartsOptions,
+                getCurrentConfig: () => this._renderReady ? this._semanticConfig() : null,
                 getCurrentResults: () => this.state.currentData,
                 getConnection: () => (typeof getActiveConnection === 'function' ? getActiveConnection() : ''),
-                getCurrentSpec: () => this.currentChartSpec,
+                getCurrentSpec: () => this._renderReady ? this.chartSession?.working?.spec || null : null,
+                getCurrentDerivedSpecs: () => (
+                    this._renderReady ? this.chartSession?.working?.derivedSpecs || [] : []
+                ),
                 getQueryId: () => (
                     this.ctx?.queryId != null ? this.ctx.queryId : window.currentQueryId
                 ),
@@ -269,11 +403,16 @@ export class ChartManager {
         console.log('[ChartManager] Components initialized');
     }
 
-    async _loadChartCapabilities() {
+    async _loadChartCapabilities(owner) {
         try {
-            const response = await fetch('/api/chart-capabilities', { credentials: 'same-origin' });
+            const response = await fetch('/api/chart-capabilities', {
+                credentials: 'same-origin',
+                signal: owner?.controller?.signal,
+            });
+            this._assertOwner(owner);
             if (!response.ok) throw new Error(`API returned ${response.status}`);
             const capabilities = await response.json();
+            this._assertOwner(owner);
             if (capabilities && typeof capabilities === 'object') {
                 this.chartCapabilities = capabilities;
             }
@@ -319,6 +458,7 @@ export class ChartManager {
             // Load ECharts if not loaded
             if (!this.state.isEChartsLoaded) {
                 await this.loadECharts();
+                if (this._disposed) return;
             }
 
             // Get selected chart type
@@ -329,12 +469,12 @@ export class ChartManager {
             if (this._pendingRestore) {
                 const restore = this._pendingRestore;
                 this._pendingRestore = null;
-                await this.restoreSavedChart(restore.chart_config, restore.chart_spec);
+                await this.restoreSavedChart(restore);
                 return;
             }
 
             // Call LLM to generate chart
-            this.generateChartWithLLM(selectedType);
+            await this.generateChartWithLLM(selectedType);
         }
     }
 
@@ -371,6 +511,7 @@ export class ChartManager {
      */
     async generateChartWithLLM(chartType = 'auto') {
         console.log('[ChartManager] Generating chart with LLM, type:', chartType);
+        const owner = this._beginOperation({ invalidate: true });
         this._devTrace('running', {
             metrics: { chart_type: chartType },
             detail: `Preparing ${chartType === 'auto' ? 'auto' : chartType} chart generation.`,
@@ -379,6 +520,7 @@ export class ChartManager {
         // Regenerating from scratch — clear any prior chat-edit state so the
         // user starts on a clean baseline.
         if (this.chartChat) this.chartChat.reset();
+        this.chartSession = null;
         this.originalConfig = null;
         this.originalChartSpec = null;
 
@@ -390,12 +532,6 @@ export class ChartManager {
 
         // Show loading state
         this.chartContainer.showLoading();
-        if (this.chartChat) this.chartChat.disable();
-
-        // Per-activation abort handle so dispose() (turn switch / leaving Chat)
-        // cancels the request and no stale response renders into a moved node.
-        this._chartAbort = new AbortController();
-        const _abortSignal = this._chartAbort.signal;
 
         try {
             // Check cache first (include chart type in cache key)
@@ -410,10 +546,11 @@ export class ChartManager {
                 const config = (parsed && parsed.chartConfig) ? parsed.chartConfig : parsed;
                 const cachedRec = (parsed && parsed.recommendedType) ? parsed.recommendedType : null;
                 if (this._isOsmMapOption(config) && !this.chartCapabilities?.osm_map?.enabled) {
+                    this._assertOwner(owner);
                     sessionStorage.removeItem(cacheKey);
                 } else {
-                    if (this._disposed) return;
-                    this.currentChartSpec = parsed?.chartSpec || null;
+                    this._assertOwner(owner);
+                    this._adoptBaseline(config, parsed?.chartSpec || null);
                     // Restore the "<Type> · Auto" button label from cache so it
                     // survives cache hits (setRecommendation is only called on a
                     // fresh network response otherwise).
@@ -421,7 +558,8 @@ export class ChartManager {
                         this.chartTypeSelector.setRecommendation(cachedRec);
                     }
                     const renderStart = performance.now();
-                    await this.renderChart(config);
+                    await this._renderWorking(owner);
+                    this._assertOwner(owner);
                     this._devTrace('done', {
                         metrics: { cache: 'browser hit', chart_type: chartType, render_ms: Math.round(performance.now() - renderStart) },
                         detail: 'Rendered cached chart config.',
@@ -463,18 +601,18 @@ export class ChartManager {
             let serverMs = 0;
             let cacheStatus = 'result hit';
             const requestStart = performance.now();
-            let data = await this._postChart(payload, _abortSignal);
+            let data = await this._postChart(payload, owner);
             serverMs += Math.round(performance.now() - requestStart);
-            if (this._disposed || _abortSignal.aborted) return;
+            this._assertOwner(owner);
             if (data === '__REDIRECT__') return;
             if (data === '__CACHE_MISS__') {
                 console.log('[ChartManager] Cache miss — re-sending full rows');
                 cacheStatus = 'result miss';
                 this._devTrace('running', { metrics: { cache: 'result miss' }, detail: 'Server result cache missed; re-sending full rows for chart build.' });
                 const fallbackStart = performance.now();
-                data = await this._postChart({ ...payload, ...this._fallbackRows() }, _abortSignal);
+                data = await this._postChart({ ...payload, ...this._fallbackRows() }, owner);
                 serverMs += Math.round(performance.now() - fallbackStart);
-                if (this._disposed || _abortSignal.aborted) return;
+                this._assertOwner(owner);
                 if (data === '__REDIRECT__') return;
             }
 
@@ -508,7 +646,8 @@ export class ChartManager {
             if (this.chartOptionsPanel && data.chart_spec) {
                 this.chartOptionsPanel.syncFromSpec(data.chart_spec);
             }
-            this.currentChartSpec = data.chart_spec || null;
+            this._assertOwner(owner);
+            this._adoptBaseline(chartConfig, data.chart_spec || null);
 
             // Display chart prompt in Chart Prompt tab if available
             if (data.prompt || data.system_message) {
@@ -518,17 +657,17 @@ export class ChartManager {
             // Cache the built config (keyed on data + type + mapping) plus the
             // type the LLM actually picked, so an Auto cache hit can restore the
             // "<Type> · Auto" button label.
+            this._assertOwner(owner);
             sessionStorage.setItem(cacheKey, JSON.stringify({
                 chartConfig,
                 recommendedType: data.chart_type || null,
                 chartSpec: data.chart_spec || null,
             }));
 
-            if (this._disposed || _abortSignal.aborted) return;
-
             // Render the chart
             const renderStart = performance.now();
-            await this.renderChart(chartConfig);
+            await this._renderWorking(owner);
+            this._assertOwner(owner);
             this._devTrace('done', {
                 metrics: {
                     cache: cacheStatus,
@@ -542,14 +681,15 @@ export class ChartManager {
         } catch (error) {
             // A cancelled request (turn switch / disposed engine) is expected;
             // don't surface it as a chart error on a node we no longer own.
-            if (this._disposed || (error && error.name === 'AbortError')) return;
+            if (!this._owns(owner) || (error && error.name === 'AbortError')) return;
             console.error('[ChartManager] Failed to generate chart with LLM:', error);
             this._devTrace('error', { detail: error.message || String(error) });
             this.chartContainer.showError(
                 'Failed to generate chart: ' + error.message
             );
+            this._invalidateRenderedChart();
         } finally {
-            this._chartAbort = null;
+            this._finishOperation(owner);
         }
     }
 
@@ -558,7 +698,8 @@ export class ChartManager {
      *   '__CACHE_MISS__' when the server has no cached rows (409),
      *   '__REDIRECT__'   when the session expired (401, redirecting to login).
      */
-    async _postChart(payload, signal = null) {
+    async _postChart(payload, owner) {
+        const signal = owner?.controller?.signal || null;
         // Combine the caller's cancellation signal (Chat turn switch / dispose)
         // with the hard 2-minute timeout when the platform supports it.
         let reqSignal;
@@ -573,6 +714,7 @@ export class ChartManager {
             body: JSON.stringify(payload),
             signal: reqSignal,
         });
+        this._assertOwner(owner);
         if (response.status === 409) return '__CACHE_MISS__';
         if (response.status === 401) {
             const next = encodeURIComponent(location.pathname + location.search);
@@ -582,7 +724,9 @@ export class ChartManager {
         if (!response.ok) {
             throw new Error(`API returned ${response.status}: ${response.statusText}`);
         }
-        return await response.json();
+        const data = await response.json();
+        this._assertOwner(owner);
+        return data;
     }
 
     /**
@@ -606,98 +750,96 @@ export class ChartManager {
         };
     }
 
-    /**
-     * Renders chart with given config (the original LLM-generated config).
-     * Snapshots the config as the Reset baseline.
-     */
+    /** Adopt a legacy config as a new baseline, then use the guarded renderer. */
     async renderChart(echartsConfig) {
-        console.log('[ChartManager] Rendering chart with LLM config');
-
-        // Capture the unmodified baseline so Reset can always restore it.
-        // Deep-clone so later edits to currentEchartsOptions don't mutate it.
+        const owner = this._beginOperation({ invalidate: true });
         try {
-            this.originalConfig = JSON.parse(JSON.stringify(echartsConfig));
-        } catch (_) {
-            this.originalConfig = echartsConfig;
+            this._adoptBaseline(echartsConfig, this.currentChartSpec);
+            await this._renderWorking(owner);
+            this._assertOwner(owner);
+        } finally {
+            this._finishOperation(owner);
         }
-        try {
-            this.originalChartSpec = this.currentChartSpec
-                ? JSON.parse(JSON.stringify(this.currentChartSpec))
-                : null;
-        } catch (_) {
-            this.originalChartSpec = this.currentChartSpec;
-        }
+    }
 
-        // A single-entry legend only repeats the axis title: hide it by default
-        // for this config unless the user has toggled the pill (or the saved
-        // chart already records a choice).
-        if (this.chartOptionsPanel && !this._isOsmMapOption(echartsConfig) && !isMapOption(echartsConfig)) {
-            this.chartOptionsPanel.applyLegendDefault(echartsConfig);
-        }
-        let displayConfig = this._withQuickToggles(echartsConfig);
+    /**
+     * The only path that draws a chart. It always starts from semantic working
+     * state and composes derived data and presentation on fresh copies.
+     */
+    async _renderWorking(owner, session = this.chartSession) {
+        this._assertOwner(owner);
+        if (!session?.working?.config) throw new Error(t('charts.errors.sessionNotInitialized'));
+        const { working, view } = session;
+        let displayConfig = stripDerivedSeries(working.config);
+        displayConfig = applyDerivedSeries(
+            displayConfig,
+            working.derivedSpecs || [],
+            this.state.currentData,
+        ).config;
+        displayConfig = this._withQuickToggles(displayConfig, view.toggles);
+        displayConfig = this._withMapView(displayConfig, view.mapView);
+
         if (this._isOsmMapOption(displayConfig)) {
-            try {
-                this.chartContainer?.dispose();
-                this.osmMapRenderer?.dispose();
-                this.osmMapRenderer = new OsmMapRenderer('chart-display-container', {
-                    onSelect: (detail) => document.dispatchEvent(new CustomEvent(
-                        'jeen:osm-map-select', { detail }
-                    )),
-                });
-                this.osmMapRenderer.render(displayConfig);
-                document.documentElement.dataset.jeenOsmMapActive = 'true';
-                document.dispatchEvent(new CustomEvent('jeen:osm-map-ready'));
-                const chartConfig = {
-                    type: 'osm_map',
-                    options: displayConfig,
-                    isEnhanced: true,
-                };
-                this.state.currentConfig = chartConfig;
-                this.currentEchartsOptions = displayConfig;
-                this._syncMapControls('osm_map');
-                this._renderMapFeedback(displayConfig);
-                this._syncChartChatEnabled();
-                this._enableChartActions(false);
-                console.log('[ChartManager] OpenStreetMap chart rendered successfully');
-            } catch (error) {
-                console.error('[ChartManager] Failed to render OpenStreetMap chart:', error);
-                this.chartContainer?.showError('Failed to render map: ' + error.message);
-            }
-            return;
+            this._assertOwner(owner);
+            this.chartContainer?.dispose();
+            this.osmMapRenderer?.dispose();
+            this.osmMapRenderer = new OsmMapRenderer('chart-display-container', {
+                onSelect: (detail) => document.dispatchEvent(new CustomEvent(
+                    'jeen:osm-map-select', { detail }
+                )),
+            });
+            this._assertOwner(owner);
+            this.osmMapRenderer.render(displayConfig);
+            this.osmMapRenderer.restoreViewState?.(view.mapView?.osm || null);
+            this._assertOwner(owner);
+            document.documentElement.dataset.jeenOsmMapActive = 'true';
+            document.dispatchEvent(new CustomEvent('jeen:osm-map-ready'));
+            const chartConfig = { type: 'osm_map', options: displayConfig, isEnhanced: true };
+            this.state.currentConfig = chartConfig;
+            this.currentEchartsOptions = displayConfig;
+            this._renderReady = true;
+            this._syncMapControls('osm_map');
+            this._renderMapFeedback(displayConfig);
+            this._syncChartChatEnabled();
+            this._enableChartActions(false);
+            console.log('[ChartManager] OpenStreetMap chart rendered successfully');
+            return displayConfig;
         }
+
         delete document.documentElement.dataset.jeenOsmMapActive;
         this.osmMapRenderer?.dispose();
+        this.osmMapRenderer = null;
         if (!this.state.isEChartsLoaded) {
             await this.loadECharts();
+            this._assertOwner(owner);
         }
-        displayConfig = this._finalizeForRender(this._withWorkspaceTheme(displayConfig));
+        displayConfig = this._withWorkspaceTheme(displayConfig);
+        displayConfig = applyStyleOverrides(displayConfig, working.styleOverrides);
+        displayConfig = this._finalizeForRender(displayConfig);
         await ensureMapsForOption(displayConfig);
+        this._assertOwner(owner);
 
         const chartConfig = {
             type: this._optionChartType(displayConfig),
             options: displayConfig,
-            isEnhanced: true
+            isEnhanced: true,
         };
-
+        await this.chartContainer.init();
+        this._assertOwner(owner);
+        this.chartContainer.render(chartConfig);
+        this._assertOwner(owner);
         this.state.currentConfig = chartConfig;
         this.currentEchartsOptions = displayConfig;
-
-        try {
-            await this.chartContainer.init();
-            this.chartContainer.render(chartConfig);
-            this._syncMapControls(chartConfig.type);
-            if (chartConfig.type === 'map' && this.mapOptionsPanel) {
-                this.mapOptionsPanel.syncFromConfig(displayConfig);
-            }
-            this._renderMapFeedback(displayConfig);
-            this._syncChartChatEnabled();
-            this._enableChartActions(true);
-            console.log('[ChartManager] Chart rendered successfully');
-        } catch (error) {
-            console.error('[ChartManager] Failed to render chart:', error);
-            this.chartContainer.showError('Failed to render chart: ' + error.message);
-            this._enableChartActions(false);
+        this._renderReady = true;
+        this._syncMapControls(chartConfig.type);
+        if (chartConfig.type === 'map' && this.mapOptionsPanel) {
+            this.mapOptionsPanel.syncFromConfig(displayConfig);
         }
+        this._renderMapFeedback(displayConfig);
+        this._syncChartChatEnabled();
+        this._enableChartActions(this.interactionEnabled);
+        console.log('[ChartManager] Chart rendered successfully');
+        return displayConfig;
     }
 
     // ── Colour palette ────────────────────────────────────────────────────
@@ -732,13 +874,8 @@ export class ChartManager {
         return this.workspaceMode ? this._themeTokenColors() : null;
     }
 
-    _withPalette(option, colorsOverride = undefined) {
+    _withPalette(option) {
         if (!option || this._isOsmMapOption(option) || isMapOption(option)) return option;
-        if (colorsOverride !== undefined) {
-            return Array.isArray(colorsOverride) && colorsOverride.length
-                ? applyPalette(option, colorsOverride)
-                : option;
-        }
         if (this.customPalette?.colors?.length) return applyPalette(option, this.customPalette.colors);
         const palette = getPalette(this.paletteId);
         if (!palette.colors) return option; // default: leave theme/server colours alone
@@ -749,104 +886,138 @@ export class ChartManager {
      * Switch the palette, remember it as a preference and recolour the current
      * chart in place (no server round-trip, chat edits are preserved).
      */
-    setPalette(id) {
+    async setPalette(id) {
         if (!isKnownPalette(id) || (id === this.paletteId && !this.customPalette)) return;
         this.paletteId = id;
         this.customPalette = null;
         try { window.JeenPreferences?.setChartPalette?.(id); } catch (_) { /* preference is best-effort */ }
         this.chartOptionsPanel?.setPalette(id);
-        const current = this.currentEchartsOptions;
-        if (!current || !this.chartContainer || this._isOsmMapOption(current) || isMapOption(current)) return;
-        const displayConfig = this._withWorkspaceTheme(this._withPalette(current));
-        this._renderDisplayConfig(displayConfig, 'Failed to apply palette');
+        if (!this.chartSession || this._isOsmMapOption(this._semanticConfig()) || isMapOption(this._semanticConfig())) return;
+        const owner = this._beginOperation({ invalidate: true });
+        try {
+            await this._renderWorking(owner);
+            this._assertOwner(owner);
+        } catch (error) {
+            if (!this._owns(owner) || error?.name === 'AbortError') return;
+            if (this._owns(owner) && error?.name !== 'AbortError') {
+                this.chartContainer?.showError('Failed to apply palette: ' + error.message);
+            }
+        } finally {
+            this._finishOperation(owner);
+        }
     }
 
     _setCustomPalette(name, colors) {
         if (!Array.isArray(colors) || !colors.length) return;
         this.customPalette = { name: String(name || 'custom'), colors: colors.slice() };
-        this.chartOptionsPanel?.setCustomPalette(this.customPalette.name, this.customPalette.colors);
+        this.chartOptionsPanel?.setCustomPalette(
+            this.customPalette.name,
+            this.customPalette.colors,
+        );
     }
 
-    applyQuickInstruction(instruction) {
-        if (!this.currentEchartsOptions || this._isOsmMapOption(this.currentEchartsOptions)
-            || isMapOption(this.currentEchartsOptions)) return null;
+    async applyQuickInstruction(instruction) {
+        if (!this.chartSession && this.currentEchartsOptions) {
+            this.chartSession = createChartSession({
+                chart_config: this.currentEchartsOptions,
+                chart_spec: this.currentChartSpec,
+                chart_toggles: this.chartOptionsPanel?.getToggles?.() || {},
+            });
+            this._syncLegacySessionAliases();
+        }
+        if (!this.chartSession || this._isOsmMapOption(this._semanticConfig())
+            || isMapOption(this._semanticConfig())) return null;
         const columns = this.chartOptionsPanel?.columns || this.state.currentData?.columns || [];
         const parsed = parseChartQuickIntent(instruction, { columns });
         if (!parsed) return null;
 
-        let base;
-        try { base = JSON.parse(JSON.stringify(this.currentEchartsOptions)); } catch (_) { base = this.currentEchartsOptions; }
-        const previousToggles = this.chartOptionsPanel?.getToggles?.() || {};
-        const candidateToggles = { ...previousToggles };
-        let candidatePaletteId = this.paletteId;
-        let candidateCustomPalette = this.customPalette
+        const previousSnapshot = this.chartSession.snapshot();
+        const previousDisplay = this.currentEchartsOptions;
+        const previousRenderedConfig = this.state.currentConfig;
+        const previousPaletteId = this.paletteId;
+        const previousCustomPalette = this.customPalette
             ? { name: this.customPalette.name, colors: this.customPalette.colors.slice() }
             : null;
-        let paletteChanged = false;
-        let restoreSort = false;
+        const candidate = createChartSession(previousSnapshot);
+        let config = candidate.working.config;
+        let spec = candidate.working.spec;
+        const toggles = { ...candidate.view.toggles };
+        let paletteId = this.paletteId;
+        let customPalette = previousCustomPalette;
 
         for (const command of parsed.commands) {
             if (command.type === 'toggle') {
-                restoreSort = restoreSort || (
-                    command.key === 'sortDesc'
-                    && previousToggles.sortDesc === true
-                    && command.value === false
-                );
-                candidateToggles[command.key] = command.value;
+                toggles[command.key] = command.value;
             } else if (command.type === 'palette') {
-                candidateCustomPalette = null;
-                candidatePaletteId = command.id;
-                paletteChanged = true;
+                paletteId = command.id;
+                customPalette = null;
             } else if (command.type === 'customPalette') {
-                candidateCustomPalette = {
+                customPalette = {
                     name: command.name,
                     colors: command.colors.slice(),
                 };
-                paletteChanged = true;
             } else if (command.type === 'binding') {
-                const rebound = this._withXAxisBinding(base, command.value);
+                const rebound = this._withXAxisBinding(config, command.value, spec);
                 if (!rebound) return null;
-                base = rebound;
+                config = rebound;
+                spec = { ...(spec || {}), x: command.value };
             }
-        }
-        const paletteColors = candidateCustomPalette?.colors
-            || getPalette(candidatePaletteId).colors;
-        let displayConfig = this._withQuickToggles(
-            base,
-            { restoreSort },
-            { toggles: candidateToggles, paletteColors },
-        );
-        displayConfig = this._withWorkspaceTheme(displayConfig, paletteColors);
-        displayConfig = this._finalizeForRender(displayConfig);
-        if (this._stableOptionJson(displayConfig) === this._stableOptionJson(this.currentEchartsOptions)) {
-            return { applied: false, noChange: true };
         }
 
-        const applied = this._renderDisplayConfig(displayConfig, 'Failed to apply quick chart edit');
-        if (!applied) throw new Error(t('charts.chat.renderFailed'));
-        this.paletteId = candidatePaletteId;
-        this.customPalette = candidateCustomPalette;
-        this.chartOptionsPanel?.setToggles(candidateToggles);
-        if (paletteChanged) {
-            if (candidateCustomPalette) {
-                this.chartOptionsPanel?.setCustomPalette(
-                    candidateCustomPalette.name,
-                    candidateCustomPalette.colors,
-                );
+        candidate.replaceWorking({ ...candidate.working, config, spec });
+        candidate.replaceView({ ...candidate.view, toggles });
+        const noSemanticChange = this._stableOptionJson(candidate.snapshot())
+            === this._stableOptionJson(previousSnapshot);
+        const noPaletteChange = paletteId === previousPaletteId
+            && this._stableOptionJson(customPalette) === this._stableOptionJson(previousCustomPalette);
+        if (noSemanticChange && noPaletteChange) return { applied: false, noChange: true };
+
+        this.paletteId = paletteId;
+        this.customPalette = customPalette;
+        this.chartSession = candidate;
+        this._syncLegacySessionAliases();
+        const owner = this._beginOperation({ invalidate: true });
+        try {
+            await this._renderWorking(owner, candidate);
+            this._assertOwner(owner);
+            this.chartSession = candidate;
+            this._syncLegacySessionAliases();
+            this._syncPanelFromSession();
+            if (customPalette) {
+                this.chartOptionsPanel?.setCustomPalette(customPalette.name, customPalette.colors);
             } else {
-                this.chartOptionsPanel?.setPalette(candidatePaletteId);
-                try { window.JeenPreferences?.setChartPalette?.(candidatePaletteId); } catch (_) { /* best effort */ }
+                this.chartOptionsPanel?.setPalette(paletteId);
+                try { window.JeenPreferences?.setChartPalette?.(paletteId); } catch (_) { /* best effort */ }
             }
+            return {
+                applied: true,
+                summary: parsed.commands
+                    .map((command) => this._quickCommandSummary(command))
+                    .filter(Boolean)
+                    .join(' · '),
+            };
+        } catch (error) {
+            this.paletteId = previousPaletteId;
+            this.customPalette = previousCustomPalette;
+            const rollback = createChartSession(previousSnapshot);
+            if (this._owns(owner) && error?.name !== 'AbortError') {
+                try {
+                    await this._renderWorking(owner, rollback);
+                    this._assertOwner(owner);
+                } catch (_) {
+                    this.currentEchartsOptions = previousDisplay;
+                    this.state.currentConfig = previousRenderedConfig;
+                    this._renderReady = Boolean(previousDisplay);
+                }
+            }
+            this.chartSession = rollback;
+            this._syncLegacySessionAliases();
+            this._syncPanelFromSession();
+            if (error?.name === 'AbortError') throw error;
+            throw new Error(t('charts.chat.renderFailed'));
+        } finally {
+            this._finishOperation(owner);
         }
-        for (const command of parsed.commands) {
-            if (command.type !== 'binding') continue;
-            this.currentChartSpec = { ...(this.currentChartSpec || {}), x: command.value };
-            this.chartOptionsPanel?.syncFromSpec(this.currentChartSpec);
-        }
-        return {
-            applied: true,
-            summary: parsed.commands.map((command) => this._quickCommandSummary(command)).filter(Boolean).join(' · '),
-        };
     }
 
     _stableOptionJson(value) {
@@ -858,6 +1029,24 @@ export class ChartManager {
             );
         };
         try { return JSON.stringify(normalize(value)); } catch (_) { return ''; }
+    }
+
+    _explicitPaletteChange(previous, next) {
+        const extract = (option) => {
+            const series = Array.isArray(option?.series) ? option.series : [];
+            const seriesColors = series.map((item) => (
+                item?.itemStyle?.color || item?.lineStyle?.color || null
+            )).filter((color) => typeof color === 'string' && color);
+            if (seriesColors.length) return seriesColors;
+            return Array.isArray(option?.color)
+                ? option.color.filter((color) => typeof color === 'string' && color)
+                : [];
+        };
+        const before = extract(previous);
+        const after = extract(next);
+        return after.length && this._stableOptionJson(before) !== this._stableOptionJson(after)
+            ? after
+            : null;
     }
 
     _quickCommandSummary(command) {
@@ -879,13 +1068,7 @@ export class ChartManager {
         return keys[command.key] ? t(keys[command.key]) : '';
     }
 
-    /**
-     * Rebind a category x-axis to another column already present in the result.
-     * This is deterministic and uses every row in the browser result; the LLM
-     * editor only receives a sample and historically changed neither chart_spec
-     * nor all category labels, which produced false "Applied" confirmations.
-     */
-    _withXAxisBinding(config, column) {
+    _withXAxisBinding(option, column, currentSpec = null) {
         const data = this.state.currentData || {};
         const names = (data.columns || []).map((item) => typeof item === 'string' ? item : item?.name);
         const columnIndex = names.indexOf(column);
@@ -895,16 +1078,15 @@ export class ChartManager {
             Array.isArray(row) ? row[columnIndex] : row?.[column]
         ));
         if (categories.some((value) => value === undefined)) return null;
-        const previousColumn = this.currentChartSpec?.x;
+        const previousColumn = currentSpec?.x;
         const previousIndex = names.indexOf(previousColumn);
         const sourceCategories = previousIndex >= 0
             ? rows.map((row) => Array.isArray(row) ? row[previousIndex] : row?.[previousColumn])
             : null;
 
         let out;
-        try { out = JSON.parse(JSON.stringify(config)); } catch (_) { return null; }
+        try { out = JSON.parse(JSON.stringify(option)); } catch (_) { return null; }
         if (out.dataset) return null;
-        restoreChartSortState(out);
         const axes = Array.isArray(out.xAxis) ? out.xAxis : out.xAxis ? [out.xAxis] : [];
         if (axes.length !== 1 || axes[0]?.type !== 'category') return null;
         const axis = axes[0];
@@ -966,34 +1148,16 @@ export class ChartManager {
     }
 
     /**
-     * Last step before an ECharts render: restore the function formatters that
-     * the JSON deep-clones in the palette / theme / toggle steps drop.
+     * Last step before an ECharts render: translate the ML series names and
+     * restore the function formatters that the JSON deep-clones in the
+     * palette / theme / toggle steps drop.
      */
     _finalizeForRender(displayConfig) {
         if (!displayConfig || this._isOsmMapOption(displayConfig)) return displayConfig;
-        return this._applyValueFormatting(displayConfig);
+        return this._applyValueFormatting(localizeSeriesLabels(displayConfig, tOrNull));
     }
 
-    /** Render an already-prepared option and record it as the current state. */
-    _renderDisplayConfig(displayConfig, errorLabel) {
-        displayConfig = this._finalizeForRender(displayConfig);
-        const chartConfig = {
-            type: this._optionChartType(displayConfig),
-            options: displayConfig,
-            isEnhanced: true,
-        };
-        try {
-            this.chartContainer.render(chartConfig);
-            this.currentEchartsOptions = displayConfig;
-            this.state.currentConfig = chartConfig;
-            return true;
-        } catch (error) {
-            console.error(`[ChartManager] ${errorLabel}:`, error);
-            return false;
-        }
-    }
-
-    _withWorkspaceTheme(option, colorsOverride = undefined) {
+    _withWorkspaceTheme(option) {
         if (!this.workspaceMode || !option || typeof option !== 'object') return option;
         let themed;
         try { themed = JSON.parse(JSON.stringify(option)); } catch (_) { themed = { ...option }; }
@@ -1001,11 +1165,8 @@ export class ChartManager {
         const token = (name, fallback) => style.getPropertyValue(name).trim() || fallback;
         // The chosen palette (or the theme tokens for the default) drives both
         // the option palette and the per-series colours below.
-        const colors = (
-            colorsOverride !== undefined ? colorsOverride : this._paletteColors()
-        ) || this._themeTokenColors();
-        const faint = token('--faint', '#b8b8bf');
-        const muted = token('--muted', '#98989f');
+        const colors = this._paletteColors() || this._themeTokenColors();
+        const muted = token('--muted', '#6b6b73');
         const border = token('--border', '#e9e9ec');
         themed.backgroundColor = 'transparent';
         themed.textStyle = {
@@ -1019,7 +1180,7 @@ export class ChartManager {
             axes.forEach((axis) => {
                 axis.axisLabel = {
                     ...(axis.axisLabel || {}),
-                    color: key === 'xAxis' ? muted : faint,
+                    color: muted,
                     fontFamily: key === 'xAxis' ? 'Outfit, system-ui, sans-serif' : 'Geist Mono, monospace',
                     fontSize: key === 'xAxis' ? 11 : 10.5,
                 };
@@ -1093,19 +1254,36 @@ export class ChartManager {
         return option;
     }
 
-    _refreshWorkspaceTheme() {
-        if (!this.workspaceMode || !this.chartContainer || !this.currentEchartsOptions) return;
-        const base = this.originalConfig || this.currentEchartsOptions;
-        if (this._isOsmMapOption(base)) return;
-        const displayConfig = this._withWorkspaceTheme(this._withQuickToggles(base));
-        this._renderDisplayConfig(displayConfig, 'Failed to refresh workspace theme');
+    async _refreshWorkspaceTheme() {
+        if (!this.workspaceMode || !this.chartContainer || !this.chartSession) return;
+        if (this._isOsmMapOption(this._semanticConfig())) return;
+        const owner = this._beginOperation({ invalidate: true });
+        try {
+            await this._renderWorking(owner);
+            this._assertOwner(owner);
+        } catch (error) {
+            if (!this._owns(owner) || error?.name === 'AbortError') return;
+            if (this._owns(owner) && error?.name !== 'AbortError') {
+                console.error('[ChartManager] Failed to refresh workspace theme:', error);
+            }
+        } finally {
+            this._finishOperation(owner);
+        }
     }
 
     getSaveState() {
-        return {
-            chart_spec: this.currentChartSpec,
-            chart_config: this.currentEchartsOptions || this.originalConfig || null,
-        };
+        // Semantic session state is safe to capture while a presentation render
+        // is in flight. This preserves an accepted edit when the user switches
+        // turns before ECharts finishes drawing it.
+        if (!this.chartSession) return null;
+        const snapshot = this.chartSession.snapshot();
+        const osmView = this.osmMapRenderer?.getViewState?.();
+        if (osmView) {
+            const view = this.chartSession.view;
+            this.chartSession.replaceView({ ...view, mapView: { ...view.mapView, osm: osmView } });
+            return this.chartSession.snapshot();
+        }
+        return snapshot;
     }
 
     setAnalysisMode(on) {
@@ -1125,12 +1303,16 @@ export class ChartManager {
 
     setInteractionEnabled(enabled) {
         this.interactionEnabled = Boolean(enabled);
+        if (!this.interactionEnabled) this._invalidateRenderedChart();
+        else if (this._renderReady) {
+            this._enableChartActions(!this._isOsmMapOption(this.currentEchartsOptions));
+        }
         this._syncChartChatEnabled();
     }
 
     _syncChartChatEnabled() {
         if (!this.chartChat) return;
-        if (this.interactionEnabled) this.chartChat.enable();
+        if (this.interactionEnabled && this._renderReady) this.chartChat.enable();
         else this.chartChat.disable();
     }
 
@@ -1146,20 +1328,43 @@ export class ChartManager {
         });
     }
 
-    async restoreSavedChart(echartsConfig, chartSpec = null) {
-        if (!echartsConfig) return;
-        this.currentChartSpec = chartSpec || null;
-        if (this.chartOptionsPanel && chartSpec) {
-            try { this.chartOptionsPanel.syncFromSpec(chartSpec); } catch (_) {}
+    async restoreSavedChart(snapshotOrConfig, chartSpec = null) {
+        const snapshot = snapshotOrConfig?.chart_config
+            ? snapshotOrConfig
+            : { chart_config: snapshotOrConfig, chart_spec: chartSpec };
+        if (!snapshot.chart_config) return;
+        const owner = this._beginOperation({ invalidate: true });
+        try {
+            this._valueFormat = null;
+            this._setChartSession(snapshot);
+            const working = this.chartSession.working;
+            const restoredSpec = working.spec;
+            if (restoredSpec?.chart_type) {
+                try {
+                    this.chartTypeSelector?.setRecommendation?.(restoredSpec.chart_type);
+                    this.chartOptionsPanel?.setChartType?.(restoredSpec.chart_type);
+                    this._syncMapControls?.(restoredSpec.chart_type);
+                } catch (_) { /* selector state is cosmetic */ }
+            }
+            await this._renderWorking(owner);
+            this._assertOwner(owner);
+        } catch (error) {
+            if (!this._owns(owner) || error?.name === 'AbortError') return;
+            if (this._owns(owner) && error?.name !== 'AbortError') {
+                this.chartContainer?.showError('Failed to restore chart: ' + error.message);
+                this._invalidateRenderedChart();
+            }
+            throw error;
+        } finally {
+            this._finishOperation(owner);
         }
-        if (chartSpec && chartSpec.chart_type) {
+        if (this._disposed) return;
+        const restoredSpec = this.chartSession?.working?.spec;
+        if (restoredSpec && restoredSpec.chart_type) {
             try {
-                this.chartTypeSelector?.setRecommendation?.(chartSpec.chart_type);
-                this.chartOptionsPanel?.setChartType?.(chartSpec.chart_type);
-                this._syncMapControls?.(chartSpec.chart_type);
+                this.chartTypeSelector?.setRecommendation?.(restoredSpec.chart_type);
             } catch (_) { /* selector state is cosmetic */ }
         }
-        await this.renderChart(echartsConfig);
         if (this.chartToggle && typeof this.chartToggle.showChartView === 'function') {
             this.chartToggle.showChartView();
         }
@@ -1180,178 +1385,135 @@ export class ChartManager {
      * @param {object} newConfig
      * @param {Array} derivedSpecs
      */
-    applyEditedConfig(newConfig, derivedSpecs, _notes = null, edit = null) {
-        if (!newConfig || typeof newConfig !== 'object') return;
-
-        const previous = this.currentEchartsOptions;
-        if (this._isOsmMapOption(newConfig)) {
-            const previousSpec = this.currentChartSpec;
-            try {
-                if (edit?.rebuild_required) {
-                    this.osmMapRenderer?.render(newConfig);
-                    this.currentEchartsOptions = newConfig;
-                    this.state.currentConfig = {
-                        type: 'osm_map',
-                        options: newConfig,
-                        isEnhanced: true,
-                    };
-                    if (edit.chart_spec && typeof edit.chart_spec === 'object') {
-                        this.currentChartSpec = edit.chart_spec;
-                        this.chartOptionsPanel?.syncFromSpec(edit.chart_spec);
-                    }
-                    this._renderMapFeedback(newConfig);
-                }
-                if (Array.isArray(edit?.view_commands) && edit.view_commands.length) {
-                    this.osmMapRenderer?.applyViewCommands(edit.view_commands);
-                }
-                return;
-            } catch (error) {
-                console.error('[ChartManager] Failed to apply edited map:', error);
-                this.currentEchartsOptions = previous;
-                this.currentChartSpec = previousSpec;
-                if (previous) {
-                    try { this.osmMapRenderer?.render(previous); } catch (_) { /* logged above */ }
-                }
-                throw error;
-            }
-        }
-        // Strip any prior __derived series the LLM may have echoed back, then
-        // re-apply only the freshly-described overlays.
+    async applyEditedConfig(newConfig, derivedSpecs, _notes = null, edit = null) {
+        if (!newConfig || typeof newConfig !== 'object' || !this.chartSession) return;
+        const previousSnapshot = this.chartSession.snapshot();
+        const previousWorking = this.chartSession.working;
+        const previousDisplay = this.currentEchartsOptions;
+        const previousRenderedConfig = this.state.currentConfig;
+        const previousCustomPalette = this.customPalette;
+        const baselineConfig = this.chartSession.baseline.config;
+        const candidate = createChartSession(previousSnapshot);
         const cleaned = stripDerivedSeries(newConfig);
-        const { config: withDerived } = applyDerivedSeries(
-            cleaned,
-            derivedSpecs || [],
-            this.state.currentData
-        );
-        const candidateToggles = {
-            ...(this.chartOptionsPanel?.getToggles?.() || {}),
-            ...detectToggles(withDerived),
-        };
-        if (!(withDerived.legend && typeof withDerived.legend === 'object')) {
-            candidateToggles.legend = this.chartOptionsPanel?.getToggles?.().legend;
+        const editedPalette = this._explicitPaletteChange(previousWorking.config, cleaned);
+        const styleOverrides = extractStyleOverrides(cleaned, baselineConfig);
+        const nextSpec = edit?.chart_spec && typeof edit.chart_spec === 'object'
+            ? edit.chart_spec
+            : previousWorking.spec;
+        candidate.replaceWorking({
+            config: cleaned,
+            spec: nextSpec,
+            derivedSpecs: derivedSpecs || [],
+            styleOverrides,
+        });
+        if (this.chartOptionsPanel && !this._isOsmMapOption(cleaned)) {
+            this.chartOptionsPanel.syncTogglesFromConfig(cleaned);
+            candidate.replaceView({
+                ...candidate.view,
+                toggles: this.chartOptionsPanel.getToggles(),
+                legendUserSet: this.chartOptionsPanel.legendUserSet,
+            });
         }
-        const editedPalette = this._explicitPaletteChange(previous, withDerived);
-        const paletteColors = editedPalette || this._paletteColors();
-        const displayConfig = this._finalizeForRender(
-            this._withWorkspaceTheme(
-                this._withQuickToggles(
-                    withDerived,
-                    {},
-                    { toggles: candidateToggles, paletteColors },
-                ),
-                paletteColors,
-            )
-        );
-        if (this._stableOptionJson(displayConfig) === this._stableOptionJson(previous)) {
+        if (this._stableOptionJson(candidate.snapshot()) === this._stableOptionJson(previousSnapshot)
+            && !editedPalette) {
+            this._syncPanelFromSession();
             return { applied: false, noChange: true };
         }
+        if (editedPalette) {
+            this.customPalette = { name: 'custom', colors: editedPalette.slice() };
+        }
 
-        const chartConfig = {
-            type: this._optionChartType(displayConfig),
-            options: displayConfig,
-            isEnhanced: true,
-        };
-
+        // Publish the semantic candidate before rendering so a newer local
+        // operation (for example a quick toggle) composes from this edit. Only
+        // the current owner may roll it back on an actual render failure.
+        this.chartSession = candidate;
+        this._syncLegacySessionAliases();
+        const owner = this._beginOperation({ invalidate: true });
         try {
-            this.chartContainer.render(chartConfig);
-            this.currentEchartsOptions = displayConfig;
-            this.state.currentConfig = chartConfig;
-            this.chartOptionsPanel?.setToggles(candidateToggles);
+            await this._renderWorking(owner, candidate);
+            this._assertOwner(owner);
+            if (this._isOsmMapOption(cleaned) && Array.isArray(edit?.view_commands)) {
+                this.osmMapRenderer?.applyViewCommands(edit.view_commands);
+                this._assertOwner(owner);
+                candidate.replaceView({
+                    ...candidate.view,
+                    mapView: {
+                        ...candidate.view.mapView,
+                        osm: this.osmMapRenderer?.getViewState?.() || {},
+                    },
+                });
+            }
+            this.chartSession = candidate;
+            this._syncLegacySessionAliases();
+            this._syncPanelFromSession();
             if (editedPalette) {
-                this.customPalette = { name: 'custom', colors: editedPalette.slice() };
                 this.chartOptionsPanel?.setCustomPalette('custom', editedPalette);
-            }
-            // Keep the saved spec honest about what is on screen: use the spec the
-            // edit returned, else at least its chart type — restored conversations
-            // and the type selector read the spec, not the ECharts option.
-            if (edit?.chart_spec && typeof edit.chart_spec === 'object') {
-                this.currentChartSpec = edit.chart_spec;
-            } else if (chartConfig.type && this.currentChartSpec && this.currentChartSpec.chart_type !== chartConfig.type) {
-                this.currentChartSpec = { ...this.currentChartSpec, chart_type: chartConfig.type };
-            }
-            if (this.currentChartSpec) {
-                try { this.chartOptionsPanel?.syncFromSpec(this.currentChartSpec); } catch (_) { /* panel may be unmounted */ }
             }
             return { applied: true };
         } catch (error) {
-            console.error('[ChartManager] Failed to apply edited config:', error);
-            // Roll back to the last known-good config so the user keeps a
-            // working chart.
-            if (previous) {
+            this.customPalette = previousCustomPalette;
+            if (!this._owns(owner) || error?.name === 'AbortError') return;
+            if (this._owns(owner) && error?.name !== 'AbortError') {
+                console.error('[ChartManager] Failed to apply edited config:', error);
+                const rollback = createChartSession(previousSnapshot);
                 try {
-                    this.chartContainer.render({
-                        type: this._optionChartType(previous),
-                        options: previous,
-                        isEnhanced: true,
-                    });
-                } catch (_) { /* swallow — we already logged the original error */ }
+                    await this._renderWorking(owner, rollback);
+                    this._assertOwner(owner);
+                    this.chartSession = rollback;
+                    this._syncLegacySessionAliases();
+                    this._syncPanelFromSession();
+                } catch (_) {
+                    this.currentEchartsOptions = previousDisplay;
+                    this.state.currentConfig = previousRenderedConfig;
+                    this._renderReady = Boolean(previousDisplay);
+                }
             }
             throw error;
+        } finally {
+            this._finishOperation(owner);
         }
-    }
-
-    _explicitPaletteChange(previous, next) {
-        const extract = (option) => {
-            const series = Array.isArray(option?.series) ? option.series : [];
-            const seriesColors = series.map((item) => (
-                item?.itemStyle?.color || item?.lineStyle?.color || null
-            )).filter((color) => typeof color === 'string' && color);
-            if (seriesColors.length) return seriesColors;
-            return Array.isArray(option?.color)
-                ? option.color.filter((color) => typeof color === 'string' && color)
-                : [];
-        };
-        const before = extract(previous);
-        const after = extract(next);
-        return after.length && this._stableOptionJson(before) !== this._stableOptionJson(after)
-            ? after
-            : null;
     }
 
     /**
      * Reverts the chart to the original LLM-generated config.
      * The chat transcript is cleared by ChartChat itself.
      */
-    resetChartEdits() {
-        if (!this.originalConfig) return;
+    async resetChartEdits() {
+        if (!this.chartSession) return;
+        const previousSnapshot = this.chartSession.snapshot();
+        const previousCustomPalette = this.customPalette;
+        const candidate = createChartSession(previousSnapshot);
+        candidate.reset();
         this.customPalette = null;
         this.chartOptionsPanel?.clearCustomPalette?.();
-        let baseline;
+        this.chartSession = candidate;
+        this._syncLegacySessionAliases();
+        this._syncPanelFromSession();
+        const owner = this._beginOperation({ invalidate: true });
         try {
-            baseline = JSON.parse(JSON.stringify(this.originalConfig));
-        } catch (_) {
-            baseline = this.originalConfig;
-        }
-        if (this._isOsmMapOption(baseline)) {
-            try {
-                this.osmMapRenderer?.render(baseline);
-                this.currentEchartsOptions = baseline;
-                this.state.currentConfig = {
-                    type: 'osm_map',
-                    options: baseline,
-                    isEnhanced: true,
-                };
-                this.currentChartSpec = this.originalChartSpec
-                    ? JSON.parse(JSON.stringify(this.originalChartSpec))
-                    : null;
-                this.chartOptionsPanel?.syncFromSpec(this.currentChartSpec || {});
-                this._renderMapFeedback(baseline);
-            } catch (error) {
-                console.error('[ChartManager] Failed to reset map:', error);
+            await this._renderWorking(owner, candidate);
+            this._assertOwner(owner);
+            this.chartSession = candidate;
+            this._syncLegacySessionAliases();
+            this._syncPanelFromSession();
+        } catch (error) {
+            this.customPalette = previousCustomPalette;
+            if (!this._owns(owner) || error?.name === 'AbortError') return;
+            if (this._owns(owner) && error?.name !== 'AbortError') {
+                const rollback = createChartSession(previousSnapshot);
+                try {
+                    await this._renderWorking(owner, rollback);
+                    this._assertOwner(owner);
+                    this.chartSession = rollback;
+                    this._syncLegacySessionAliases();
+                    this._syncPanelFromSession();
+                } catch (_) {
+                    this._invalidateRenderedChart();
+                }
             }
-            return;
-        }
-        this.chartOptionsPanel?.resetToggles?.();
-        this.chartOptionsPanel?.syncTogglesFromConfig?.(baseline);
-        const displayConfig = this._withWorkspaceTheme(this._withQuickToggles(baseline));
-        this._renderDisplayConfig(displayConfig, 'Failed to reset chart');
-        // Reset means the original chart, spec included (the map branch above
-        // already does this).
-        this.currentChartSpec = this.originalChartSpec
-            ? JSON.parse(JSON.stringify(this.originalChartSpec))
-            : null;
-        if (this.currentChartSpec) {
-            try { this.chartOptionsPanel?.syncFromSpec(this.currentChartSpec); } catch (_) { /* panel may be unmounted */ }
+            throw error;
+        } finally {
+            this._finishOperation(owner);
         }
     }
 
@@ -1427,7 +1589,7 @@ export class ChartManager {
      * @returns {string|null}
      */
     getChartDataURL() {
-        if (!this.chartContainer || !this.chartContainer.hasChart()) return null;
+        if (!this._renderReady || !this.chartContainer || !this.chartContainer.hasChart()) return null;
         try {
             return this.chartContainer.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#ffffff' });
         } catch (_) {
@@ -1436,7 +1598,7 @@ export class ChartManager {
     }
 
     _handleSavePng() {
-        if (!this.chartContainer || !this.chartContainer.hasChart()) {
+        if (!this._renderReady || !this.chartContainer || !this.chartContainer.hasChart()) {
             this.showToast(t('charts.actions.noChartExport'), 'error');
             return;
         }
@@ -1456,7 +1618,7 @@ export class ChartManager {
     }
 
     async _handleCopyPng(btn) {
-        if (!this.chartContainer || !this.chartContainer.hasChart()) {
+        if (!this._renderReady || !this.chartContainer || !this.chartContainer.hasChart()) {
             this.showToast(t('charts.actions.noChartCopy'), 'error');
             return;
         }
@@ -1467,6 +1629,7 @@ export class ChartManager {
             return;
         }
         const originalLabel = btn ? btn.querySelector('span')?.textContent : null;
+        const epoch = this._chartEpoch;
         try {
             if (btn) {
                 btn.disabled = true;
@@ -1474,15 +1637,17 @@ export class ChartManager {
                 if (span) span.textContent = t('charts.actions.copying');
             }
             const blob = await this.chartContainer.getBlob({ type: 'png', pixelRatio: 2, backgroundColor: '#ffffff' });
+            if (this._disposed || epoch !== this._chartEpoch || !this._renderReady) return;
             if (!blob) throw new Error(t('charts.errors.noImageData'));
             await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+            if (this._disposed || epoch !== this._chartEpoch || !this._renderReady) return;
             this.showToast(t('charts.actions.copied'), 'success');
         } catch (e) {
             console.error('[ChartManager] Copy chart failed:', e);
             this.showToast(t('charts.actions.copyFailed', { detail: e && e.message ? e.message : t('common.unknownError') }), 'error');
         } finally {
             if (btn) {
-                btn.disabled = false;
+                btn.disabled = this._disposed || epoch !== this._chartEpoch || !this._renderReady;
                 const span = btn.querySelector('span');
                 if (span && originalLabel) span.textContent = originalLabel;
             }
@@ -1765,14 +1930,12 @@ export class ChartManager {
         return `chart_llm_v2_${dataHash}_${chartType}_${mapKey}${ctxKey}`;
     }
 
-    _withQuickToggles(config, options = {}, overrides = null) {
+    _withQuickToggles(config, toggles = null) {
         if (!config) return config;
         if (this._isOsmMapOption(config)) return config;
         let out = config;
-        if (this.chartOptionsPanel && !isMapOption(config)) {
-            out = overrides?.toggles
-                ? applyQuickOptions(config, overrides.toggles, this.originalConfig, options)
-                : this.chartOptionsPanel.applyTogglesTo(config, this.originalConfig, options);
+        if (!isMapOption(config)) {
+            out = applyQuickOptions(config, toggles || this.chartSession?.view?.toggles || {});
         }
         // Apply value formatting last so it covers initial render, chat edits,
         // quick toggles, and reset uniformly.
@@ -1783,12 +1946,7 @@ export class ChartManager {
             out = this._suppressCanvasTitle(out);
         }
         // The user's palette rides the same pipeline so it survives every path.
-        return this._withPalette(
-            out,
-            overrides && Object.prototype.hasOwnProperty.call(overrides, 'paletteColors')
-                ? overrides.paletteColors
-                : undefined,
-        );
+        return this._withPalette(out);
     }
 
     /**
@@ -1850,65 +2008,92 @@ export class ChartManager {
         }
     }
 
-    _handleMapControl(action, value) {
-        if (!this.currentEchartsOptions || !this.chartContainer) return;
-        const chart = this.chartContainer.getInstance?.();
-        if (!chart) return;
-
-        if (action === 'zoom-in') {
-            this._patchMapView((target) => { target.zoom = Math.min((target.zoom || 1) * 1.2, 12); });
-        } else if (action === 'zoom-out') {
-            this._patchMapView((target) => { target.zoom = Math.max((target.zoom || 1) / 1.2, 0.7); });
-        } else if (action === 'fit' || action === 'reset') {
-            if (action === 'reset') {
-                try { chart.dispatchAction({ type: 'restore' }); } catch (_) {}
+    _withMapView(option, mapView = {}) {
+        if (!isMapOption(option)) return option;
+        let out;
+        try { out = JSON.parse(JSON.stringify(option)); } catch (_) { out = { ...option }; }
+        const view = mapView?.echarts || {};
+        const controls = mapView?.controls || {};
+        const apply = (target) => {
+            if (!target || (target.type !== 'map' && target.coordinateSystem !== 'geo' && !target.map)) return;
+            for (const key of ['layoutCenter', 'layoutSize', 'aspectScale', 'zoom', 'scaleLimit']) {
+                if (view[key] !== undefined) target[key] = Array.isArray(view[key]) ? view[key].slice() : view[key];
             }
-            const view = this.currentEchartsOptions.jeenMap?.defaultView || {};
-            this._patchMapView((target) => {
-                for (const key of ['layoutCenter', 'layoutSize', 'aspectScale', 'zoom', 'scaleLimit']) {
-                    if (view[key] !== undefined) target[key] = Array.isArray(view[key]) ? view[key].slice() : view[key];
-                }
-            });
-            setTimeout(() => this.chartContainer.resize(), 0);
-        } else if (action === 'labels') {
-            this._patchMapView((target) => {
-                target.label = target.label && typeof target.label === 'object' ? { ...target.label } : {};
-                target.label.show = !!value;
-            });
-            if (this.currentEchartsOptions.jeenMap) this.currentEchartsOptions.jeenMap.showLabels = !!value;
-        } else if (action === 'roam') {
-            this._patchMapView((target) => { target.roam = !!value; });
-        } else if (action === 'noData') {
-            this._patchMapView((target) => {
-                target.itemStyle = target.itemStyle && typeof target.itemStyle === 'object' ? { ...target.itemStyle } : {};
-                target.itemStyle.areaColor = value ? '#eef2f7' : 'rgba(0,0,0,0)';
-            });
+            if (typeof controls.roam === 'boolean') target.roam = controls.roam;
+            if (typeof controls.labels === 'boolean') {
+                target.label = { ...(target.label || {}), show: controls.labels };
+            }
+            if (typeof controls.noData === 'boolean') {
+                target.itemStyle = {
+                    ...(target.itemStyle || {}),
+                    areaColor: controls.noData ? '#eef2f7' : 'rgba(0,0,0,0)',
+                };
+            }
+        };
+        if (Array.isArray(out.series)) out.series.forEach(apply);
+        if (out.geo && typeof out.geo === 'object' && !Array.isArray(out.geo)) apply(out.geo);
+        if (out.jeenMap) out.jeenMap = { ...out.jeenMap, showLabels: Boolean(controls.labels) };
+        return controls.palette ? this._withMapPalette(out, controls.palette) : out;
+    }
+
+    async _handleMapControl(action, value) {
+        if (!this.chartSession || !isMapOption(this._semanticConfig())) return;
+        const previousSnapshot = this.chartSession.snapshot();
+        const candidate = createChartSession(previousSnapshot);
+        const baselineView = candidate.baseline.mapView || {};
+        let mapView = candidate.view.mapView || {};
+        let echartsView = { ...(mapView.echarts || {}) };
+        let controls = { ...(mapView.controls || {}) };
+        const renderedTarget = (
+            this.currentEchartsOptions?.geo
+            || this.currentEchartsOptions?.series?.find((series) => series?.type === 'map')
+            || {}
+        );
+        if (action === 'zoom-in') {
+            echartsView.zoom = Math.min((echartsView.zoom || renderedTarget.zoom || 1) * 1.2, 12);
+        } else if (action === 'zoom-out') {
+            echartsView.zoom = Math.max((echartsView.zoom || renderedTarget.zoom || 1) / 1.2, 0.7);
+        } else if (action === 'fit') {
+            echartsView = { ...(this._semanticConfig()?.jeenMap?.defaultView || {}) };
+        } else if (action === 'reset') {
+            mapView = JSON.parse(JSON.stringify(baselineView));
+            echartsView = { ...(mapView.echarts || {}) };
+            controls = { ...(mapView.controls || {}) };
+        } else if (action === 'labels' || action === 'roam' || action === 'noData') {
+            controls[action] = Boolean(value);
         } else if (action === 'palette') {
-            this._applyMapPalette(value);
+            controls.palette = value;
+        }
+        candidate.replaceView({ ...candidate.view, mapView: { ...mapView, echarts: echartsView, controls } });
+        this.chartSession = candidate;
+        this._syncLegacySessionAliases();
+        const owner = this._beginOperation({ invalidate: true });
+        try {
+            await this._renderWorking(owner, candidate);
+            this._assertOwner(owner);
+            this.chartSession = candidate;
+            this._syncLegacySessionAliases();
+        } catch (error) {
+            if (!this._owns(owner) || error?.name === 'AbortError') return;
+            if (this._owns(owner) && error?.name !== 'AbortError') {
+                const rollback = createChartSession(previousSnapshot);
+                try {
+                    await this._renderWorking(owner, rollback);
+                    this._assertOwner(owner);
+                    this.chartSession = rollback;
+                    this._syncLegacySessionAliases();
+                } catch (_) {
+                    this._invalidateRenderedChart();
+                }
+            }
+            console.error('[ChartManager] Failed to apply map control:', error);
+        } finally {
+            this._finishOperation(owner);
         }
     }
 
-    _patchMapView(mutator) {
-        const options = this.currentEchartsOptions;
-        const patch = {};
-        if (Array.isArray(options.series)) {
-            patch.series = options.series.map((series) => {
-                if (!series || (series.type !== 'map' && series.coordinateSystem !== 'geo')) return {};
-                mutator(series);
-                return { ...series };
-            });
-        }
-        if (options.geo && typeof options.geo === 'object' && !Array.isArray(options.geo)) {
-            mutator(options.geo);
-            patch.geo = { ...options.geo };
-        }
-        this.chartContainer.getInstance()?.setOption(patch, false);
-        if (this.state.currentConfig) this.state.currentConfig.options = options;
-    }
-
-    _applyMapPalette(name) {
+    _withMapPalette(options, name) {
         const palette = MAP_PALETTES[name] || MAP_PALETTES.blue;
-        const options = this.currentEchartsOptions;
         if (options.visualMap && typeof options.visualMap === 'object' && !Array.isArray(options.visualMap)) {
             options.visualMap.inRange = { ...(options.visualMap.inRange || {}), color: palette.slice() };
         }
@@ -1924,10 +2109,7 @@ export class ChartManager {
             });
         }
         if (options.jeenMap) options.jeenMap.palette = name;
-        this.chartContainer.getInstance()?.setOption({
-            visualMap: options.visualMap,
-            series: Array.isArray(options.series) ? options.series.map((series) => ({ ...series })) : undefined,
-        }, false);
+        return options;
     }
 
     _renderMapFeedback(config) {
@@ -1991,7 +2173,7 @@ export class ChartManager {
             };
         }
         const primaryMeta = this._valueFormat || { kind: 'number', compact: true, symbol: '' };
-        const primaryFmt = makeValueFormatter(primaryMeta);
+        const primaryFmt = isolateInRtl(makeValueFormatter(primaryMeta));
 
         // Pull the numeric value out of a point regardless of shape: plain
         // number, {value}, or [x, y] / time-axis pairs.
@@ -2006,7 +2188,7 @@ export class ChartManager {
             if (!axis) return;
             if (Array.isArray(axis)) { axis.forEach(applyAxis); return; }
             if (axis.type === 'value') {
-                const f = axis.jeenFormat ? makeValueFormatter(axis.jeenFormat) : primaryFmt;
+                const f = axis.jeenFormat ? isolateInRtl(makeValueFormatter(axis.jeenFormat)) : primaryFmt;
                 axis.axisLabel = { ...(axis.axisLabel || {}), formatter: f };
             }
         };
@@ -2026,7 +2208,7 @@ export class ChartManager {
             let meta = primaryMeta;
             if (s.jeenFormat) {
                 meta = s.jeenFormat;
-                f = makeValueFormatter(meta);
+                f = isolateInRtl(makeValueFormatter(meta));
                 perSeriesDiff = true;
             }
             seriesFmts[i] = f;
@@ -2035,7 +2217,7 @@ export class ChartManager {
                 // On-chart labels use one shared unit per series (all-K or all
                 // full numbers with thousands separators), unlike the axis,
                 // which may abbreviate freely.
-                const labelFmt = makeLabelFormatter(meta, collectNumericValues(s.data));
+                const labelFmt = isolateInRtl(makeLabelFormatter(meta, collectNumericValues(s.data)));
                 s.label = (s.label && typeof s.label === 'object') ? s.label : {};
                 s.label.formatter = (p) => labelFmt(pickValue(p));
                 if (s.label.fontSize == null) s.label.fontSize = 11;
@@ -2087,9 +2269,10 @@ export class ChartManager {
                 };
                 delete tip.valueFormatter;
             } else if (isAxis && (perSeriesDiff || hasPairs)) {
+                const headFmt = isolateInRtl((value) => String(value));
                 tip.formatter = (params) => {
                     const arr = Array.isArray(params) ? params : [params];
-                    const head = arr.length ? (arr[0].axisValueLabel ?? arr[0].name ?? '') : '';
+                    const head = arr.length ? headFmt(arr[0].axisValueLabel ?? arr[0].name ?? '') : '';
                     const rows = arr.map((p) => {
                         const f = seriesFmts[p.seriesIndex] || primaryFmt;
                         return `${p.marker || ''} ${p.seriesName}: ${f(pickValue(p))}`;
@@ -2104,20 +2287,40 @@ export class ChartManager {
         return options;
     }
 
-    _reapplyQuickToggles(change = null) {
-        if ((!this.currentEchartsOptions && !this.originalConfig) || !this.chartContainer) return;
-        let baseline;
+    async _reapplyQuickToggles() {
+        if (!this.chartSession || !this.chartContainer) return;
+        const previousSnapshot = this.chartSession.snapshot();
+        const candidate = createChartSession(previousSnapshot);
+        candidate.replaceView({
+            ...candidate.view,
+            toggles: this.chartOptionsPanel?.getToggles?.() || candidate.view.toggles,
+            legendUserSet: this.chartOptionsPanel?.legendUserSet ?? candidate.view.legendUserSet,
+        });
+        this.chartSession = candidate;
+        this._syncLegacySessionAliases();
+        const owner = this._beginOperation({ invalidate: true });
         try {
-            baseline = JSON.parse(JSON.stringify(this.currentEchartsOptions || this.originalConfig));
-        } catch (_) {
-            baseline = this.currentEchartsOptions || this.originalConfig;
+            await this._renderWorking(owner, candidate);
+            this._assertOwner(owner);
+            this.chartSession = candidate;
+            this._syncLegacySessionAliases();
+        } catch (error) {
+            if (this._owns(owner) && error?.name !== 'AbortError') {
+                const rollback = createChartSession(previousSnapshot);
+                try {
+                    await this._renderWorking(owner, rollback);
+                    this._assertOwner(owner);
+                    this.chartSession = rollback;
+                    this._syncLegacySessionAliases();
+                    this._syncPanelFromSession();
+                } catch (_) {
+                    this.chartContainer?.showError('Failed to apply chart options: ' + error.message);
+                    this._invalidateRenderedChart();
+                }
+            }
+        } finally {
+            this._finishOperation(owner);
         }
-        // Same pipeline as the initial render (toggles -> palette -> workspace
-        // theme) so a toggle never drops the theme or the chosen colours.
-        const displayConfig = this._withWorkspaceTheme(this._withQuickToggles(baseline, {
-            restoreSort: change?.key === 'sortDesc' && change.value === false,
-        }));
-        this._renderDisplayConfig(displayConfig, 'Failed to apply quick toggles');
     }
 
     simpleHash(str) {
@@ -2135,6 +2338,8 @@ export class ChartManager {
      */
     dispose() {
         this._disposed = true;
+        this._chartEpoch += 1;
+        this._invalidateRenderedChart();
         this.chartChat?.disable?.();
         this.chartChat?.reset?.();
         // Cancel any in-flight chart request so its late response can't render
@@ -2159,6 +2364,8 @@ export class ChartManager {
             this._themeObserver = null;
         }
         document.removeEventListener('jeen:osm-table-focus', this._onOsmTableFocus);
+        const toolbar = document.getElementById('chart-actions-toolbar');
+        if (toolbar?._chartManager === this) toolbar._chartManager = null;
         delete document.documentElement.dataset.jeenOsmMapActive;
         console.log('[ChartManager] Disposed');
     }

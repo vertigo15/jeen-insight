@@ -46,11 +46,36 @@ ingress:
   hosts: []
   tls: []
 
+# OpenShift Route — use instead of ingress on OpenShift (route.openshift.io/v1).
+route:
+  enabled: false
+  # Blank: the router assigns <name>-<namespace>.<apps domain>. Set it to the
+  # host in PUBLIC_APP_URL so OAuth redirects and cookies match.
+  host: ""
+  # haproxy.router.openshift.io/timeout; must exceed the longest SSE response.
+  timeout: 360s
+  annotations: {}
+  tls:
+    enabled: true
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+    # Optional PEM material. Blank = the router's default (wildcard) certificate.
+    certificate: ""
+    key: ""
+    caCertificate: ""
+
 resources: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
 topologySpreadConstraints: []
+
+# Numeric IDs pinned on the container. Set a value to null to omit the field:
+# OpenShift's restricted SCC assigns a UID from the project's range and rejects
+# a pod that pins one outside it (the image tolerates any UID in GID 0).
+securityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
 
 podDisruptionBudget:
   enabled: false

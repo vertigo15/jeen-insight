@@ -23,6 +23,7 @@ def _summary(**overrides):
         "source_key": "sales_db",
         "source_label": "Sales",
         "turn_count": 2,
+        "saved_answer_count": 1,
         "last_question": "and by region?",
         "created_at": "2026-09-01T10:00:00+00:00",
         "last_activity_at": "2026-09-01T10:05:00+00:00",
@@ -105,6 +106,7 @@ def test_last_returns_hydration_payload_without_rows(client, fake_state, monkeyp
     body = resp.json()
     assert body["conversation"]["id"] == CONV_ID
     assert body["conversation"]["connection_available"] is True
+    assert body["conversation"]["saved_answer_count"] == 1
     assert [t["sequence_number"] for t in body["turns"]] == [2, 1]
     # Metadata-first: no rows, no chart config on the hydration payload.
     assert all("results" not in t and "chart_config" not in t for t in body["turns"])
@@ -156,6 +158,18 @@ def test_artifact_scoped_to_principal_and_conversation(client, fake_state):
     assert str(kwargs["turn_id"]) == TURN_ID
 
 
+def test_single_turn_metadata_is_owner_scoped(client, fake_state):
+    h = _history_with(fake_state, get_conversation_turn=AsyncMock(return_value=_turn(is_favorite=True)))
+    resp = client.get(f"/api/conversations/{CONV_ID}/turns/{TURN_ID}")
+    assert resp.status_code == 200
+    assert resp.json()["turn_id"] == TURN_ID
+    assert resp.json()["is_favorite"] is True
+    assert h.get_conversation_turn.await_args.kwargs["user_id"] == "user-a"
+
+    h.get_conversation_turn = AsyncMock(return_value=None)
+    assert client.get(f"/api/conversations/{CONV_ID}/turns/{TURN_ID}").status_code == 404
+
+
 def test_list_requires_connection_or_all(client, fake_state):
     _history_with(fake_state, list_conversations=AsyncMock(return_value=[]))
     assert client.get("/api/conversations").status_code == 400
@@ -176,13 +190,92 @@ def test_rename_and_delete_are_user_scoped(client, fake_state):
     h = _history_with(
         fake_state,
         rename_conversation=AsyncMock(return_value=False),
-        delete_conversation=AsyncMock(return_value=False),
+        delete_conversation=AsyncMock(return_value={"status": "missing", "saved_answer_count": 0}),
     )
     assert client.patch(f"/api/conversations/{CONV_ID}", json={"title": "x"}).status_code == 404
     assert client.delete(f"/api/conversations/{CONV_ID}").status_code == 404
     assert h.rename_conversation.await_args.kwargs["user_id"] == "user-a"
     assert h.delete_conversation.await_args.kwargs["user_id"] == "user-a"
+    assert h.delete_conversation.await_args.kwargs["delete_saved"] is False
     assert client.patch(f"/api/conversations/{CONV_ID}", json={"title": ""}).status_code == 422
+
+
+def test_delete_requires_explicit_confirmation_for_saved_answers(client, fake_state):
+    h = _history_with(
+        fake_state,
+        delete_conversation=AsyncMock(side_effect=[
+            {"status": "blocked", "saved_answer_count": 2},
+            {"status": "deleted", "saved_answer_count": 2},
+        ]),
+    )
+    blocked = client.delete(f"/api/conversations/{CONV_ID}")
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"] == {
+        "code": "conversation_has_saved_answers",
+        "saved_answer_count": 2,
+    }
+
+    deleted = client.delete(f"/api/conversations/{CONV_ID}?delete_saved=true")
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted_saved_answer_count"] == 2
+    assert h.delete_conversation.await_args.kwargs["delete_saved"] is True
+
+
+def test_favorite_answers_are_user_scoped_and_reopenable(client, fake_state):
+    h = _history_with(
+        fake_state,
+        list_favorite_answers=AsyncMock(return_value=[{
+            "conversation_id": CONV_ID,
+            "turn_id": TURN_ID,
+            "sequence_number": 2,
+            "conversation_title": "top customers",
+            "question": "and by region?",
+            "answer": "North led",
+            "result_kind": "table",
+            "snapshot_status": "stored",
+            "source_key": "sales_db",
+            "source_label": "Sales",
+            "created_at": "2026-09-01T10:05:00+00:00",
+            "favorited_at": "2026-09-01T10:06:00+00:00",
+        }]),
+        set_answer_favorite=AsyncMock(side_effect=[True, False]),
+    )
+    h.favorite_schema_ready = True
+
+    listed = client.get("/api/conversations/favorites?limit=25")
+    assert listed.status_code == 200
+    item = listed.json()["items"][0]
+    assert item["turn_id"] == TURN_ID and item["connection_available"] is True
+    assert h.list_favorite_answers.await_args.kwargs == {
+        "user_id": "user-a", "source_key": None, "limit": 25, "before": None,
+    }
+    page_one = client.get("/api/conversations/favorites?limit=1")
+    cursor = page_one.json()["next_cursor"]
+    assert cursor
+    page_two = client.get(f"/api/conversations/favorites?limit=1&before={cursor}")
+    assert page_two.status_code == 200
+    assert h.list_favorite_answers.await_args.kwargs["before"] is not None
+    assert client.get("/api/conversations/favorites?before=garbage").status_code == 400
+
+    added = client.put(f"/api/conversations/{CONV_ID}/turns/{TURN_ID}/favorite")
+    removed = client.delete(f"/api/conversations/{CONV_ID}/turns/{TURN_ID}/favorite")
+    assert added.json()["is_favorite"] is True
+    assert removed.json()["is_favorite"] is False
+    assert h.set_answer_favorite.await_args_list[0].kwargs["user_id"] == "user-a"
+
+
+def test_favorite_routes_fail_closed_when_schema_or_turn_is_missing(client, fake_state):
+    h = _history_with(fake_state)
+    h.favorite_schema_ready = False
+    assert client.get("/api/conversations/favorites").status_code == 503
+    assert client.put(f"/api/conversations/{CONV_ID}/turns/{TURN_ID}/favorite").status_code == 503
+
+    h.favorite_schema_ready = True
+    h.set_answer_favorite = AsyncMock(side_effect=[None, False])
+    assert client.put(f"/api/conversations/{CONV_ID}/turns/{TURN_ID}/favorite").status_code == 404
+    removed = client.delete(f"/api/conversations/{CONV_ID}/turns/{TURN_ID}/favorite")
+    assert removed.status_code == 200
+    assert removed.json()["is_favorite"] is False
 
 
 # ── on-open prune trigger ───────────────────────────────────────────────────
@@ -496,6 +589,7 @@ def test_generate_chart_persists_baseline_with_principal(client, fake_state, mon
     assert persisted["user_id"] == "user-a"
     assert str(persisted["turn_id"]) == TURN_ID
     assert persisted["chart_config"] == resp.json()["chart_config"]
+    assert persisted["request_started_at"].tzinfo is not None
 
 
 def test_generate_chart_skips_persistence_without_query_id_or_over_cap(client, fake_state, monkeypatch):
@@ -532,6 +626,7 @@ def test_generate_chart_skips_persistence_without_query_id_or_over_cap(client, f
     h.clear_turn_chart.assert_awaited_once()
     assert str(h.clear_turn_chart.await_args.kwargs["turn_id"]) == TURN_ID
     assert h.clear_turn_chart.await_args.kwargs["user_id"] == "user-a"
+    assert h.clear_turn_chart.await_args.kwargs["request_started_at"].tzinfo is not None
 
 
 # ── save_to_memory capture ──────────────────────────────────────────────────

@@ -381,6 +381,63 @@ export class OsmMapRenderer {
         this._scheduleRender();
     }
 
+    getViewState() {
+        if (!this.map) return null;
+        const lat = Number(this.center?.lat);
+        const lng = Number(this.center?.lng);
+        return {
+            center: Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null,
+            zoom: this.zoom,
+            activeBasemapId: this.activeBasemapId,
+            activeOverlayIds: [...(this.activeOverlayIds || [])],
+            activeDataLayerIds: [...(this.activeDataLayerIds || [])],
+            dataLayerMode: this.dataLayerMode,
+            selectedPlaceKey: this.selectedPlaceKey || null,
+            sidebarCollapsed: Boolean(this.sidebar?.classList?.contains('is-collapsed')),
+        };
+    }
+
+    restoreViewState(state) {
+        if (!state || typeof state !== 'object' || !this.map) return;
+        const legacyCenter = Array.isArray(state.center) && state.center.length === 2
+            ? { lat: Number(state.center[0]), lng: Number(state.center[1]) }
+            : null;
+        const objectCenter = state.center && typeof state.center === 'object'
+            && !Array.isArray(state.center)
+            ? { lat: Number(state.center.lat), lng: Number(state.center.lng) }
+            : null;
+        const center = objectCenter || legacyCenter;
+        if (center && Number.isFinite(center.lat) && Number.isFinite(center.lng)) {
+            this.center = center;
+        }
+        if (Number.isFinite(Number(state.zoom))) this.zoom = Number(state.zoom);
+        if (state.activeBasemapId && this.layerManifest?.basemaps?.some(
+            (layer) => layer.id === state.activeBasemapId
+        )) {
+            this.activeBasemapId = state.activeBasemapId;
+        }
+        const restoreSet = (ids, layers) => {
+            const allowed = new Set((layers || []).map((layer) => layer.id));
+            return new Set((Array.isArray(ids) ? ids : []).filter((id) => allowed.has(id)));
+        };
+        if (Array.isArray(state.activeOverlayIds)) {
+            this.activeOverlayIds = restoreSet(state.activeOverlayIds, this.layerManifest?.overlays);
+        }
+        if (Array.isArray(state.activeDataLayerIds)) {
+            this.activeDataLayerIds = restoreSet(state.activeDataLayerIds, this.layerManifest?.dataLayers);
+        }
+        if (['auto', 'points', 'clusters'].includes(state.dataLayerMode)) {
+            this.dataLayerMode = state.dataLayerMode;
+        }
+        this.selectedPlaceKey = state.selectedPlaceKey || null;
+        if (this.sidebar) {
+            this.sidebar.classList.toggle('is-collapsed', Boolean(state.sidebarCollapsed));
+        }
+        this._syncLayerControl();
+        this._renderSidebarDetails();
+        this._scheduleRender();
+    }
+
     _buildLegend(overlay) {
         const legend = document.createElement('div');
         legend.className = 'osm-map-legend';

@@ -141,9 +141,15 @@
         const rows = normalizeRows(results);
         const needle = String(query || '').trim().toLowerCase();
         if (!needle) return rows.slice();
-        return rows.filter((row) => columns.some((column, index) =>
-            String(rowValue(row, column, index) ?? '').toLowerCase().includes(needle)
-        ));
+        const metadata = resultColumnMetadata(results);
+        return rows.filter((row) => columns.some((column, index) => {
+            const raw = rowValue(row, column, index);
+            const rawText = String(raw ?? '').toLowerCase();
+            if (rawText.includes(needle)) return true;
+            const meta = metadata[index];
+            return meta?.type === 'datetime'
+                && formatResultDateTime(raw, meta.omitMidnightTime).toLowerCase().includes(needle);
+        }));
     }
 
     /**
@@ -180,22 +186,150 @@
         if (!present.length) return 'empty';
         if (present.every((v) => typeof v === 'number' || (typeof v === 'string' && Number.isFinite(numericValue(v))))) return 'number';
         if (present.every((v) => typeof v === 'boolean')) return 'boolean';
-        if (present.every((v) => !Number.isNaN(Date.parse(v)) && /[-/:T]/.test(String(v)))) return 'datetime';
+        if (present.every((v) => resultDateTimeParts(v)
+            || (!Number.isNaN(Date.parse(v)) && /[-/:T]/.test(String(v))))) return 'datetime';
         return 'text';
+    }
+
+    /**
+     * Parse a canonical SQL/ISO calendar timestamp without constructing a Date.
+     * Keeping the calendar components as strings prevents timezone conversion
+     * from shifting a database date to the previous or next day.
+     */
+    function resultDateTimeParts(value) {
+        const text = value == null ? '' : String(value).trim();
+        const match = /^(\d{4}-\d{2}-\d{2})(?:([ T])(\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?(Z|[+-]\d{2}(?::?\d{2})?)?)?$/.exec(text);
+        if (!match) return null;
+        const hasTime = Boolean(match[2]);
+        const fraction = match[6] || '';
+        return {
+            date: match[1],
+            hasTime,
+            time: hasTime ? text.slice(11) : '',
+            midnight: !hasTime || (
+                match[3] === '00'
+                && match[4] === '00'
+                && (!match[5] || match[5] === '00')
+                && (!fraction || /^\.[0]+$/.test(fraction))
+            ),
+        };
+    }
+
+    function formatResultDateTime(value, omitMidnightTime) {
+        const parts = resultDateTimeParts(value);
+        if (!parts) return String(value);
+        const date = window.I18n?.formatCalendarDate?.(parts.date) || parts.date;
+        if (!parts.hasTime || (omitMidnightTime && parts.midnight)) return date;
+        return `${date} ${parts.time}`;
+    }
+
+    const resultColumnMetaCache = new WeakMap();
+
+    /**
+     * Stable, preference-independent metadata for one result object. Filtering,
+     * sorting and map interactions re-render the same result, so scan its rows
+     * once rather than rebuilding date-column metadata on every interaction.
+     */
+    function resultColumnMetadata(results) {
+        if (!results || typeof results !== 'object') return [];
+        const columns = results.columns || [];
+        const rows = normalizeRows(results);
+        const cached = resultColumnMetaCache.get(results);
+        if (cached && cached.columns === columns && cached.rows === rows
+            && cached.columnCount === columns.length && cached.rowCount === rows.length) {
+            return cached.metadata;
+        }
+
+        const metadata = columns.map((name, index) => {
+            const sampled = rows.slice(0, 50).map((row) => rowValue(row, name, index));
+            const type = inferColumnType(sampled);
+            const numeric = type === 'number';
+            const plain = numeric && isPlainNumberColumn(
+                name,
+                rows.map((row) => rowValue(row, name, index)),
+            );
+            let sawDate = false;
+            let omitMidnightTime = type === 'datetime';
+            if (type === 'datetime') {
+                for (const row of rows) {
+                    const value = rowValue(row, name, index);
+                    if (value === null || value === undefined || value === '') continue;
+                    sawDate = true;
+                    const parts = resultDateTimeParts(value);
+                    if (!parts || !parts.midnight) {
+                        omitMidnightTime = false;
+                        break;
+                    }
+                }
+            }
+            return {
+                name,
+                sourceIndex: index,
+                type,
+                numeric,
+                plain,
+                omitMidnightTime: sawDate && omitMidnightTime,
+            };
+        });
+        resultColumnMetaCache.set(results, {
+            columns,
+            rows,
+            columnCount: columns.length,
+            rowCount: rows.length,
+            metadata,
+        });
+        return metadata;
+    }
+
+    const ID_WORDS = new Set(['id', 'key', 'pk', 'uuid', 'code']);
+    // Hebrew puts the identifier word first: "מזהה_לקוח", "קוד_מוצר".
+    const HE_ID_WORDS = new Set(['מזהה', 'קוד', 'מפתח']);
+    const YEAR_WORDS = new Set(['year', 'yr', 'fy', 'שנה', 'שנת']);
+
+    /** "CustomerKey" / "order_year" -> ["customer", "key"] / ["order", "year"]. */
+    function nameWords(name) {
+        return String(name || '')
+            .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+            .toLowerCase()
+            .split(/[^a-z0-9\u0590-\u05ff]+/)
+            .filter(Boolean);
+    }
+
+    /**
+     * Numbers that name something rather than measure it: ids and keys (by the
+     * column name alone) and years (a year word plus 4-digit integers in every
+     * row, so "sales_per_year" totals still get separators).
+     */
+    function isPlainNumberColumn(name, values) {
+        const words = nameWords(name);
+        if (!words.length) return false;
+        if (ID_WORDS.has(words[words.length - 1]) || HE_ID_WORDS.has(words[0])) return true;
+        if (!words.some((word) => YEAR_WORDS.has(word))) return false;
+        const present = values.filter((v) => v !== null && v !== undefined && v !== '');
+        return present.length > 0 && present.every((v) => {
+            const n = numericValue(v);
+            return Number.isInteger(n) && n >= 1000 && n <= 9999;
+        });
     }
 
     function compactProfile(results) {
         const columns = (results && results.columns) || [];
         const rows = normalizeRows(results);
+        const metadata = resultColumnMetadata(results);
         return columns.map((name, index) => {
             const values = rows.map((row) => rowValue(row, name, index));
             const present = values.filter((v) => v !== null && v !== undefined && v !== '');
-            const type = inferColumnType(values);
+            const meta = metadata[index] || {};
+            const type = meta.type || inferColumnType(values);
             let range = t('results.profile.noValues');
             if (present.length) {
                 if (type === 'number') {
                     const nums = present.map(numericValue);
-                    range = `${formatCompact(Math.min(...nums))} – ${formatCompact(Math.max(...nums))}`;
+                    const show = isPlainNumberColumn(name, present) ? String : formatCompact;
+                    range = `${show(Math.min(...nums))} – ${show(Math.max(...nums))}`;
+                } else if (type === 'datetime') {
+                    const strings = present.map(String).sort((a, b) => a.localeCompare(b));
+                    range = `${formatResultDateTime(strings[0], meta.omitMidnightTime)} – ${formatResultDateTime(strings[strings.length - 1], meta.omitMidnightTime)}`;
                 } else {
                     const strings = present.map(String).sort((a, b) => a.localeCompare(b));
                     range = `${strings[0]} – ${strings[strings.length - 1]}`;
@@ -247,10 +381,11 @@
         conversation: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></svg>',
         railConversation: '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/><path d="M8 10h8M8 14h5"/></svg>',
         pin: '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 3h6l-1 6 3 3H7l3-3-1-6Z"/></svg>',
-        bell: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>',
         export: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3v12M7 8l5-5 5 5M5 14v6h14v-6"/></svg>',
         copy: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
+        star: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></svg>',
         code: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 5l-4 14"/></svg>',
+        pencil: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
     };
 
     const WorkspaceController = {
@@ -269,6 +404,10 @@
         mapSelectedRows: new Set(),
         desktopPreference: true,
         autoCollapsed: false,
+        // Inline "edit a sent message": the turn currently in edit mode and the
+        // working draft of its question. Only one turn edits at a time.
+        editingTurnId: null,
+        editDraft: '',
         lastAppliedResultId: null,
         // Conversation persistence: the restored conversation header, the
         // hydration state and the generation guard that lets a connection
@@ -285,6 +424,11 @@
         _hydration: null,
         _analysisRerunInFlight: null,
         _analysisRerunAbort: null,
+        _turnRerunAborts: new Set(),
+        _proposalExpiryTimer: null,
+        savedView: 'answers',
+        _favoriteList: null,
+        _unavailableSavedAnswer: null,
 
         init() {
             if (document.getElementById('v3-shell')) return;
@@ -305,11 +449,24 @@
             });
             document.addEventListener('jeen:osm-map-ready', () => this.renderTable());
             document.addEventListener('jeen:conversation-tabs', (event) => this.setTabsVisible(!!event.detail?.visible));
+            // Send visibility depends on the signed-in user, which auth.js loads after the shell.
+            document.addEventListener('jeen:current-user', () => this._setActionsEnabled(Boolean(this._actionsEnabled)));
+            document.addEventListener('jeen:preferences-changed', (event) => {
+                if (event.detail?.key !== 'dateFormat') return;
+                this.renderTable();
+                this.renderDock();
+            });
             this.setTabsVisible(conversationTabsPreferred());
             this.setTab('conversation');
             this._renderEmptySuggestions();
+            // Restore the persisted desktop open/closed preference before the
+            // responsive pass so a wide reload honours the last explicit toggle.
+            const storedOpen = this._readConversationOpen();
+            if (storedOpen !== null) this.desktopPreference = storedOpen;
             this._applyResponsive();
+            if (window.innerWidth > 1100) this.setConversation(this.desktopPreference);
             this.render();
+            this.syncRail();
             document.body.classList.add('v3-ready');
             document.body.classList.remove('v3-booting');
             window.askQuestion = () => this.submitComposer();
@@ -323,35 +480,36 @@
             shell.id = 'v3-shell';
             shell.className = 'v3-shell';
             shell.innerHTML = `
-              <nav class="v3-rail" aria-label="${h('shell.rail.navigation')}">
+              <header class="v3-topbar">
                 <img class="v3-logo" src="/static/images/jeen-mark.png" alt="Jeen">
-                <div class="v3-rail-divider"></div>
-                <button class="v3-rail-btn is-active" data-rail="conversation" aria-label="${h('shell.rail.conversation')}" data-tooltip="${h('shell.rail.conversation')}">${ICON.railConversation}</button>
-                <button class="v3-rail-btn" data-rail="tables" aria-label="${h('shell.rail.tables')}" data-tooltip="${h('shell.rail.tables')}">${ICON.table}</button>
-                <button class="v3-rail-btn" data-rail="pinned" aria-label="${h('shell.rail.pinnedLabel')}" data-tooltip="${h('shell.rail.pinned')}">${ICON.pin}</button>
-                <button class="v3-rail-btn" data-rail="history" aria-label="${h('shell.rail.historyLabel')}" data-tooltip="${h('shell.rail.history')}">${ICON.history}</button>
-                <div class="v3-rail-spacer"></div>
-                <button id="v3-settings-button" class="v3-rail-btn v3-rail-btn--settings" data-rail="settings" aria-label="${h('shell.rail.settings')}" data-tooltip="${h('shell.rail.settings')}">${ICON.settings}</button>
-              </nav>
-              <div class="v3-app">
-                <header class="v3-topbar">
-                  <button id="v3-conversation-toggle" class="v3-conversation-toggle" aria-expanded="true" aria-controls="v3-conversation">
-                    ${ICON.conversation}<span>${h('shell.topbar.hideConversation')}</span>
-                  </button>
-                  <div id="v3-connection-slot" class="v3-connection-slot"></div>
-                  <div class="v3-topbar-spacer"></div>
-                  <div id="v3-theme-slot"></div>
-                  <button class="v3-topbar-icon" aria-label="${h('shell.topbar.notifications')}" title="${h('shell.topbar.notifications')}">${ICON.bell}</button>
-                  <div id="v3-user-slot"></div>
-                </header>
+                <span class="v3-topbar-divider" aria-hidden="true"></span>
+                <div id="v3-connection-slot" class="v3-connection-slot"></div>
+                <div class="v3-topbar-spacer"></div>
+                <div id="v3-theme-slot"></div>
+                <div id="v3-user-slot"></div>
+              </header>
+              <div class="v3-main-row">
+                <nav class="v3-rail" aria-label="${h('shell.rail.navigation')}">
+                  <button class="v3-rail-btn is-active" data-rail="conversation" aria-label="${h('shell.rail.conversation')}" data-tooltip="${h('shell.rail.hideConversation')}" aria-controls="v3-conversation" aria-expanded="true">${ICON.railConversation}<span class="v3-rail-dot" hidden></span></button>
+                  <button class="v3-rail-btn" data-rail="tables" aria-label="${h('shell.rail.tables')}" data-tooltip="${h('shell.rail.tables')}">${ICON.table}</button>
+                  <button class="v3-rail-btn" data-rail="saved" aria-label="${h('shell.rail.savedLabel')}" data-tooltip="${h('shell.rail.saved')}">${ICON.pin}</button>
+                  <button class="v3-rail-btn" data-rail="history" aria-label="${h('shell.rail.historyLabel')}" data-tooltip="${h('shell.rail.history')}">${ICON.history}</button>
+                  <div class="v3-rail-spacer"></div>
+                  <button id="v3-settings-button" class="v3-rail-btn v3-rail-btn--settings" data-rail="settings" aria-label="${h('shell.rail.settings')}" data-tooltip="${h('shell.rail.settings')}">${ICON.settings}</button>
+                </nav>
+                <div class="v3-app">
                 <div class="v3-body">
                   <div id="v3-drawer-overlay" class="v3-drawer-overlay"></div>
                   <aside id="v3-conversation" class="v3-conversation" aria-label="${h('shell.panels.workspaceLabel')}">
+                    <div class="v3-panel-head">
+                      <strong id="v3-panel-title">${h('shell.tabs.conversation')}</strong>
+                      <button id="v3-new-conversation" type="button" class="v3-new-conversation">${h('conversation.newConversation')}</button>
+                    </div>
                     <div class="v3-tabs-wrap">
                       <div class="v3-tabs" role="tablist" aria-label="${h('shell.tabs.sections')}">
                         <button id="v3-tab-conversation" class="v3-tab" data-tab="conversation" role="tab" aria-selected="true" aria-controls="v3-panel-conversation">${h('shell.tabs.conversation')}</button>
                         <button id="v3-tab-tables" class="v3-tab" data-tab="tables" role="tab" aria-selected="false" aria-controls="v3-panel-tables">${h('shell.tabs.tables')}</button>
-                        <button id="v3-tab-pinned" class="v3-tab" data-tab="pinned" role="tab" aria-selected="false" aria-controls="v3-panel-pinned">${h('shell.tabs.pinned')}</button>
+                        <button id="v3-tab-saved" class="v3-tab" data-tab="saved" role="tab" aria-selected="false" aria-controls="v3-panel-saved">${h('shell.tabs.saved')}</button>
                         <button id="v3-tab-conversations" class="v3-tab" data-tab="conversations" role="tab" aria-selected="false" aria-controls="v3-panel-conversations">${h('shell.tabs.history')}</button>
                       </div>
                     </div>
@@ -369,10 +527,19 @@
                       <div id="v3-table-search-slot" class="v3-panel-search"></div>
                       <div id="v3-tables-slot"></div>
                     </section>
-                    <section id="v3-panel-pinned" class="v3-panel v3-panel-list" data-panel="pinned" role="tabpanel" aria-labelledby="v3-tab-pinned" hidden>
-                      <div id="v3-question-search-slot" class="v3-panel-search"></div>
-                      <div class="v3-thread-empty-label">${h('shell.panels.pinnedRecent')}</div>
-                      <div id="v3-pinned-slot"></div>
+                    <section id="v3-panel-saved" class="v3-panel v3-panel-list" data-panel="saved" role="tabpanel" aria-labelledby="v3-tab-saved" hidden>
+                      <div class="v3-saved-switch" role="tablist" aria-label="${h('favorite.sections')}">
+                        <button id="v3-saved-tab-answers" type="button" data-saved-view="answers" role="tab" aria-selected="true" aria-controls="v3-saved-answers">${h('favorite.answers')}</button>
+                        <button id="v3-saved-tab-questions" type="button" data-saved-view="questions" role="tab" aria-selected="false" aria-controls="v3-saved-questions" tabindex="-1">${h('favorite.questions')}</button>
+                      </div>
+                      <div id="v3-saved-answers" data-saved-pane="answers" role="tabpanel" aria-labelledby="v3-saved-tab-answers">
+                        <div id="v3-favorites-list" class="v3-favorites-list"></div>
+                      </div>
+                      <div id="v3-saved-questions" data-saved-pane="questions" role="tabpanel" aria-labelledby="v3-saved-tab-questions" hidden>
+                        <div id="v3-question-search-slot" class="v3-panel-search"></div>
+                        <div class="v3-thread-empty-label">${h('shell.panels.pinnedRecent')}</div>
+                        <div id="v3-pinned-slot"></div>
+                      </div>
                     </section>
                     <div class="v3-composer-wrap">
                       <div class="v3-composer">
@@ -392,7 +559,9 @@
                         <h1 id="v3-result-title" class="v3-result-title">${h('shell.result.getStarted')}</h1>
                         <div id="v3-meta-row" class="v3-meta-row"></div>
                       </div>
-                      <div id="v3-actions" class="v3-actions"></div>
+                      <div id="v3-actions" class="v3-actions">
+                        <button id="v3-favorite-action" type="button" class="v3-favorite-action" hidden>${ICON.star}<span>${h('favorite.add')}</span></button>
+                      </div>
                     </header>
                     <div class="v3-scroll">
                       <div id="v3-placeholder" class="v3-placeholder">
@@ -456,6 +625,7 @@
                       <div id="v3-dock-body" class="v3-dock-body" hidden></div>
                     </section>
                   </main>
+                </div>
                 </div>
               </div>`;
             document.body.insertBefore(shell, document.body.firstChild);
@@ -550,7 +720,12 @@
                 this.renderDock();
             }));
             document.querySelectorAll('[data-rail]').forEach((button) => button.addEventListener('click', () => this._rail(button.dataset.rail)));
-            document.getElementById('v3-conversation-toggle').addEventListener('click', () => this.toggleConversation());
+            document.querySelectorAll('[data-saved-view]').forEach((button) => button.addEventListener('click', () => this.setSavedView(button.dataset.savedView)));
+            document.querySelector('.v3-saved-switch').addEventListener('keydown', (event) => {
+                this._tabKeydown(event, '[data-saved-view]', (button) => this.setSavedView(button.dataset.savedView));
+            });
+            document.getElementById('v3-new-conversation').addEventListener('click', () => this.newConversation());
+            document.getElementById('v3-favorite-action').addEventListener('click', () => this.toggleFavorite());
             document.getElementById('v3-drawer-overlay').addEventListener('click', () => this.setConversation(false, true));
             document.getElementById('v3-dock-toggle').addEventListener('click', () => this.toggleDock(this.dockTab));
             document.querySelector('[data-question-log]')?.addEventListener('click', () => document.getElementById('history-btn')?.click());
@@ -612,15 +787,24 @@
         _rail(action) {
             // 'new' is kept as an alias so older callers (onboarding) still work.
             if (action === 'conversation' || action === 'new') {
+                // The Conversation icon is the panel toggle: when its own tab is
+                // already showing, a click collapses the panel; otherwise it
+                // switches to Conversation and opens the panel.
+                if (this.activeTab === 'conversation' && this.isConversationOpen()) {
+                    this.setConversation(false, true);
+                    this._persistConversationOpen(false);
+                    return;
+                }
                 this.setTab('conversation');
                 this.setConversation(true);
+                this._persistConversationOpen(true);
                 if (this.input) this.input.focus();
             } else if (action === 'tables') {
                 // setTab('tables') already refreshes the table list once.
                 this.setTab('tables');
                 this.setConversation(true);
-            } else if (action === 'pinned') {
-                this.setTab('pinned');
+            } else if (action === 'saved' || action === 'pinned') {
+                this.setTab('saved');
                 this.setConversation(true);
             } else if (action === 'history') {
                 this.setTab('conversations');
@@ -633,19 +817,28 @@
 
         setTab(tab) {
             this.activeTab = tab;
+            const panelTitles = {
+                conversation: t('shell.tabs.conversation'),
+                tables: t('shell.tabs.tables'),
+                saved: t('shell.tabs.saved'),
+                conversations: t('shell.tabs.history'),
+            };
+            const panelTitle = document.getElementById('v3-panel-title');
+            if (panelTitle) panelTitle.textContent = panelTitles[tab] || panelTitles.conversation;
             document.querySelectorAll('[data-tab]').forEach((button) => {
                 const active = button.dataset.tab === tab;
                 button.setAttribute('aria-selected', String(active));
                 button.tabIndex = active ? 0 : -1;
             });
             document.querySelectorAll('[data-panel]').forEach((panel) => { panel.hidden = panel.dataset.panel !== tab; });
-            // Rail icon <-> panel tab mapping (the History icon opens the
-            // 'conversations' panel; 'new' is the legacy id of the first icon).
-            const railForTab = { conversation: ['conversation', 'new'], tables: ['tables'], pinned: ['pinned'], conversations: ['history'] };
-            const activeRails = railForTab[tab] || [];
-            document.querySelectorAll('[data-rail]').forEach((button) => button.classList.toggle('is-active', activeRails.includes(button.dataset.rail)));
+            // syncRail() owns the rail's active/collapsed visuals: it lights the
+            // matching icon only when the panel is actually open.
+            this.syncRail();
             if (tab === 'tables' && typeof window.loadTables === 'function') window.loadTables();
-            if (tab === 'pinned' && typeof window.displayHistory === 'function') window.displayHistory();
+            if (tab === 'saved') {
+                if (this.savedView === 'answers') this.loadFavoriteAnswers();
+                else if (typeof window.displayHistory === 'function') window.displayHistory();
+            }
             if (tab === 'conversations') this.loadConversationList();
         },
 
@@ -661,10 +854,18 @@
             document.getElementById('v3-conversation')?.classList.toggle('v3-tabs-hidden', !visible);
         },
 
-        toggleConversation() {
+        /** True when the conversation panel is visible (desktop) or forced open (drawer). */
+        isConversationOpen() {
             const panel = document.getElementById('v3-conversation');
-            const open = panel.hidden || (!panel.classList.contains('v3-force-open') && window.innerWidth <= 1100);
+            if (!panel || panel.hidden) return false;
+            if (window.innerWidth <= 1100) return panel.classList.contains('v3-force-open');
+            return true;
+        },
+
+        toggleConversation() {
+            const open = !this.isConversationOpen();
             this.setConversation(open, !open);
+            this._persistConversationOpen(open);
         },
 
         setConversation(open, restoreFocus = false) {
@@ -681,11 +882,51 @@
             overlay.classList.toggle('is-open', open && window.innerWidth < 900);
             overlay.setAttribute('aria-hidden', String(!(open && window.innerWidth < 900)));
             panel.setAttribute('aria-hidden', String(!open));
-            const toggle = document.getElementById('v3-conversation-toggle');
-            toggle.setAttribute('aria-expanded', String(open));
-            toggle.querySelector('span').textContent = open ? t('shell.topbar.hideConversation') : t('shell.topbar.showConversation');
-            if (!open && restoreFocus) toggle.focus();
+            this.syncRail();
+            if (!open && restoreFocus) document.querySelector('[data-rail="conversation"]')?.focus();
             setTimeout(() => window.dispatchEvent(new Event('resize')), 0);
+        },
+
+        /**
+         * Single owner of the rail's active/collapsed visuals. A section icon is
+         * "active" (rose) only when its panel is actually open; the Conversation
+         * icon additionally shows a collapsed state + an unread-style dot (when
+         * the panel is closed and the thread has turns) and carries the toggle's
+         * aria/tooltip. Called from setTab, setConversation and after render.
+         */
+        syncRail() {
+            const railForTab = { conversation: ['conversation', 'new'], tables: ['tables'], saved: ['saved', 'pinned'], conversations: ['history'] };
+            const activeRails = railForTab[this.activeTab] || [];
+            const open = this.isConversationOpen();
+            document.querySelectorAll('[data-rail]').forEach((button) => {
+                button.classList.toggle('is-active', open && activeRails.includes(button.dataset.rail));
+            });
+            const convo = document.querySelector('[data-rail="conversation"]');
+            if (!convo) return;
+            const conversationActive = activeRails.includes('conversation');
+            const collapsed = !open;
+            convo.classList.toggle('is-collapsed', collapsed);
+            // The button controls the whole panel (aria-controls="v3-conversation"),
+            // so expanded reflects panel visibility regardless of which tab shows.
+            convo.setAttribute('aria-expanded', String(open));
+            const label = (open && conversationActive) ? t('shell.rail.hideConversation') : t('shell.rail.showConversation');
+            convo.setAttribute('data-tooltip', label);
+            convo.setAttribute('aria-label', label);
+            const dot = convo.querySelector('.v3-rail-dot');
+            if (dot) dot.hidden = !(collapsed && this.turns.length >= 1);
+        },
+
+        /** Persist the explicit desktop open/closed choice (never the responsive auto-collapse). */
+        _persistConversationOpen(open) {
+            if (window.innerWidth <= 1100) return;
+            try { window.localStorage.setItem('v3.conversationOpen', open ? 'true' : 'false'); } catch (_) { /* storage may be unavailable */ }
+        },
+
+        _readConversationOpen() {
+            try {
+                const raw = window.localStorage.getItem('v3.conversationOpen');
+                return raw === null ? null : raw === 'true';
+            } catch (_) { return null; }
         },
 
         _applyResponsive() {
@@ -722,6 +963,14 @@
                 if (typeof window.showToast === 'function') window.showToast(t('errors.selectConnectionFirst'), 'error');
                 return;
             }
+            // A brand-new question (from the composer, a follow-up chip or a
+            // programmatic send) leaves any open inline edit; re-running an
+            // edited turn (replaceTurnId) is the edit committing itself.
+            const replaceTurn = options.replaceTurnId ? this.turns.find((item) => item.id === options.replaceTurnId) : null;
+            // A stale rerun target (turn gone) must never fall through to
+            // appending a brand-new turn.
+            if (options.replaceTurnId && !replaceTurn) return;
+            if (!replaceTurn) this._cancelEdit();
 
             this.sending = true;
             this.setTab('conversation');
@@ -732,18 +981,29 @@
             const generation = this._generation;
             const abort = new AbortController();
             this._streamAbort = abort;
-            const turn = {
+            if (replaceTurn) {
+                // Re-run an existing turn in place (edit / edited-retry): wipe every
+                // result-derived field and bump its revision so late async
+                // writebacks from the previous run are dropped.
+                this._resetTurnForRerun(replaceTurn);
+                replaceTurn.question = q;
+                this.lastAppliedResultId = null;
+                this.selectedResultId = replaceTurn.id;
+            }
+            const turn = replaceTurn || {
                 id: `turn-${Date.now()}-${++this.seq}`,
                 question: q,
                 status: 'running',
                 startedAt: performance.now(),
+                askedAt: Date.now(),
+                rev: 0,
                 phaseState: Object.fromEntries(PHASES.map((phase) => [phase.id, 'pending'])),
                 trace: [],
                 traceOpen: false,
                 result: null,
                 error: null,
             };
-            this.turns.push(turn);
+            if (!replaceTurn) this.turns.push(turn);
             this.selectedTurnId = turn.id;
             this._setComposerBusy(true);
             this.render();
@@ -963,6 +1223,9 @@
             // Onboarding signal: a question was answered successfully.
             document.dispatchEvent(new CustomEvent('jeen:onboarding:ask_first_question'));
             turn.result = data;
+            turn.turnId = data.query_id || turn.turnId || null;
+            turn.conversationId = data.session_id || turn.conversationId || null;
+            turn.isFavorite = false;
             // ML skills: a confirm / clarify / guard stop is a result (a card),
             // not a table and not an error.
             turn.resultKind = data.proposal ? 'proposal' : turn.resultKind;
@@ -981,6 +1244,33 @@
             }
             this.render();
             this._scrollThread();
+            // A 0-row result shows its "no records" answer immediately; the
+            // likely-cause hint (when the server did not already include one)
+            // arrives shortly after via a background call, so the user is not
+            // kept waiting for it.
+            if (data.empty_result && !data.empty_hint) this._fetchEmptyHint(turn);
+        },
+
+        /** Background likely-cause hint for an empty (0-row) result. Best-effort. */
+        async _fetchEmptyHint(turn) {
+            const data = turn.result || {};
+            if (!data || !data.sql || data.empty_hint) return;
+            const connection = typeof getActiveConnection === 'function' ? getActiveConnection() : '';
+            if (!connection) return;
+            // Drop a late hint if the turn was re-run (edited) meanwhile.
+            const rev = turn.rev || 0;
+            try {
+                const res = await this._postJson('/api/empty-result-hint', {
+                    connection,
+                    query_id: data.query_id ? String(data.query_id) : null,
+                    question: turn.question,
+                    sql: data.sql,
+                });
+                if (res && res.hint && turn.result === data && (turn.rev || 0) === rev) {
+                    turn.result.empty_hint = res.hint;
+                    this.render();
+                }
+            } catch (_) { /* the hint is optional — drop it silently */ }
         },
 
         _onError(turn, error, data) {
@@ -1007,7 +1297,15 @@
             const turn = this.turns.find((item) => item.id === id);
             if (!turn) return;
             if (id !== this.selectedTurnId) this._selectionVersion += 1;
+            this._unavailableSavedAnswer = null;
+            const switchingResult = this.selectedResultId !== turn.id;
             this._captureSelectedChart();
+            if (switchingResult) {
+                // The previous manager may remain mounted while the destination
+                // turn hydrates (or may be a text-only turn). Invalidate its
+                // chat/export/save surface immediately after capturing it.
+                window.JeenLegacyBridge?.setChartInteractionEnabled?.(false);
+            }
             const selection = selectionForTurn(this.selectedResultId, turn);
             this.selectedTurnId = selection.selectedTurnId;
             this.selectedResultId = selection.selectedResultId;
@@ -1030,7 +1328,16 @@
                 || current.chartLoading || current.chartUnavailable) return;
             if (current && current.result?.results && window.JeenLegacyBridge?.getChartState) {
                 const state = window.JeenLegacyBridge.getChartState();
-                if (state && state.chart_config) current.chartState = state;
+                if (state && state.chart_config) {
+                    // Keep the versioned page snapshot (baseline + working +
+                    // view), not a reference to manager-owned state. The legacy
+                    // top-level config/spec remain for server artifacts.
+                    try {
+                        current.chartState = JSON.parse(JSON.stringify(state));
+                    } catch (_) {
+                        current.chartState = state;
+                    }
+                }
             }
         },
 
@@ -1047,15 +1354,42 @@
                 try { this._analysisRerunAbort.abort(); } catch (_) { /* already settled */ }
                 this._analysisRerunAbort = null;
             }
+            this._turnRerunAborts.forEach((abort) => {
+                try { abort.abort(); } catch (_) { /* already settled */ }
+            });
+            this._turnRerunAborts.clear();
             this._analysisRerunInFlight = null;
             window.JeenLegacyBridge?.setAnalysisRerunBusy?.(false);
+        },
+
+        _hasActiveWork() {
+            return Boolean(
+                this.sending
+                || this.hydrating
+                || this._analysisRerunInFlight
+                || this.turns.some((turn) => turn.rerunning)
+            );
+        },
+
+        _syncNewConversationAction() {
+            const button = document.getElementById('v3-new-conversation');
+            if (!button) return;
+            const busy = this._hasActiveWork();
+            const label = t(busy ? 'conversation.stopAndStartNew' : 'conversation.newConversation');
+            button.disabled = false;
+            button.title = label;
+            button.setAttribute('aria-label', label);
         },
 
         reset() {
             this._generation += 1;
             this._abortInFlight();
             this.turns = [];
+            this.editingTurnId = null;
+            this.editDraft = '';
+            this._editSel = null;
             this.conversation = null;
+            this._unavailableSavedAnswer = null;
             this.hydrating = false;
             this.readOnly = false;
             this.selectedTurnId = null;
@@ -1071,10 +1405,97 @@
         /** Explicit "New conversation": clear the thread; the server creates the
          *  conversation row lazily on the first question. */
         newConversation() {
+            const cancelledWork = this._hasActiveWork();
             this.reset();
             this.setTab('conversation');
             this.setConversation(true);
             if (this.input) this.input.focus();
+            if (cancelledWork && typeof window.showToast === 'function') {
+                window.showToast(t('conversation.cancelledForNew'), 'info');
+            }
+        },
+
+        _favoriteCoordinates(turn) {
+            if (!turn || turn.status !== 'success' || turn.result?.proposal) return null;
+            const conversationId = turn.conversationId || turn.result?.session_id || this.conversation?.id;
+            const turnId = turn.turnId || turn.result?.query_id;
+            return conversationId && turnId
+                ? { conversationId: String(conversationId), turnId: String(turnId) }
+                : null;
+        },
+
+        _renderFavoriteAction(turn) {
+            const button = document.getElementById('v3-favorite-action');
+            if (!button) return;
+            const coordinates = this._favoriteCoordinates(turn);
+            button.hidden = !coordinates;
+            if (!coordinates) return;
+            const active = Boolean(turn.isFavorite);
+            button.disabled = Boolean(turn.favoriteSaving);
+            button.classList.toggle('is-active', active);
+            button.setAttribute('aria-pressed', String(active));
+            button.setAttribute('aria-label', active ? t('favorite.remove') : t('favorite.add'));
+            button.title = active ? t('favorite.remove') : t('favorite.add');
+            const label = button.querySelector('span');
+            if (label) label.textContent = active ? t('favorite.saved') : t('favorite.add');
+        },
+
+        async toggleFavorite() {
+            const turn = this.turns.find((item) => item.id === this.selectedResultId);
+            const coordinates = this._favoriteCoordinates(turn);
+            if (!turn || !coordinates || turn.favoriteSaving) return;
+            await this.setFavoriteState(
+                coordinates.conversationId,
+                coordinates.turnId,
+                !turn.isFavorite,
+                turn,
+            );
+        },
+
+        async setFavoriteState(conversationId, turnId, favorite, knownTurn = null) {
+            this._favoriteSavingKeys = this._favoriteSavingKeys || new Set();
+            const mutationKey = `${conversationId}:${turnId}`;
+            if (this._favoriteSavingKeys.has(mutationKey)) return false;
+            this._favoriteSavingKeys.add(mutationKey);
+            const turn = knownTurn || this.turns.find((item) =>
+                String(item.turnId || item.result?.query_id || '') === String(turnId)
+            );
+            const currentSelection = () => this.turns.find((item) => item.id === this.selectedResultId);
+            const prior = Boolean(turn?.isFavorite);
+            if (turn) {
+                turn.isFavorite = favorite;
+                turn.favoriteSaving = true;
+            }
+            this._renderFavoriteAction(currentSelection());
+            this.renderConversation();
+            if (this.activeTab === 'saved' && this.savedView === 'answers') this.renderFavoriteAnswers();
+            try {
+                const response = await fetch(
+                    `/api/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/favorite`,
+                    { method: favorite ? 'PUT' : 'DELETE', headers: { 'Content-Type': 'application/json' }, body: favorite ? '{}' : undefined }
+                );
+                if (!response.ok && !(favorite === false && response.status === 404)) {
+                    throw new Error(`favorite ${response.status}`);
+                }
+                if (turn) turn.isFavorite = favorite;
+                this._favoriteList = null;
+                if (this.activeTab === 'saved' && this.savedView === 'answers') await this.loadFavoriteAnswers();
+                if (typeof window.showToast === 'function') {
+                    window.showToast(favorite ? t('favorite.added') : t('favorite.removed'), 'success');
+                }
+                return true;
+            } catch (error) {
+                console.warn('[Workspace] favorite update failed', error);
+                if (turn) turn.isFavorite = prior;
+                if (typeof window.showToast === 'function') window.showToast(t('favorite.updateFailed'), 'error');
+                return false;
+            } finally {
+                this._favoriteSavingKeys.delete(mutationKey);
+                if (turn) turn.favoriteSaving = false;
+                this._renderFavoriteAction(currentSelection());
+                this.renderConversation();
+                if (this.activeTab === 'saved' && this.savedView === 'answers') this.renderFavoriteAnswers();
+            }
         },
 
         async _hydrationModule() {
@@ -1083,7 +1504,7 @@
                 this._hydration = window.ConversationHydration;
                 return this._hydration;
             }
-            const module = await import('./conversationHydration.js?v=2');
+            const module = await import('./conversationHydration.js?v=3');
             this._hydration = module;
             return module;
         },
@@ -1100,6 +1521,10 @@
             this._pendingOpen = null;
             const conversationId = options.conversationId
                 || (pendingOpen && pendingOpen.sourceKey === sourceKey ? pendingOpen.conversationId : null);
+            const targetTurnId = options.turnId
+                || (pendingOpen && pendingOpen.sourceKey === sourceKey ? pendingOpen.turnId : null);
+            const favoriteItem = options.favoriteItem
+                || (pendingOpen && pendingOpen.sourceKey === sourceKey ? pendingOpen.favoriteItem : null);
             const readOnly = Boolean(options.readOnly);
             if (!sourceKey && !conversationId) return;
             this._generation += 1;
@@ -1108,7 +1533,10 @@
             const abort = new AbortController();
             this._hydrateAbort = abort;
             this.turns = [];
+            this.editingTurnId = null;
+            this.editDraft = '';
             this.conversation = null;
+            this._unavailableSavedAnswer = null;
             this.readOnly = readOnly;
             this.selectedTurnId = null;
             this.selectedResultId = null;
@@ -1128,8 +1556,15 @@
                 if (stale()) return;
                 if (response.status === 401) return;
                 if (response.status === 404 && conversationId) {
-                    if (typeof window.showToast === 'function') window.showToast(t('conversation.list.gone'), 'error');
                     this.hydrating = false;
+                    if (favoriteItem) {
+                        this._unavailableSavedAnswer = {
+                            item: favoriteItem,
+                            retryable: false,
+                        };
+                    } else if (typeof window.showToast === 'function') {
+                        window.showToast(t('conversation.list.gone'), 'error');
+                    }
                     this.render();
                     return;
                 }
@@ -1138,6 +1573,9 @@
                 if (stale()) return;
                 this.hydrating = false;
                 if (!detail || !detail.conversation) {
+                    if (favoriteItem) {
+                        this._unavailableSavedAnswer = { item: favoriteItem, retryable: true };
+                    }
                     this.render();
                     return;
                 }
@@ -1150,16 +1588,52 @@
                     window._jeenSetSessionId(this.readOnly ? null : detail.conversation.id);
                 }
                 const newest = this.turns[this.turns.length - 1];
-                if (newest) {
-                    this.selectedTurnId = newest.id;
-                    this.selectedResultId = newest.status === 'success' ? newest.id : null;
+                let requested = targetTurnId
+                    ? this.turns.find((item) => String(item.turnId) === String(targetTurnId))
+                    : null;
+                // A favorite can outlive the normal hydration page. Fetch its
+                // metadata directly so Saved always opens the exact answer.
+                if (targetTurnId && !requested) {
+                    const turnResponse = await fetch(
+                        `/api/conversations/${encodeURIComponent(detail.conversation.id)}/turns/${encodeURIComponent(targetTurnId)}`,
+                        { signal: abort.signal }
+                    );
+                    if (stale()) return;
+                    if (turnResponse.ok) {
+                        requested = mod.turnFromServer(await turnResponse.json(), detail.conversation.id);
+                        this.turns.push(requested);
+                        this.turns.sort((a, b) => a.sequence - b.sequence);
+                    } else {
+                        this._unavailableSavedAnswer = {
+                            item: favoriteItem || {
+                                conversation_id: detail.conversation.id,
+                                turn_id: targetTurnId,
+                                question: detail.conversation.title,
+                                source_key: detail.conversation.source_key,
+                                source_label: detail.conversation.source_label,
+                            },
+                            retryable: turnResponse.status !== 404,
+                        };
+                    }
+                }
+                if (targetTurnId && !requested) {
+                    this.selectedTurnId = null;
+                    this.selectedResultId = null;
+                    this.render();
+                    return;
+                }
+                const initial = requested || newest;
+                if (initial) {
+                    this.selectedTurnId = initial.id;
+                    this.selectedResultId = initial.status === 'success' ? initial.id : null;
                     if (!this.selectedResultId) {
                         const lastOk = [...this.turns].reverse().find((item) => item.status === 'success');
                         this.selectedResultId = lastOk ? lastOk.id : null;
                     }
                 }
                 this.render();
-                this._scrollThread();
+                if (requested) this._scrollTurnIntoView(requested.id);
+                else this._scrollThread();
                 const target = this.turns.find((item) => item.id === this.selectedResultId);
                 if (target && target.artifactState === 'missing' && target.snapshotStatus === 'stored') {
                     await this._loadArtifact(target);
@@ -1168,6 +1642,9 @@
                 if (stale() || abort.signal.aborted) return;
                 console.warn('[Workspace] conversation restore failed', error);
                 this.hydrating = false;
+                if (favoriteItem) {
+                    this._unavailableSavedAnswer = { item: favoriteItem, retryable: true };
+                }
                 this.render();
             } finally {
                 if (this._hydrateAbort === abort) this._hydrateAbort = null;
@@ -1179,6 +1656,7 @@
             if (!turn || !turn.restored || !turn.conversationId || !turn.turnId) return;
             if (turn.artifactState === 'loading' || turn.artifactState === 'loaded') return;
             const generation = this._generation;
+            const rev = turn.rev || 0;
             turn.artifactState = 'loading';
             this.renderWorkspace();
             try {
@@ -1186,10 +1664,12 @@
                 const response = await fetch(
                     `/api/conversations/${encodeURIComponent(turn.conversationId)}/turns/${encodeURIComponent(turn.turnId)}/artifact`
                 );
-                if (generation !== this._generation) return;
+                // Drop stale rows if the connection reset (generation) or the turn
+                // was re-run in place (rev) while the fetch was open.
+                if (generation !== this._generation || (turn.rev || 0) !== rev) return;
                 if (!response.ok) throw new Error(`artifact ${response.status}`);
                 const artifact = await response.json();
-                if (generation !== this._generation) return;
+                if (generation !== this._generation || (turn.rev || 0) !== rev) return;
                 mod.applyArtifact(turn, artifact);
                 if (!turn.result.results) {
                     // Snapshot vanished between listing and fetch (pruned); offer Load data.
@@ -1219,6 +1699,8 @@
                 return;
             }
             const generation = this._generation;
+            const abort = new AbortController();
+            this._turnRerunAborts.add(abort);
             turn.rerunning = true;
             turn.rerunError = null;
             this.render();
@@ -1226,7 +1708,7 @@
                 const mod = await this._hydrationModule();
                 const response = await fetch(
                     `/api/conversations/${encodeURIComponent(turn.conversationId)}/turns/${encodeURIComponent(turn.turnId)}/rerun`,
-                    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+                    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: abort.signal }
                 );
                 if (generation !== this._generation) return;
                 if (!response.ok) {
@@ -1248,10 +1730,11 @@
                 this.lastAppliedResultId = null;
                 if (typeof window.showToast === 'function') window.showToast(t('conversation.rerun.refreshed'), 'success');
             } catch (error) {
-                if (generation !== this._generation) return;
+                if (generation !== this._generation || abort.signal.aborted) return;
                 turn.rerunError = error && error.message ? error.message : String(error);
                 if (typeof window.showToast === 'function') window.showToast(turn.rerunError, 'error');
             } finally {
+                this._turnRerunAborts.delete(abort);
                 turn.rerunning = false;
                 if (generation === this._generation) this.render();
             }
@@ -1265,6 +1748,126 @@
             if (status === 504) return t('conversation.rerun.timedOut');
             if (status === 502) return text.replace(/^\{.*?"detail":\s*"?/, '').slice(0, 200) || t('conversation.rerun.sourceError');
             return t('conversation.rerun.failedStatus', { status });
+        },
+
+        setSavedView(view) {
+            this.savedView = view === 'questions' ? 'questions' : 'answers';
+            document.querySelectorAll('[data-saved-view]').forEach((button) => {
+                const active = button.dataset.savedView === this.savedView;
+                button.setAttribute('aria-selected', String(active));
+                button.tabIndex = active ? 0 : -1;
+            });
+            document.querySelectorAll('[data-saved-pane]').forEach((pane) => {
+                pane.hidden = pane.dataset.savedPane !== this.savedView;
+            });
+            if (this.savedView === 'answers') this.loadFavoriteAnswers();
+            else if (typeof window.displayHistory === 'function') window.displayHistory();
+        },
+
+        async loadFavoriteAnswers(options = {}) {
+            const host = document.getElementById('v3-favorites-list');
+            if (!host) return;
+            const append = Boolean(options.append);
+            const before = append ? this._favoriteNextCursor : null;
+            if (append && !before) return;
+            const requestId = (this._favoriteLoadSeq || 0) + 1;
+            this._favoriteLoadSeq = requestId;
+            this._favoritesLoading = true;
+            if (!append) host.innerHTML = `<div class="v3-thread-empty-label">${h('favorite.loading')}</div>`;
+            try {
+                const query = new URLSearchParams({ limit: '50' });
+                if (before) query.set('before', before);
+                const response = await fetch(`/api/conversations/favorites?${query.toString()}`);
+                if (!response.ok) throw new Error(`favorites ${response.status}`);
+                const data = await response.json();
+                if (requestId !== this._favoriteLoadSeq) return;
+                const incoming = Array.isArray(data.items) ? data.items : [];
+                if (append) {
+                    const seen = new Set((this._favoriteList || []).map((item) => String(item.turn_id)));
+                    this._favoriteList = [...(this._favoriteList || []), ...incoming.filter((item) => !seen.has(String(item.turn_id)))];
+                } else {
+                    this._favoriteList = incoming;
+                }
+                this._favoriteNextCursor = data.next_cursor || null;
+                this.renderFavoriteAnswers();
+            } catch (error) {
+                if (requestId !== this._favoriteLoadSeq) return;
+                console.warn('[Workspace] favorite answers failed', error);
+                if (!append) host.innerHTML = `<div class="v3-thread-empty-label">${h('favorite.loadFailed')}</div>`;
+                else if (typeof window.showToast === 'function') window.showToast(t('favorite.loadFailed'), 'error');
+            } finally {
+                if (requestId === this._favoriteLoadSeq) {
+                    this._favoritesLoading = false;
+                    const more = host.querySelector('[data-favorite-more]');
+                    if (more) more.disabled = false;
+                }
+            }
+        },
+
+        renderFavoriteAnswers() {
+            const host = document.getElementById('v3-favorites-list');
+            if (!host) return;
+            const items = this._favoriteList || [];
+            if (!items.length) {
+                host.innerHTML = `<div class="v3-saved-empty"><strong>${h('favorite.emptyTitle')}</strong><span>${h('favorite.emptyCopy')}</span></div>`;
+                return;
+            }
+            host.innerHTML = items.map((item) => {
+                const answer = textOf(item.answer);
+                const when = item.favorited_at ? this._formatWhen(item.favorited_at) : '';
+                const mutationKey = `${item.conversation_id}:${item.turn_id}`;
+                const saving = Boolean(this._favoriteSavingKeys?.has(mutationKey));
+                const badges = [];
+                if (item.connection_available === false) {
+                    badges.push(`<span class="v3-favorite-badge is-unavailable">${h('favorite.connectionUnavailable')}</span>`);
+                }
+                if (item.result_kind === 'table' && item.snapshot_status !== 'stored') {
+                    badges.push(`<span class="v3-favorite-badge">${h('favorite.refreshRequired')}</span>`);
+                }
+                return `<article class="v3-favorite-item" data-favorite-open="${esc(item.turn_id)}" tabindex="0" role="button">
+                  <div class="v3-favorite-item-head">
+                    <strong dir="${directionOf(item.question)}">${esc(item.question)}</strong>
+                    <button type="button" data-favorite-remove="${esc(item.turn_id)}" aria-label="${h('favorite.remove')}" title="${h('favorite.remove')}"${saving ? ' disabled' : ''}>${ICON.star}</button>
+                  </div>
+                  ${answer ? `<p dir="${directionOf(answer)}">${esc(answer)}</p>` : ''}
+                  ${badges.length ? `<div class="v3-favorite-badges">${badges.join('')}</div>` : ''}
+                  <div class="v3-favorite-meta"><bdi>${esc(item.source_label || item.source_key)}</bdi>${when ? ` · ${esc(when)}` : ''}</div>
+                </article>`;
+            }).join('') + (this._favoriteNextCursor
+                ? `<button type="button" class="v3-favorites-more" data-favorite-more${this._favoritesLoading ? ' disabled' : ''}>${h('favorite.loadMore')}</button>`
+                : '');
+            host.querySelectorAll('[data-favorite-open]').forEach((card) => {
+                const open = () => {
+                    const item = items.find((candidate) => String(candidate.turn_id) === card.dataset.favoriteOpen);
+                    if (item) this.openFavorite(item);
+                };
+                card.addEventListener('click', (event) => {
+                    if (!event.target.closest('[data-favorite-remove]')) open();
+                });
+                card.addEventListener('keydown', (event) => {
+                    if (event.target === card && (event.key === 'Enter' || event.key === ' ')) {
+                        event.preventDefault();
+                        open();
+                    }
+                });
+            });
+            host.querySelectorAll('[data-favorite-remove]').forEach((button) => button.addEventListener('click', async (event) => {
+                event.stopPropagation();
+                const item = items.find((candidate) => String(candidate.turn_id) === button.dataset.favoriteRemove);
+                if (item) await this.setFavoriteState(item.conversation_id, item.turn_id, false);
+            }));
+            host.querySelector('[data-favorite-more]')?.addEventListener('click', () => this.loadFavoriteAnswers({ append: true }));
+        },
+
+        openFavorite(item) {
+            if (!item) return;
+            this.openConversation({
+                id: item.conversation_id,
+                title: item.conversation_title,
+                source_key: item.source_key,
+                source_label: item.source_label,
+                connection_available: item.connection_available,
+            }, { turnId: item.turn_id, favoriteItem: item });
         },
 
         // ── History tab: browse / open / rename / delete conversations ──────
@@ -1323,10 +1926,11 @@
         _conversationItemHtml(c, readOnly) {
             const current = this.conversation && this.conversation.id === c.id;
             const when = c.last_activity_at ? this._formatWhen(c.last_activity_at) : '';
+            const savedCount = Number(c.saved_answer_count) || 0;
             return `<div class="v3-conv-item${current ? ' is-current' : ''}" data-open-conversation="${esc(c.id)}" role="button" tabindex="0">
               <div class="v3-conv-title" dir="${directionOf(c.title)}" title="${esc(c.title)}">${esc(c.title)}</div>
               <div class="v3-conv-meta">
-                <span><bdi>${esc(c.source_label || c.source_key)}</bdi>${readOnly ? ` · ${h('conversation.list.readOnly')}` : ''}</span>
+                <span><bdi>${esc(c.source_label || c.source_key)}</bdi>${readOnly ? ` · ${h('conversation.list.readOnly')}` : ''}${savedCount ? ` · ${h('conversation.list.savedCount', { count: savedCount })}` : ''}</span>
                 <span>${h('conversation.list.questionCount', { count: Number(c.turn_count) || 0 })}${when ? ` · ${esc(when)}` : ''}</span>
               </div>
               ${c.last_question && c.last_question !== c.title ? `<div class="v3-conv-last" dir="${directionOf(c.last_question)}">${esc(c.last_question)}</div>` : ''}
@@ -1337,23 +1941,37 @@
             </div>`;
         },
 
-        openConversation(item) {
+        openConversation(item, options = {}) {
             if (!item) return;
             const active = typeof window.getActiveConnection === 'function' ? window.getActiveConnection() : '';
             this.setTab('conversation');
             if (item.connection_available === false) {
                 // Connection is gone: open read-only without switching connections.
-                this.hydrate(item.source_key, { conversationId: item.id, readOnly: true });
+                this.hydrate(item.source_key, {
+                    conversationId: item.id,
+                    turnId: options.turnId,
+                    favoriteItem: options.favoriteItem,
+                    readOnly: true,
+                });
                 return;
             }
             if (item.source_key && item.source_key !== active && typeof window.onConnectionChange === 'function') {
                 // Switching connections triggers hydrate() via 'jeen:connection-resolved';
                 // remember which conversation to open instead of the newest one.
-                this._pendingOpen = { sourceKey: item.source_key, conversationId: item.id };
+                this._pendingOpen = {
+                    sourceKey: item.source_key,
+                    conversationId: item.id,
+                    turnId: options.turnId || null,
+                    favoriteItem: options.favoriteItem || null,
+                };
                 window.onConnectionChange(item.source_key);
                 return;
             }
-            this.hydrate(item.source_key || active, { conversationId: item.id });
+            this.hydrate(item.source_key || active, {
+                conversationId: item.id,
+                turnId: options.turnId,
+                favoriteItem: options.favoriteItem,
+            });
         },
 
         async renameConversation(item) {
@@ -1381,13 +1999,40 @@
         },
 
         async deleteConversation(item) {
-            if (!window.confirm(t('conversation.delete.confirm', { title: iso(item.title) }))) return;
+            let savedCount = Number(item.saved_answer_count) || 0;
+            let deleteSaved = savedCount > 0;
+            const confirmed = window.confirm(deleteSaved
+                ? t('conversation.delete.confirmSaved', { title: iso(item.title), count: savedCount })
+                : t('conversation.delete.confirm', { title: iso(item.title) }));
+            if (!confirmed) return;
             try {
-                const response = await fetch(`/api/conversations/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+                let url = `/api/conversations/${encodeURIComponent(item.id)}`;
+                if (deleteSaved) url += '?delete_saved=true';
+                let response = await fetch(url, { method: 'DELETE' });
+                if (response.status === 409 && !deleteSaved) {
+                    let payload = {};
+                    try { payload = await response.json(); } catch (_) { /* plain text */ }
+                    const detail = payload.detail || payload;
+                    if (detail.code !== 'conversation_has_saved_answers') {
+                        throw new Error('unexpected delete conflict');
+                    }
+                    savedCount = Number(detail.saved_answer_count) || 0;
+                    if (!window.confirm(t('conversation.delete.confirmSaved', {
+                        title: iso(item.title),
+                        count: savedCount,
+                    }))) return;
+                    deleteSaved = true;
+                    response = await fetch(
+                        `/api/conversations/${encodeURIComponent(item.id)}?delete_saved=true`,
+                        { method: 'DELETE' }
+                    );
+                }
                 if (!response.ok && response.status !== 404) throw new Error(`delete ${response.status}`);
                 this._conversationList = (this._conversationList || []).filter((c) => c.id !== item.id);
+                this._favoriteList = (this._favoriteList || []).filter((favorite) => favorite.conversation_id !== item.id);
                 if (this.conversation && this.conversation.id === item.id) this.reset();
                 this.renderConversationList();
+                if (this.activeTab === 'saved' && this.savedView === 'answers') this.renderFavoriteAnswers();
                 if (typeof window.showToast === 'function') window.showToast(t('conversation.delete.done'), 'success');
             } catch (error) {
                 console.warn('[Workspace] delete failed', error);
@@ -1403,6 +2048,7 @@
                 this.askButton.disabled = busy;
                 this.askButton.setAttribute('aria-busy', String(busy));
             }
+            this._syncNewConversationAction();
         },
 
         _renderEmptySuggestions() {
@@ -1411,8 +2057,12 @@
         },
 
         render() {
+            this._clearProposalExpiryTimer();
+            this._syncNewConversationAction();
             this.renderConversation();
             this.renderWorkspace();
+            this.syncRail();
+            this._scheduleNextProposalExpiry();
         },
 
         renderConversation() {
@@ -1447,13 +2097,14 @@
                 : '';
             const head = `<div class="v3-thread-head">
                 <span class="v3-thread-title" dir="${directionOf(title)}" title="${esc(title)}">${esc(title)}</span>
-                <button class="v3-text-btn" data-new-conversation>${h('conversation.newConversation')}</button>
               </div>${readOnlyNote}`;
+            // Capture edit focus BEFORE the rebuild so a re-render (enrichment,
+            // empty-hint, etc.) restores focus only when the field actually had
+            // it — never yanking it back from the composer (README §5).
+            const editHadFocus = Boolean(this.editingTurnId)
+                && document.activeElement instanceof HTMLElement
+                && document.activeElement.matches('[data-edit-input]');
             thread.innerHTML = head + this.turns.map((turn) => this._turnHtml(turn)).join('');
-            thread.querySelector('[data-new-conversation]')?.addEventListener('click', (event) => {
-                event.stopPropagation();
-                this.newConversation();
-            });
             thread.querySelectorAll('[data-load-data]').forEach((button) => button.addEventListener('click', (event) => {
                 event.stopPropagation();
                 this.rerunTurn(button.dataset.loadData);
@@ -1484,7 +2135,11 @@
             thread.querySelectorAll('[data-retry]').forEach((button) => button.addEventListener('click', (event) => {
                 event.stopPropagation();
                 const turn = this.turns.find((item) => item.id === button.dataset.retry);
-                if (turn) this.send(turn.question);
+                if (!turn) return;
+                // An edited turn retries in place (keeping its "edited" mark); a
+                // normal turn retries as an ordinary re-ask.
+                if (turn.edited) this.send(turn.question, { replaceTurnId: turn.id });
+                else this.send(turn.question);
             }));
             thread.querySelectorAll('[data-report-gap]').forEach((button) => button.addEventListener('click', async (event) => {
                 event.stopPropagation();
@@ -1497,19 +2152,257 @@
                     button.textContent = t('conversation.turn.retryReport');
                 }
             }));
+            thread.querySelectorAll('[data-edit]').forEach((button) => button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                this.startEdit(button.dataset.edit);
+            }));
+            const editHead = thread.querySelector('.v3-turn-head--editing');
+            const editInput = thread.querySelector('[data-edit-input]');
+            if (editHead) {
+                // Esc anywhere in the editing header (textarea, Cancel, Save)
+                // leaves edit mode and never reaches the document Escape handler
+                // that closes the mobile drawer.
+                editHead.addEventListener('keydown', (event) => {
+                    if (event.key === 'Escape') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        this._cancelEdit();
+                    }
+                });
+            }
+            if (editInput) {
+                editInput.addEventListener('click', (event) => event.stopPropagation());
+                const trackSel = () => { this._editSel = [editInput.selectionStart, editInput.selectionEnd]; };
+                editInput.addEventListener('input', () => {
+                    this.editDraft = editInput.value;
+                    trackSel();
+                    editInput.style.height = 'auto';
+                    editInput.style.height = `${Math.min(editInput.scrollHeight, 200)}px`;
+                    const save = thread.querySelector('[data-edit-save]');
+                    if (save) save.disabled = !this._editDirty(editInput.dataset.editInput);
+                });
+                editInput.addEventListener('keyup', trackSel);
+                editInput.addEventListener('select', trackSel);
+                editInput.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+                        event.preventDefault();
+                        this._saveEdit(editInput.dataset.editInput);
+                    }
+                });
+            }
+            thread.querySelectorAll('[data-edit-cancel]').forEach((button) => button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                this._cancelEdit();
+            }));
+            thread.querySelectorAll('[data-edit-save]').forEach((button) => button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                this._saveEdit(button.dataset.editSave);
+            }));
+            // A re-render (enrichment, trace toggle, …) rebuilds the thread and
+            // would drop an open edit field; restore focus + the prior selection,
+            // but only if the field actually had focus (don't grab it back from
+            // the composer).
+            if (this.editingTurnId && editInput && editHadFocus) {
+                this._focusEditInput(this.editingTurnId, !this._editSel);
+            }
+        },
+
+        /**
+         * Whether the "Edit" affordance is offered on a completed turn. Hidden
+         * while any turn is streaming, on read-only conversations, on an ML
+         * proposal (paused run), a running/rerunning turn, or a restored answer
+         * with no rerunnable query behind it.
+         */
+        _editAvailable(turn) {
+            if (this.readOnly || this.sending || turn.rerunning) return false;
+            if (turn.status === 'running') return false;
+            if (turn.result && turn.result.proposal) return false;
+            if (turn.restored && !(turn.result && turn.result.sql)) return false;
+            return true;
+        },
+
+        /** "You · {time}" (or the edit time) · edited — the grey header meta line. */
+        _turnMetaHtml(turn) {
+            const bits = [h('conversation.turn.you')];
+            if (turn.edited && turn.editedAt != null) {
+                // Mockup 3c: edited turns show only the edit time (no date).
+                bits.push(esc(this._formatStamp(turn.editedAt, 'time')));
+                bits.push(h('conversation.turn.edited'));
+            } else if (turn.askedAt != null) {
+                // Mockup 3a: "Sep 21, 5:47 PM" — month/day/time, no year.
+                bits.push(esc(this._formatStamp(turn.askedAt, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })));
+            }
+            return `<div class="v3-turn-meta">${bits.join(' · ')}</div>`;
+        },
+
+        /** Localized timestamp for the turn header; falls back to the OS locale. */
+        _formatStamp(value, style) {
+            if (window.I18n && typeof window.I18n.formatDate === 'function') return window.I18n.formatDate(value, style) || '';
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return '';
+            const opts = typeof style === 'object' ? style : { hour: '2-digit', minute: '2-digit' };
+            return date.toLocaleString(undefined, opts);
+        },
+
+        /** Grey question header: avatar, meta, question, favorite star, Edit. */
+        _turnHeadHtml(turn) {
+            if (this.editingTurnId === turn.id) return this._turnEditHeadHtml(turn);
+            const star = turn.isFavorite ? `<span class="v3-turn-favorite" title="${h('favorite.saved')}">${ICON.star}</span>` : '';
+            // On an already-edited error turn the body's "Edit again" covers it,
+            // so the header pill would be a duplicate.
+            const showEdit = this._editAvailable(turn) && !(turn.status === 'error' && turn.edited);
+            const edit = showEdit
+                ? `<button type="button" class="v3-turn-edit" data-edit="${turn.id}"><span class="v3-turn-edit-icon" aria-hidden="true">${ICON.pencil}</span>${h('conversation.turn.edit')}</button>`
+                : '';
+            return `<div class="v3-turn-head">
+              <span class="v3-mini-avatar">${esc(this._initials())}</span>
+              <div class="v3-turn-headmain">
+                ${this._turnMetaHtml(turn)}
+                <div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div>
+              </div>
+              ${star}${edit}
+            </div>`;
+        },
+
+        /** Edit-mode header (mockup 3b): meta "Editing", a textarea, then Cancel / Save & rerun. */
+        _turnEditHeadHtml(turn) {
+            const draft = this.editDraft != null ? this.editDraft : String(turn.question || '');
+            const dirty = this._editDirty(turn.id);
+            return `<div class="v3-turn-head v3-turn-head--editing">
+              <span class="v3-mini-avatar">${esc(this._initials())}</span>
+              <div class="v3-turn-headmain">
+                <div class="v3-turn-meta">${h('conversation.turn.editing')}</div>
+                <textarea class="v3-edit-input" data-edit-input="${turn.id}" dir="auto" rows="1" aria-label="${h('conversation.turn.editing')}">${esc(draft)}</textarea>
+                <div class="v3-edit-actions">
+                  <button type="button" class="v3-edit-cancel" data-edit-cancel="${turn.id}">${h('common.cancel')}</button>
+                  <button type="button" class="v3-edit-save" data-edit-save="${turn.id}"${dirty ? '' : ' disabled'}>${h('conversation.turn.saveRerun')}</button>
+                </div>
+              </div>
+            </div>`;
+        },
+
+        /** Agent label row that opens every answer body: Jeen mark + "Jeen". */
+        _agentLabelHtml() {
+            return `<div class="v3-turn-agent"><img class="v3-agent-mark" src="/static/images/jeen-mark.png" alt="">${h('conversation.turn.agent')}</div>`;
+        },
+
+        /** The trimmed draft differs from the stored question (Save is enabled). */
+        _editDirty(turnId) {
+            const turn = this.turns.find((item) => item.id === turnId);
+            if (!turn) return false;
+            const draft = String(this.editDraft || '').trim();
+            return Boolean(draft) && draft !== String(turn.question || '').trim();
+        },
+
+        /** Enter edit mode for one turn, cancelling any edit already open. */
+        startEdit(turnId) {
+            const turn = this.turns.find((item) => item.id === turnId);
+            if (!turn || !this._editAvailable(turn)) return;
+            this.editingTurnId = turnId;
+            this.editDraft = String(turn.question || '');
+            this._editSel = null;
+            this.renderConversation();
+            this._focusEditInput(turnId, true);
+        },
+
+        /** Leave edit mode without changes and hand focus back to the Edit button. */
+        _cancelEdit() {
+            if (!this.editingTurnId) return;
+            const id = this.editingTurnId;
+            this.editingTurnId = null;
+            this.editDraft = '';
+            this._editSel = null;
+            this.renderConversation();
+            document.querySelector(`[data-edit="${id}"]`)?.focus();
+        },
+
+        /**
+         * Commit an edit: replace the turn's question, mark it edited, wipe every
+         * result-derived field so it renders as a fresh running answer, then
+         * re-run it in place (later turns are kept). Frontend-only for now — the
+         * rerun goes through /api/ask/stream with the full conversation as
+         * context and the server appends a new turn (see the handoff open
+         * questions), so a reload shows the edit as an appended turn.
+         */
+        _saveEdit(turnId) {
+            const turn = this.turns.find((item) => item.id === turnId);
+            if (!turn || !this._editDirty(turnId)) return;
+            const draft = String(this.editDraft || '').trim();
+            // Mark the edit; send() (via _resetTurnForRerun) wipes the old result
+            // and re-runs the turn in place, keeping later turns.
+            turn.edited = true;
+            turn.editedAt = Date.now();
+            this.editingTurnId = null;
+            this.editDraft = '';
+            this._editSel = null;
+            this.selectedTurnId = turn.id;
+            this.selectedResultId = turn.id;
+            this.send(draft, { replaceTurnId: turn.id });
+            if (this.input) this.input.focus();
+        },
+
+        /**
+         * Wipe every result-derived field on a turn that is about to be re-run in
+         * place (edit / edited-retry) and bump its revision so any late async
+         * writeback (empty-hint, artifact, analysis chart) from the previous run
+         * is dropped instead of landing on the new answer. Question / edited /
+         * editedAt are set by the caller.
+         */
+        _resetTurnForRerun(turn) {
+            turn.rev = (turn.rev || 0) + 1;
+            turn.status = 'running';
+            turn.startedAt = performance.now();
+            turn.durationMs = null;
+            turn.phaseState = Object.fromEntries(PHASES.map((phase) => [phase.id, 'pending']));
+            turn.trace = [];
+            turn.traceOpen = false;
+            turn.result = null;
+            turn.error = null;
+            turn.restored = false;
+            turn.snapshotAt = null;
+            turn.resultKind = undefined;
+            turn.hasChart = false;
+            turn.canLoadData = false;
+            turn.artifactState = undefined;
+            turn.rerunError = null;
+            turn.chartState = null;
+            turn.chartLoading = false;
+            turn.chartUnavailable = false;
+            turn.chartCollapsed = undefined;
+            turn.isFavorite = false;
+        },
+
+        /** Focus the edit textarea (after a render), size it, and restore the caret. */
+        _focusEditInput(turnId, toEnd) {
+            requestAnimationFrame(() => {
+                const input = document.querySelector(`[data-edit-input="${turnId}"]`);
+                if (!input) return;
+                input.style.height = 'auto';
+                input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
+                input.focus();
+                if (!toEnd && Array.isArray(this._editSel)) {
+                    const [start, end] = this._editSel;
+                    try { input.setSelectionRange(start, end); } catch (_) { /* not focusable yet */ }
+                } else {
+                    const len = input.value.length;
+                    try { input.setSelectionRange(len, len); } catch (_) { /* not focusable yet */ }
+                }
+            });
         },
 
         _turnHtml(turn) {
             const selected = turn.id === this.selectedTurnId;
-            const initials = this._initials();
             if (turn.status === 'running') {
                 return `<article class="v3-turn is-running${selected ? ' is-selected' : ''}" data-turn="${turn.id}">
-                  <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
-                  <div class="v3-running-list">${PHASES.map((phase) => {
+                  ${this._turnHeadHtml(turn)}
+                  <div class="v3-turn-body">
+                    ${this._agentLabelHtml()}
+                    <div class="v3-running-list">${PHASES.map((phase) => {
                     const status = turn.phaseState[phase.id];
                     const label = status === 'done' ? h('conversation.turn.statusOk') : status === 'running' ? h('conversation.turn.statusRunning') : status === 'error' ? h('conversation.turn.statusFailed') : '';
                     return `<div class="v3-running-row is-${status}"><span class="v3-dot is-${status === 'done' ? 'ok' : status}"></span><span>${esc(phase.label)}</span><span class="v3-running-status">${label}</span></div>`;
                 }).join('')}</div>
+                  </div>
                 </article>`;
             }
             if (turn.status === 'error') {
@@ -1518,16 +2411,20 @@
                 const meta = turn.restored
                     ? `${esc(turn.executionStatus || t('conversation.turn.error'))} · ${h('conversation.turn.restoredFromHistory')}`
                     : h('conversation.turn.failedAt', { node: iso(failed?.node || t('conversation.turn.query')), duration: formatMs(turn.durationMs) });
-                return `<article class="v3-turn${selected || (!turn.restored && isNewest) ? ' is-selected' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showAnswerBadge')}" tabindex="0" aria-label="${h('conversation.turn.showAnswer', { question: iso(turn.question) })}">
-                  <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
-                  <div class="v3-error-block" dir="auto">${esc(turn.error)}
-                    <div class="v3-error-meta">${meta}</div>
-                  </div>
-                  ${isNewest ? `<div class="v3-summary" style="margin-top:12px;color:var(--muted)">${h('conversation.turn.newestFailed')}</div>` : ''}
-                  <div class="v3-error-actions">
-                    <button data-retry="${turn.id}">${h('common.retry')}</button>
-                    ${turn.restored ? '' : `<button title="${h('conversation.turn.editSqlTitle')}">${h('conversation.turn.editSql')}</button>`}
-                    <button data-report-gap="${turn.id}">${h('conversation.turn.reportGap')}</button>
+                return `<article class="v3-turn${selected || (!turn.restored && isNewest) ? ' is-selected' : ''}${this.editingTurnId === turn.id ? ' is-editing' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showAnswerBadge')}" tabindex="0" aria-label="${h('conversation.turn.showAnswer', { question: iso(turn.question) })}">
+                  ${this._turnHeadHtml(turn)}
+                  <div class="v3-turn-body">
+                    ${this._agentLabelHtml()}
+                    <div class="v3-error-block" dir="auto">${esc(turn.error)}
+                      <div class="v3-error-meta">${meta}</div>
+                    </div>
+                    ${isNewest ? `<div class="v3-summary" style="color:var(--muted)">${h('conversation.turn.newestFailed')}</div>` : ''}
+                    <div class="v3-error-actions">
+                      <button data-retry="${turn.id}">${h('common.retry')}</button>
+                      ${turn.edited ? `<button data-edit="${turn.id}">${h('conversation.turn.editAgain')}</button>` : ''}
+                      ${turn.restored ? '' : `<button title="${h('conversation.turn.editSqlTitle')}">${h('conversation.turn.editSql')}</button>`}
+                      <button data-report-gap="${turn.id}">${h('conversation.turn.reportGap')}</button>
+                    </div>
                   </div>
                 </article>`;
             }
@@ -1537,17 +2434,39 @@
             const summary = textOf(result.answer);
             const findings = result.findings || [];
             const followups = result.followups || [];
+            // A successful query that returned no rows: show an explicit,
+            // localized "no records" line plus a likely-cause hint, and never
+            // paint findings/followups (which only make sense for real rows).
+            // Restored turns can have unloaded rows, so trust only the server's
+            // empty_result flag for them (never the row-count heuristic).
+            const emptyRows = normalizeRows(result.results);
+            const hasRows = emptyRows.length > 0;
+            const isEmpty = Boolean(result.empty_result)
+                || (!turn.restored && Boolean(result.sql && !result.error && !result.proposal && !hasRows));
+            const emptyMessage = isEmpty ? h('results.grid.noRecordsFromDb') : '';
+            // Findings + follow-ups are authoritative text saved with the turn, so
+            // a restored answer shows them even before its rows are (re)loaded; a
+            // live turn still needs real rows, and neither paints on an empty result.
+            const showAnalytics = (hasRows || turn.restored) && !isEmpty;
             const skillLabel = window.JeenAnalysisUI ? window.JeenAnalysisUI.SKILL_LABEL : {};
             if (result.proposal) {
                 // A stopped ML run: the card lives in the answer pane; the thread
                 // shows the question, the message and what the run is waiting for.
                 const proposal = result.proposal;
                 const kind = proposal.kind || result.status;
-                const waiting = kind === 'guard' ? t('conversation.turn.waitingGuard') : kind === 'clarify' ? t('conversation.turn.waitingChoice') : t('conversation.turn.waitingConfirm');
-                return `<article class="v3-turn is-proposal${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showCardBadge')}" data-route-path="ml" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="${h('conversation.turn.showCard', { question: iso(turn.question) })}" aria-current="${selected ? 'true' : 'false'}">
-                  <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
-                  <div class="v3-run-strip">${this._routePillHtml(result)}<span class="v3-skill-chip">${esc(skillLabel[proposal.skill] || proposal.skill || t('conversation.empty.analysis'))}</span><span class="v3-run-meta">${esc(waiting)}</span></div>
-                  <div class="v3-answer"><div class="v3-summary" dir="${directionOf(summary)}">${esc(summary || proposal.message || '')}</div></div>
+                const expired = window.JeenAnalysisUI
+                    ? window.JeenAnalysisUI.proposalExpired(proposal)
+                    : !proposal.proposal_id;
+                const waiting = expired
+                    ? t('conversation.turn.expiredProposal')
+                    : kind === 'guard' ? t('conversation.turn.waitingGuard') : kind === 'clarify' ? t('conversation.turn.waitingChoice') : t('conversation.turn.waitingConfirm');
+                return `<article class="v3-turn is-proposal${expired ? ' is-expired' : ''}${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showCardBadge')}" data-route-path="ml" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="${h('conversation.turn.showCard', { question: iso(turn.question) })}" aria-current="${selected ? 'true' : 'false'}">
+                  ${this._turnHeadHtml(turn)}
+                  <div class="v3-turn-body">
+                    ${this._agentLabelHtml()}
+                    <div class="v3-run-strip">${this._routePillHtml(result)}<span class="v3-skill-chip">${esc(skillLabel[proposal.skill] || proposal.skill || t('conversation.empty.analysis'))}</span><span class="v3-run-meta">${esc(waiting)}</span></div>
+                    <div class="v3-summary" dir="${directionOf(summary)}">${esc(summary || proposal.message || '')}</div>
+                  </div>
                 </article>`;
             }
             const analysis = result.analysis && result.analysis.skill ? result.analysis : null;
@@ -1566,20 +2485,24 @@
             const strip = turn.restored ? this._restoredStripHtml(turn) : `<div class="v3-run-strip">${dots}${this._routePillHtml(result)}${mlPill}<span class="v3-run-meta">${h('conversation.turn.runMeta', { duration: formatMs(turn.durationMs), count: trace.length })}</span>
                 <button class="v3-text-btn" data-trace-toggle="${turn.id}">${turn.traceOpen ? h('conversation.turn.hideRun') : h('conversation.turn.runDetails')}</button>
               </div>`;
-            return `<article class="v3-turn${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showAnswerBadge')}" data-route-path="${esc(routePath)}" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="${h('conversation.turn.showAnswer', { question: iso(turn.question) })}" aria-current="${selected ? 'true' : 'false'}">
-              <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
-              ${strip}
-              ${!turn.restored && turn.traceOpen ? this._traceHtml(turn, trace) : ''}
-              <div class="v3-answer">
-                ${summary ? (wantsMarkdown(result) ? markdownDiv(summary) : `<div class="v3-summary" dir="${directionOf(summary)}">${esc(summary)}</div>`) : ''}
-                ${findings.length ? `<section class="v3-insights" aria-label="${h('conversation.turn.keyInsights')}" dir="${insightsDirection}">
+            return `<article class="v3-turn${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}${this.editingTurnId === turn.id ? ' is-editing' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showAnswerBadge')}" data-route-path="${esc(routePath)}" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="${h('conversation.turn.showAnswer', { question: iso(turn.question) })}" aria-current="${selected ? 'true' : 'false'}">
+              ${this._turnHeadHtml(turn)}
+              <div class="v3-turn-body">
+                ${this._agentLabelHtml()}
+                ${strip}
+                ${!turn.restored && turn.traceOpen ? this._traceHtml(turn, trace) : ''}
+                ${isEmpty
+                    ? `<div class="v3-summary" dir="${directionOf(emptyMessage)}">${esc(emptyMessage)}</div>
+                       <div class="v3-empty-hint${result.empty_hint ? '' : ' is-loading'}" dir="${directionOf(textOf(result.empty_hint || emptyMessage))}">${result.empty_hint ? esc(textOf(result.empty_hint)) : h('conversation.turn.emptyHintLoading')}</div>`
+                    : (summary ? (wantsMarkdown(result) ? markdownDiv(summary) : `<div class="v3-summary" dir="${directionOf(summary)}">${esc(summary)}</div>`) : '')}
+                ${(findings.length && showAnalytics) ? `<section class="v3-insights" aria-label="${h('conversation.turn.keyInsights')}" dir="${insightsDirection}">
                   <div class="v3-insights-title"><span class="v3-insights-mark" aria-hidden="true">✦</span>${h('conversation.turn.keyInsights')}</div>
                   <div class="v3-insights-list">${findings.map((finding, index) => `<div class="v3-finding">
                     <span class="v3-insight-index" aria-hidden="true">${index + 1}</span>
                     <span dir="${directionOf(finding)}">${esc(textOf(finding))}</span>
                   </div>`).join('')}</div>
                 </section>` : ''}
-                ${followups.length ? `<div class="v3-followups">${followups.map((question) => `<button class="v3-chip" dir="${directionOf(question)}" data-followup="${esc(textOf(question))}">${esc(textOf(question))}</button>`).join('')}</div>` : ''}
+                ${(followups.length && showAnalytics) ? `<div class="v3-followups">${followups.map((question) => `<button class="v3-chip" dir="${directionOf(question)}" data-followup="${esc(textOf(question))}">${esc(textOf(question))}</button>`).join('')}</div>` : ''}
               </div>
             </article>`;
         },
@@ -1728,6 +2651,26 @@
             if (!visible && this.dockTab === 'model') this.dockTab = 'sql';
         },
 
+        _clearProposalExpiryTimer() {
+            if (this._proposalExpiryTimer !== null) {
+                clearTimeout(this._proposalExpiryTimer);
+                this._proposalExpiryTimer = null;
+            }
+        },
+
+        _scheduleNextProposalExpiry() {
+            const now = Date.now();
+            const expiries = this.turns
+                .map((turn) => new Date(turn.result?.proposal?.expires_at).getTime())
+                .filter((expiresAt) => Number.isFinite(expiresAt) && expiresAt > now);
+            if (!expiries.length) return;
+            const delay = Math.min(Math.min(...expiries) - now + 50, 2_147_483_647);
+            this._proposalExpiryTimer = setTimeout(() => {
+                this._proposalExpiryTimer = null;
+                this.render();
+            }, delay);
+        },
+
         /** Answer pane for a stopped ML run: confirm card, clarification or guard refusal. */
         _renderProposal(turn) {
             const placeholder = document.getElementById('v3-placeholder');
@@ -1735,7 +2678,12 @@
             const data = turn.result || {};
             const proposal = data.proposal || {};
             const kind = proposal.kind || data.status || 'confirm';
-            const statusLabel = kind === 'guard' || data.status === 'blocked' ? t('conversation.proposal.blocked') : kind === 'clarify' ? t('conversation.proposal.clarify') : t('conversation.proposal.planning');
+            const expired = window.JeenAnalysisUI
+                ? window.JeenAnalysisUI.proposalExpired(proposal)
+                : !proposal.proposal_id;
+            const statusLabel = expired
+                ? t('conversation.proposal.expired')
+                : kind === 'guard' || data.status === 'blocked' ? t('conversation.proposal.blocked') : kind === 'clarify' ? t('conversation.proposal.clarify') : t('conversation.proposal.planning');
             const skill = (window.JeenAnalysisUI && window.JeenAnalysisUI.SKILL_LABEL[proposal.skill]) || proposal.skill || '';
             const failed = (proposal.guard_results || []).filter((g) => !g.passed);
             const meta = kind === 'guard'
@@ -1745,7 +2693,11 @@
             // Guard keeps a status strip (it saves to history and reads as a result);
             // confirm/clarify lead with the Planning line inside the card, so the strip
             // stays out of the way — matching the skill-states mockup.
-            document.getElementById('v3-meta-row').innerHTML = kind === 'guard'
+            document.getElementById('v3-meta-row').innerHTML = expired
+                ? `<span class="v3-status is-expired">${esc(statusLabel)}</span>
+                   ${skill ? `<span class="v3-skill-chip">${esc(skill)}</span>` : ''}
+                   ${turn.restored ? `<span class="v3-result-meta">${h('conversation.restored.restored')}</span>` : ''}`
+                : kind === 'guard'
                 ? `<span class="v3-status is-blocked">${esc(statusLabel)}</span>
                    ${skill ? `<span class="v3-skill-chip">${esc(skill)}</span>` : ''}
                    <span class="v3-result-meta">${esc(meta)}${turn.restored ? ` · ${h('conversation.restored.restored')}` : ''}</span>`
@@ -1760,7 +2712,9 @@
             const chart = document.getElementById('chart-view-container');
             if (chart) chart.style.display = 'none';
             this._setModelTabVisible(false);
-            document.getElementById('v3-dock-meta').textContent = kind === 'guard' ? t('conversation.proposal.blockedBeforeSql') : t('conversation.proposal.waitingForYou');
+            document.getElementById('v3-dock-meta').textContent = expired
+                ? t('conversation.proposal.expiredDock')
+                : kind === 'guard' ? t('conversation.proposal.blockedBeforeSql') : t('conversation.proposal.waitingForYou');
             this._setActionsEnabled(false);
             this.renderDock();
             this._bindProposalCard(turn, placeholder);
@@ -1773,6 +2727,44 @@
             const expired = window.JeenAnalysisUI
                 ? window.JeenAnalysisUI.proposalExpired(proposal)
                 : !proposal.proposal_id;
+            if (expired) {
+                const recreate = card.querySelector('[data-recreate]');
+                const hint = card.querySelector('[data-recreate-hint]');
+                const connection = this._analysisConnection();
+                const unavailable = this.readOnly
+                    ? t('conversation.readOnlySend')
+                    : (!connection ? t('analysis.proposal.selectConnection') : '');
+                if (recreate && unavailable) {
+                    recreate.disabled = true;
+                    recreate.title = unavailable;
+                    if (hint) {
+                        hint.hidden = false;
+                        hint.textContent = unavailable;
+                    }
+                }
+                recreate?.addEventListener('click', async () => {
+                    if (recreate.disabled) return;
+                    const label = recreate.textContent;
+                    card.classList.add('is-busy');
+                    recreate.disabled = true;
+                    recreate.setAttribute('aria-busy', 'true');
+                    recreate.textContent = t('analysis.proposal.askingAgain');
+                    card.querySelector('[data-sql-instead]')?.setAttribute('disabled', '');
+                    try {
+                        await this.send(turn.question, { analysis: true });
+                    } finally {
+                        if (card.isConnected) {
+                            card.classList.remove('is-busy');
+                            recreate.disabled = false;
+                            recreate.removeAttribute('aria-busy');
+                            recreate.textContent = label;
+                            card.querySelector('[data-sql-instead]')?.removeAttribute('disabled');
+                        }
+                    }
+                });
+                card.querySelector('[data-sql-instead]')?.addEventListener('click', () => this.send(turn.question, { analysis: false }));
+                return;
+            }
             // The setup form's local behaviour (summary, changed markers, validation)
             // lives in analysisPanel.js; the controller only runs and reports.
             const form = window.JeenAnalysisUI && window.JeenAnalysisUI.bindSetupForm && proposal.kind === 'confirm'
@@ -1797,16 +2789,14 @@
                 }
                 note.textContent = message;
             };
-            if (expired) {
-                card.querySelectorAll('[data-run], [data-exit]').forEach((b) => {
-                    b.disabled = true;
-                    b.title = t('conversation.proposal.expiredTitle');
-                });
-                const note = document.createElement('div');
-                note.className = 'v3-ml-error';
-                note.textContent = t('conversation.proposal.expiredNote');
-                card.appendChild(note);
-            }
+            const handleFailure = (error) => {
+                if (error && error.status === 410) {
+                    proposal.expires_at = new Date(0).toISOString();
+                    this.render();
+                    return;
+                }
+                fail(error);
+            };
             card.querySelector('[data-run]')?.addEventListener('click', async () => {
                 // Validate against the chips' declared bounds first: the first invalid
                 // field gets focus and a message, and nothing is sent.
@@ -1820,7 +2810,7 @@
                 try {
                     await this.runProposal(turn, { patch, remember });
                 } catch (error) {
-                    fail(error);
+                    handleFailure(error);
                 }
             });
             card.querySelectorAll('[data-exit]').forEach((button) => button.addEventListener('click', async () => {
@@ -1841,7 +2831,7 @@
                         override: option.kind === 'override',
                     });
                 } catch (error) {
-                    fail(error);
+                    handleFailure(error);
                 }
             }));
             card.querySelector('[data-sql-instead]')?.addEventListener('click', () => this.send(turn.question, { analysis: false }));
@@ -2050,6 +3040,7 @@
             this._analysisRerunInFlight = run;
             this._analysisRerunAbort = abort;
             window.JeenLegacyBridge?.setAnalysisRerunBusy?.(true);
+            this._syncNewConversationAction();
             try {
                 const data = await this._postJson('/api/analysis/rerun', body, {
                     signal: abort.signal,
@@ -2070,21 +3061,28 @@
                 if (this._analysisRerunInFlight === run) {
                     this._analysisRerunInFlight = null;
                     window.JeenLegacyBridge?.setAnalysisRerunBusy?.(false);
+                    this._syncNewConversationAction();
                 }
             }
         },
 
         /** Append a completed turn returned by /api/analysis/run|rerun (never mutates the parent). */
         _appendServerTurn(data, { question, parent, select = true } = {}) {
+            // Appending a new turn leaves any open inline edit.
+            if (this.editingTurnId) { this.editingTurnId = null; this.editDraft = ''; this._editSel = null; }
             const turn = {
                 id: `turn-${Date.now()}-${++this.seq}`,
                 question: question || data.question || (parent && parent.question) || '',
                 status: 'success',
                 startedAt: performance.now(),
+                askedAt: Date.now(),
                 phaseState: Object.fromEntries(PHASES.map((phase) => [phase.id, 'done'])),
                 trace: (data.trace || []).map((raw) => ({ ...raw, status: 'node_finished' })),
                 traceOpen: false,
                 result: data,
+                turnId: data.query_id || null,
+                conversationId: data.session_id || null,
+                isFavorite: false,
                 error: null,
                 parentId: parent ? parent.id : null,
                 resultKind: data.proposal ? 'proposal' : undefined,
@@ -2115,6 +3113,8 @@
                 turn.chartUnavailable = true;
                 return;
             }
+            // Drop a late chart if the turn was re-run (edited) meanwhile.
+            const rev = turn.rev || 0;
             const body = { connection, query_id: String(data.query_id), chart_spec: spec };
             try {
                 let payload;
@@ -2124,6 +3124,7 @@
                     if (!/cached|re-send/i.test(String(error && error.message))) throw error;
                     payload = await this._postJson('/api/analysis/chart', { ...body, results: data.results });
                 }
+                if ((turn.rev || 0) !== rev) return;
                 if (payload && payload.chart_config) {
                     turn.chartState = { chart_spec: payload.chart_spec || spec, chart_config: payload.chart_config };
                     turn.hasChart = true;
@@ -2132,6 +3133,7 @@
                     turn.chartUnavailable = true;
                 }
             } catch (error) {
+                if ((turn.rev || 0) !== rev) return;
                 turn.chartUnavailable = true;
                 console.warn('[Workspace] analysis chart failed', error);
             }
@@ -2197,7 +3199,7 @@
                   <span class="v3-result-meta">${h('conversation.text.textAnswer')}${turn.restored ? ` · ${h('conversation.restored.restored')}` : ''}</span>`;
                 const answerBody = wantsMarkdown(data)
                     ? markdownDiv(answer)
-                    : `<span dir="${directionOf(answer)}">${esc(answer || t('conversation.text.noDataNeeded'))}</span>`;
+                    : `<div class="v3-text-answer" dir="${directionOf(answer)}">${esc(answer || t('conversation.text.noDataNeeded'))}</div>`;
                 placeholder.innerHTML = `<strong>${h('conversation.text.answer')}</strong>${answerBody}`;
             }
             placeholder.hidden = false;
@@ -2230,13 +3232,54 @@
             title.setAttribute('dir', directionOf(text));
         },
 
+        _renderUnavailableSavedAnswer(state) {
+            const item = state && state.item;
+            if (!item) return;
+            const placeholder = document.getElementById('v3-placeholder');
+            const chartBlock = document.getElementById('v3-chart-block');
+            const tableBlock = document.getElementById('v3-table-block');
+            this._placeChartInteraction(false);
+            this._hideDefinition();
+            this._setResultTitle(item.question || item.conversation_title || t('favorite.answerUnavailable'));
+            document.getElementById('v3-meta-row').innerHTML = `
+              <span class="v3-status is-empty">${h('favorite.answerUnavailable')}</span>`;
+            placeholder.innerHTML = `<div class="v3-saved-unavailable" role="status">
+              <strong>${h('favorite.answerUnavailable')}</strong>
+              <span>${h('favorite.unavailableCopy')}</span>
+              <div class="v3-saved-unavailable-actions">
+                <button type="button" class="v3-text-btn" data-saved-retry>${h('favorite.retry')}</button>
+                <button type="button" class="v3-text-btn" data-saved-remove>${h('favorite.remove')}</button>
+              </div>
+            </div>`;
+            placeholder.hidden = false;
+            chartBlock.hidden = true;
+            tableBlock.hidden = true;
+            document.getElementById('v3-dock-meta').textContent = t('shell.dock.noRunYet');
+            this._setActionsEnabled(false);
+            this.renderDock();
+            placeholder.querySelector('[data-saved-retry]')?.addEventListener('click', () => this.openFavorite(item));
+            placeholder.querySelector('[data-saved-remove]')?.addEventListener('click', async () => {
+                const removed = await this.setFavoriteState(item.conversation_id, item.turn_id, false);
+                if (!removed) return;
+                this._unavailableSavedAnswer = null;
+                this.setTab('saved');
+                this.setSavedView('answers');
+                this.render();
+            });
+        },
+
         renderWorkspace() {
             const turn = this.turns.find((item) => item.id === this.selectedResultId && item.status === 'success');
+            this._renderFavoriteAction(turn);
             const placeholder = document.getElementById('v3-placeholder');
             const chartBlock = document.getElementById('v3-chart-block');
             const tableBlock = document.getElementById('v3-table-block');
             const chartStatus = document.getElementById('v3-chart-status');
             if (chartStatus) chartStatus.hidden = true;
+            if (this._unavailableSavedAnswer) {
+                this._renderUnavailableSavedAnswer(this._unavailableSavedAnswer);
+                return;
+            }
             if (!turn) {
                 this._placeChartInteraction(false);
                 this._restorePlaceholder();
@@ -2326,7 +3369,10 @@
             // baseline, and rendered through the restore path.
             if (isAnalysis && !turn.chartState && !turn.chartLoading && !turn.chartUnavailable && rows.length) {
                 turn.chartLoading = true;
+                const chartRev = turn.rev || 0;
                 this._loadAnalysisChart(turn).finally(() => {
+                    // A re-run (edit) since this load started owns its own flags now.
+                    if ((turn.rev || 0) !== chartRev) return;
                     turn.chartLoading = false;
                     if (this.selectedResultId === turn.id) {
                         this.lastAppliedResultId = null;
@@ -2367,14 +3413,24 @@
                     // restore path and wait for the chart machinery instead of
                     // guessing with a timer. No LLM chart call when a baseline exists.
                     const applied = turn.id;
-                    window.JeenLegacyBridge.applyRestoredResult(data, turn.chartState).then(() => {
-                        if (this.selectedResultId === applied) showChart();
-                    });
+                    const appliedRev = turn.rev || 0;
+                    window.JeenLegacyBridge.applyRestoredResult(data, turn.chartState)
+                        .then(() => {
+                            if (this.selectedResultId === applied && (turn.rev || 0) === appliedRev) showChart();
+                        })
+                        .catch((error) => {
+                            console.warn('[Workspace] chart apply failed', error);
+                            if (this.selectedResultId === applied && (turn.rev || 0) === appliedRev) {
+                                this.lastAppliedResultId = null;
+                                window.JeenLegacyBridge?.setChartInteractionEnabled?.(false);
+                            }
+                        });
                 } else {
                     const applied = turn.id;
+                    const appliedRev = turn.rev || 0;
                     window.JeenLegacyBridge.applyResult(data);
                     requestAnimationFrame(() => {
-                        if (this.selectedResultId === applied) showChart();
+                        if (this.selectedResultId === applied && (turn.rev || 0) === appliedRev) showChart();
                     });
                 }
             }
@@ -2444,10 +3500,16 @@
                 : cap.total ? t('results.grid.loadedMatched', { loaded: allRows.length, total: formatCompact(cap.total) }) : t('results.grid.rowsLoaded', { count: allRows.length });
             const grid = document.getElementById('v3-grid');
             const wrap = document.getElementById('v3-grid-wrap');
-            const numeric = new Set(columns.map((column, index) => inferColumnType(filtered.slice(0, 50).map((row) => rowValue(row, column, index))) === 'number' ? index : -1).filter((index) => index >= 0));
+            const columnMetadata = resultColumnMetadata(results);
             const descriptors = [];
             columns.forEach((name, index) => {
-                descriptors.push({ name, sourceIndex: index, numeric: numeric.has(index) });
+                const meta = columnMetadata[index] || {
+                    name, sourceIndex: index, numeric: false, plain: false, type: 'text', omitMidnightTime: false,
+                };
+                descriptors.push({
+                    ...meta,
+                    plain: meta.plain && !presentation.formats?.[index],
+                });
                 const derived = (presentation.derived || []).find((item) => item.sourceIndex === index);
                 if (derived) descriptors.push({ name: derived.name, sourceIndex: index, numeric: true, derived });
             });
@@ -2483,7 +3545,11 @@
                     : rowValue(row, columns[descriptor.sourceIndex], descriptor.sourceIndex);
                 const rendered = descriptor.derived
                     ? (descriptor.derived.type === 'pct_total' && raw != null ? `${formatCompact(raw)}%` : formatCompact(raw))
-                    : (window.JeenLegacyBridge?.formatTableValue?.(raw, descriptor.sourceIndex, descriptor.numeric) ?? (raw ?? '—'));
+                    : (descriptor.type === 'datetime' && raw != null && raw !== '')
+                        ? formatResultDateTime(raw, descriptor.omitMidnightTime)
+                    : (descriptor.plain && raw != null && raw !== '')
+                        ? String(raw)
+                        : (window.JeenLegacyBridge?.formatTableValue?.(raw, descriptor.sourceIndex, descriptor.numeric) ?? (raw ?? '—'));
                     return `<div class="v3-grid-cell${descriptor.numeric ? ' is-numeric' : ''}${descriptor.derived ? ' is-derived' : ''}"${descriptor.numeric ? ' dir="ltr"' : ''} title="${esc(rendered)}">${esc(rendered)}</div>`;
                 }).join('')}</div>`;
             };
@@ -2676,18 +3742,24 @@
         },
 
         _setActionsEnabled(enabled) {
+            this._actionsEnabled = enabled;
             ['export-btn', 'copy-results-btn', 'send-result-btn', 'describe-btn'].forEach((id) => {
                 const button = document.getElementById(id);
                 if (!button) return;
                 button.disabled = !enabled;
                 button.setAttribute('aria-disabled', String(!enabled));
                 button.style.display = '';
-                if (id === 'send-result-btn' && enabled) {
+                if (id === 'send-result-btn') {
                     const me = window._currentUser || {};
-                    const canSend = Boolean(me.connectors_enabled && me.is_entra && window._resultHandle);
+                    // Without Entra and a delivery connector Send can never work: hide it
+                    // instead of showing a permanently disabled primary button.
+                    const eligible = Boolean(me.connectors_enabled && me.is_entra);
+                    const canSend = enabled && eligible && Boolean(window._resultHandle);
+                    button.style.display = eligible ? '' : 'none';
                     button.disabled = !canSend;
                     button.setAttribute('aria-disabled', String(!canSend));
-                    button.title = canSend ? t('results.actions.sendResult') : t('results.actions.sendDisabled');
+                    if (canSend) button.title = t('results.actions.sendResult');
+                    else button.title = enabled ? t('send.noSnapshot') : t('results.actions.sendLabel');
                 }
             });
         },
@@ -2702,6 +3774,14 @@
             requestAnimationFrame(() => {
                 const thread = document.getElementById('v3-thread');
                 if (thread) thread.scrollTop = thread.scrollHeight;
+            });
+        },
+
+        _scrollTurnIntoView(turnId) {
+            requestAnimationFrame(() => {
+                const card = [...document.querySelectorAll('#v3-thread [data-turn]')]
+                    .find((node) => node.dataset.turn === turnId);
+                card?.scrollIntoView({ block: 'nearest' });
             });
         },
     };

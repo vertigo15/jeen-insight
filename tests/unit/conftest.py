@@ -17,6 +17,7 @@ exercise real handler logic; use ``anon_client`` to assert the 401 path.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -99,6 +100,9 @@ def fake_state(monkeypatch):
     # (the untouched default) works; PBI-specific tests override this explicitly.
     fakes.connection_service.get_connection = AsyncMock(
         return_value=SimpleNamespace(is_power_bi=False, source_key="sales_db")
+    )
+    fakes.history_service.get_chart_request_watermark = AsyncMock(
+        return_value=datetime(2026, 9, 24, 7, 0, tzinfo=timezone.utc)
     )
     monkeypatch.setattr(api_state, "connection_service", fakes.connection_service)
     monkeypatch.setattr(api_state, "metadata_loader", fakes.metadata_loader)

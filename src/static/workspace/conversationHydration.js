@@ -19,6 +19,18 @@ export const ARTIFACT_LOADING = 'loading';
 export const ARTIFACT_LOADED = 'loaded';
 export const ARTIFACT_FAILED = 'failed';
 
+/** Preserve both versioned in-page snapshots and legacy server chart pairs. */
+export function chartStateFromArtifact(artifact) {
+    if (!artifact || !artifact.chart_config) return null;
+    return {
+        chart_config: artifact.chart_config,
+        chart_spec: artifact.chart_spec || null,
+        ...(artifact.chart_toggles ? { chart_toggles: artifact.chart_toggles } : {}),
+        ...(artifact.derived_specs ? { derived_specs: artifact.derived_specs } : {}),
+        ...(artifact.chart_session ? { chart_session: artifact.chart_session } : {}),
+    };
+}
+
 /**
  * Map one ConversationTurn DTO to a workspace turn.
  *
@@ -56,7 +68,9 @@ export function turnFromServer(dto, conversationId) {
         executionStatus: dto.execution_status || 'pending',
         snapshotStatus: dto.snapshot_status || SNAPSHOT_NOT_APPLICABLE,
         snapshotAt: dto.snapshot_at || null,
+        askedAt: dto.created_at || null,
         hasChart: Boolean(dto.has_chart),
+        isFavorite: Boolean(dto.is_favorite),
         canLoadData,
         artifactState: needsArtifact ? ARTIFACT_MISSING : ARTIFACT_LOADED,
         startedAt: 0,
@@ -113,7 +127,7 @@ export function applyArtifact(turn, artifact) {
     turn.snapshotStatus = artifact.snapshot_status || turn.snapshotStatus;
     turn.snapshotAt = artifact.snapshot_at || turn.snapshotAt;
     if (results && artifact.chart_config) {
-        turn.chartState = { chart_spec: artifact.chart_spec || null, chart_config: artifact.chart_config };
+        turn.chartState = chartStateFromArtifact(artifact);
         turn.hasChart = true;
     } else {
         turn.chartState = null;
@@ -147,6 +161,7 @@ if (typeof globalThis !== 'undefined') {
         turnFromServer,
         turnsFromDetail,
         applyArtifact,
+        chartStateFromArtifact,
         hasRenderableResult,
         makeGenerationGuard,
         SNAPSHOT_STORED,

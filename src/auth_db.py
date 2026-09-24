@@ -98,7 +98,7 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
         row = conn.execute(
             """
             SELECT id, name, email, password_hash, role, status, avatar_hue,
-                   last_active_at, created_at, locale
+                   last_active_at, created_at, locale, date_format
             FROM auth_users WHERE email = %s LIMIT 1
             """,
             (email,),
@@ -116,7 +116,20 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
         "last_active_at": row[7].isoformat() if row[7] else None,
         "created_at":    row[8].isoformat() if row[8] else None,
         "locale":        row[9],
+        "date_format":   row[10],
     }
+
+
+def get_user_preferences(user_id: int) -> Optional[Dict[str, Any]]:
+    """Return the account preferences refreshed by the parallel startup request."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT date_format FROM auth_users WHERE id = %s LIMIT 1",
+            (user_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return {"date_format": row[0]}
 
 
 def verify_password(plain: str, hashed: str) -> bool:
@@ -168,6 +181,20 @@ def set_user_locale(user_id: int, locale: str) -> None:
     with _connect() as conn:
         conn.execute("UPDATE auth_users SET locale = %s WHERE id = %s", (locale, user_id))
         conn.commit()
+
+
+def set_user_date_format(user_id: int, date_format: str) -> bool:
+    """Persist the account's result-table calendar date format.
+
+    Returns ``False`` if the authenticated account was deleted concurrently.
+    """
+    with _connect() as conn:
+        cursor = conn.execute(
+            "UPDATE auth_users SET date_format = %s WHERE id = %s",
+            (date_format, user_id),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
 
 
 def create_user(

@@ -47,7 +47,7 @@ test('table toolbar has a top separator and Describe sits below the grid', async
 test('conversation scroll follows the newest card after its final answer expands', async ({ page }) => {
   await ask(page, Q.sqlAggregate);
   await page.addStyleTag({
-    content: '#v3-thread .v3-turn:last-child .v3-answer { min-height: 520px; }',
+    content: '#v3-thread .v3-turn:last-child .v3-turn-body { min-height: 520px; }',
   });
   await ask(page, Q.sqlCount);
   const scroll = await page.evaluate(() => {
@@ -59,13 +59,7 @@ test('conversation scroll follows the newest card after its final answer expands
   });
   expect(scroll.bottom).toBeGreaterThanOrEqual(scroll.height - 2);
   await expect(page.locator('#v3-thread article.v3-turn').last()).toBeInViewport();
-  await expect(page.locator('[data-new-conversation]')).toBeInViewport();
-  const stickyHeader = await page.evaluate(() => {
-    const thread = document.getElementById('v3-thread').getBoundingClientRect();
-    const header = document.querySelector('.v3-thread-head').getBoundingClientRect();
-    return Math.abs(header.top - thread.top);
-  });
-  expect(stickyHeader).toBeLessThanOrEqual(1);
+  await expect(page.locator('#v3-new-conversation')).toBeInViewport();
 });
 
 test('run details separate MCP stages and reconcile traced time with browser wall time', async ({ page }) => {
@@ -334,21 +328,21 @@ test('chart edits survive apply and Reset restores the original baseline', async
       yAxis: { type: 'value' },
       series: [{ type: 'bar', data: [1, 2], label: { show: false } }],
     };
-    manager.chartContainer = { render() {}, dispose() {} };
+    manager.chartContainer = { async init() {}, render() {}, dispose() {} };
+    manager.state.isEChartsLoaded = true;
     manager.state.currentData = { columns: ['region', 'sales'], rows: [['A', 1], ['B', 2]] };
-    manager.currentEchartsOptions = structuredClone(baseline);
-    manager.originalConfig = structuredClone(baseline);
-    manager.currentChartSpec = { chart_type: 'bar', x: 'region', y: 'sales' };
-    manager.originalChartSpec = structuredClone(manager.currentChartSpec);
+    const spec = { chart_type: 'bar', x: 'region', y: 'sales' };
+    manager._adoptBaseline(structuredClone(baseline), spec);
 
     const edited = structuredClone(baseline);
     edited.series[0].label.show = true;
-    manager.applyEditedConfig(edited, [], null, { chart_spec: manager.currentChartSpec });
+    await manager.applyEditedConfig(edited, [], null, { chart_spec: spec });
     const applied = manager.currentEchartsOptions.series[0].label.show;
-    manager.resetChartEdits();
+    await manager.resetChartEdits();
     const reset = manager.currentEchartsOptions.series[0].label.show;
+    const type = manager.getSaveState().chart_spec.chart_type;
     manager.dispose();
-    return { applied, reset, type: manager.currentChartSpec.chart_type };
+    return { applied, reset, type };
   });
 
   expect(state).toEqual({ applied: true, reset: false, type: 'bar' });
@@ -419,7 +413,8 @@ test('common chart-chat edits are instant and existing columns rebind the x-axis
 
     const manager = new ChartManager({ workspaceMode: false });
     manager.chartOptionsPanel = panel;
-    manager.chartContainer = { render() {}, dispose() {} };
+    manager.chartContainer = { async init() {}, render() {}, dispose() {} };
+    manager.state.isEChartsLoaded = true;
     manager.state.currentData = {
       columns: ['month_number', 'month_name', 'revenue'],
       rows: [[1, 'January', 10], [2, 'February', 20]],
@@ -452,7 +447,7 @@ test('common chart-chat edits are instant and existing columns rebind the x-axis
     chat.enable();
     chat._inputEl.value = 'all lables and change colore to red';
     await chat._handleSend();
-    const firstSummary = chat._appliedLabelEl.textContent;
+    const firstSummary = chat._appliedInstructionEl.textContent;
     const first = {
       labels: manager.currentEchartsOptions.series[0].label.show,
       color: manager.currentEchartsOptions.series[0].itemStyle.color,
@@ -460,35 +455,35 @@ test('common chart-chat edits are instant and existing columns rebind the x-axis
     };
     const greenConfig = JSON.parse(JSON.stringify(manager.currentEchartsOptions));
     greenConfig.series[0].itemStyle.color = '#228b22';
-    const greenApplied = manager.applyEditedConfig(greenConfig, [], 'Changed bars to green.');
+    const greenApplied = await manager.applyEditedConfig(greenConfig, [], 'Changed bars to green.');
     const greenState = {
       color: manager.currentEchartsOptions.series[0].itemStyle.color,
       customPalette: manager.customPalette?.name,
     };
-    const greenRepeated = manager.applyEditedConfig(
+    const greenRepeated = await manager.applyEditedConfig(
       JSON.parse(JSON.stringify(manager.currentEchartsOptions)),
       [],
       'Changed bars to green.',
     );
     chat._inputEl.value = 'show month names in the x axis';
     await chat._handleSend();
-    const secondSummary = chat._appliedLabelEl.textContent;
+    const secondSummary = chat._appliedInstructionEl.textContent;
     const second = {
       categories: manager.currentEchartsOptions.xAxis.data,
       specX: manager.currentChartSpec.x,
       panelX: panel.getMapping().xColumn,
     };
-    const repeated = manager.applyQuickInstruction('show month names in the x axis');
+    const repeated = await manager.applyQuickInstruction('show month names in the x axis');
     panel.setToggles({ sortDesc: true });
-    manager._reapplyQuickToggles({ key: 'sortDesc', value: true });
-    manager.applyQuickInstruction('show month numbers in the x axis');
-    manager.applyQuickInstruction('show month names in the x axis');
+    await manager._reapplyQuickToggles({ key: 'sortDesc', value: true });
+    await manager.applyQuickInstruction('show month numbers in the x axis');
+    await manager.applyQuickInstruction('show month names in the x axis');
     const sortedBinding = {
       categories: manager.currentEchartsOptions.xAxis.data,
       values: manager.currentEchartsOptions.series[0].data,
     };
     panel.setToggles({ sortDesc: false });
-    manager._reapplyQuickToggles({ key: 'sortDesc', value: false });
+    await manager._reapplyQuickToggles({ key: 'sortDesc', value: false });
     const sortOff = {
       categories: manager.currentEchartsOptions.xAxis.data,
       values: manager.currentEchartsOptions.series[0].data,
@@ -511,7 +506,7 @@ test('common chart-chat edits are instant and existing columns rebind the x-axis
     const preservedRole = manager.currentEchartsOptions.series[0].jeenRole;
     const resetLabel = chat._resetBtnEl.getAttribute('aria-label');
     const resetHasSvg = Boolean(chat._resetBtnEl.querySelector('svg'));
-    chat._handleReset();
+    await chat._handleReset();
     const reset = {
       labels: manager.currentEchartsOptions.series[0].label.show,
       categories: manager.currentEchartsOptions.xAxis.data,
@@ -598,8 +593,8 @@ test('an unchanged LLM chart response is reported as a no-op, not Applied', asyn
 
   expect(state).toEqual({
     applies: 0,
-    appliedHidden: false,
-    appliedLabelHidden: true,
+    appliedHidden: true,
+    appliedLabelHidden: false,
     resetVisible: true,
     status: 'No visible chart change was applied.',
     statusKind: 'warn',
@@ -623,7 +618,8 @@ test('failed local chart rendering rolls back palette and toggle state', async (
     panel.render();
     const manager = new ChartManager({ workspaceMode: false });
     manager.chartOptionsPanel = panel;
-    manager.chartContainer = { render() { throw new Error('paint failed'); }, dispose() {} };
+    manager.chartContainer = { async init() {}, render() { throw new Error('paint failed'); }, dispose() {} };
+    manager.state.isEChartsLoaded = true;
     manager.state.currentData = {
       columns: ['category', 'value'],
       rows: [['A', 1], ['B', 2]],
@@ -636,7 +632,7 @@ test('failed local chart rendering rolls back palette and toggle state', async (
     manager.originalConfig = structuredClone(manager.currentEchartsOptions);
     let error = '';
     try {
-      manager.applyQuickInstruction('show labels and change color to red');
+      await manager.applyQuickInstruction('show labels and change color to red');
     } catch (caught) {
       error = caught.message;
     }
@@ -674,7 +670,8 @@ test('rebinding after sorting preserves rows when the previous categories repeat
     panel.render();
     const manager = new ChartManager({ workspaceMode: false });
     manager.chartOptionsPanel = panel;
-    manager.chartContainer = { render() {}, dispose() {} };
+    manager.chartContainer = { async init() {}, render() {}, dispose() {} };
+    manager.state.isEChartsLoaded = true;
     manager.state.currentData = {
       columns: ['old_category', 'new_category', 'value'],
       rows: [['A', 'Jan', 10], ['A', 'Feb', 20], ['B', 'Mar', 15]],
@@ -689,8 +686,8 @@ test('rebinding after sorting preserves rows when the previous categories repeat
     manager.originalChartSpec = structuredClone(manager.currentChartSpec);
     panel.syncFromSpec(manager.currentChartSpec);
     panel.setToggles({ sortDesc: true });
-    manager._reapplyQuickToggles({ key: 'sortDesc', value: true });
-    const edit = manager.applyQuickInstruction('show new category in the x axis');
+    await manager._reapplyQuickToggles({ key: 'sortDesc', value: true });
+    const edit = await manager.applyQuickInstruction('show new category in the x axis');
     return {
       edit,
       categories: manager.currentEchartsOptions.xAxis.data,
@@ -739,7 +736,7 @@ test('Reset invalidates a delayed chart-edit response', async ({ page }) => {
     chat._inputEl.value = 'make labels larger';
     const pending = chat._handleSend();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    chat._handleReset();
+    await chat._handleReset();
     release();
     await pending;
     window.fetch = originalFetch;

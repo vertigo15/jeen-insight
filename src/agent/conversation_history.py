@@ -8,6 +8,7 @@ Backed by:
   * insights_conversations              (one row per conversation; id == session_id)
   * insights_conversation_sessions      (one row per turn)
   * insights_turn_artifacts             (answer / snapshot / chart per turn)
+  * insights_favorite_answers            (per-user saved turns)
   * insights_conversation_prune_state   (per user+connection retention claim)
   * insights_query_insights
   * insights_pinned_questions
@@ -102,6 +103,10 @@ class ConversationHistoryService:
         # turn artifact. Probed by the lifespan; off by default so a database
         # without the columns keeps persisting ordinary turns.
         self.analysis_schema_ready = False
+        # Whether migration 030 added answer-level favorites. This stays
+        # independent from migration 022 so rolling upgrades keep conversation
+        # hydration working before the new table has been applied.
+        self.favorite_schema_ready = False
 
     async def initialize(self) -> None:
         # Pool is already initialized by `get_metadata_pool()`. This method is
@@ -787,18 +792,30 @@ class ConversationHistoryService:
     # ------------------------------------------------------------------
     # Conversations (restore / browse)
     # ------------------------------------------------------------------
-    _CONVERSATION_SUMMARY_SQL = """
-        SELECT c.id, c.title, c.source_key, c.source_label,
-               c.created_at, c.last_activity_at,
-               (SELECT COUNT(*) FROM insights_conversation_sessions t
-                 WHERE t.session_id = c.id) AS turn_count,
-               (SELECT t.natural_language_query
-                  FROM insights_conversation_sessions t
-                 WHERE t.session_id = c.id
-                 ORDER BY t.sequence_number DESC
-                 LIMIT 1) AS last_question
-        FROM insights_conversations c
-    """
+    def _conversation_summary_sql(self) -> str:
+        saved_count = (
+            """
+            (SELECT COUNT(*)
+               FROM insights_favorite_answers f
+               JOIN insights_conversation_sessions ft ON ft.id = f.turn_id
+              WHERE f.user_id = c.user_id AND ft.session_id = c.id)
+            """
+            if self.favorite_schema_ready
+            else "0::bigint"
+        )
+        return f"""
+            SELECT c.id, c.title, c.source_key, c.source_label,
+                   c.created_at, c.last_activity_at,
+                   (SELECT COUNT(*) FROM insights_conversation_sessions t
+                     WHERE t.session_id = c.id) AS turn_count,
+                   (SELECT t.natural_language_query
+                      FROM insights_conversation_sessions t
+                     WHERE t.session_id = c.id
+                     ORDER BY t.sequence_number DESC
+                     LIMIT 1) AS last_question,
+                   {saved_count} AS saved_answer_count
+            FROM insights_conversations c
+        """
 
     @staticmethod
     def _summary_row(row: Any) -> Dict[str, Any]:
@@ -808,6 +825,9 @@ class ConversationHistoryService:
             "source_key": row["source_key"],
             "source_label": row["source_label"],
             "turn_count": int(row["turn_count"] or 0),
+            "saved_answer_count": int(
+                ConversationHistoryService._row_get(row, "saved_answer_count", 0) or 0
+            ),
             "last_question": row["last_question"],
             "created_at": _iso(row["created_at"]),
             "last_activity_at": _iso(row["last_activity_at"]),
@@ -821,7 +841,7 @@ class ConversationHistoryService:
         try:
             async with self.pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    self._CONVERSATION_SUMMARY_SQL
+                    self._conversation_summary_sql()
                     + """
                     WHERE c.user_id = $1 AND c.source_key = $2
                     ORDER BY c.last_activity_at DESC, c.id DESC
@@ -843,7 +863,7 @@ class ConversationHistoryService:
         try:
             async with self.pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    self._CONVERSATION_SUMMARY_SQL
+                    self._conversation_summary_sql()
                     + " WHERE c.id = $1 AND c.user_id = $2",
                     conversation_id,
                     user_id,
@@ -870,7 +890,7 @@ class ConversationHistoryService:
             before_id = before[1] if before else None
             async with self.pool.acquire() as conn:
                 rows = await conn.fetch(
-                    self._CONVERSATION_SUMMARY_SQL
+                    self._conversation_summary_sql()
                     + """
                     WHERE c.user_id = $1
                       AND ($2::text IS NULL OR c.source_key = $2)
@@ -938,6 +958,7 @@ class ConversationHistoryService:
             "snapshot_at": _iso(row["snapshot_at"]),
             "analysis": _jsonb(ConversationHistoryService._row_get(row, "analysis")),
             "low_confidence": bool(ConversationHistoryService._row_get(row, "low_confidence", False)),
+            "is_favorite": bool(ConversationHistoryService._row_get(row, "is_favorite", False)),
         }
 
     def _analysis_select(self, alias: str = "a") -> str:
@@ -945,6 +966,16 @@ class ConversationHistoryService:
         if not self.analysis_schema_ready:
             return ""
         return f", {alias}.analysis, {alias}.low_confidence"
+
+    def _favorite_select(self, turn_alias: str = "cs", conversation_alias: str = "c") -> str:
+        """Favorite state without touching migration 030 on older databases."""
+        if not self.favorite_schema_ready:
+            return ", FALSE AS is_favorite"
+        return (
+            ", EXISTS (SELECT 1 FROM insights_favorite_answers f "
+            f"WHERE f.user_id = {conversation_alias}.user_id "
+            f"AND f.turn_id = {turn_alias}.id) AS is_favorite"
+        )
 
     async def get_conversation_turns(
         self,
@@ -967,7 +998,8 @@ class ConversationHistoryService:
                            a.result_kind, a.answer, a.error AS artifact_error,
                            a.metrics, a.findings, a.suggestions, a.followups,
                            a.snapshot_status, a.snapshot_at,
-                           (a.chart_config IS NOT NULL) AS has_chart{self._analysis_select()}
+                           (a.chart_config IS NOT NULL) AS has_chart
+                           {self._analysis_select()}{self._favorite_select()}
                     FROM insights_conversation_sessions cs
                     JOIN insights_conversations c ON c.id = cs.session_id
                     LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id
@@ -986,6 +1018,38 @@ class ConversationHistoryService:
         except Exception:
             logger.exception("Failed to get conversation turns")
             return []
+
+    async def get_conversation_turn(
+        self, *, conversation_id: UUID, turn_id: UUID, user_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Metadata for one owned turn, including its favorite state."""
+        if not self.conversation_schema_ready:
+            return None
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    f"""
+                    SELECT cs.id, cs.sequence_number, cs.natural_language_query,
+                           cs.generated_sql, cs.execution_status, cs.row_count,
+                           cs.error_message, cs.created_at,
+                           a.result_kind, a.answer, a.error AS artifact_error,
+                           a.metrics, a.findings, a.suggestions, a.followups,
+                           a.snapshot_status, a.snapshot_at,
+                           (a.chart_config IS NOT NULL) AS has_chart
+                           {self._analysis_select()}{self._favorite_select()}
+                    FROM insights_conversation_sessions cs
+                    JOIN insights_conversations c ON c.id = cs.session_id
+                    LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id
+                    WHERE cs.id = $1 AND cs.session_id = $2 AND c.user_id = $3
+                    """,
+                    turn_id,
+                    conversation_id,
+                    user_id,
+                )
+            return self._turn_row(row) if row else None
+        except Exception:
+            logger.exception("Failed to get conversation turn")
+            return None
 
     async def get_turn_artifact(
         self, *, conversation_id: UUID, turn_id: UUID, user_id: str
@@ -1182,11 +1246,15 @@ class ConversationHistoryService:
         chart_spec: Optional[Dict[str, Any]],
         chart_config: Optional[Dict[str, Any]],
         chart_bytes: int,
+        request_started_at: Optional[datetime] = None,
     ) -> bool:
         """Persist the server-built chart baseline for a turn.
 
         Only turns whose snapshot is ``stored`` take a chart: a chart cannot be
-        restored without its rows, and ``pruned`` stays terminal.
+        restored without its rows, and ``pruned`` stays terminal. When a
+        request-start timestamp is supplied, ``chart_updated_at`` is a
+        last-writer watermark: a slower request that started earlier cannot
+        replace a chart produced by a newer request.
         """
         if not self.conversation_schema_ready:
             return False
@@ -1198,28 +1266,60 @@ class ConversationHistoryService:
                     SET chart_spec       = $3::jsonb,
                         chart_config     = $4::jsonb,
                         chart_bytes      = $5,
-                        chart_updated_at = NOW(),
+                        chart_updated_at = COALESCE($6::timestamptz, NOW()),
                         updated_at       = NOW()
                     FROM insights_conversation_sessions cs
                     WHERE a.turn_id = $1
                       AND cs.id = a.turn_id
                       AND cs.user_id = $2
                       AND a.snapshot_status = 'stored'
+                      AND (
+                          $6::timestamptz IS NULL
+                          OR a.chart_updated_at IS NULL
+                          OR a.chart_updated_at <= $6::timestamptz
+                      )
                     """,
                     turn_id,
                     user_id,
                     json.dumps(chart_spec) if chart_spec is not None else None,
                     json.dumps(chart_config) if chart_config is not None else None,
                     chart_bytes,
+                    request_started_at,
                 )
                 return result.endswith(" 1")
         except Exception:
             logger.exception("Failed to persist chart for turn %s", turn_id)
             return False
 
-    async def clear_turn_chart(self, *, turn_id: UUID, user_id: str) -> bool:
+    async def get_chart_request_watermark(self) -> Optional[datetime]:
+        """Return a database-clock watermark for ordering chart writes.
+
+        Both request-start ordering and rerun invalidation then use PostgreSQL's
+        clock, so API replica clock skew cannot let an obsolete chart win.
+        """
+        if not self.conversation_schema_ready:
+            return None
+        try:
+            async with self.pool.acquire() as conn:
+                return await conn.fetchval("SELECT clock_timestamp()")
+        except Exception:
+            logger.exception("Failed to obtain chart request watermark")
+            return None
+
+    async def clear_turn_chart(
+        self,
+        *,
+        turn_id: UUID,
+        user_id: str,
+        request_started_at: Optional[datetime] = None,
+    ) -> bool:
         """Drop a stored chart baseline (e.g. the new chart exceeded the byte cap
-        and must not be restored from an obsolete config)."""
+        and must not be restored from an obsolete config).
+
+        A guarded clear retains its request timestamp as a watermark even
+        though the chart columns become null. This prevents an older in-flight
+        generation from repopulating the obsolete baseline afterward.
+        """
         if not self.conversation_schema_ready:
             return False
         try:
@@ -1228,13 +1328,27 @@ class ConversationHistoryService:
                     """
                     UPDATE insights_turn_artifacts a
                     SET chart_spec = NULL, chart_config = NULL, chart_bytes = NULL,
-                        chart_updated_at = NULL, updated_at = NOW()
+                        chart_updated_at = CASE
+                            WHEN $3::timestamptz IS NULL THEN NULL
+                            ELSE $3::timestamptz
+                        END,
+                        updated_at = NOW()
                     FROM insights_conversation_sessions cs
                     WHERE a.turn_id = $1 AND cs.id = a.turn_id AND cs.user_id = $2
-                      AND a.chart_config IS NOT NULL
+                      AND (
+                          ($3::timestamptz IS NULL AND a.chart_config IS NOT NULL)
+                          OR (
+                              $3::timestamptz IS NOT NULL
+                              AND (
+                                  a.chart_updated_at IS NULL
+                                  OR a.chart_updated_at <= $3::timestamptz
+                              )
+                          )
+                      )
                     """,
                     turn_id,
                     user_id,
+                    request_started_at,
                 )
                 return result.endswith(" 1")
         except Exception:
@@ -1261,10 +1375,11 @@ class ConversationHistoryService:
                     """
                     INSERT INTO insights_turn_artifacts (
                         turn_id, result_kind, result_snapshot, snapshot_status,
-                        snapshot_bytes, snapshot_at
+                        snapshot_bytes, snapshot_at, chart_updated_at
                     )
                     SELECT $1::uuid, 'table', $3::jsonb, $4::text, $5::int,
-                           CASE WHEN $4::text = 'stored' THEN NOW() END
+                           CASE WHEN $4::text = 'stored' THEN NOW() END,
+                           NOW()
                     WHERE EXISTS (
                         SELECT 1 FROM insights_conversation_sessions
                         WHERE id = $1::uuid AND user_id = $2::text
@@ -1277,7 +1392,7 @@ class ConversationHistoryService:
                             chart_spec       = NULL,
                             chart_config     = NULL,
                             chart_bytes      = NULL,
-                            chart_updated_at = NULL,
+                            chart_updated_at = NOW(),
                             updated_at       = NOW()
                     """,
                     turn_id,
@@ -1315,22 +1430,221 @@ class ConversationHistoryService:
             return False
 
     async def delete_conversation(
-        self, *, conversation_id: UUID, user_id: str
-    ) -> bool:
-        """Hard delete; FK cascades remove turns, insights and artifacts."""
+        self,
+        *,
+        conversation_id: UUID,
+        user_id: str,
+        delete_saved: bool = False,
+    ) -> Dict[str, Any]:
+        """Hard delete an owned conversation after protecting saved answers.
+
+        Favorite mutations, retention and deletion share one advisory lock per
+        user + connection, so a concurrent Save cannot slip between the count
+        and the cascading DELETE.
+        """
         if not self.conversation_schema_ready:
-            return False
+            return {"status": "missing", "saved_answer_count": 0}
         try:
             async with self.pool.acquire() as conn:
-                result = await conn.execute(
-                    "DELETE FROM insights_conversations WHERE id = $1 AND user_id = $2",
-                    conversation_id,
-                    user_id,
-                )
-                return result.endswith(" 1")
+                async with conn.transaction():
+                    source_key = await conn.fetchval(
+                        "SELECT source_key FROM insights_conversations WHERE id = $1 AND user_id = $2",
+                        conversation_id,
+                        user_id,
+                    )
+                    if not source_key:
+                        return {"status": "missing", "saved_answer_count": 0}
+                    if self.favorite_schema_ready:
+                        await conn.fetchval(
+                            "SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))",
+                            user_id,
+                            source_key,
+                        )
+                        still_owned = await conn.fetchval(
+                            "SELECT 1 FROM insights_conversations WHERE id = $1 AND user_id = $2",
+                            conversation_id,
+                            user_id,
+                        )
+                        if not still_owned:
+                            return {"status": "missing", "saved_answer_count": 0}
+                        saved_count = int(await conn.fetchval(
+                            """
+                            SELECT COUNT(*)
+                            FROM insights_favorite_answers f
+                            JOIN insights_conversation_sessions cs ON cs.id = f.turn_id
+                            WHERE f.user_id = $1 AND cs.session_id = $2
+                            """,
+                            user_id,
+                            conversation_id,
+                        ) or 0)
+                        if saved_count and not delete_saved:
+                            return {
+                                "status": "blocked",
+                                "saved_answer_count": saved_count,
+                            }
+                    else:
+                        saved_count = 0
+                    result = await conn.execute(
+                        "DELETE FROM insights_conversations WHERE id = $1 AND user_id = $2",
+                        conversation_id,
+                        user_id,
+                    )
+                    if not result.endswith(" 1"):
+                        return {"status": "missing", "saved_answer_count": saved_count}
+                    return {"status": "deleted", "saved_answer_count": saved_count}
         except Exception:
             logger.exception("Failed to delete conversation")
-            return False
+            return {"status": "error", "saved_answer_count": 0}
+
+    # ------------------------------------------------------------------
+    # Favorite answers
+    # ------------------------------------------------------------------
+    async def set_answer_favorite(
+        self,
+        *,
+        conversation_id: UUID,
+        turn_id: UUID,
+        user_id: str,
+        favorite: bool,
+    ) -> Optional[bool]:
+        """Set one owned successful turn's favorite state.
+
+        ``None`` means a favorite request targets a missing/not-owned turn.
+        Removing a missing turn returns ``False`` because its cascaded favorite
+        row is already gone, keeping DELETE idempotent for stale clients.
+        """
+        if not (self.conversation_schema_ready and self.favorite_schema_ready):
+            return None
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    source_key = await conn.fetchval(
+                        """
+                        SELECT c.source_key
+                        FROM insights_conversation_sessions cs
+                        JOIN insights_conversations c ON c.id = cs.session_id
+                        WHERE cs.id = $1
+                          AND cs.session_id = $2
+                          AND c.user_id = $3
+                          AND cs.execution_status = 'success'
+                        """,
+                        turn_id,
+                        conversation_id,
+                        user_id,
+                    )
+                    if not source_key:
+                        return None if favorite else False
+                    # Serialize favorite mutations with retention for this user
+                    # and connection. Re-check ownership after acquiring the
+                    # lock because a prune may have won between the first lookup
+                    # and this lock.
+                    await conn.fetchval(
+                        "SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))",
+                        user_id,
+                        source_key,
+                    )
+                    owned = await conn.fetchval(
+                        """
+                        SELECT 1
+                        FROM insights_conversation_sessions cs
+                        JOIN insights_conversations c ON c.id = cs.session_id
+                        WHERE cs.id = $1
+                          AND cs.session_id = $2
+                          AND c.user_id = $3
+                          AND cs.execution_status = 'success'
+                        """,
+                        turn_id,
+                        conversation_id,
+                        user_id,
+                    )
+                    if not owned:
+                        return None if favorite else False
+                    if favorite:
+                        await conn.execute(
+                            """
+                            INSERT INTO insights_favorite_answers (user_id, turn_id)
+                            VALUES ($1, $2)
+                            ON CONFLICT (user_id, turn_id) DO NOTHING
+                            """,
+                            user_id,
+                            turn_id,
+                        )
+                    else:
+                        await conn.execute(
+                            """
+                            DELETE FROM insights_favorite_answers
+                            WHERE user_id = $1 AND turn_id = $2
+                            """,
+                            user_id,
+                            turn_id,
+                        )
+            return favorite
+        except Exception:
+            logger.exception("Failed to update answer favorite for %s", turn_id)
+            return None
+
+    @staticmethod
+    def _favorite_row(row: Any) -> Dict[str, Any]:
+        return {
+            "conversation_id": str(row["conversation_id"]),
+            "turn_id": str(row["turn_id"]),
+            "sequence_number": int(row["sequence_number"]),
+            "conversation_title": row["conversation_title"],
+            "question": row["question"],
+            "answer": _jsonb(row["answer"]),
+            "result_kind": row["result_kind"] or RESULT_KIND_TEXT,
+            "snapshot_status": row["snapshot_status"] or SNAPSHOT_NOT_APPLICABLE,
+            "source_key": row["source_key"],
+            "source_label": row["source_label"],
+            "created_at": _iso(row["created_at"]),
+            "favorited_at": _iso(row["favorited_at"]),
+        }
+
+    async def list_favorite_answers(
+        self,
+        *,
+        user_id: str,
+        source_key: Optional[str] = None,
+        limit: int = 100,
+        before: Optional[Tuple[datetime, UUID]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Favorited answers, newest favorite first, with enough metadata to reopen."""
+        if not (self.conversation_schema_ready and self.favorite_schema_ready):
+            return []
+        try:
+            before_ts = before[0] if before else None
+            before_id = before[1] if before else None
+            async with self.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT cs.session_id AS conversation_id, cs.id AS turn_id,
+                           cs.sequence_number, cs.natural_language_query AS question,
+                           cs.created_at, c.title AS conversation_title,
+                           c.source_key, c.source_label,
+                           a.answer, a.result_kind, a.snapshot_status,
+                           f.created_at AS favorited_at
+                    FROM insights_favorite_answers f
+                    JOIN insights_conversation_sessions cs ON cs.id = f.turn_id
+                    JOIN insights_conversations c ON c.id = cs.session_id
+                    LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id
+                    WHERE f.user_id = $1
+                      AND c.user_id = $1
+                      AND ($2::text IS NULL OR c.source_key = $2)
+                      AND ($3::timestamptz IS NULL
+                           OR (f.created_at, f.turn_id) < ($3::timestamptz, $4::uuid))
+                    ORDER BY f.created_at DESC, f.turn_id DESC
+                    LIMIT $5
+                    """,
+                    user_id,
+                    source_key,
+                    before_ts,
+                    before_id,
+                    max(1, min(int(limit), 200)),
+                )
+            return [self._favorite_row(row) for row in rows]
+        except Exception:
+            logger.exception("Failed to list favorite answers")
+            return []
 
     async def prune_user_conversations(
         self,
@@ -1347,17 +1661,40 @@ class ConversationHistoryService:
         1. Claim the ``(user_id, source_key)`` prune-state row; if another
            replica pruned within *min_interval_seconds* the whole run is skipped.
         2. Delete conversations ranked beyond *keep_last* (never the protected
-           one). FK cascades remove their turns, insights and artifacts.
-        3. Drop the blobs of turns ranked beyond *keep_last_turns* across all of
-           the user's turns on this connection (no conversation is exempt; the
-           newest turn is rank 1 by construction), marking them ``pruned``.
+           one or a conversation containing a favorite). FK cascades remove
+           their turns, insights and artifacts.
+        3. Drop the blobs of non-favorite turns ranked beyond *keep_last_turns*
+           across all of the user's turns on this connection, marking them
+           ``pruned``. Favorites do not consume the ordinary retention budget.
         """
         if not self.conversation_schema_ready:
             return {"skipped": "schema_missing"}
         started = time.monotonic()
+        favorite_conversation_guard = ""
+        favorite_turn_guard = ""
+        if self.favorite_schema_ready:
+            favorite_conversation_guard = """
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM insights_conversation_sessions ft
+                              JOIN insights_favorite_answers f ON f.turn_id = ft.id
+                              WHERE ft.session_id = c.id AND f.user_id = $1
+                          )
+            """
+            favorite_turn_guard = """
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM insights_favorite_answers f
+                                  WHERE f.user_id = $1 AND f.turn_id = cs.id
+                              )
+            """
         try:
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
+                    await conn.fetchval(
+                        "SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))",
+                        user_id,
+                        source_key,
+                    )
                     claimed = await conn.fetchval(
                         """
                         INSERT INTO insights_conversation_prune_state
@@ -1377,7 +1714,7 @@ class ConversationHistoryService:
                         return {"skipped": "recently_pruned"}
 
                     deleted = await conn.fetch(
-                        """
+                        f"""
                         WITH ranked AS (
                             SELECT id,
                                    ROW_NUMBER() OVER (
@@ -1391,6 +1728,7 @@ class ConversationHistoryService:
                         WHERE c.id = r.id
                           AND r.rn > $3
                           AND c.id IS DISTINCT FROM $4::uuid
+                          {favorite_conversation_guard}
                         RETURNING c.id
                         """,
                         user_id,
@@ -1399,7 +1737,7 @@ class ConversationHistoryService:
                         protect_conversation_id,
                     )
                     pruned = await conn.fetch(
-                        """
+                        f"""
                         WITH ranked AS (
                             SELECT a.turn_id,
                                    ROW_NUMBER() OVER (
@@ -1411,6 +1749,7 @@ class ConversationHistoryService:
                               AND cs.source_key = $2
                               AND (a.result_snapshot IS NOT NULL
                                    OR a.chart_config IS NOT NULL)
+                              {favorite_turn_guard}
                         )
                         UPDATE insights_turn_artifacts a
                         SET result_snapshot  = NULL,
@@ -1584,6 +1923,7 @@ class ConversationHistoryService:
         rows: List[Any],
         chart_spec: Optional[Dict[str, Any]] = None,
         chart_config: Optional[Dict[str, Any]] = None,
+        chart_state: Optional[Dict[str, Any]] = None,
         insights_payload: Optional[Dict[str, Any]] = None,
         connection_id: Optional[str] = None,
     ) -> UUID:
@@ -1599,8 +1939,8 @@ class ConversationHistoryService:
                 INSERT INTO insights_saved_analyses (
                     user_id, source_key, connection_id, query_id, name, question,
                     generated_sql, columns, row_count, result_snapshot,
-                    chart_spec, chart_config, insights_payload
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                    chart_spec, chart_config, chart_state, insights_payload
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 RETURNING id
                 """,
                 user_id,
@@ -1615,6 +1955,7 @@ class ConversationHistoryService:
                 json.dumps(snapshot),
                 json.dumps(chart_spec) if chart_spec else None,
                 json.dumps(chart_config) if chart_config else None,
+                json.dumps(chart_state) if chart_state else None,
                 json.dumps(insights_payload) if insights_payload else None,
             )
             return saved_id
@@ -1682,7 +2023,10 @@ class ConversationHistoryService:
             if not row:
                 return None
             data = dict(row)
-            for key in ("columns", "result_snapshot", "chart_spec", "chart_config", "insights_payload"):
+            for key in (
+                "columns", "result_snapshot", "chart_spec", "chart_config",
+                "chart_state", "insights_payload",
+            ):
                 val = data.get(key)
                 if isinstance(val, str):
                     try:
@@ -1708,6 +2052,7 @@ class ConversationHistoryService:
         name: Optional[str] = None,
         chart_spec: Optional[Dict[str, Any]] = None,
         chart_config: Optional[Dict[str, Any]] = None,
+        chart_state: Optional[Dict[str, Any]] = None,
     ) -> bool:
         try:
             async with self.pool.acquire() as conn:
@@ -1717,12 +2062,14 @@ class ConversationHistoryService:
                     SET name = COALESCE($1, name),
                         chart_spec = COALESCE($2::jsonb, chart_spec),
                         chart_config = COALESCE($3::jsonb, chart_config),
+                        chart_state = COALESCE($4::jsonb, chart_state),
                         updated_at = NOW()
-                    WHERE id = $4 AND user_id = $5 AND deleted_at IS NULL
+                    WHERE id = $5 AND user_id = $6 AND deleted_at IS NULL
                     """,
                     name.strip()[:180] if isinstance(name, str) and name.strip() else None,
                     json.dumps(chart_spec) if chart_spec is not None else None,
                     json.dumps(chart_config) if chart_config is not None else None,
+                    json.dumps(chart_state) if chart_state is not None else None,
                     saved_id,
                     user_id,
                 )

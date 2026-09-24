@@ -33,6 +33,7 @@ function dto(overrides = {}) {
         row_count: 3,
         has_chart: true,
         has_rerunnable_query: true,
+        is_favorite: false,
         created_at: '2026-09-01T10:00:00Z',
         snapshot_at: '2026-09-01T10:00:01Z',
         ...overrides,
@@ -54,6 +55,8 @@ function dto(overrides = {}) {
     assert.deepEqual(turn.result.followups, ['and by month?']);
     assert.deepEqual(turn.result.suggestions, [], 'null analytics become empty arrays for the renderer');
     assert.equal(turn.durationMs, 640);
+    assert.equal(turn.isFavorite, false);
+    assert.equal(turnFromServer(dto({ is_favorite: true }), CONV).isFavorite, true);
 }
 
 // ── pruned / too_large table turns offer Load data ─────────────────────────

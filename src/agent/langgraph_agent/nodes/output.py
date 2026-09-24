@@ -50,6 +50,11 @@ def _json_safe_value(value: Any) -> Any:
 
 _ARTIFACT_STATS_SCAN_CAP = 2000
 
+# Deterministic, persisted fallback for a successful query that returned no rows.
+# The browser localizes this via i18n off the ``empty_result`` flag; this English
+# sentence is what history and non-UI API consumers see.
+_EMPTY_RESULT_ANSWER = "No records were returned from the database for this query."
+
 
 def _build_result_artifact(sql: Optional[str], query_result: Dict[str, Any]) -> Dict[str, Any]:
     """Build a compact, durable summary of a result set for follow-up detection.
@@ -264,6 +269,10 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
                 label = col.replace("_", " ").title()
                 parts.append(f"{label}: {_format_trivial_value(val)}")
             answer = " | ".join(parts) if parts else None
+        elif state.get("generated_sql") and not state.get("exec_error") and not state.get("sqlglot_error"):
+            # A successful query that genuinely returned zero rows: say so
+            # explicitly instead of leaving a silent empty grid.
+            answer = _EMPTY_RESULT_ANSWER
     elif not state.get("generated_sql") and not answer:
         # Only fall back to clarification / error_context when no answer has been set.
         # (from_memory route already populated `answer` via memory_answer_generator.)
@@ -315,6 +324,24 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
             "path": "ml" if route == "needs_analysis" else "sql" if route == "needs_query" else route,
         },
     }
+
+    # A successful query that returned zero rows. The UI shows an explicit
+    # "no records" state (localized) plus a likely-cause hint instead of a silent
+    # empty grid, and never paints stale findings/followups from a prior turn.
+    _empty_rows = (state.get("query_result") or {}).get("rows") or []
+    is_empty_result = bool(
+        state.get("generated_sql")
+        and not state.get("exec_error")
+        and not state.get("sqlglot_error")
+        and not state.get("dlp_blocked")
+        and not proposal
+        and not analysis
+        and len(_empty_rows) == 0
+    )
+    if is_empty_result:
+        formatted["empty_result"] = True
+        if state.get("empty_hint"):
+            formatted["empty_hint"] = state.get("empty_hint")
 
     # ── ML skills ─────────────────────────────────────────────────────────
     if state.get("analysis_skill"):
@@ -376,18 +403,21 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
     # the node emits `follow_up_questions`, not `follow_up`. Findings are meant
     # to be plain strings but occasionally come back as highlight-fragment
     # arrays, so flatten rather than let one stray shape fail the response.
-    if eval_result.get("insights"):
-        formatted["findings"] = [
-            insight_text(f) for f in eval_result["insights"] if f
-        ]
-    if eval_result.get("suggestions"):
-        formatted["suggestions"] = [
-            insight_text(s) for s in eval_result["suggestions"] if s
-        ]
-    if eval_result.get("follow_up_questions"):
-        formatted["followups"] = [
-            insight_text(q) for q in eval_result["follow_up_questions"] if q
-        ]
+    # Never attach them to an empty result — there is nothing to analyse, and a
+    # stale value would otherwise be painted onto a "no records" answer.
+    if not is_empty_result:
+        if eval_result.get("insights"):
+            formatted["findings"] = [
+                insight_text(f) for f in eval_result["insights"] if f
+            ]
+        if eval_result.get("suggestions"):
+            formatted["suggestions"] = [
+                insight_text(s) for s in eval_result["suggestions"] if s
+            ]
+        if eval_result.get("follow_up_questions"):
+            formatted["followups"] = [
+                insight_text(q) for q in eval_result["follow_up_questions"] if q
+            ]
 
     # ── Execution trace ───────────────────────────────────────────────────────────────────
     # NOTE: the trace is intentionally NOT attached here. response_formatter

@@ -6,8 +6,12 @@ __pycache__/
 .Python
 env/
 venv/
+.venv/
 ENV/
 *.egg-info/
+
+# Image tarballs / OpenShift delivery bundle (deployment/openshift/build-images.sh)
+dist/
 
 # Environment variables
 .env

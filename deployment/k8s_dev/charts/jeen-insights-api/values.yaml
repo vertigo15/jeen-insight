@@ -37,6 +37,13 @@ tolerations: []
 affinity: {}
 topologySpreadConstraints: []
 
+# Numeric IDs pinned on the container. Set a value to null to omit the field:
+# OpenShift's restricted SCC assigns a UID from the project's range and rejects
+# a pod that pins one outside it (the image tolerates any UID in GID 0).
+securityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+
 podDisruptionBudget:
   enabled: false
   minAvailable: 1

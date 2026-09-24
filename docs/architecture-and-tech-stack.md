@@ -52,7 +52,7 @@ the deliberate `expose` (not `ports`) in `docker-compose.yml` and the
 ## The agent (the core value)
 
 The heart is a **LangGraph text-to-SQL state machine** built in
-`src/agent/langgraph_agent/graph.py`. `build_graph()` wires 25 nodes into a
+`src/agent/langgraph_agent/graph.py`. `build_graph()` wires 27 nodes into a
 `StateGraph` (full node/arc reference: [agent-state-flow.md](./agent-state-flow.md)).
 The flow on every question:
 

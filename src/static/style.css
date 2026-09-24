@@ -1511,12 +1511,24 @@ td.cell-id {
   transition: background 100ms ease, border-color 100ms ease, color 100ms ease;
 }
 .chart-opt-toggle:hover { border-color: var(--color-accent); color: var(--color-text); }
+.chart-opt-toggle:focus-visible {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-focus);
+}
 .chart-opt-toggle.is-on {
   background: var(--color-dim-bg);
   border-color: var(--color-accent);
   color: var(--color-dim-text);
   font-weight: var(--weight-bold);
 }
+.chart-opt-toggle.is-mixed {
+  border-color: var(--color-accent);
+  background: linear-gradient(90deg, var(--color-dim-bg) 50%, var(--color-surface) 50%);
+  color: var(--color-dim-text);
+}
+.chart-opt-toggle:disabled,
+.chart-opt-toggle[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
 
 /* Column pickers — full-width panel that expands below the toolbar row. */
 .chart-cols-expand {
@@ -2535,8 +2547,7 @@ td.cell-id {
   min-width: 200px;
 }
 .chart-refine-entry[hidden],
-.chart-refine-applied[hidden],
-.chart-refine-status[hidden] { display: none !important; }
+.chart-refine-applied[hidden] { display: none !important; }
 .chart-refine-input {
   flex: 1;
   min-width: 0;
@@ -2559,6 +2570,7 @@ td.cell-id {
   opacity: 0.6;
   cursor: not-allowed;
 }
+.chart-refine-input[readonly] { cursor: progress; }
 .chart-refine-apply {
   display: inline-flex;
   align-items: center;
@@ -2575,28 +2587,44 @@ td.cell-id {
   cursor: pointer;
 }
 .chart-refine-apply svg { display: block; }
-.chart-refine-apply:hover:not(:disabled) { background: var(--color-accent-2); }
-.chart-refine-apply:disabled { opacity: 0.5; cursor: not-allowed; }
-/* Applied state — "✓ Applied: <refinement> · Reset chart" */
+.chart-refine-apply:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--color-accent-2); }
+.chart-refine-apply:focus-visible,
+.chart-refine-reset:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+.chart-refine-apply:disabled,
+.chart-refine-apply[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+[dir="rtl"] .chart-refine-apply svg { transform: scaleX(-1); }
+/* Applied confirmation stays on its own compact row while entry remains usable. */
 .chart-refine-applied {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  flex: 1;
-  min-width: 200px;
-  flex-wrap: nowrap;
-}
-.chart-refine-applied-label {
-  min-width: 0;
-  max-width: 320px;
-  overflow: hidden;
+  gap: 5px;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 6px;
+  padding-inline-start: 22px;
+  flex-wrap: wrap;
+  color: var(--color-muted);
   font-size: 12.5px;
+}
+.chart-refine-applied-check { color: var(--color-success); font-weight: var(--weight-bold); }
+.chart-refine-applied-label {
   font-weight: var(--weight-semibold);
   color: var(--color-success);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.chart-refine-applied-label::before { content: '✓ '; }
+.chart-refine-applied-instruction {
+  max-width: min(42ch, 100%);
+  overflow: hidden;
+  color: var(--color-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chart-refine-session-hint { color: var(--color-faint); }
+.chart-refine-dot { color: var(--color-faint); font-size: 12px; }
 .chart-refine-reset {
   width: 30px;
   height: 30px;
@@ -2605,15 +2633,15 @@ td.cell-id {
   align-items: center;
   justify-content: center;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-pill);
   background: transparent;
   padding: 0;
   color: var(--color-muted);
+  border-radius: 999px;
   cursor: pointer;
 }
 .chart-refine-reset:hover { border-color: var(--color-muted); color: var(--color-text); background: var(--color-surface-2); }
-/* Inline single-line status (progress / warning / error). Success is
-   conveyed by the "Applied" state, so this stays hidden then. */
+.chart-refine-reset:disabled { opacity: .5; cursor: not-allowed; }
+/* One persistent live region announces progress and every outcome. */
 .chart-refine-status {
   margin-top: 6px;
   font-size: var(--text-xs);
@@ -2622,11 +2650,16 @@ td.cell-id {
   white-space: pre-wrap;
   word-wrap: break-word;
 }
+.chart-refine-status:empty { display: none; }
+.chart-refine-status[data-kind="success"] { color: var(--color-success); }
 .chart-refine-status[data-kind="warn"] { color: var(--color-text); }
 .chart-refine-status[data-kind="error"] { color: var(--color-error, #c0392b); }
 .chart-refine-status[data-kind="progress"] { color: var(--color-faint); font-style: italic; }
 @media (max-width: 600px) {
-  .chart-refine-entry { min-width: 0; width: 100%; }
+  .chart-refine-entry { min-width: 0; width: 100%; align-items: stretch; flex-direction: column; }
+  .chart-refine-apply { justify-content: center; min-height: 40px; }
+  .chart-refine-applied { width: 100%; padding-inline-start: 0; }
+  .chart-refine-session-hint { flex-basis: 100%; }
   .chart-actions-toolbar { justify-content: stretch; }
   .chart-actions-toolbar .chart-action-btn { flex: 1; justify-content: center; }
 }

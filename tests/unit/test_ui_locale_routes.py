@@ -27,7 +27,7 @@ def client(monkeypatch):
     ui_app.app.config["WTF_CSRF_ENABLED"] = True
 
 
-def _login(client, locale=None):
+def _login(client, locale=None, date_format=None):
     with client.session_transaction() as sess:
         sess["user_id"] = 7
         sess["user_name"] = "Dana"
@@ -35,6 +35,7 @@ def _login(client, locale=None):
         sess["user_role"] = "admin"
         sess["avatar_hue"] = 120
         sess["locale"] = locale
+        sess["date_format"] = date_format
 
 
 def _html_attrs(body: str) -> tuple[str, str]:
@@ -106,14 +107,17 @@ def test_signed_in_without_saved_language_uses_cookie_then_header(client):
 
 
 def test_auth_me_exposes_saved_locale(client, monkeypatch):
+    import src.auth_db as auth_db
     import src.security.app_flags as flags
 
     monkeypatch.setattr(flags, "get_connectors_enabled_sync", lambda: False)
     monkeypatch.setattr(flags, "get_agent_tools_enabled_sync", lambda: False)
-    _login(client, locale="he")
+    monkeypatch.setattr(auth_db, "get_user_preferences", lambda uid: {"date_format": "dmy"})
+    _login(client, locale="he", date_format="dmy")
     res = client.get("/api/auth/me")
     assert res.status_code == 200
     assert res.get_json()["locale"] == "he"
+    assert res.get_json()["date_format"] == "dmy"
 
 
 def test_patch_locale_persists_updates_session_and_sets_cookie(client, monkeypatch):
@@ -156,12 +160,106 @@ def test_patch_locale_requires_a_session(client):
     assert res.get_json()["code"] == "UNAUTHENTICATED"
 
 
+def test_account_date_format_is_bootstrapped_without_an_extra_request(client):
+    _login(client, date_format="mdy")
+    body = client.get("/").get_data(as_text=True)
+    match = re.search(r'<script type="application/json" id="i18n-bootstrap">(.*?)</script>', body, re.S)
+    assert match
+    assert json.loads(match.group(1))["dateFormat"] == "mdy"
+
+
+def test_missing_account_date_format_preserves_iso_display(client):
+    _login(client, date_format=None)
+    body = client.get("/").get_data(as_text=True)
+    match = re.search(r'<script type="application/json" id="i18n-bootstrap">(.*?)</script>', body, re.S)
+    assert match
+    assert json.loads(match.group(1))["dateFormat"] == "iso"
+
+
+def test_auth_me_refreshes_date_format_in_existing_parallel_request(client, monkeypatch):
+    import src.auth_db as auth_db
+    import src.security.app_flags as flags
+
+    monkeypatch.setattr(flags, "get_connectors_enabled_sync", lambda: False)
+    monkeypatch.setattr(flags, "get_agent_tools_enabled_sync", lambda: False)
+    monkeypatch.setattr(auth_db, "get_user_preferences", lambda uid: {"date_format": "mdy"})
+    _login(client, date_format="iso")
+
+    res = client.get("/api/auth/me")
+    assert res.status_code == 200
+    assert res.get_json()["date_format"] == "mdy"
+    with client.session_transaction() as sess:
+        assert sess["date_format"] == "mdy"
+
+
+def test_patch_date_format_persists_and_updates_session(client, monkeypatch):
+    import src.auth_db as auth_db
+
+    saved = {}
+    monkeypatch.setattr(auth_db, "set_user_date_format", lambda uid, value: saved.update({uid: value}) or True)
+    _login(client)
+
+    res = client.patch("/api/auth/me/date-format", json={"date_format": "dmy"})
+    assert res.status_code == 200
+    assert res.get_json() == {"date_format": "dmy"}
+    assert saved == {7: "dmy"}
+    with client.session_transaction() as sess:
+        assert sess["date_format"] == "dmy"
+
+
+def test_patch_date_format_rejects_unknown_value_and_requires_session(client, monkeypatch):
+    import src.auth_db as auth_db
+
+    saved = {}
+    monkeypatch.setattr(auth_db, "set_user_date_format", lambda uid, value: saved.update({uid: value}) or True)
+    _login(client)
+    bad = client.patch("/api/auth/me/date-format", json={"date_format": "browser"})
+    assert bad.status_code == 400
+    assert bad.get_json()["code"] == "INVALID_DATE_FORMAT"
+    assert saved == {}
+
+    with client.session_transaction() as sess:
+        sess.clear()
+    denied = client.patch("/api/auth/me/date-format", json={"date_format": "iso"})
+    assert denied.status_code == 401
+    assert denied.get_json()["code"] == "UNAUTHENTICATED"
+
+
+def test_patch_date_format_rejects_non_object_json(client):
+    _login(client)
+    res = client.patch("/api/auth/me/date-format", json="dmy")
+    assert res.status_code == 400
+    assert res.get_json()["code"] == "INVALID_REQUEST"
+
+
+def test_patch_date_format_handles_missing_account_and_database_error(client, monkeypatch):
+    import src.auth_db as auth_db
+
+    _login(client, date_format="iso")
+    monkeypatch.setattr(auth_db, "set_user_date_format", lambda uid, value: False)
+    missing = client.patch("/api/auth/me/date-format", json={"date_format": "dmy"})
+    assert missing.status_code == 404
+    assert missing.get_json()["code"] == "ACCOUNT_NOT_FOUND"
+
+    def boom(uid, value):
+        raise RuntimeError("password=secret host=10.0.0.9")
+
+    monkeypatch.setattr(auth_db, "set_user_date_format", boom)
+    failed = client.patch("/api/auth/me/date-format", json={"date_format": "mdy"})
+    assert failed.status_code == 500
+    assert failed.get_json()["code"] == "DB_ERROR"
+    assert "secret" not in failed.get_json()["error"]
+    with client.session_transaction() as sess:
+        assert sess["date_format"] == "iso"
+
+
 def test_local_login_syncs_the_account_language_into_the_cookie(client, monkeypatch):
     import src.auth_db as auth_db
 
     user = {
         "id": 7, "name": "Dana", "email": "dana@example.com", "password_hash": "x",
         "role": "viewer", "status": "active", "avatar_hue": 10, "locale": "he",
+        "date_format": "dmy",
     }
     monkeypatch.setattr(auth_db, "get_user_by_email", lambda email: user)
     monkeypatch.setattr(auth_db, "verify_password", lambda plain, hashed: True)
@@ -171,6 +269,7 @@ def test_local_login_syncs_the_account_language_into_the_cookie(client, monkeypa
     assert res.headers.get("Set-Cookie", "").startswith("locale=he")
     with client.session_transaction() as sess:
         assert sess["locale"] == "he"
+        assert sess["date_format"] == "dmy"
 
 
 def test_local_login_without_saved_language_keeps_the_prelogin_cookie(client, monkeypatch):
@@ -187,6 +286,8 @@ def test_local_login_without_saved_language_keeps_the_prelogin_cookie(client, mo
     res = client.post("/login", data={"email": "noa@example.com", "password": "pw"})
     assert res.status_code == 302
     assert "locale=" not in res.headers.get("Set-Cookie", "")
+    with client.session_transaction() as sess:
+        assert sess["date_format"] == "iso"
     # Display still follows the cookie the visitor chose before signing in.
     assert _html_attrs(client.get("/").get_data(as_text=True)) == ("he", "rtl")
 
@@ -257,6 +358,40 @@ def test_patch_locale_is_csrf_protected(monkeypatch):
         ok = c.patch("/api/auth/me/locale", json={"locale": "he"}, headers={"X-CSRFToken": token})
         assert ok.status_code == 200, ok.get_data(as_text=True)
         assert saved == {7: "he"}
+
+
+def test_patch_date_format_is_csrf_protected(monkeypatch):
+    import src.auth_db as auth_db
+    from flask_wtf.csrf import generate_csrf
+
+    monkeypatch.setattr(ui_app, "_needs_first_run_setup", lambda: False)
+    monkeypatch.setattr(ui_app, "_entra_sso_enabled", lambda: False)
+    saved = {}
+    monkeypatch.setattr(
+        auth_db,
+        "set_user_date_format",
+        lambda uid, value: saved.update({uid: value}) or True,
+    )
+    ui_app.app.config["WTF_CSRF_ENABLED"] = True
+    ui_app.app.config["TESTING"] = True
+    with ui_app.app.test_client() as c:
+        _login(c)
+        denied = c.patch("/api/auth/me/date-format", json={"date_format": "dmy"})
+        assert denied.status_code == 400
+        assert saved == {}
+        with c.session_transaction() as sess:
+            with ui_app.app.test_request_context():
+                from flask import session as ctx_session
+                ctx_session.update(sess)
+                token = generate_csrf()
+                sess.update(ctx_session)
+        ok = c.patch(
+            "/api/auth/me/date-format",
+            json={"date_format": "dmy"},
+            headers={"X-CSRFToken": token},
+        )
+        assert ok.status_code == 200, ok.get_data(as_text=True)
+        assert saved == {7: "dmy"}
 
 
 @pytest.mark.parametrize(

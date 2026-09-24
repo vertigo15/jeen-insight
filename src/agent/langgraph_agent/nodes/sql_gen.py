@@ -150,13 +150,15 @@ def make_sql_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
                 }
             )
 
-        # Current question — inject error context on retries
-        if retry_count > 0 and error_context:
+        # Current question — inject error context on retries, and on an empty
+        # recheck (which has its own budget and does not bump retry_count).
+        is_empty_recheck = state.get("feedback_type") == "empty_recheck"
+        if (retry_count > 0 or is_empty_recheck) and error_context:
             user_msg = await prompt_loader.arender(
                 "sql_generator",
                 question=question,
                 error_context=error_context,
-                retry_count=retry_count,
+                retry_count=retry_count or 1,
                 connection_display_name=display_name,
                 source_key=source_key,
                 database_type=db_type,

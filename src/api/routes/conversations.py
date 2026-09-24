@@ -10,11 +10,16 @@ that belongs to someone else is indistinguishable from a missing one (404).
                                               retention prune.
 * ``GET  /api/conversations``                 cursor-paged list (one connection
                                               or ``all=true``).
+* ``GET  /api/conversations/favorites``       saved answer summaries.
 * ``GET  /api/conversations/{id}``            header + paged turn metadata.
+* ``GET  /api/conversations/{id}/turns/{turn_id}``
+                                              one turn's metadata.
 * ``GET  /api/conversations/{id}/turns/{turn_id}/artifact``
                                               result snapshot + chart baseline.
 * ``POST /api/conversations/{id}/turns/{turn_id}/rerun``
                                               re-execute the stored query.
+* ``PUT|DELETE /api/conversations/{id}/turns/{turn_id}/favorite``
+                                              save/remove one answer.
 * ``PATCH /api/conversations/{id}``           rename.
 * ``DELETE /api/conversations/{id}``          hard delete (cascades).
 """
@@ -42,6 +47,8 @@ from src.api.models import (
     ConversationList,
     ConversationSummary,
     ConversationTurn,
+    FavoriteAnswer,
+    FavoriteAnswerList,
     RenameConversationRequest,
     RerunTurnResponse,
     TurnArtifact,
@@ -187,6 +194,37 @@ async def list_conversations(
     return ConversationList(items=items, next_cursor=next_cursor)
 
 
+@router.get("/conversations/favorites", response_model=FavoriteAnswerList)
+async def list_favorite_answers(
+    connection: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    before: Optional[str] = Query(None),
+    principal: Principal = Depends(get_principal),
+):
+    history = get_history_service()
+    if not getattr(history, "favorite_schema_ready", False):
+        raise HTTPException(status_code=503, detail="Answer favorites are not available")
+    rows = await history.list_favorite_answers(
+        user_id=principal.user_id,
+        source_key=connection,
+        limit=limit,
+        before=_parse_list_cursor(before),
+    )
+    available = await _available_source_keys()
+    items = [
+        FavoriteAnswer(
+            **row,
+            connection_available=(available is None or row["source_key"] in available),
+        )
+        for row in rows
+    ]
+    next_cursor = None
+    if len(rows) >= limit and rows:
+        last = rows[-1]
+        next_cursor = _encode_list_cursor(str(last["favorited_at"]), str(last["turn_id"]))
+    return FavoriteAnswerList(items=items, next_cursor=next_cursor)
+
+
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetail)
 async def get_conversation(
     conversation_id: UUID,
@@ -209,6 +247,26 @@ async def get_conversation(
         before=before,
         available=available,
     )
+
+
+@router.get(
+    "/conversations/{conversation_id}/turns/{turn_id}",
+    response_model=ConversationTurn,
+)
+async def get_conversation_turn(
+    conversation_id: UUID,
+    turn_id: UUID,
+    principal: Principal = Depends(get_principal),
+):
+    history = get_history_service()
+    turn = await history.get_conversation_turn(
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        user_id=principal.user_id,
+    )
+    if turn is None:
+        raise HTTPException(status_code=404, detail="Turn not found")
+    return ConversationTurn(**turn)
 
 
 @router.get(
@@ -248,6 +306,55 @@ async def rerun_conversation_turn(
     return RerunTurnResponse(**outcome)
 
 
+async def _set_favorite(
+    *,
+    conversation_id: UUID,
+    turn_id: UUID,
+    favorite: bool,
+    principal: Principal,
+):
+    history = get_history_service()
+    if not getattr(history, "favorite_schema_ready", False):
+        raise HTTPException(status_code=503, detail="Answer favorites are not available")
+    state = await history.set_answer_favorite(
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        user_id=principal.user_id,
+        favorite=favorite,
+    )
+    if state is None:
+        raise HTTPException(status_code=404, detail="Conversation answer not found")
+    return {"success": True, "is_favorite": state}
+
+
+@router.put("/conversations/{conversation_id}/turns/{turn_id}/favorite")
+async def favorite_answer(
+    conversation_id: UUID,
+    turn_id: UUID,
+    principal: Principal = Depends(get_principal),
+):
+    return await _set_favorite(
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        favorite=True,
+        principal=principal,
+    )
+
+
+@router.delete("/conversations/{conversation_id}/turns/{turn_id}/favorite")
+async def unfavorite_answer(
+    conversation_id: UUID,
+    turn_id: UUID,
+    principal: Principal = Depends(get_principal),
+):
+    return await _set_favorite(
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        favorite=False,
+        principal=principal,
+    )
+
+
 @router.patch("/conversations/{conversation_id}")
 async def rename_conversation(
     conversation_id: UUID,
@@ -268,12 +375,28 @@ async def rename_conversation(
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(
     conversation_id: UUID,
+    delete_saved: bool = Query(False),
     principal: Principal = Depends(get_principal),
 ):
     history = get_history_service()
-    ok = await history.delete_conversation(
-        conversation_id=conversation_id, user_id=principal.user_id
+    outcome = await history.delete_conversation(
+        conversation_id=conversation_id,
+        user_id=principal.user_id,
+        delete_saved=delete_saved,
     )
-    if not ok:
+    if outcome["status"] == "missing":
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return {"success": True}
+    if outcome["status"] == "blocked":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "conversation_has_saved_answers",
+                "saved_answer_count": outcome["saved_answer_count"],
+            },
+        )
+    if outcome["status"] != "deleted":
+        raise HTTPException(status_code=500, detail="Conversation deletion failed")
+    return {
+        "success": True,
+        "deleted_saved_answer_count": outcome["saved_answer_count"],
+    }

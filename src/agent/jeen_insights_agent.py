@@ -89,6 +89,7 @@ class JeenInsightsAgent:
             dlp_enabled=settings.DLP_ENABLED,
             sqlglot_validation_enabled=settings.SQLGLOT_VALIDATION_ENABLED,
             eval_analytics_enabled=settings.EVAL_ANALYTICS_ENABLED,
+            empty_recheck_enabled=settings.LANGGRAPH_EMPTY_RECHECK,
             require_catalog_for_query=settings.REQUIRE_CATALOG_FOR_QUERY,
             enforce_schema_qualifier=settings.SCHEMA_QUALIFIER_VALIDATION_ENABLED,
             dlp_governed_columns=_parse_governed_columns(settings.DLP_GOVERNED_COLUMNS),
@@ -395,6 +396,11 @@ class JeenInsightsAgent:
                 "query_result": None,
                 "exec_error": None,
                 "execution_time_ms": None,
+                # ── Empty-result recheck ────────────────────────────────
+                "empty_result_diagnostics": 0,
+                "needs_sql_recheck": False,
+                "empty_recheck_context": None,
+                "empty_hint": None,
                 # ── Evaluation ──────────────────────────────────────────
                 "is_trivial": False,
                 "eval_result": None,

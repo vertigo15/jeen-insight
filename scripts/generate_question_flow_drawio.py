@@ -133,7 +133,7 @@ def page_overview() -> tuple[str, Element, int, int]:
     d.box("log_query → query_id", 840, 160, 220, 35, LOGIC)
     d.box("Catalog preload", 840, 205, 220, 35, LOGIC)
 
-    lg = d.box("25 nodes:\nmemory ledger → router → SQL / ML / memory → execute → eval", 1140, 70, 240, 60, GRAPH)
+    lg = d.box("27 nodes:\nmemory ledger → router → SQL / ML / memory → execute → eval", 1140, 70, 240, 60, GRAPH)
 
     meta = d.box("Metadata DB", 60, 340, 170, 45, DB)
     d.box("MCP server", 250, 340, 170, 45, DB)

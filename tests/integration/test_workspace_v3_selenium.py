@@ -149,7 +149,7 @@ def test_workspace_structure_empty_and_responsive(driver):
 
     driver.set_window_size(899, 900)
     time.sleep(0.25)
-    driver.execute_script("document.getElementById('v3-conversation-toggle').click()")
+    driver.execute_script("document.querySelector('[data-rail=\"conversation\"]').click()")
     WebDriverWait(driver, 3).until(
         lambda d: d.find_element(By.ID, "v3-conversation").value_of_css_property("display")
         == "flex"
@@ -239,6 +239,59 @@ def test_hebrew_answers_use_rtl_insight_layout(driver):
     )
     assert "rgba" in insights.value_of_css_property("background-color")
     _shot(driver, "08_hebrew_rtl.png")
+
+
+def test_restored_answer_shows_saved_insights_without_rows(driver):
+    """A restored ("rows not kept") turn still renders its saved Key insights and
+    follow-up chips. They are authoritative text persisted with the turn, so they
+    must show even though the row data has not been re-loaded into the page."""
+    driver.execute_script(
+        """
+        window.JeenLegacyBridge = {
+          applyResult() {}, getChartState() { return null; }, restoreChartState() {}
+        };
+        const phases = window.WorkspaceV3Utils.PHASES;
+        const turn = {
+          id: 'restored-1', turnId: 't-1', conversationId: 'c-1', sequence: 0,
+          question: 'Show anomaly detection for internet sales by month',
+          status: 'success', restored: true, resultKind: 'table',
+          executionStatus: 'success', snapshotStatus: 'pruned', snapshotAt: null,
+          hasChart: false, isFavorite: false, canLoadData: true,
+          artifactState: 'missing', durationMs: 2900,
+          phaseState: Object.fromEntries(phases.map(p => [p.id, 'done'])),
+          trace: [], traceOpen: false, error: null, chartState: null,
+          result: {
+            question: 'Show anomaly detection for internet sales by month',
+            query_id: 't-1', session_id: 'c-1',
+            sql: 'SELECT month, SUM(sales) AS sales FROM internet_sales GROUP BY 1',
+            results: null,
+            answer: 'Five of 23 months fell outside the expected range.',
+            findings: ['5 of 23 months were flagged (4 above, 1 below expectation).',
+                       'The largest deviation was December 2007, 36.6% above expectation.'],
+            followups: ['What drove the December 2007 spike?',
+                        'How does 2008 compare with 2007?'],
+            metrics: { restored: true }
+          }
+        };
+        WorkspaceController.turns = [turn];
+        WorkspaceController.selectedTurnId = 'restored-1';
+        WorkspaceController.selectedResultId = 'restored-1';
+        WorkspaceController.render();
+        """
+    )
+
+    # The rows genuinely are not loaded — this is the "rows not kept" state.
+    assert driver.execute_script("return WorkspaceController.turns[0].result.results") is None
+
+    # ...yet the thread card shows the saved Key insights and follow-up chips.
+    insights = driver.find_element(By.CSS_SELECTOR, ".v3-turn .v3-insights")
+    assert len(insights.find_elements(By.CSS_SELECTOR, ".v3-finding")) == 2
+    chips = driver.find_elements(By.CSS_SELECTOR, ".v3-turn .v3-followups .v3-chip")
+    assert [c.text for c in chips] == [
+        "What drove the December 2007 spike?",
+        "How does 2008 compare with 2007?",
+    ]
+    _shot(driver, "11_restored_insights_without_rows.png")
 
 
 def _set_locale(driver, locale: str) -> None:

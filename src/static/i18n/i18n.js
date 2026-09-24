@@ -6,7 +6,7 @@
  * script, so `I18n.t()` is available synchronously when the v3 shell is built.
  *
  * The bootstrap is produced by `src.i18n.client_bootstrap()`:
- *   { locale, dir, formatLocale, locales: [{tag, name, dir}], messages }
+ *   { locale, dir, formatLocale, dateFormat, locales: [{tag, name, dir}], messages }
  * where `messages` is the effective locale's catalog already deep-merged over
  * English, so a missing translation renders English rather than a key path.
  *
@@ -31,6 +31,7 @@
         locale: 'en',
         dir: 'ltr',
         formatLocale: 'en-US',
+        dateFormat: 'iso',
         locales: [{ tag: 'en', name: 'English', dir: 'ltr' }],
         messages: {},
     };
@@ -51,6 +52,7 @@
     const locale = boot.locale || FALLBACK.locale;
     const dir = boot.dir || FALLBACK.dir;
     const formatLocale = boot.formatLocale || locale;
+    let dateFormat = ['auto', 'dmy', 'mdy', 'iso'].includes(boot.dateFormat) ? boot.dateFormat : 'iso';
     const locales = Array.isArray(boot.locales) && boot.locales.length ? boot.locales : FALLBACK.locales;
 
     const debug = (() => {
@@ -182,6 +184,53 @@
         weekdayTime: { weekday: 'short', hour: '2-digit', minute: '2-digit' },
         monthYear: { month: 'short', year: 'numeric' },
     };
+
+    function automaticDateFormat() {
+        try {
+            // Automatic follows the browser/OS region, not the interface
+            // language: English UI does not imply United States date order.
+            const browserLocale = new Intl.DateTimeFormat().resolvedOptions().locale;
+            const parts = new Intl.DateTimeFormat(browserLocale, {
+                year: 'numeric', month: '2-digit', day: '2-digit',
+            }).formatToParts(new Date(2006, 10, 22, 12));
+            const order = parts
+                .filter((part) => ['day', 'month', 'year'].includes(part.type))
+                .map((part) => part.type)
+                .join('-');
+            if (order === 'day-month-year') return 'dmy';
+            if (order === 'month-day-year') return 'mdy';
+        } catch (_) { /* use the stable fallback below */ }
+        return 'iso';
+    }
+
+    // Resolve only when the account preference changes. Result-table rendering
+    // only performs string rearrangement and never creates per-cell formatters.
+    let resolvedDateFormat = dateFormat === 'auto' ? automaticDateFormat() : dateFormat;
+
+    function setDateFormat(value, options) {
+        if (!['auto', 'dmy', 'mdy', 'iso'].includes(value)) return false;
+        const nextResolved = value === 'auto' ? automaticDateFormat() : value;
+        const changed = value !== dateFormat || nextResolved !== resolvedDateFormat;
+        dateFormat = value;
+        resolvedDateFormat = nextResolved;
+        if (changed && (!options || options.emit !== false)
+            && typeof document !== 'undefined' && typeof CustomEvent !== 'undefined') {
+            document.dispatchEvent(new CustomEvent('jeen:preferences-changed', {
+                detail: { key: 'dateFormat', value, resolvedValue: nextResolved },
+            }));
+        }
+        return true;
+    }
+
+    function formatCalendarDate(value) {
+        const text = value == null ? '' : String(value);
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+        if (!match) return text;
+        const [, year, month, day] = match;
+        if (resolvedDateFormat === 'dmy') return `${day}/${month}/${year}`;
+        if (resolvedDateFormat === 'mdy') return `${month}/${day}/${year}`;
+        return `${year}-${month}-${day}`;
+    }
 
     const dateFormats = new Map();
     function formatDate(value, style) {
@@ -322,6 +371,8 @@
         locale,
         dir,
         formatLocale,
+        get dateFormat() { return dateFormat; },
+        get resolvedDateFormat() { return resolvedDateFormat; },
         locales,
         isRtl: dir === 'rtl',
         t,
@@ -331,6 +382,8 @@
         isolate,
         formatNumber,
         formatCompact,
+        formatCalendarDate,
+        setDateFormat,
         formatDate,
         formatRelative,
         nativeName,

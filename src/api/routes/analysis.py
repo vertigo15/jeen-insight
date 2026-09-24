@@ -435,10 +435,17 @@ async def analysis_chart(
     chart_started = time.monotonic()
     _require_enabled()
     from src.api.chart_builder import build_band_option  # noqa: PLC0415
-    from src.api.routes.charts import _persist_chart_baseline, _verify_query_owner  # noqa: PLC0415
+    from src.api.routes.charts import (  # noqa: PLC0415
+        _chart_request_watermark,
+        _persist_chart_baseline,
+        _verify_query_owner,
+    )
 
     user_id = principal.user_id
     await _verify_query_owner(query_id=request.query_id, user_id=user_id, connection=request.connection)
+    request_started_at = (
+        await _chart_request_watermark() if request.query_id else None
+    )
     try:
         spec = ChartSpec.model_validate(request.chart_spec).model_dump(mode="json")
     except ValidationError as exc:
@@ -480,7 +487,13 @@ async def analysis_chart(
         raise HTTPException(status_code=422, detail=str(exc))
     build_ms = int((time.monotonic() - build_started) * 1000)
     persist_started = time.monotonic()
-    await _persist_chart_baseline(query_id=request.query_id, user_id=user_id, chart_spec=spec, chart_config=option)
+    await _persist_chart_baseline(
+        query_id=request.query_id,
+        user_id=user_id,
+        chart_spec=spec,
+        chart_config=option,
+        request_started_at=request_started_at,
+    )
     persist_ms = int((time.monotonic() - persist_started) * 1000)
     total_ms = int((time.monotonic() - chart_started) * 1000)
     response.headers["Server-Timing"] = (

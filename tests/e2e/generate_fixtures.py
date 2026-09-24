@@ -40,6 +40,7 @@ from src.agent.langgraph_agent.nodes.router import explain_routing  # noqa: E402
 QUESTIONS = [
     "Show me total sales by region last month",
     "How many orders shipped yesterday?",
+    "Total sales for the Bikes category by year",
     "Forecast profit for the next 8 weeks",
     "Is anything unusual in weekly profit?",
     "Forecast weekly revenue for a brand-new product line",

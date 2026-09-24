@@ -1624,6 +1624,7 @@ export class SettingsPage {
         const prefs = Preferences.getAll();
         const i18n = window.I18n || {};
         const currentLocale = i18n.locale || 'en';
+        const currentDateFormat = i18n.dateFormat || 'iso';
         const locales = Array.isArray(i18n.locales) && i18n.locales.length ? i18n.locales : [{ tag: 'en', name: 'English', dir: 'ltr' }];
 
         this._content.innerHTML = `
@@ -1640,6 +1641,10 @@ export class SettingsPage {
                             aria-checked="${l.tag === currentLocale ? 'true' : 'false'}" tabindex="${l.tag === currentLocale ? 0 : -1}"><bdi>${_esc(l.name)}</bdi></button>`).join('')}
                     </div>
                     <span class="sp-lang-status" id="sp-language-status" role="status" aria-live="polite"></span>`)}
+                ${this._row(t('settings.general.dateFormat.label'), t('settings.general.dateFormat.help'), `
+                    <select class="settings-select" id="sp-dateformat">
+                        ${['auto','dmy','mdy','iso'].map(value => `<option value="${value}"${currentDateFormat === value ? ' selected' : ''}>${h(`settings.general.dateFormat.${value}`)}</option>`).join('')}
+                    </select>`)}
                 ${this._row(t('settings.general.theme.label'), t('settings.general.theme.help'), `
                     <select class="settings-select" id="sp-theme">
                         <option value="light"${prefs.theme==='light'?' selected':''}>${h('settings.general.theme.light')}</option>
@@ -1695,6 +1700,29 @@ export class SettingsPage {
             Preferences.setTheme(e.target.value);
             if (this._onApplyTheme) this._onApplyTheme(e.target.value);
         });
+        this._content.querySelector('#sp-dateformat')?.addEventListener('change', async e => {
+            const select = e.target;
+            const next = select.value;
+            const previous = window.I18n?.dateFormat || currentDateFormat;
+            select.disabled = true;
+            try {
+                const res = await fetch('/api/auth/me/date-format', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ date_format: next }),
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const saved = await res.json();
+                window.I18n?.setDateFormat?.(saved.date_format || next);
+                if (window._currentUser) window._currentUser.date_format = saved.date_format || next;
+                select.disabled = false;
+            } catch (err) {
+                console.warn('[SettingsPage] date format save failed:', err);
+                select.value = previous;
+                select.disabled = false;
+                _showToast(t('settings.general.dateFormat.saveFailed'), 'error');
+            }
+        });
         this._content.querySelector('#sp-rowlimit')?.addEventListener('change', e => Preferences.setRowLimit(e.target.value));
         this._content.querySelector('#sp-convtabs')?.addEventListener('change', e => {
             Preferences.setConversationTabs(e.target.value);
@@ -1703,8 +1731,25 @@ export class SettingsPage {
         this._content.querySelector('#sp-charttype')?.addEventListener('change', e => Preferences.setChartType(e.target.value));
         this._content.querySelector('#sp-insights')?.addEventListener('change', e => Preferences.setAutoInsights(e.target.value));
         this._content.querySelector('#sp-temp')?.addEventListener('change', e => Preferences.setTemperature(e.target.value));
-        this._content.querySelector('#sp-reset-prefs')?.addEventListener('click', () => {
+        this._content.querySelector('#sp-reset-prefs')?.addEventListener('click', async () => {
             if (!confirm(t('settings.general.resetConfirm'))) return;
+            const accountDateFormat = window.I18n?.dateFormat || currentDateFormat;
+            if (accountDateFormat !== 'iso') {
+                try {
+                    const res = await fetch('/api/auth/me/date-format', {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ date_format: 'iso' }),
+                    });
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    window.I18n?.setDateFormat?.('iso');
+                    if (window._currentUser) window._currentUser.date_format = 'iso';
+                } catch (err) {
+                    console.warn('[SettingsPage] date format reset failed:', err);
+                    _showToast(t('settings.general.dateFormat.saveFailed'), 'error');
+                    return;
+                }
+            }
             Preferences.resetAll();
             this._renderGeneral();
             if (this._onApplyTheme) this._onApplyTheme(Preferences.DEFAULTS.theme);

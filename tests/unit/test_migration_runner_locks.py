@@ -212,12 +212,17 @@ async def test_verify_only_mode_passes_without_ddl_when_baseline_exists():
 
 @pytest.mark.asyncio
 async def test_verify_only_mode_names_every_missing_object():
-    present = _ALL_PRESENT - {"insights_filter_preferences", "insights_conversation_sessions.node_trace"}
+    present = _ALL_PRESENT - {
+        "insights_filter_preferences",
+        "insights_conversation_sessions.node_trace",
+        "auth_users.date_format",
+    }
     conn = FakeConn(existing=present)
     with pytest.raises(insights_schema.InsightsSchemaMissing) as exc:
         await insights_schema.ensure_insights_baseline(conn, require_platform=True, apply=False)
     assert "insights_filter_preferences" in str(exc.value)
     assert "insights_conversation_sessions.node_trace" in str(exc.value)
+    assert "auth_users.date_format" in str(exc.value)
     assert "SCHEMA_BOOTSTRAP_ON_START" in str(exc.value)
     assert conn.executed == []
 

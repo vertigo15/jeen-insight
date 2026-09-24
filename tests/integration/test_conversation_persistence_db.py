@@ -10,7 +10,7 @@ database semantics this feature relies on can only be proven here:
 * ``log_query`` under concurrent writers never violates ``(session_id,
   sequence_number)`` and refuses a foreign session id;
 * the retention prune deletes beyond ``keep_last`` (never the protected
-  conversation), bounds blob-holding turns exactly to ``keep_last_turns``
+  conversation or a favorite), bounds blob-holding turns exactly to ``keep_last_turns``
   across a long active conversation, leaves ``not_applicable`` turns alone,
   is idempotent, and its DB claim lets only one run through per interval;
 * the guarded artifact upsert is a no-op after a prune, while the rerun write
@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -186,6 +187,36 @@ def test_migration_022_rekeys_cross_source_threads_and_adds_fk(pool):
     _run(pool, scenario())
 
 
+def test_migration_031_round_trips_account_date_format(pool):
+    p, _ = pool
+
+    async def scenario():
+        async with p.acquire() as conn:
+            await _apply_migrations_upto(conn, "031_user_date_format.sql")
+            email = f"date-format-{uuid.uuid4()}@example.test"
+            user_id = await conn.fetchval(
+                """
+                INSERT INTO auth_users (name, email, password_hash, role, status, avatar_hue)
+                VALUES ('Date Format Test', $1, 'unused', 'viewer', 'active', 0)
+                RETURNING id
+                """,
+                email,
+            )
+            try:
+                await conn.execute(
+                    "UPDATE auth_users SET date_format = 'dmy' WHERE id = $1",
+                    user_id,
+                )
+                assert await conn.fetchval(
+                    "SELECT date_format FROM auth_users WHERE id = $1",
+                    user_id,
+                ) == "dmy"
+            finally:
+                await conn.execute("DELETE FROM auth_users WHERE id = $1", user_id)
+
+    _run(pool, scenario())
+
+
 # ── service-level guarantees ─────────────────────────────────────────────────
 
 @pytest.fixture()
@@ -222,6 +253,80 @@ async def _turn(history, *, user=USER_A, src=SRC_A, session, question="q", sql="
         chart_config={"series": [{"type": "bar"}]}, chart_bytes=20,
     )
     return qid
+
+
+def test_chart_request_start_watermark_rejects_stale_write_and_clear(history, pool):
+    async def scenario():
+        session = uuid.uuid4()
+        qid = await _turn(history, session=session)
+        newer = datetime.now(timezone.utc) + timedelta(seconds=2)
+        older = newer - timedelta(seconds=1)
+
+        assert await history.upsert_turn_chart(
+            turn_id=qid,
+            user_id=USER_A,
+            chart_spec={"chart_type": "line"},
+            chart_config={"series": [{"type": "line"}]},
+            chart_bytes=30,
+            request_started_at=newer,
+        )
+        assert not await history.upsert_turn_chart(
+            turn_id=qid,
+            user_id=USER_A,
+            chart_spec={"chart_type": "pie"},
+            chart_config={"series": [{"type": "pie"}]},
+            chart_bytes=31,
+            request_started_at=older,
+        )
+        assert not await history.clear_turn_chart(
+            turn_id=qid, user_id=USER_A, request_started_at=older
+        )
+        artifact = await history.get_turn_artifact(
+            conversation_id=session, turn_id=qid, user_id=USER_A
+        )
+        assert artifact["chart_config"]["series"][0]["type"] == "line"
+
+        newest = newer + timedelta(seconds=1)
+        assert await history.clear_turn_chart(
+            turn_id=qid, user_id=USER_A, request_started_at=newest
+        )
+        assert not await history.upsert_turn_chart(
+            turn_id=qid,
+            user_id=USER_A,
+            chart_spec={"chart_type": "bar"},
+            chart_config={"series": [{"type": "bar"}]},
+            chart_bytes=20,
+            request_started_at=newer,
+        )
+        async with history.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT chart_config, chart_updated_at FROM insights_turn_artifacts WHERE turn_id = $1",
+                qid,
+            )
+        assert row["chart_config"] is None
+        assert row["chart_updated_at"] == newest
+
+        # A rerun replaces the result rows and establishes its own watermark.
+        # A chart request that started before the rerun must not attach a chart
+        # built from the obsolete rows after the rerun finishes.
+        before_rerun = datetime.now(timezone.utc) - timedelta(seconds=1)
+        assert await history.store_rerun_snapshot(
+            turn_id=qid,
+            user_id=USER_A,
+            result_snapshot={"columns": ["a"], "rows": [[99]], "row_count": 1},
+            snapshot_status="stored",
+            snapshot_bytes=16,
+        )
+        assert not await history.upsert_turn_chart(
+            turn_id=qid,
+            user_id=USER_A,
+            chart_spec={"chart_type": "bar"},
+            chart_config={"series": [{"type": "bar", "data": [1]}]},
+            chart_bytes=20,
+            request_started_at=before_rerun,
+        )
+
+    _run(pool, scenario())
 
 
 def test_log_query_is_atomic_and_refuses_foreign_session(history, pool):
@@ -271,14 +376,169 @@ def test_delete_conversation_cascades(history, pool):
                 """,
                 USER_A, SRC_A, qid,
             )
-        assert not await history.delete_conversation(conversation_id=session, user_id=USER_B), "foreign delete refused"
-        assert await history.delete_conversation(conversation_id=session, user_id=USER_A)
+        foreign = await history.delete_conversation(conversation_id=session, user_id=USER_B)
+        assert foreign["status"] == "missing", "foreign delete refused"
+        deleted = await history.delete_conversation(conversation_id=session, user_id=USER_A)
+        assert deleted["status"] == "deleted"
         async with history.pool.acquire() as conn:
             assert await conn.fetchval("SELECT COUNT(*) FROM insights_conversation_sessions WHERE session_id = $1", session) == 0
             assert await conn.fetchval("SELECT COUNT(*) FROM insights_turn_artifacts WHERE turn_id = $1", qid) == 0
             assert await conn.fetchval("SELECT COUNT(*) FROM insights_query_insights WHERE query_id = $1", qid) == 0
             assert await conn.fetchval("SELECT query_id FROM insights_saved_analyses WHERE id = $1", saved) is None
             await conn.execute("DELETE FROM insights_saved_analyses WHERE id = $1", saved)
+
+    _run(pool, scenario())
+
+
+def test_saved_answers_require_explicit_conversation_delete(history, pool):
+    async def scenario():
+        migration = Path(__file__).resolve().parents[2] / "db" / "migrations" / "insights" / "030_favorite_answers.sql"
+        async with history.pool.acquire() as conn:
+            await conn.execute(migration.read_text(encoding="utf-8"))
+        history.favorite_schema_ready = True
+
+        session = uuid.uuid4()
+        qid = await _turn(history, session=session)
+        assert await history.set_answer_favorite(
+            conversation_id=session, turn_id=qid, user_id=USER_A, favorite=True,
+        )
+        blocked = await history.delete_conversation(
+            conversation_id=session, user_id=USER_A,
+        )
+        assert blocked == {"status": "blocked", "saved_answer_count": 1}
+        assert await history.get_conversation(conversation_id=session, user_id=USER_A)
+
+        deleted = await history.delete_conversation(
+            conversation_id=session, user_id=USER_A, delete_saved=True,
+        )
+        assert deleted == {"status": "deleted", "saved_answer_count": 1}
+        assert await history.get_conversation(conversation_id=session, user_id=USER_A) is None
+        assert await history.list_favorite_answers(user_id=USER_A) == []
+
+    _run(pool, scenario())
+
+
+def test_favorite_and_manual_delete_are_serialized(history, pool):
+    async def scenario():
+        migration = Path(__file__).resolve().parents[2] / "db" / "migrations" / "insights" / "030_favorite_answers.sql"
+        async with history.pool.acquire() as conn:
+            await conn.execute(migration.read_text(encoding="utf-8"))
+        history.favorite_schema_ready = True
+
+        session = uuid.uuid4()
+        qid = await _turn(history, session=session)
+        favorite_result, delete_result = await asyncio.gather(
+            history.set_answer_favorite(
+                conversation_id=session, turn_id=qid, user_id=USER_A, favorite=True,
+            ),
+            history.delete_conversation(conversation_id=session, user_id=USER_A),
+        )
+        conversation = await history.get_conversation(conversation_id=session, user_id=USER_A)
+        if favorite_result is True:
+            assert delete_result["status"] == "blocked"
+            assert conversation is not None
+        else:
+            assert favorite_result is None
+            assert delete_result["status"] == "deleted"
+            assert conversation is None
+
+    _run(pool, scenario())
+
+
+def test_favorite_protects_conversation_and_artifact_until_removed(history, pool):
+    async def scenario():
+        migration = Path(__file__).resolve().parents[2] / "db" / "migrations" / "insights" / "030_favorite_answers.sql"
+        async with history.pool.acquire() as conn:
+            await conn.execute(migration.read_text(encoding="utf-8"))
+        history.favorite_schema_ready = True
+
+        favorite_session, middle_session, newest_session = (uuid.uuid4() for _ in range(3))
+        favorite_turn = await _turn(history, session=favorite_session, question="keep me")
+        await _turn(history, session=middle_session, question="middle")
+        await _turn(history, session=newest_session, question="newest")
+        async with history.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE insights_conversations
+                SET last_activity_at = CASE id
+                    WHEN $1 THEN NOW() - INTERVAL '3 days'
+                    WHEN $2 THEN NOW() - INTERVAL '2 days'
+                    WHEN $3 THEN NOW() - INTERVAL '1 day'
+                END
+                WHERE id = ANY($4::uuid[])
+                """,
+                favorite_session, middle_session, newest_session,
+                [favorite_session, middle_session, newest_session],
+            )
+
+        assert await history.set_answer_favorite(
+            conversation_id=favorite_session,
+            turn_id=favorite_turn,
+            user_id=USER_A,
+            favorite=True,
+        )
+        stats = await history.prune_user_conversations(
+            user_id=USER_A, source_key=SRC_A, keep_last=1, keep_last_turns=1,
+            min_interval_seconds=0,
+        )
+        assert stats["deleted_conversations"] == 1
+        assert await history.get_conversation(conversation_id=favorite_session, user_id=USER_A)
+        artifact = await history.get_turn_artifact(
+            conversation_id=favorite_session, turn_id=favorite_turn, user_id=USER_A,
+        )
+        assert artifact["snapshot_status"] == "stored" and artifact["results"] is not None
+        favorites = await history.list_favorite_answers(user_id=USER_A)
+        assert [item["turn_id"] for item in favorites] == [str(favorite_turn)]
+
+        assert await history.set_answer_favorite(
+            conversation_id=favorite_session,
+            turn_id=favorite_turn,
+            user_id=USER_A,
+            favorite=False,
+        ) is False
+        await history.prune_user_conversations(
+            user_id=USER_A, source_key=SRC_A, keep_last=1, keep_last_turns=1,
+            min_interval_seconds=0,
+        )
+        assert await history.get_conversation(conversation_id=favorite_session, user_id=USER_A) is None
+
+    _run(pool, scenario())
+
+
+def test_favorite_and_retention_are_serialized(history, pool):
+    async def scenario():
+        migration = Path(__file__).resolve().parents[2] / "db" / "migrations" / "insights" / "030_favorite_answers.sql"
+        async with history.pool.acquire() as conn:
+            await conn.execute(migration.read_text(encoding="utf-8"))
+        history.favorite_schema_ready = True
+
+        target, newest = uuid.uuid4(), uuid.uuid4()
+        target_turn = await _turn(history, session=target, question="race target")
+        await _turn(history, session=newest, question="newest")
+        async with history.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE insights_conversations SET last_activity_at = NOW() - INTERVAL '1 day' WHERE id = $1",
+                target,
+            )
+
+        favorite_result, _stats = await asyncio.gather(
+            history.set_answer_favorite(
+                conversation_id=target, turn_id=target_turn, user_id=USER_A, favorite=True,
+            ),
+            history.prune_user_conversations(
+                user_id=USER_A, source_key=SRC_A, keep_last=1, keep_last_turns=1,
+                min_interval_seconds=0,
+            ),
+        )
+        conversation = await history.get_conversation(conversation_id=target, user_id=USER_A)
+        if favorite_result is True:
+            assert conversation is not None, "a successful favorite must protect its conversation"
+            artifact = await history.get_turn_artifact(
+                conversation_id=target, turn_id=target_turn, user_id=USER_A,
+            )
+            assert artifact["snapshot_status"] == "stored" and artifact["results"] is not None
+        else:
+            assert favorite_result is None and conversation is None
 
     _run(pool, scenario())
 

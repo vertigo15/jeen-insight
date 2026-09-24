@@ -74,6 +74,9 @@
   var checklistEl = null;
   var successCount = 0;
   var nudgeShown = false;
+  // Answers that arrive before GET /api/user/onboarding resolves. Flushed after
+  // boot so a returning user's dismissed nudge cannot flash on a fast first hit.
+  var pendingAnswers = 0;
   // In-memory "Skip for now" flag. Authoritative within this page even if
   // sessionStorage is unavailable (private mode, storage disabled, quota).
   var sessionMuted = false;
@@ -199,8 +202,12 @@
     } else if (key === 'pin_question') {
       // Reveal the Pinned / recent-questions panel, where each question has a
       // pin control, then spotlight a real star.
-      if (ctrl) { ctrl.setConversation(true); ctrl.setTab('pinned'); }
-      else { var tab = document.getElementById('v3-tab-pinned'); if (tab) tab.click(); }
+      if (ctrl) {
+        ctrl.setConversation(true);
+        ctrl.setTab('saved');
+        if (typeof ctrl.setSavedView === 'function') ctrl.setSavedView('questions');
+      }
+      else { var tab = document.getElementById('v3-tab-saved'); if (tab) tab.click(); }
       spotlightPin(0);
     }
   }
@@ -209,7 +216,7 @@
   // for a real "pin" star, then spotlight it. Fall back to the Pinned tab if the
   // list is still empty (no questions asked yet).
   function spotlightPin(attempt) {
-    var panel = document.getElementById('v3-panel-pinned');
+    var panel = document.getElementById('v3-panel-saved');
     var star = panel && panel.querySelector('.pin-icon[data-pin-action="pin"]');
     if (star) {
       showHint(star, {
@@ -220,9 +227,9 @@
       return;
     }
     if (attempt < 8) { setTimeout(function () { spotlightPin(attempt + 1); }, 150); return; }
-    var tab = document.getElementById('v3-tab-pinned');
+    var tab = document.getElementById('v3-tab-saved');
     var placement = 'below-left';
-    if (!isVisible(tab)) { tab = document.querySelector('[data-rail="pinned"]'); placement = 'right'; }
+    if (!isVisible(tab)) { tab = document.querySelector('[data-rail="saved"]'); placement = 'right'; }
     if (tab) showHint(tab, {
       placement: placement,
       title: t('onboarding.hints.pinnedHere.title'),
@@ -430,7 +437,7 @@
   }
 
   function maybeShowNudge() {
-    if (ftueMuted()) return;
+    if (!state.ready || ftueMuted()) return;
     if (nudgeShown || successCount !== 1) return;
     if (state.data && state.data.nudge_dismissed_at) return;
     var scroll = document.querySelector('.v3-workspace .v3-scroll');
@@ -561,7 +568,10 @@
       ro: null,
       prevFocus: document.activeElement,
       prevTab: window.ChatController ? window.ChatController.activeTab : 'conversation',
-      prevConversationOpen: !document.getElementById('v3-conversation').hidden
+      // `.hidden` is always false at <=1100px (drawer mode), so ask the controller.
+      prevConversationOpen: window.ChatController && typeof window.ChatController.isConversationOpen === 'function'
+        ? window.ChatController.isConversationOpen()
+        : !document.getElementById('v3-conversation').hidden
     };
     document.body.appendChild(tour.scrim);
     window.addEventListener('resize', reposition);
@@ -795,6 +805,9 @@
 
   // ---------------------------------------------------------------- signals
   function onAnswer() {
+    // Queue until the server row is in: otherwise the first answer of a session
+    // mounts the nudge for a user who already dismissed it (GET still in flight).
+    if (!state.ready) { pendingAnswers++; return; }
     markItem('ask_first_question');
     successCount++;
     if (successCount >= 3) retireCards();
@@ -835,10 +848,19 @@
 
       // Skipped this session or permanently opted out: mount nothing. Progress
       // signals keep persisting server-side so a returning user resumes cleanly.
-      if (!ftueMuted()) {
+      if (ftueMuted()) {
+        hideAllSurfaces();
+      } else {
         mountChecklist();
         mountCards();
         if (!state.data.welcome_seen_at) showWelcome();
+      }
+      // Replay answers that landed while the GET was in flight, now that we
+      // know whether the nudge / cards are still in play.
+      if (pendingAnswers) {
+        var queued = pendingAnswers;
+        pendingAnswers = 0;
+        while (queued--) onAnswer();
       }
       // Boot decisions are final: a readiness marker for tests / integrations.
       document.body.classList.add('jo-ready');

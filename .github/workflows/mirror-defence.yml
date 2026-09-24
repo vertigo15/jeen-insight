@@ -1,0 +1,32 @@
+name: Mirror Source to Defence
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: defence-repository-mirror
+  cancel-in-progress: true
+
+jobs:
+  mirror:
+    if: github.repository == 'JeenAIDefense-Team/jeen-insight'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Defence repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Synchronize source branches and tags
+        run: |
+          git remote add upstream-source https://github.com/vertigo15/jeen-insight.git
+          git fetch --prune upstream-source '+refs/heads/*:refs/remotes/upstream-source/*'
+          git fetch --force --tags upstream-source
+          git update-ref -d refs/remotes/upstream-source/HEAD || true
+          git push --force origin 'refs/remotes/upstream-source/*:refs/heads/*'
+          git push --force origin --tags

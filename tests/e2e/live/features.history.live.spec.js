@@ -159,9 +159,10 @@ test.describe('Conversation & history features', { tag: ['@history', '@feature']
     }
   });
 
-  test('pinning a recent question moves it to Pinned and survives a reload; unpinning removes it', async () => {
-    await page.locator('[data-rail="pinned"]').click();
-    const host = page.locator('[data-panel="pinned"]');
+  test('pinning a recent question moves it to Saved > Questions and survives a reload; unpinning removes it', async () => {
+    await page.locator('[data-rail="saved"]').click();
+    await page.locator('[data-saved-view="questions"]').click();
+    const host = page.locator('[data-panel="saved"]');
     await expect(host).toBeVisible();
     const recent = host.locator('.history-item:not(.pinned-item)', { hasText: Q2 }).first();
     await expect(recent).toBeVisible({ timeout: 30_000 });
@@ -174,7 +175,8 @@ test.describe('Conversation & history features', { tag: ['@history', '@feature']
     await page.reload({ waitUntil: 'domcontentloaded' });
     await L.openApp(page);
     await L.settle(page, 90_000);
-    await page.locator('[data-rail="pinned"]').click();
+    await page.locator('[data-rail="saved"]').click();
+    await page.locator('[data-saved-view="questions"]').click();
     const pinnedItem = host.locator('.history-item.pinned-item', { hasText: Q2 });
     await expect(pinnedItem).toBeVisible({ timeout: 30_000 });
     await pinnedItem.locator('.pin-icon').click();
@@ -305,7 +307,7 @@ test.describe('Conversation & history features', { tag: ['@history', '@feature']
 
   test('the conversation drawer collapses at a narrow viewport and Escape/overlay restores focus', async () => {
     await page.setViewportSize({ width: 800, height: 900 });
-    const toggle = page.locator('#v3-conversation-toggle');
+    const toggle = page.locator('[data-rail="conversation"]');
     await expect(toggle).toBeVisible();
     await toggle.click();
     await expect(page.locator('#v3-conversation')).toHaveClass(/v3-force-open/);

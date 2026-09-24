@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, List
 from unittest.mock import MagicMock
@@ -97,6 +98,15 @@ def test_log_query_uses_legacy_path_when_schema_missing():
     assert "insights_conversations" not in sql, "pre-022 DB: never touch the conversation table"
     assert "insights_get_next_sequence_number" in sql
     assert "INSERT INTO insights_conversation_sessions" in sql
+
+
+def test_conversation_summary_saved_count_is_schema_gated():
+    svc = ConversationHistoryService(_FakePool(_FakeConn([])), conversation_schema_ready=True)
+    assert "insights_favorite_answers" not in svc._conversation_summary_sql()
+    assert "0::bigint" in svc._conversation_summary_sql()
+    svc.favorite_schema_ready = True
+    assert "insights_favorite_answers" in svc._conversation_summary_sql()
+    assert "saved_answer_count" in svc._conversation_summary_sql()
 
 
 def test_log_query_is_one_transaction_with_lock_when_schema_ready():
@@ -247,6 +257,7 @@ def test_new_schema_methods_short_circuit_without_schema():
     assert run(svc.get_conversation(conversation_id=SESSION, user_id="u")) is None
     assert run(svc.list_conversations(user_id="u")) == []
     assert run(svc.get_conversation_turns(conversation_id=SESSION, user_id="u")) == []
+    assert run(svc.get_conversation_turn(conversation_id=SESSION, turn_id=QID, user_id="u")) is None
     assert run(svc.get_turn_artifact(conversation_id=SESSION, turn_id=QID, user_id="u")) is None
     assert run(svc.get_turn_for_rerun(conversation_id=SESSION, turn_id=QID, user_id="u")) is None
     assert run(svc.upsert_turn_artifact(turn_id=QID, result_kind="text")) is False
@@ -254,9 +265,96 @@ def test_new_schema_methods_short_circuit_without_schema():
     assert run(svc.clear_turn_chart(turn_id=QID, user_id="u")) is False
     assert run(svc.store_rerun_snapshot(turn_id=QID, user_id="u", result_snapshot=None, snapshot_status="too_large", snapshot_bytes=None)) is False
     assert run(svc.rename_conversation(conversation_id=SESSION, user_id="u", title="t")) is False
-    assert run(svc.delete_conversation(conversation_id=SESSION, user_id="u")) is False
+    assert run(svc.delete_conversation(conversation_id=SESSION, user_id="u")) == {
+        "status": "missing", "saved_answer_count": 0,
+    }
     assert run(svc.prune_user_conversations(user_id="u", source_key="s", keep_last=1, keep_last_turns=1, min_interval_seconds=0)) == {"skipped": "schema_missing"}
     assert pool.acquired == 0, "no query is attempted against missing tables"
+
+
+def test_chart_writes_use_request_start_as_ordering_watermark():
+    started = datetime(2026, 9, 24, 7, 0, tzinfo=timezone.utc)
+    watermark_conn = _FakeConn(responses=[started])
+    watermark_service = ConversationHistoryService(
+        _FakePool(watermark_conn), conversation_schema_ready=True
+    )
+    assert asyncio.run(watermark_service.get_chart_request_watermark()) == started
+    assert "SELECT clock_timestamp()" in _sql_of(watermark_conn)
+
+    upsert_conn = _FakeConn(responses=["UPDATE 1"])
+    service = ConversationHistoryService(
+        _FakePool(upsert_conn), conversation_schema_ready=True
+    )
+    assert asyncio.run(service.upsert_turn_chart(
+        turn_id=QID,
+        user_id="u",
+        chart_spec={"chart_type": "bar"},
+        chart_config={"series": [{"type": "bar"}]},
+        chart_bytes=12,
+        request_started_at=started,
+    ))
+    upsert_sql = _sql_of(upsert_conn)
+    assert "a.chart_updated_at <= $6::timestamptz" in upsert_sql
+    assert upsert_conn.calls[0][2][5] == started
+
+    clear_conn = _FakeConn(responses=["UPDATE 1"])
+    clear_service = ConversationHistoryService(
+        _FakePool(clear_conn), conversation_schema_ready=True
+    )
+    assert asyncio.run(clear_service.clear_turn_chart(
+        turn_id=QID, user_id="u", request_started_at=started
+    ))
+    clear_sql = _sql_of(clear_conn)
+    assert "a.chart_updated_at <= $3::timestamptz" in clear_sql
+    assert "ELSE $3::timestamptz" in clear_sql
+    assert clear_conn.calls[0][2][2] == started
+
+    rerun_conn = _FakeConn(responses=["INSERT 0 1"])
+    rerun_service = ConversationHistoryService(
+        _FakePool(rerun_conn), conversation_schema_ready=True
+    )
+    assert asyncio.run(rerun_service.store_rerun_snapshot(
+        turn_id=QID,
+        user_id="u",
+        result_snapshot={"columns": ["a"], "rows": [[1]], "row_count": 1},
+        snapshot_status="stored",
+        snapshot_bytes=12,
+    ))
+    rerun_sql = _sql_of(rerun_conn)
+    assert "snapshot_at, chart_updated_at" in rerun_sql
+    assert "chart_updated_at = NOW()" in rerun_sql
+
+
+def test_saved_analysis_persists_versioned_chart_state():
+    saved_id = uuid.uuid4()
+    conn = _FakeConn(responses=[saved_id])
+    service = ConversationHistoryService(
+        _FakePool(conn), conversation_schema_ready=True
+    )
+    chart_state = {
+        "chart_config": {"series": [{"type": "line", "data": [1]}]},
+        "chart_toggles": {"dataLabels": True},
+        "derived_specs": [{"operator": "moving_avg", "source_column": "value"}],
+    }
+    result = asyncio.run(service.save_analysis(
+        user_id="u",
+        source_key="sales",
+        connection_id="sales",
+        name="Saved",
+        question="show value",
+        generated_sql="select 1",
+        query_id=None,
+        columns=["value"],
+        rows=[[1]],
+        chart_spec={"chart_type": "line"},
+        chart_config=chart_state["chart_config"],
+        chart_state=chart_state,
+    ))
+    assert result == saved_id
+    sql = _sql_of(conn)
+    assert "chart_spec, chart_config, chart_state, insights_payload" in sql
+    args = conn.calls[0][2]
+    assert '"chart_toggles"' in args[12]
 
 
 @pytest.mark.parametrize(
@@ -279,3 +377,94 @@ def test_lifespan_probe_sets_schema_and_kill_switch_independently(
     asyncio.run(lifespan._probe_conversation_persistence(conn, history))
     assert history.conversation_schema_ready is expect_ready
     assert history.persistence_enabled is expect_enabled
+
+
+def test_answer_favorite_is_owned_idempotent_and_listed():
+    conn = _FakeConn(responses=[
+        "s", None, 1, "INSERT 0 1",
+        [{
+            "conversation_id": SESSION,
+            "turn_id": QID,
+            "sequence_number": 3,
+            "conversation_title": "Revenue",
+            "question": "Revenue by month",
+            "answer": '"Revenue rose"',
+            "result_kind": "table",
+            "snapshot_status": "stored",
+            "source_key": "s",
+            "source_label": "Sales",
+            "created_at": "2026-09-01T10:00:00+00:00",
+            "favorited_at": "2026-09-01T10:01:00+00:00",
+        }],
+    ])
+    svc = ConversationHistoryService(_FakePool(conn), conversation_schema_ready=True)
+    svc.favorite_schema_ready = True
+
+    state = asyncio.run(svc.set_answer_favorite(
+        conversation_id=SESSION, turn_id=QID, user_id="u", favorite=True,
+    ))
+    items = asyncio.run(svc.list_favorite_answers(user_id="u", source_key="s"))
+
+    assert state is True
+    assert items[0]["answer"] == "Revenue rose"
+    sql = _sql_of(conn)
+    assert "cs.execution_status = 'success'" in sql
+    assert "pg_advisory_xact_lock" in sql
+    assert "ON CONFLICT (user_id, turn_id) DO NOTHING" in sql
+    assert "c.user_id = $1" in sql
+
+
+def test_answer_favorite_refuses_foreign_turn_and_schema_missing():
+    conn = _FakeConn(responses=[None])
+    svc = ConversationHistoryService(_FakePool(conn), conversation_schema_ready=True)
+    svc.favorite_schema_ready = True
+    assert asyncio.run(svc.set_answer_favorite(
+        conversation_id=SESSION, turn_id=QID, user_id="intruder", favorite=True,
+    )) is None
+    assert "INSERT INTO insights_favorite_answers" not in _sql_of(conn)
+    missing_remove = ConversationHistoryService(_FakePool(_FakeConn([None])), conversation_schema_ready=True)
+    missing_remove.favorite_schema_ready = True
+    assert asyncio.run(missing_remove.set_answer_favorite(
+        conversation_id=SESSION, turn_id=QID, user_id="u", favorite=False,
+    )) is False
+
+    unavailable = ConversationHistoryService(_FakePool(_FakeConn([])), conversation_schema_ready=True)
+    assert asyncio.run(unavailable.list_favorite_answers(user_id="u")) == []
+    assert asyncio.run(unavailable.set_answer_favorite(
+        conversation_id=SESSION, turn_id=QID, user_id="u", favorite=True,
+    )) is None
+
+
+def test_favorite_schema_probe_sets_independent_flag():
+    from src.api import lifespan
+
+    conn = MagicMock()
+
+    async def fetchval(_sql):
+        return True
+
+    conn.fetchval = fetchval
+    history = SimpleNamespace(favorite_schema_ready=None)
+    assert asyncio.run(lifespan._probe_favorite_schema(conn, history)) is True
+    assert history.favorite_schema_ready is True
+
+
+def test_delete_conversation_blocks_saved_answers_and_forced_delete_is_locked():
+    blocked_conn = _FakeConn(responses=["s", None, 1, 2])
+    blocked = ConversationHistoryService(_FakePool(blocked_conn), conversation_schema_ready=True)
+    blocked.favorite_schema_ready = True
+    outcome = asyncio.run(blocked.delete_conversation(
+        conversation_id=SESSION, user_id="u",
+    ))
+    assert outcome == {"status": "blocked", "saved_answer_count": 2}
+    assert "pg_advisory_xact_lock" in _sql_of(blocked_conn)
+    assert "DELETE FROM insights_conversations" not in _sql_of(blocked_conn)
+
+    forced_conn = _FakeConn(responses=["s", None, 1, 2, "DELETE 1"])
+    forced = ConversationHistoryService(_FakePool(forced_conn), conversation_schema_ready=True)
+    forced.favorite_schema_ready = True
+    outcome = asyncio.run(forced.delete_conversation(
+        conversation_id=SESSION, user_id="u", delete_saved=True,
+    ))
+    assert outcome == {"status": "deleted", "saved_answer_count": 2}
+    assert "DELETE FROM insights_conversations" in _sql_of(forced_conn)

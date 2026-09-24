@@ -61,6 +61,7 @@ async def save_analysis(
             rows=rows,
             chart_spec=request.chart_spec,
             chart_config=request.chart_config,
+            chart_state=request.chart_state,
             insights_payload=request.insights,
         )
     except PermissionError as exc:
@@ -94,6 +95,7 @@ async def update_saved_analysis(
         name=request.name,
         chart_spec=request.chart_spec,
         chart_config=request.chart_config,
+        chart_state=request.chart_state,
     )
     if not ok:
         raise HTTPException(status_code=404, detail="Saved analysis not found")
