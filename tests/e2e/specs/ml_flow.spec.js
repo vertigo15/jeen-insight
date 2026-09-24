@@ -59,3 +59,97 @@ test('"Answer with SQL instead" from the card switches to the SQL path', async (
   await expect(turn).toHaveAttribute('data-route-path', 'sql');
   await expect(turn.locator('.v3-route-pill.is-sql')).toHaveText('SQL');
 });
+
+test('an expired card explains the state and can ask the question again', async ({ page }) => {
+  await page.evaluate(() => {
+    const original = window.__FIXTURES__.SCENARIOS.forecast_confirm;
+    let calls = 0;
+    window.__FIXTURES__.SCENARIOS.forecast_confirm = (body) => {
+      const result = original(body);
+      if (calls++ === 0) result.proposal.expires_at = '2000-01-01T00:00:00Z';
+      return result;
+    };
+  });
+  await ask(page, Q.forecast);
+
+  const card = page.locator('#v3-placeholder .v3-ml-card.is-expired');
+  await expect(card).toBeVisible();
+  await expect(card.locator('.v3-ml-expired-badge')).toHaveText('Expired');
+  await expect(card.locator('#v3-ml-expired-title')).toHaveText('This analysis setup expired');
+  await expect(card.locator('[data-recreate]')).toBeEnabled();
+  await expect(card.locator('[data-sql-instead]')).toBeEnabled();
+  await expect(card.locator('select, input, [data-run], [data-exit]')).toHaveCount(0);
+  await expect(card.locator('.v3-ml-static')).not.toHaveCount(0);
+  await expect(lastTurn(page).locator('.v3-run-meta')).toContainText('expired');
+  await expect(page.locator('#v3-dock-meta')).toContainText('expired');
+
+  // Hold the resend briefly so the button's progress state is observable.
+  await page.evaluate(() => {
+    const send = window.ChatController.send.bind(window.ChatController);
+    window.ChatController.send = (...args) => new Promise((resolve) => {
+      setTimeout(() => resolve(send(...args)), 250);
+    });
+  });
+  await card.locator('[data-recreate]').click();
+  await expect(card.locator('[data-recreate]')).toHaveAttribute('aria-busy', 'true');
+  await expect(card.locator('[data-recreate]')).toHaveText('Asking…');
+
+  await expect(page.locator('#v3-thread article.v3-turn')).toHaveCount(2);
+  const fresh = page.locator('#v3-placeholder .v3-ml-card.is-confirm');
+  await expect(fresh).toBeVisible();
+  await expect(fresh).not.toHaveClass(/is-expired/);
+  await expect(fresh.locator('[data-run]')).toBeEnabled();
+});
+
+test('expired-card recovery is visibly guarded without a connection', async ({ page }) => {
+  await ask(page, Q.forecast);
+  await page.evaluate(() => {
+    const turn = window.ChatController.turns[0];
+    turn.result.proposal.expires_at = '2000-01-01T00:00:00Z';
+    window.getActiveConnection = () => '';
+    window.ChatController.render();
+  });
+
+  const card = page.locator('#v3-placeholder .v3-ml-card.is-expired');
+  await expect(card.locator('[data-recreate]')).toBeDisabled();
+  await expect(card.locator('[data-recreate-hint]')).toBeVisible();
+  await expect(card.locator('[data-recreate-hint]')).toHaveText('Select a connection to ask again.');
+});
+
+test('a card becomes expired while the page remains open', async ({ page }) => {
+  await page.evaluate(() => {
+    const original = window.__FIXTURES__.SCENARIOS.forecast_confirm;
+    window.__FIXTURES__.SCENARIOS.forecast_confirm = (body) => {
+      const result = original(body);
+      result.proposal.expires_at = new Date(Date.now() + 800).toISOString();
+      return result;
+    };
+  });
+  await ask(page, Q.forecast);
+
+  await expect(page.locator('#v3-placeholder .v3-ml-card.is-confirm')).not.toHaveClass(/is-expired/);
+  await expect(page.locator('#v3-placeholder .v3-ml-card.is-expired')).toBeVisible({ timeout: 3000 });
+  await expect(page.locator('#v3-dock-meta')).toContainText('expired');
+});
+
+test('a server expiry response converts the active card to the expired state', async ({ page }) => {
+  await ask(page, Q.forecast);
+  await page.evaluate(() => {
+    const request = window.fetch;
+    window.fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input.url;
+      if (url === '/api/analysis/run') {
+        return Promise.resolve(new Response(
+          JSON.stringify({ detail: 'This proposal has expired; ask the question again.' }),
+          { status: 410, headers: { 'Content-Type': 'application/json' } },
+        ));
+      }
+      return request(input, init);
+    };
+  });
+
+  await page.locator('#v3-placeholder [data-run]').click();
+  await expect(page.locator('#v3-placeholder .v3-ml-card.is-expired')).toBeVisible();
+  await expect(page.locator('#v3-placeholder [data-recreate]')).toBeEnabled();
+  await expect(page.locator('#v3-dock-meta')).toContainText('expired');
+});

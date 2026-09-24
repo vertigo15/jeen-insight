@@ -257,6 +257,18 @@ const forecastChips = [
     assert.doesNotMatch(evil, /<img/);
     // Without chips the summary falls back to the server's sentence.
     assert.match(UI.proposalHtml({ ...proposal, chips: [] }), /data-summary>Reading this as an anomaly check/);
+
+    const expired = UI.proposalHtml({ ...proposal, expires_at: '2000-01-01T00:00:00Z' });
+    assert.match(expired, /is-confirm is-expired/);
+    assert.match(expired, /role="status"/);
+    assert.match(expired, /This analysis setup expired/);
+    assert.match(expired, /data-recreate[^>]*>Ask again</);
+    assert.match(expired, /data-sql-instead/);
+    assert.match(expired, /class="v3-ml-static"[^>]*><bdi>Profit<\/bdi>/);
+    assert.doesNotMatch(expired, /data-run/);
+    assert.doesNotMatch(expired, /data-remember/);
+    assert.doesNotMatch(expired, /<select|<input/);
+    assert.doesNotMatch(expired, />Planning</);
 }
 
 // ── guard refusal + clarification ────────────────────────────────────────────
@@ -290,6 +302,21 @@ const forecastChips = [
     assert.match(clarify, /is-clarify/);
     assert.match(clarify, /OrderDate/);
     assert.match(clarify, /ShipDate/);
+
+    const expiredGuard = UI.proposalHtml({ ...guard, expires_at: '2000-01-01T00:00:00Z' });
+    assert.match(expiredGuard, /is-guard is-expired/);
+    assert.match(expiredGuard, /data-recreate/);
+    assert.match(expiredGuard, /v3-ml-exit is-static/);
+    assert.doesNotMatch(expiredGuard, /data-exit/);
+
+    const expiredClarify = UI.proposalHtml({
+        proposal_id: 'p3', kind: 'clarify', skill: 'forecast', message: 'Which date should I use?',
+        params: {}, expires_at: '2000-01-01T00:00:00Z',
+        options: [{ kind: 'patch', label: 'OrderDate', params_patch: {} }],
+    });
+    assert.match(expiredClarify, /is-clarify is-expired/);
+    assert.match(expiredClarify, /v3-ml-exit is-static[^>]*>OrderDate</);
+    assert.doesNotMatch(expiredClarify, /data-exit/);
 }
 
 // ── chip patch collection (DOM-less: emulate elements) ───────────────────────

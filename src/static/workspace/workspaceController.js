@@ -423,6 +423,7 @@
         _analysisRerunInFlight: null,
         _analysisRerunAbort: null,
         _turnRerunAborts: new Set(),
+        _proposalExpiryTimer: null,
         savedView: 'answers',
         _favoriteList: null,
         _unavailableSavedAnswer: null,
@@ -2051,10 +2052,12 @@
         },
 
         render() {
+            this._clearProposalExpiryTimer();
             this._syncNewConversationAction();
             this.renderConversation();
             this.renderWorkspace();
             this.syncRail();
+            this._scheduleNextProposalExpiry();
         },
 
         renderConversation() {
@@ -2442,8 +2445,13 @@
                 // shows the question, the message and what the run is waiting for.
                 const proposal = result.proposal;
                 const kind = proposal.kind || result.status;
-                const waiting = kind === 'guard' ? t('conversation.turn.waitingGuard') : kind === 'clarify' ? t('conversation.turn.waitingChoice') : t('conversation.turn.waitingConfirm');
-                return `<article class="v3-turn is-proposal${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showCardBadge')}" data-route-path="ml" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="${h('conversation.turn.showCard', { question: iso(turn.question) })}" aria-current="${selected ? 'true' : 'false'}">
+                const expired = window.JeenAnalysisUI
+                    ? window.JeenAnalysisUI.proposalExpired(proposal)
+                    : !proposal.proposal_id;
+                const waiting = expired
+                    ? t('conversation.turn.expiredProposal')
+                    : kind === 'guard' ? t('conversation.turn.waitingGuard') : kind === 'clarify' ? t('conversation.turn.waitingChoice') : t('conversation.turn.waitingConfirm');
+                return `<article class="v3-turn is-proposal${expired ? ' is-expired' : ''}${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showCardBadge')}" data-route-path="ml" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="${h('conversation.turn.showCard', { question: iso(turn.question) })}" aria-current="${selected ? 'true' : 'false'}">
                   ${this._turnHeadHtml(turn)}
                   <div class="v3-turn-body">
                     ${this._agentLabelHtml()}
@@ -2600,6 +2608,26 @@
             if (!visible && this.dockTab === 'model') this.dockTab = 'sql';
         },
 
+        _clearProposalExpiryTimer() {
+            if (this._proposalExpiryTimer !== null) {
+                clearTimeout(this._proposalExpiryTimer);
+                this._proposalExpiryTimer = null;
+            }
+        },
+
+        _scheduleNextProposalExpiry() {
+            const now = Date.now();
+            const expiries = this.turns
+                .map((turn) => new Date(turn.result?.proposal?.expires_at).getTime())
+                .filter((expiresAt) => Number.isFinite(expiresAt) && expiresAt > now);
+            if (!expiries.length) return;
+            const delay = Math.min(Math.min(...expiries) - now + 50, 2_147_483_647);
+            this._proposalExpiryTimer = setTimeout(() => {
+                this._proposalExpiryTimer = null;
+                this.render();
+            }, delay);
+        },
+
         /** Answer pane for a stopped ML run: confirm card, clarification or guard refusal. */
         _renderProposal(turn) {
             const placeholder = document.getElementById('v3-placeholder');
@@ -2607,7 +2635,12 @@
             const data = turn.result || {};
             const proposal = data.proposal || {};
             const kind = proposal.kind || data.status || 'confirm';
-            const statusLabel = kind === 'guard' || data.status === 'blocked' ? t('conversation.proposal.blocked') : kind === 'clarify' ? t('conversation.proposal.clarify') : t('conversation.proposal.planning');
+            const expired = window.JeenAnalysisUI
+                ? window.JeenAnalysisUI.proposalExpired(proposal)
+                : !proposal.proposal_id;
+            const statusLabel = expired
+                ? t('conversation.proposal.expired')
+                : kind === 'guard' || data.status === 'blocked' ? t('conversation.proposal.blocked') : kind === 'clarify' ? t('conversation.proposal.clarify') : t('conversation.proposal.planning');
             const skill = (window.JeenAnalysisUI && window.JeenAnalysisUI.SKILL_LABEL[proposal.skill]) || proposal.skill || '';
             const failed = (proposal.guard_results || []).filter((g) => !g.passed);
             const meta = kind === 'guard'
@@ -2617,7 +2650,11 @@
             // Guard keeps a status strip (it saves to history and reads as a result);
             // confirm/clarify lead with the Planning line inside the card, so the strip
             // stays out of the way — matching the skill-states mockup.
-            document.getElementById('v3-meta-row').innerHTML = kind === 'guard'
+            document.getElementById('v3-meta-row').innerHTML = expired
+                ? `<span class="v3-status is-expired">${esc(statusLabel)}</span>
+                   ${skill ? `<span class="v3-skill-chip">${esc(skill)}</span>` : ''}
+                   ${turn.restored ? `<span class="v3-result-meta">${h('conversation.restored.restored')}</span>` : ''}`
+                : kind === 'guard'
                 ? `<span class="v3-status is-blocked">${esc(statusLabel)}</span>
                    ${skill ? `<span class="v3-skill-chip">${esc(skill)}</span>` : ''}
                    <span class="v3-result-meta">${esc(meta)}${turn.restored ? ` · ${h('conversation.restored.restored')}` : ''}</span>`
@@ -2632,7 +2669,9 @@
             const chart = document.getElementById('chart-view-container');
             if (chart) chart.style.display = 'none';
             this._setModelTabVisible(false);
-            document.getElementById('v3-dock-meta').textContent = kind === 'guard' ? t('conversation.proposal.blockedBeforeSql') : t('conversation.proposal.waitingForYou');
+            document.getElementById('v3-dock-meta').textContent = expired
+                ? t('conversation.proposal.expiredDock')
+                : kind === 'guard' ? t('conversation.proposal.blockedBeforeSql') : t('conversation.proposal.waitingForYou');
             this._setActionsEnabled(false);
             this.renderDock();
             this._bindProposalCard(turn, placeholder);
@@ -2645,6 +2684,44 @@
             const expired = window.JeenAnalysisUI
                 ? window.JeenAnalysisUI.proposalExpired(proposal)
                 : !proposal.proposal_id;
+            if (expired) {
+                const recreate = card.querySelector('[data-recreate]');
+                const hint = card.querySelector('[data-recreate-hint]');
+                const connection = this._analysisConnection();
+                const unavailable = this.readOnly
+                    ? t('conversation.readOnlySend')
+                    : (!connection ? t('analysis.proposal.selectConnection') : '');
+                if (recreate && unavailable) {
+                    recreate.disabled = true;
+                    recreate.title = unavailable;
+                    if (hint) {
+                        hint.hidden = false;
+                        hint.textContent = unavailable;
+                    }
+                }
+                recreate?.addEventListener('click', async () => {
+                    if (recreate.disabled) return;
+                    const label = recreate.textContent;
+                    card.classList.add('is-busy');
+                    recreate.disabled = true;
+                    recreate.setAttribute('aria-busy', 'true');
+                    recreate.textContent = t('analysis.proposal.askingAgain');
+                    card.querySelector('[data-sql-instead]')?.setAttribute('disabled', '');
+                    try {
+                        await this.send(turn.question, { analysis: true });
+                    } finally {
+                        if (card.isConnected) {
+                            card.classList.remove('is-busy');
+                            recreate.disabled = false;
+                            recreate.removeAttribute('aria-busy');
+                            recreate.textContent = label;
+                            card.querySelector('[data-sql-instead]')?.removeAttribute('disabled');
+                        }
+                    }
+                });
+                card.querySelector('[data-sql-instead]')?.addEventListener('click', () => this.send(turn.question, { analysis: false }));
+                return;
+            }
             // The setup form's local behaviour (summary, changed markers, validation)
             // lives in analysisPanel.js; the controller only runs and reports.
             const form = window.JeenAnalysisUI && window.JeenAnalysisUI.bindSetupForm && proposal.kind === 'confirm'
@@ -2669,16 +2746,14 @@
                 }
                 note.textContent = message;
             };
-            if (expired) {
-                card.querySelectorAll('[data-run], [data-exit]').forEach((b) => {
-                    b.disabled = true;
-                    b.title = t('conversation.proposal.expiredTitle');
-                });
-                const note = document.createElement('div');
-                note.className = 'v3-ml-error';
-                note.textContent = t('conversation.proposal.expiredNote');
-                card.appendChild(note);
-            }
+            const handleFailure = (error) => {
+                if (error && error.status === 410) {
+                    proposal.expires_at = new Date(0).toISOString();
+                    this.render();
+                    return;
+                }
+                fail(error);
+            };
             card.querySelector('[data-run]')?.addEventListener('click', async () => {
                 // Validate against the chips' declared bounds first: the first invalid
                 // field gets focus and a message, and nothing is sent.
@@ -2692,7 +2767,7 @@
                 try {
                     await this.runProposal(turn, { patch, remember });
                 } catch (error) {
-                    fail(error);
+                    handleFailure(error);
                 }
             });
             card.querySelectorAll('[data-exit]').forEach((button) => button.addEventListener('click', async () => {
@@ -2713,7 +2788,7 @@
                         override: option.kind === 'override',
                     });
                 } catch (error) {
-                    fail(error);
+                    handleFailure(error);
                 }
             }));
             card.querySelector('[data-sql-instead]')?.addEventListener('click', () => this.send(turn.question, { analysis: false }));
