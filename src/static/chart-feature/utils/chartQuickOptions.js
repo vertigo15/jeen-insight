@@ -108,7 +108,7 @@ function _sortCategorySeriesDesc(config) {
 
     config.series = series.map((s) => {
         if (!Array.isArray(s.data) || s.data.length !== categories.length) return s;
-        return { ...s, data: pairs.map((p) => s.data[p.index]) };
+        return { ...s, data: pairs.map((pair) => s.data[pair.index]) };
     });
 }
 

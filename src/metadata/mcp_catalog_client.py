@@ -45,6 +45,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -108,6 +109,33 @@ class McpCatalogClient:
     ) -> None:
         self._srv_svc   = server_service
         self._cache_svc = cache_service
+        self._http_client: Optional[httpx.AsyncClient] = None
+        self._catalog_inflight: Dict[tuple[int, str], "asyncio.Task[None]"] = {}
+        self._closing = False
+
+    def _ensure_open(self) -> None:
+        if self._closing:
+            raise RuntimeError("MCP catalog client is closing")
+
+    def _client(self) -> httpx.AsyncClient:
+        self._ensure_open()
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(timeout=_TIMEOUT_S)
+        return self._http_client
+
+    async def aclose(self) -> None:
+        """Close the pooled transport after all background work has drained."""
+        self._closing = True
+        tasks = list(self._catalog_inflight.values())
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._catalog_inflight.clear()
+        if self._http_client is not None and not self._http_client.is_closed:
+            await self._http_client.aclose()
+        self._http_client = None
 
     # ── Public catalog API ────────────────────────────────────────────────────
 
@@ -121,6 +149,7 @@ class McpCatalogClient:
 
         Returns [] on any error so the caller can fall back to settings_services.
         """
+        self._ensure_open()
         server = await self._srv_svc.get_active()
         if not server:
             return []
@@ -135,6 +164,7 @@ class McpCatalogClient:
         Calls get_catalog_prompt once → parses markdown → caches all 6 sections.
         Returns empty fallbacks on errors so the prompt degrades gracefully.
         """
+        self._ensure_open()
         server = await self._srv_svc.get_active()
         if not server:
             return _empty_bundle()
@@ -144,9 +174,10 @@ class McpCatalogClient:
         if cached is not None:
             return cached
 
-        # Cache miss — fetch from MCP and populate all sections.
+        # Cache miss — fetch from MCP and populate all sections. Warm-cache and
+        # a first query can race; share one provider request per source.
         try:
-            await self._ensure_catalog(server, source_key)
+            await self._ensure_catalog_coalesced(server, source_key)
         except Exception as exc:
             logger.error("mcp: load_all failed for %s: %s", source_key, exc)
             return _empty_bundle()
@@ -158,12 +189,27 @@ class McpCatalogClient:
     async def load_filtered(
         self, source_key: str, question: str
     ) -> Dict[str, str]:
+        bundle, _timing = await self.load_filtered_with_meta(source_key, question)
+        return bundle
+
+    async def load_filtered_with_meta(
+        self, source_key: str, question: str
+    ) -> tuple[Dict[str, str], Dict[str, int]]:
         """Return a question-focused catalog bundle from ``get_filtered_prompt``.
 
         Filtered prompts are request-specific, so they deliberately bypass the
         shared full-catalog cache. Callers should fall back to ``load_all`` when
         this optional MCP capability is unavailable or fails.
         """
+        self._ensure_open()
+        started = time.monotonic()
+        timing = {
+            "connection_ms": 0,
+            "filtered_tool_ms": 0,
+            "parse_ms": 0,
+            "full_restore_ms": 0,
+            "total_ms": 0,
+        }
         server = await self._srv_svc.get_active()
         if not server:
             raise McpError("No active MCP server")
@@ -172,15 +218,20 @@ class McpCatalogClient:
         if not tool:
             raise McpError("No filtered prompt tool mapped (need: describe_table)")
 
+        step = time.monotonic()
         conn_id = await self._resolve_connection_id(server, source_key)
+        timing["connection_ms"] = int((time.monotonic() - step) * 1000)
         if conn_id is None:
             raise McpError(f"No connection found for source_key={source_key!r}")
 
+        step = time.monotonic()
         raw = await self._call_tool(
             server,
             tool,
             {"connection_id": conn_id, "question": question},
         )
+        timing["filtered_tool_ms"] = int((time.monotonic() - step) * 1000)
+        step = time.monotonic()
         text = (
             raw.get("prompt", "")
             if isinstance(raw, dict) and isinstance(raw.get("prompt"), str)
@@ -192,6 +243,7 @@ class McpCatalogClient:
             )
 
         bundle = _parse_catalog_markdown(text)
+        timing["parse_ms"] = int((time.monotonic() - step) * 1000)
         if not bundle.get("tables"):
             raise McpError(
                 f"No table section in response from {tool} "
@@ -200,19 +252,29 @@ class McpCatalogClient:
         # Interim: the question filter drops native date columns it deems
         # unnecessary; the time-series skills need them — see restore_date_columns.
         try:
+            step = time.monotonic()
             full = await self.load_all(source_key)
             bundle["columns"] = restore_date_columns(bundle.get("columns", ""), full.get("columns", ""))
+            timing["full_restore_ms"] = int((time.monotonic() - step) * 1000)
         except Exception as exc:  # noqa: BLE001
+            timing["full_restore_ms"] = int((time.monotonic() - step) * 1000)
             logger.warning("mcp: could not restore date columns for %s: %s", source_key, exc)
         if not bundle.get("sources"):
             bundle["sources"] = await self._build_sources(server, source_key)
         logger.info(
-            "mcp: filtered catalog loaded source_key=%s connection_id=%d (%d chars)",
+            "mcp: filtered catalog loaded source_key=%s connection_id=%d (%d chars) "
+            "connection_ms=%d filtered_tool_ms=%d parse_ms=%d full_restore_ms=%d total_ms=%d",
             source_key,
             conn_id,
             len(text),
+            timing["connection_ms"],
+            timing["filtered_tool_ms"],
+            timing["parse_ms"],
+            timing["full_restore_ms"],
+            int((time.monotonic() - started) * 1000),
         )
-        return bundle
+        timing["total_ms"] = int((time.monotonic() - started) * 1000)
+        return bundle, timing
     async def search_column_values(
         self,
         source_key: str,
@@ -625,6 +687,45 @@ class McpCatalogClient:
             source_key, conn_id, len(text),
         )
 
+    async def _ensure_catalog_coalesced(
+        self, server: McpServer, source_key: str
+    ) -> None:
+        self._ensure_open()
+        key = (server.id, source_key)
+        task = self._catalog_inflight.get(key)
+        if task is None:
+            task = asyncio.create_task(self._ensure_catalog(server, source_key))
+            self._catalog_inflight[key] = task
+            task.add_done_callback(
+                lambda completed, cache_key=key: self._catalog_task_done(
+                    cache_key, completed
+                )
+            )
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # The provider fetch remains shared and may still serve another
+            # waiter. The done callback owns eviction and exception retrieval.
+            raise
+
+    def _catalog_task_done(
+        self, key: tuple[int, str], task: "asyncio.Task[None]"
+    ) -> None:
+        if self._catalog_inflight.get(key) is task:
+            self._catalog_inflight.pop(key, None)
+        if task.cancelled():
+            return
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            return
+        if error is not None:
+            logger.debug(
+                "mcp: shared catalog fetch failed source_key=%s: %s",
+                key[1],
+                error,
+            )
+
     async def _build_sources(self, server: McpServer, source_key: str) -> str:
         """Build the 'sources' bundle value from connection list metadata."""
         connections = await self._get_connections(server)
@@ -767,8 +868,9 @@ class McpCatalogClient:
 
         payload = {"jsonrpc": _JSONRPC, "method": method, "params": params, "id": 1}
 
-        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
-            response = await client.post(server.endpoint, json=payload, headers=headers)
+        response = await self._client().post(
+            server.endpoint, json=payload, headers=headers
+        )
 
         if response.status_code != 200:
             raise McpError(

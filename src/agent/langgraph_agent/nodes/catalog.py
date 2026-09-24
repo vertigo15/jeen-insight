@@ -73,10 +73,11 @@ async def _route_catalog_load(
                 meta["source"] = "mcp"
                 if question.strip():
                     try:
-                        bundle = await _state.mcp_catalog_client.load_filtered(
+                        bundle, mcp_timing = await _state.mcp_catalog_client.load_filtered_with_meta(
                             source_key, question
                         )
                         meta["filtered"] = True
+                        meta["mcp_timing"] = mcp_timing
                         logger.info(
                             "catalog_lookup: using filtered MCP provider for source_key=%s",
                             source_key,
@@ -149,9 +150,9 @@ async def _acquire_catalog(
 
     ``catalog_seeded`` is a one-shot ticket: the node clears it after consuming,
     so the explicit refresh paths (``missing_table`` in SQL, ``refresh_catalog``
-    in DAX) re-enter this node and get a genuine reload. That is the whole point
-    of those paths, and keying off the flag rather than off the feedback type
-    means a new refresh route cannot silently inherit a stale catalog.
+    in DAX) re-enter this node and reload. The first load may use the
+    question-specific filtered MCP prompt; a re-entry uses the reusable full
+    catalog so one query never invokes the filtered provider twice.
 
     Returns ``(bundle, meta, load_ms, catalog_error)``. Never raises: a failed
     load yields an empty bundle so the caller can fail closed.
@@ -171,10 +172,16 @@ async def _acquire_catalog(
 
     logger.info("%s: loading metadata for source_key=%s", log_label, source_key)
     try:
+        # An existing, already-consumed bundle means this is an explicit graph
+        # refresh. Use the full catalog on that path: repeating the same
+        # question-specific filter is both expensive and unlikely to reveal the
+        # object that caused the refresh. When pre-loading failed, ``seeded`` is
+        # empty and this first in-graph attempt still receives the question.
+        load_question = "" if seeded else str(state.get("question") or "")
         bundle, meta = await _load_catalog_bundle(
             source_key,
             metadata_loader,
-            question=str(state.get("question") or ""),
+            question=load_question,
         )
     except Exception as exc:  # noqa: BLE001 — fail closed rather than query blindly
         logger.error("%s: metadata load failed for source_key=%s: %s", log_label, source_key, exc)

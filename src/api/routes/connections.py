@@ -45,7 +45,21 @@ async def warm_connection_cache(source_key: str):
     """
     from src.api import state
     loader = get_metadata_loader()
-    bundle = await loader.load_all(source_key)
+    provider = "db"
+    bundle = None
+    if state.mcp_server_service and state.mcp_catalog_client:
+        try:
+            source = await state.mcp_server_service.get_catalog_source(source_key)
+            if source == "mcp":
+                bundle = await state.mcp_catalog_client.load_all(source_key)
+                if bundle.get("tables", "").strip() not in ("", "No tables registered."):
+                    provider = "mcp"
+                else:
+                    bundle = None
+        except Exception:  # noqa: BLE001
+            bundle = None
+    if bundle is None:
+        bundle = await loader.load_all(source_key)
     # Also warm the AgentRegistry so the agent object is built.
     if state.agent_registry:
         try:
@@ -55,5 +69,6 @@ async def warm_connection_cache(source_key: str):
     return {
         "status": "ok",
         "source_key": source_key,
+        "provider": provider,
         "tables": bundle.get("tables", "").count("\n") + 1 if bundle.get("tables") else 0,
     }

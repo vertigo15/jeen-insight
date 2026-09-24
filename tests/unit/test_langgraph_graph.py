@@ -272,13 +272,12 @@ class TestFromMemoryRoute:
 
     @pytest.mark.asyncio
     async def test_memory_escape_hatch_falls_through_to_query(self, mock_services, prompt_loader):
-        """If memory_answer returns needs_query, the graph falls through to catalog_lookup."""
+        """A memory route without a turn ref falls through before memory_answer."""
         sql = "SELECT SalesAmount FROM FactSales LIMIT 5"
         mock_services.llm.generate.side_effect = [
             _router_resp("from_memory"),
-            _text_resp('{"needs_query": true}'),     # escape hatch
-            _sql_tool_resp(sql),                     # sql_generator
-            _eval_resp(),                            # eval
+            _sql_tool_resp(sql),
+            _eval_resp(),
         ]
         mock_services.sql_runner.run_sql.return_value = {
             "columns": ["SalesAmount"], "rows": [{"SalesAmount": 100}, {"SalesAmount": 200}], "row_count": 2,

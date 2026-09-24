@@ -35,7 +35,7 @@ test('a chart edit survives local presentation changes and Reset restores the ba
   expect(editCalls[1].body.all_data).toHaveLength(3);
 
   await expect(refine.locator('.chart-refine-applied')).toBeVisible();
-  await expect(refine.locator('.chart-refine-applied bdi')).toHaveText('הצג כגרף קו עם תוויות');
+  await expect(refine.locator('.chart-refine-applied bdi')).toHaveText('Changed the chart to a line and enabled labels.');
   await expect.poll(() => page.evaluate(() => (
     window.__chartTestManager.currentEchartsOptions?.series?.[0]?.type
   ))).toBe('line');

@@ -8,9 +8,8 @@
  *
  * Layout (matches design handoff): a hairline-separated row with a sparkle
  * AI icon, a single-line rounded inline input, and a small purple "Apply →"
- * button (Enter also applies). After a refinement is applied the row swaps to
- * "✓ Applied: <refinement> · Reset chart" (green confirmation + purple Reset
- * link). "Reset chart" only exists once there is something to reset.
+ * button (Enter also applies). After a refinement the input remains available,
+ * with a compact success summary and icon-only Reset control beside it.
  *
  * UX note: the conversation transcript is intentionally NOT shown. Errors and
  * out-of-scope requests surface in a small inline status line under the row.
@@ -41,6 +40,7 @@ const ANALYSIS_PLACEHOLDER = () => t('charts.chat.analysisPlaceholder');
 
 const SPARKLE_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3zM19 16l.9 2.1L22 19l-2.1.9L19 22l-.9-2.1L16 19l2.1-.9L19 16z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
 const ARROW_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const RESET_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 export class ChartChat {
     /**
@@ -52,6 +52,7 @@ export class ChartChat {
      *   getCurrentSpec?: () => object|null,
      *   getCurrentDerivedSpecs?: () => Array,
      *   getQueryId?: () => string|null,
+     *   onQuickEdit?: (instruction: string) => {applied:boolean, summary?:string}|null,
      *   onApply: (config: object, derivedSeries: Array, notes?: string|null, edit?: object) => void|Promise<void>,
      *   onReset: () => void|Promise<void>
      * }} hooks
@@ -120,10 +121,12 @@ export class ChartChat {
         entry.appendChild(input);
         entry.appendChild(applyBtn);
 
-        // Applied state — "✓ Applied: <refinement> · Reset chart"
+        // Applied state — "✓ <summary> [reset icon]"
         const applied = document.createElement('div');
         applied.className = 'chart-refine-applied';
         applied.hidden = true;
+        applied.setAttribute('role', 'status');
+        applied.setAttribute('aria-live', 'polite');
 
         const appliedCheck = document.createElement('span');
         appliedCheck.className = 'chart-refine-applied-check';
@@ -149,8 +152,9 @@ export class ChartChat {
         const resetBtn = document.createElement('button');
         resetBtn.type = 'button';
         resetBtn.className = 'chart-refine-reset';
-        resetBtn.textContent = t('charts.chat.reset');
+        resetBtn.innerHTML = RESET_SVG;
         resetBtn.title = t('charts.chat.resetTitle');
+        resetBtn.setAttribute('aria-label', t('charts.chat.reset'));
         resetBtn.addEventListener('click', () => this._handleReset());
 
         applied.appendChild(appliedCheck);
@@ -203,6 +207,7 @@ export class ChartChat {
 
     reset() {
         this.messages = [];
+        this.idCounter += 1;
         if (this.inFlight) {
             try { this.inFlight.abort(); } catch (_) { /* ignore */ }
             this.inFlight = null;
@@ -225,10 +230,10 @@ export class ChartChat {
         this._entryEl.hidden = false;
     }
 
-    _showApplied(label) {
+    _showApplied(summary) {
         if (!this.mounted) return;
         this._appliedLabelEl.textContent = t('charts.chat.appliedPrefix');
-        this._appliedInstructionEl.textContent = label;
+        this._appliedInstructionEl.textContent = summary || t('charts.chat.updated');
         // Keep the edit box available after a successful change. Chart chat is
         // conversational: users commonly follow an edit with "open layers" or
         // another styling adjustment before deciding whether to reset.
@@ -246,6 +251,10 @@ export class ChartChat {
         // textContent — never innerHTML — to avoid XSS from LLM output.
         this._statusEl.textContent = text;
         this._statusEl.dataset.kind = kind || '';
+        this._statusEl.hidden = false;
+        if ((kind === 'warn' || kind === 'error') && this._appliedEl) {
+            this._appliedEl.hidden = true;
+        }
     }
 
     _clearStatus() {
@@ -289,8 +298,9 @@ export class ChartChat {
         this._applyBtnEl.setAttribute('aria-disabled', canSubmit ? 'false' : 'true');
         this._applyBtnEl.classList.toggle('is-busy', active);
         if (this._resetBtnEl) {
-            this._resetBtnEl.disabled = !available || active;
-            this._resetBtnEl.setAttribute('aria-disabled', (!available || active) ? 'true' : 'false');
+            const resetDisabled = !available || this.externalBusy;
+            this._resetBtnEl.disabled = resetDisabled;
+            this._resetBtnEl.setAttribute('aria-disabled', resetDisabled ? 'true' : 'false');
         }
         const label = this._applyBtnEl.querySelector('span');
         if (label) {
@@ -362,14 +372,36 @@ export class ChartChat {
         }
 
         const config = this.hooks.getCurrentConfig && this.hooks.getCurrentConfig();
-        const results = this.hooks.getCurrentResults && this.hooks.getCurrentResults();
-        const connection = this.hooks.getConnection ? this.hooks.getConnection() : '';
-
         if (!config) {
             this._setStatus(t('charts.chat.needChart'), 'warn');
             this._focusInput();
             return;
         }
+        if (typeof this.hooks.onQuickEdit === 'function') {
+            try {
+                const quick = await this.hooks.onQuickEdit(instruction);
+                if (quick && quick.applied) {
+                    const summary = quick.summary || t('charts.chat.updated');
+                    this._appendMessage('user', instruction);
+                    this._appendMessage('assistant', summary);
+                    this._clearStatus();
+                    this._inputEl.value = '';
+                    this._showApplied(summary);
+                    return;
+                }
+                if (quick && quick.noChange) {
+                    this._setStatus(t('charts.chat.noVisibleChange'), 'warn');
+                    return;
+                }
+            } catch (error) {
+                console.error('[ChartChat] quick edit failed', error);
+                this._setStatus(t('charts.chat.renderFailed'), 'error');
+                return;
+            }
+        }
+
+        const results = this.hooks.getCurrentResults && this.hooks.getCurrentResults();
+        const connection = this.hooks.getConnection ? this.hooks.getConnection() : '';
         if (!connection) {
             this._setStatus(t('errors.selectConnectionFirst'), 'warn');
             this._focusInput();
@@ -429,11 +461,19 @@ export class ChartChat {
                 this._setStatus(fallback, 'warn');
                 return;
             }
+            if (!derived.length && stableJson(newConfig) === stableJson(config)) {
+                this._setStatus(note || t('charts.chat.noVisibleChange'), 'warn');
+                return;
+            }
 
             // Apply via the parent (ChartManager owns the render loop + undo).
             if (this.hooks.onApply) {
                 try {
-                    await this.hooks.onApply(newConfig, derived, note || null, data);
+                    const result = await this.hooks.onApply(newConfig, derived, note || null, data);
+                    if (result && result.noChange) {
+                        this._setStatus(note || t('charts.chat.noVisibleChange'), 'warn');
+                        return;
+                    }
                 } catch (e) {
                     console.error('[ChartChat] onApply threw', e);
                     this._setStatus(t('charts.chat.renderFailed'), 'error');
@@ -443,7 +483,7 @@ export class ChartChat {
 
             this._appendMessage('assistant', note || t('charts.chat.updated'));
             this._inputEl.value = '';
-            this._showApplied(instruction);
+            this._showApplied(note || t('charts.chat.updated'));
             this._setStatus(t('charts.chat.appliedAnnouncement'), 'success');
         } catch (e) {
             if (e && e.name === 'AbortError') return; // silent — superseded or reset
@@ -495,7 +535,15 @@ export class ChartChat {
     }
 
     async _handleReset() {
-        if (!this.mounted || !this.enabled || this._localBusy || this.externalBusy || this.inFlight) return;
+        if (!this.mounted || !this.enabled || this.externalBusy) return;
+        if (this.inFlight) {
+            this.idCounter += 1;
+            try { this.inFlight.abort(); } catch (_) { /* already settled */ }
+            this.inFlight = null;
+            this._localBusy = false;
+        } else if (this._localBusy) {
+            return;
+        }
         this._setStatus(t('charts.chat.resetting'), 'progress');
         this._setBusy(true);
         try {
@@ -527,4 +575,15 @@ function guessType(sampleRows, idx) {
     }
     if (nonNull === 0) return 'string';
     return numeric / nonNull >= 0.7 ? 'number' : 'string';
+}
+
+function stableJson(value) {
+    const normalize = (item) => {
+        if (Array.isArray(item)) return item.map(normalize);
+        if (!item || typeof item !== 'object') return item;
+        return Object.fromEntries(
+            Object.keys(item).sort().map((key) => [key, normalize(item[key])])
+        );
+    };
+    try { return JSON.stringify(normalize(value)); } catch (_) { return ''; }
 }

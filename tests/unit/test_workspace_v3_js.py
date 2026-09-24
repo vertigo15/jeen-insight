@@ -19,6 +19,7 @@ def test_workspace_v3_pure_utilities():
       if (u.PHASES.length !== 9) throw new Error('phase count');
       if (u.NODE_PHASE.pbi_execute_query !== 'execution') throw new Error('DAX mapping');
       if (u.NODE_PHASE.sql_generator !== 'generation') throw new Error('SQL mapping');
+      if (u.NODE_PHASE.pre_graph_setup !== 'catalog') throw new Error('pre-graph mapping');
 
       const results = {{
         columns: ['amount', 'region'],
@@ -39,6 +40,8 @@ def test_workspace_v3_pure_utilities():
       if (u.textOf([{{t:'Revenue '}}, {{text:'grew'}}]) !== 'Revenue grew') throw new Error('fragment text');
       const note = u.safeTraceNote({{node:'sql_generator', type:'llm', detail:'SELECT secret FROM payroll'}});
       if (note.includes('SELECT') || note.includes('payroll')) throw new Error('SQL leaked into inline trace');
+      const preload = u.safeTraceNote({{node:'pre_graph_setup', type:'db', detail:'question-specific catalog 25ms · reusable catalog 7ms'}});
+      if (!preload.includes('question-specific catalog 25ms')) throw new Error('pre-graph timing hidden');
       if (u.filterResultRows(results, 'us').length !== 1) throw new Error('row filtering');
       if (u.directionOf('המכירות עלו ב-37%') !== 'rtl') throw new Error('Hebrew direction');
       if (u.directionOf('Revenue increased 37%') !== 'ltr') throw new Error('English direction');
@@ -115,7 +118,8 @@ def test_workspace_chart_modes_keep_ml_reruns_separate_from_graph_edits():
     assert "this.analysisMode && key === 'sortDesc'" in options
     assert "if (this.analysisMode) return;" in options
     assert "if (this._analysisRerunInFlight)" in controller
-    assert "const select = this.selectedResultId === turn.id" in controller
+    assert "this._selectionVersion === run.selectionVersion" in controller
+    assert "if (id !== this.selectedTurnId) this._selectionVersion += 1" in controller
     assert "generation !== this._generation || abort.signal.aborted" in controller
     assert "timeoutMs: 185_000" in controller
     assert "this.lastAppliedResultId !== current.id" in controller

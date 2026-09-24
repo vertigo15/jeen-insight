@@ -17,11 +17,12 @@ import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v
 import { DEFAULT_PALETTE_ID, applyPalette, getPalette, isKnownPalette } from './utils/chartPalettes.js?v=1';
 import { ChartChat } from './components/ChartChat.js?v=107';
 import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js?v=1';
+import { parseChartQuickIntent } from './utils/chartQuickIntents.js?v=2';
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
 import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=9';
 import { CHART_TYPE_VALUES } from './chartTypes.js?v=79';
 import { localizeSeriesLabels } from './utils/seriesLabels.js?v=1';
-import { applyQuickOptions } from './utils/chartQuickOptions.js?v=3';
+import { applyQuickOptions } from './utils/chartQuickOptions.js?v=4';
 import {
     applyStyleOverrides,
     createChartSession,
@@ -87,6 +88,7 @@ export class ChartManager {
         // User-chosen colour palette (a preference, so it follows the user across
         // charts). 'jeen' means "no override": theme tokens / server palette.
         this.paletteId = this._readPalettePreference();
+        this.customPalette = null;
 
         // Per-instance query context + view elements. When set (Chat mode)
         // these override the Ask-mode window globals / fixed element IDs so a
@@ -382,6 +384,7 @@ export class ChartManager {
                 onApply: (newConfig, derivedSpecs, notes, edit) => (
                     this.applyEditedConfig(newConfig, derivedSpecs, notes, edit)
                 ),
+                onQuickEdit: (instruction) => this.applyQuickInstruction(instruction),
                 onReset: () => this.resetChartEdits(),
                 // ML results: the bar re-runs the analysis as a new turn; the
                 // workspace owns that flow (proposal → /api/analysis/rerun).
@@ -865,6 +868,7 @@ export class ChartManager {
 
     /** Colours to draw with, or null when the server/theme default should stand. */
     _paletteColors() {
+        if (this.customPalette?.colors?.length) return this.customPalette.colors;
         const palette = getPalette(this.paletteId);
         if (palette.colors) return palette.colors;
         return this.workspaceMode ? this._themeTokenColors() : null;
@@ -872,6 +876,7 @@ export class ChartManager {
 
     _withPalette(option) {
         if (!option || this._isOsmMapOption(option) || isMapOption(option)) return option;
+        if (this.customPalette?.colors?.length) return applyPalette(option, this.customPalette.colors);
         const palette = getPalette(this.paletteId);
         if (!palette.colors) return option; // default: leave theme/server colours alone
         return applyPalette(option, palette.colors);
@@ -882,8 +887,9 @@ export class ChartManager {
      * chart in place (no server round-trip, chat edits are preserved).
      */
     async setPalette(id) {
-        if (!isKnownPalette(id) || id === this.paletteId) return;
+        if (!isKnownPalette(id) || (id === this.paletteId && !this.customPalette)) return;
         this.paletteId = id;
+        this.customPalette = null;
         try { window.JeenPreferences?.setChartPalette?.(id); } catch (_) { /* preference is best-effort */ }
         this.chartOptionsPanel?.setPalette(id);
         if (!this.chartSession || this._isOsmMapOption(this._semanticConfig()) || isMapOption(this._semanticConfig())) return;
@@ -899,6 +905,246 @@ export class ChartManager {
         } finally {
             this._finishOperation(owner);
         }
+    }
+
+    _setCustomPalette(name, colors) {
+        if (!Array.isArray(colors) || !colors.length) return;
+        this.customPalette = { name: String(name || 'custom'), colors: colors.slice() };
+        this.chartOptionsPanel?.setCustomPalette(
+            this.customPalette.name,
+            this.customPalette.colors,
+        );
+    }
+
+    async applyQuickInstruction(instruction) {
+        if (!this.chartSession && this.currentEchartsOptions) {
+            this.chartSession = createChartSession({
+                chart_config: this.currentEchartsOptions,
+                chart_spec: this.currentChartSpec,
+                chart_toggles: this.chartOptionsPanel?.getToggles?.() || {},
+            });
+            this._syncLegacySessionAliases();
+        }
+        if (!this.chartSession || this._isOsmMapOption(this._semanticConfig())
+            || isMapOption(this._semanticConfig())) return null;
+        const columns = this.chartOptionsPanel?.columns || this.state.currentData?.columns || [];
+        const parsed = parseChartQuickIntent(instruction, { columns });
+        if (!parsed) return null;
+
+        const previousSnapshot = this.chartSession.snapshot();
+        const previousDisplay = this.currentEchartsOptions;
+        const previousRenderedConfig = this.state.currentConfig;
+        const previousPaletteId = this.paletteId;
+        const previousCustomPalette = this.customPalette
+            ? { name: this.customPalette.name, colors: this.customPalette.colors.slice() }
+            : null;
+        const candidate = createChartSession(previousSnapshot);
+        let config = candidate.working.config;
+        let spec = candidate.working.spec;
+        const toggles = { ...candidate.view.toggles };
+        let paletteId = this.paletteId;
+        let customPalette = previousCustomPalette;
+
+        for (const command of parsed.commands) {
+            if (command.type === 'toggle') {
+                toggles[command.key] = command.value;
+            } else if (command.type === 'palette') {
+                paletteId = command.id;
+                customPalette = null;
+            } else if (command.type === 'customPalette') {
+                customPalette = {
+                    name: command.name,
+                    colors: command.colors.slice(),
+                };
+            } else if (command.type === 'binding') {
+                const rebound = this._withXAxisBinding(config, command.value, spec);
+                if (!rebound) return null;
+                config = rebound;
+                spec = { ...(spec || {}), x: command.value };
+            }
+        }
+
+        candidate.replaceWorking({ ...candidate.working, config, spec });
+        candidate.replaceView({ ...candidate.view, toggles });
+        const noSemanticChange = this._stableOptionJson(candidate.snapshot())
+            === this._stableOptionJson(previousSnapshot);
+        const noPaletteChange = paletteId === previousPaletteId
+            && this._stableOptionJson(customPalette) === this._stableOptionJson(previousCustomPalette);
+        if (noSemanticChange && noPaletteChange) return { applied: false, noChange: true };
+
+        this.paletteId = paletteId;
+        this.customPalette = customPalette;
+        this.chartSession = candidate;
+        this._syncLegacySessionAliases();
+        const owner = this._beginOperation({ invalidate: true });
+        try {
+            await this._renderWorking(owner, candidate);
+            this._assertOwner(owner);
+            this.chartSession = candidate;
+            this._syncLegacySessionAliases();
+            this._syncPanelFromSession();
+            if (customPalette) {
+                this.chartOptionsPanel?.setCustomPalette(customPalette.name, customPalette.colors);
+            } else {
+                this.chartOptionsPanel?.setPalette(paletteId);
+                try { window.JeenPreferences?.setChartPalette?.(paletteId); } catch (_) { /* best effort */ }
+            }
+            return {
+                applied: true,
+                summary: parsed.commands
+                    .map((command) => this._quickCommandSummary(command))
+                    .filter(Boolean)
+                    .join(' · '),
+            };
+        } catch (error) {
+            this.paletteId = previousPaletteId;
+            this.customPalette = previousCustomPalette;
+            const rollback = createChartSession(previousSnapshot);
+            if (this._owns(owner) && error?.name !== 'AbortError') {
+                try {
+                    await this._renderWorking(owner, rollback);
+                    this._assertOwner(owner);
+                } catch (_) {
+                    this.currentEchartsOptions = previousDisplay;
+                    this.state.currentConfig = previousRenderedConfig;
+                    this._renderReady = Boolean(previousDisplay);
+                }
+            }
+            this.chartSession = rollback;
+            this._syncLegacySessionAliases();
+            this._syncPanelFromSession();
+            if (error?.name === 'AbortError') throw error;
+            throw new Error(t('charts.chat.renderFailed'));
+        } finally {
+            this._finishOperation(owner);
+        }
+    }
+
+    _stableOptionJson(value) {
+        const normalize = (item) => {
+            if (Array.isArray(item)) return item.map(normalize);
+            if (!item || typeof item !== 'object') return item;
+            return Object.fromEntries(
+                Object.keys(item).sort().map((key) => [key, normalize(item[key])])
+            );
+        };
+        try { return JSON.stringify(normalize(value)); } catch (_) { return ''; }
+    }
+
+    _explicitPaletteChange(previous, next) {
+        const extract = (option) => {
+            const series = Array.isArray(option?.series) ? option.series : [];
+            const seriesColors = series.map((item) => (
+                item?.itemStyle?.color || item?.lineStyle?.color || null
+            )).filter((color) => typeof color === 'string' && color);
+            if (seriesColors.length) return seriesColors;
+            return Array.isArray(option?.color)
+                ? option.color.filter((color) => typeof color === 'string' && color)
+                : [];
+        };
+        const before = extract(previous);
+        const after = extract(next);
+        return after.length && this._stableOptionJson(before) !== this._stableOptionJson(after)
+            ? after
+            : null;
+    }
+
+    _quickCommandSummary(command) {
+        if (command.type === 'customPalette') {
+            return t('charts.chat.summaryColor', { color: command.name });
+        }
+        if (command.type === 'palette') {
+            return t('charts.chat.summaryPalette', { palette: command.id });
+        }
+        if (command.type === 'binding') {
+            return t('charts.chat.summaryXAxis', { column: command.value });
+        }
+        const keys = {
+            dataLabels: command.value ? 'charts.chat.summaryLabelsOn' : 'charts.chat.summaryLabelsOff',
+            legend: command.value ? 'charts.chat.summaryLegendOn' : 'charts.chat.summaryLegendOff',
+            dataZoom: command.value ? 'charts.chat.summaryZoomOn' : 'charts.chat.summaryZoomOff',
+            sortDesc: command.value ? 'charts.chat.summarySortOn' : 'charts.chat.summarySortOff',
+        };
+        return keys[command.key] ? t(keys[command.key]) : '';
+    }
+
+    _withXAxisBinding(option, column, currentSpec = null) {
+        const data = this.state.currentData || {};
+        const names = (data.columns || []).map((item) => typeof item === 'string' ? item : item?.name);
+        const columnIndex = names.indexOf(column);
+        const rows = data.data || data.rows || [];
+        if (columnIndex < 0 || !Array.isArray(rows) || !rows.length) return null;
+        const categories = rows.map((row) => (
+            Array.isArray(row) ? row[columnIndex] : row?.[column]
+        ));
+        if (categories.some((value) => value === undefined)) return null;
+        const previousColumn = currentSpec?.x;
+        const previousIndex = names.indexOf(previousColumn);
+        const sourceCategories = previousIndex >= 0
+            ? rows.map((row) => Array.isArray(row) ? row[previousIndex] : row?.[previousColumn])
+            : null;
+
+        let out;
+        try { out = JSON.parse(JSON.stringify(option)); } catch (_) { return null; }
+        if (out.dataset) return null;
+        const axes = Array.isArray(out.xAxis) ? out.xAxis : out.xAxis ? [out.xAxis] : [];
+        if (axes.length !== 1 || axes[0]?.type !== 'category') return null;
+        const axis = axes[0];
+        if (!Array.isArray(axis.data) || axis.data.length !== categories.length) return null;
+        const currentCategories = axis.data.slice();
+        if (sourceCategories && sourceCategories.every((value) => value !== undefined)) {
+            const keys = sourceCategories.map((value) => JSON.stringify([typeof value, value]));
+            const hasDuplicates = new Set(keys).size !== keys.length;
+            const currentKeys = currentCategories.map((value) => JSON.stringify([typeof value, value]));
+            if (hasDuplicates && currentKeys.some((key, index) => key !== keys[index])) return null;
+        }
+        axes[0] = { ...axis, data: categories.slice(), name: column };
+        out.xAxis = Array.isArray(out.xAxis) ? axes : axes[0];
+
+        if (Array.isArray(out.series)) {
+            const unsupported = out.series.some((series) => (
+                series && (
+                    Number(series.xAxisIndex || 0) !== 0
+                    || series.datasetIndex !== undefined
+                    || series.encode !== undefined
+                    || (series.data !== undefined && !Array.isArray(series.data))
+                    || (Array.isArray(series.data) && series.data.length !== categories.length)
+                )
+            ));
+            if (unsupported) return null;
+            let alignmentFailed = false;
+            const reboundSeries = out.series.map((series) => {
+                if (!series || !Array.isArray(series.data)) return series;
+                let aligned = series.data.slice();
+                if (sourceCategories && sourceCategories.every((value) => value !== undefined)) {
+                    const queues = new Map();
+                    currentCategories.forEach((value, index) => {
+                        const key = JSON.stringify([typeof value, value]);
+                        if (!queues.has(key)) queues.set(key, []);
+                        queues.get(key).push(series.data[index]);
+                    });
+                    aligned = sourceCategories.map((value) => {
+                        const key = JSON.stringify([typeof value, value]);
+                        return queues.get(key)?.shift();
+                    });
+                    if (aligned.some((point) => point === undefined)) {
+                        alignmentFailed = true;
+                        return series;
+                    }
+                }
+                const points = aligned.map((point, index) => {
+                    if (Array.isArray(point) && point.length >= 2) return [categories[index], ...point.slice(1)];
+                    if (point && typeof point === 'object' && Array.isArray(point.value) && point.value.length >= 2) {
+                        return { ...point, value: [categories[index], ...point.value.slice(1)] };
+                    }
+                    return point;
+                });
+                return { ...series, data: points };
+            });
+            if (alignmentFailed) return null;
+            out.series = reboundSeries;
+        }
+        return out;
     }
 
     /**
@@ -1143,9 +1389,13 @@ export class ChartManager {
         if (!newConfig || typeof newConfig !== 'object' || !this.chartSession) return;
         const previousSnapshot = this.chartSession.snapshot();
         const previousWorking = this.chartSession.working;
+        const previousDisplay = this.currentEchartsOptions;
+        const previousRenderedConfig = this.state.currentConfig;
+        const previousCustomPalette = this.customPalette;
         const baselineConfig = this.chartSession.baseline.config;
         const candidate = createChartSession(previousSnapshot);
         const cleaned = stripDerivedSeries(newConfig);
+        const editedPalette = this._explicitPaletteChange(previousWorking.config, cleaned);
         const styleOverrides = extractStyleOverrides(cleaned, baselineConfig);
         const nextSpec = edit?.chart_spec && typeof edit.chart_spec === 'object'
             ? edit.chart_spec
@@ -1163,6 +1413,14 @@ export class ChartManager {
                 toggles: this.chartOptionsPanel.getToggles(),
                 legendUserSet: this.chartOptionsPanel.legendUserSet,
             });
+        }
+        if (this._stableOptionJson(candidate.snapshot()) === this._stableOptionJson(previousSnapshot)
+            && !editedPalette) {
+            this._syncPanelFromSession();
+            return { applied: false, noChange: true };
+        }
+        if (editedPalette) {
+            this.customPalette = { name: 'custom', colors: editedPalette.slice() };
         }
 
         // Publish the semantic candidate before rendering so a newer local
@@ -1188,7 +1446,12 @@ export class ChartManager {
             this.chartSession = candidate;
             this._syncLegacySessionAliases();
             this._syncPanelFromSession();
+            if (editedPalette) {
+                this.chartOptionsPanel?.setCustomPalette('custom', editedPalette);
+            }
+            return { applied: true };
         } catch (error) {
+            this.customPalette = previousCustomPalette;
             if (!this._owns(owner) || error?.name === 'AbortError') return;
             if (this._owns(owner) && error?.name !== 'AbortError') {
                 console.error('[ChartManager] Failed to apply edited config:', error);
@@ -1200,7 +1463,9 @@ export class ChartManager {
                     this._syncLegacySessionAliases();
                     this._syncPanelFromSession();
                 } catch (_) {
-                    this._invalidateRenderedChart();
+                    this.currentEchartsOptions = previousDisplay;
+                    this.state.currentConfig = previousRenderedConfig;
+                    this._renderReady = Boolean(previousDisplay);
                 }
             }
             throw error;
@@ -1216,8 +1481,11 @@ export class ChartManager {
     async resetChartEdits() {
         if (!this.chartSession) return;
         const previousSnapshot = this.chartSession.snapshot();
+        const previousCustomPalette = this.customPalette;
         const candidate = createChartSession(previousSnapshot);
         candidate.reset();
+        this.customPalette = null;
+        this.chartOptionsPanel?.clearCustomPalette?.();
         this.chartSession = candidate;
         this._syncLegacySessionAliases();
         this._syncPanelFromSession();
@@ -1229,6 +1497,7 @@ export class ChartManager {
             this._syncLegacySessionAliases();
             this._syncPanelFromSession();
         } catch (error) {
+            this.customPalette = previousCustomPalette;
             if (!this._owns(owner) || error?.name === 'AbortError') return;
             if (this._owns(owner) && error?.name !== 'AbortError') {
                 const rollback = createChartSession(previousSnapshot);

@@ -564,8 +564,10 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-trace { margin-top: 11px; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); }
 .v3-trace-row { display: grid; grid-template-columns: 6px minmax(82px, auto) 1fr 46px; align-items: center; gap: 9px; padding: 7px 11px; border-bottom: 1px solid var(--border); font: 10.5px var(--font-mono); }
 .v3-trace-row:last-child { border-bottom: 0; }
+.v3-trace-row--breakdown { padding-block: 5px; background: var(--soft); color: var(--muted); }
 .v3-trace-note { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .v3-trace-ms { color: var(--muted); text-align: end; font-variant-numeric: tabular-nums; direction: ltr; }
+.v3-trace-reconcile { padding: 8px 11px; color: var(--faint); font: 10.5px/1.45 var(--font-mono); }
 .v3-summary { font-size: 14.5px; font-weight: 400; line-height: 1.6; text-align: start; text-wrap: pretty; }
 
 /* Rendered Markdown answers (capability/catalog help). Scoped so nothing here
@@ -732,7 +734,12 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-data-block[hidden] { display: none; }
 
 /* Conversation persistence: thread header, restored-turn hints */
-.v3-thread-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.v3-thread-head {
+  position: sticky; top: 0; z-index: 3; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin: 0; padding: 8px 0;
+  border-bottom: 1px solid var(--border); background: var(--bg);
+}
 .v3-thread-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11.5px; }
 .v3-thread-restoring .v3-thread-empty-label { animation: v3-pulse 1.4s ease-in-out infinite; }
 @keyframes v3-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
@@ -784,8 +791,9 @@ body.v3-ready > .app-layout { display: none !important; }
 }
 .v3-chart-edit .chart-refine-applied { width: fit-content; max-width: 100%; padding-inline-start: 0; }
 .v3-chart-edit .chart-refine-reset {
-  height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: 9999px;
-  background: transparent; color: var(--muted); font-size: 12px;
+  width: 30px; height: 30px; padding: 0; display: inline-flex; flex: 0 0 30px;
+  align-items: center; justify-content: center; border: 1px solid var(--border);
+  border-radius: 9999px; background: transparent; color: var(--muted);
 }
 .v3-chart-edit .chart-refine-reset:hover { border-color: var(--border2); background: var(--soft); color: var(--text); }
 .v3-chart-edit .chart-refine-status { margin-top: 6px; color: var(--muted); font-size: 12px; }

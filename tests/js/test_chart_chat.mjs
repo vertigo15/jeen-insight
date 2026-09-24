@@ -194,8 +194,8 @@ assert.equal(chat._rowEl.children.includes(chat._appliedEl), false);
 assert.equal(chat._appliedLabelEl.textContent, 'Applied:');
 assert.equal(chat._appliedInstructionEl.tagName, 'BDI');
 assert.equal(chat._appliedInstructionEl.getAttribute('dir'), 'auto');
-assert.equal(chat._appliedInstructionEl.textContent, 'הצג revenue by region');
-assert.equal(chat._resetBtnEl.textContent, 'Reset chart');
+assert.equal(chat._appliedInstructionEl.textContent, 'Rendered');
+assert.equal(chat._resetBtnEl.getAttribute('aria-label'), 'Reset chart');
 assert.deepEqual(chat.messages.map((message) => message.role), ['user', 'assistant']);
 
 const reset = chat._handleReset();

@@ -2613,6 +2613,8 @@ td.cell-id {
 .chart-refine-applied-label {
   font-weight: var(--weight-semibold);
   color: var(--color-success);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .chart-refine-applied-instruction {
   max-width: min(42ch, 100%);
@@ -2624,17 +2626,20 @@ td.cell-id {
 .chart-refine-session-hint { color: var(--color-faint); }
 .chart-refine-dot { color: var(--color-faint); font-size: 12px; }
 .chart-refine-reset {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  flex: 0 0 30px;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--color-border);
   background: transparent;
-  padding: 3px 8px;
-  font-family: var(--font-sans);
-  font-size: 12px;
-  font-weight: var(--weight-semibold);
+  padding: 0;
   color: var(--color-muted);
   border-radius: 999px;
   cursor: pointer;
 }
-.chart-refine-reset:hover { border-color: var(--color-accent); color: var(--color-text); }
+.chart-refine-reset:hover { border-color: var(--color-muted); color: var(--color-text); background: var(--color-surface-2); }
 .chart-refine-reset:disabled { opacity: .5; cursor: not-allowed; }
 /* One persistent live region announces progress and every outcome. */
 .chart-refine-status {
