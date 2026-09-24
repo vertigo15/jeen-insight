@@ -287,7 +287,13 @@ async def rerun_analysis(request: AnalysisRerunRequest, principal: Principal = D
         patch = await _patch_from_instruction(agent, skill, base_params, request.instruction, parent.get("question") or "")
         instruction_ms = int((time.monotonic() - instruction_started) * 1000)
         if not patch:
-            raise HTTPException(status_code=422, detail="I couldn't turn that instruction into a parameter change. Try the chips instead.")
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "I couldn't turn that instruction into a parameter change. "
+                    "Use the Adjust analysis controls or try a more specific instruction."
+                ),
+            )
     if not patch:
         raise HTTPException(status_code=422, detail="Nothing to change: provide params_patch or an instruction")
     try:

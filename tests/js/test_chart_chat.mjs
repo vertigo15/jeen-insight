@@ -42,6 +42,6 @@ assert.equal(chat._applyBtnEl.disabled, false);
 chat._showApplied('open map layers');
 assert.equal(chat._entryEl.hidden, false);
 assert.equal(chat._appliedEl.hidden, false);
-assert.equal(chat._appliedLabelEl.textContent, 'Applied: open map layers');
+assert.equal(chat._appliedLabelEl.textContent, 'open map layers');
 
 console.log('chart chat JS tests passed');

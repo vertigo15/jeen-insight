@@ -166,15 +166,18 @@ async def _warm_caches(
     metadata_loader: Any,
     connection_service: Any,
     prompt_cache: Any,
+    *,
+    warm_metadata: bool = True,
 ) -> None:
     """Pre-warm metadata and prompt caches after startup.
 
-    Runs concurrently for all active connections so the first real query
-    never pays the cold-start penalty.
+    In DB catalog mode, runs concurrently for all active connections. MCP mode
+    restores durable L2 entries separately and warms a selected connection via
+    `/warm-cache`; it must not fetch every remote catalog at process startup.
     """
     import asyncio as _asyncio
     try:
-        connections = await connection_service.list_connections()
+        connections = await connection_service.list_connections() if warm_metadata else []
         if connections:
             tasks = [metadata_loader.load_all(c.source_key) for c in connections]
             results = await _asyncio.gather(*tasks, return_exceptions=True)
@@ -190,6 +193,40 @@ async def _warm_caches(
         logger.info("startup: pre-warmed prompt cache")
     except Exception as exc:  # noqa: BLE001
         logger.warning("startup: cache warm-up skipped: %s", exc)
+
+
+async def _restore_mcp_l1_cache() -> bool:
+    """Restore durable MCP entries and report whether MCP mode is usable."""
+    try:
+        catalog_src = await state.mcp_server_service.get_catalog_source()
+        if catalog_src != "mcp":
+            logger.info("startup: DB catalog mode")
+            return False
+        active_srv = await state.mcp_server_service.get_active()
+        if not active_srv:
+            logger.warning("startup: catalog_source=mcp but no active server; falling back to DB")
+            return False
+        try:
+            warmed = await state.mcp_cache_service.warm_from_db(active_srv.id)
+            logger.info(
+                "startup: MCP mode active (%s) — warmed %d cache entries",
+                active_srv.server_name,
+                warmed,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # A failed durable-cache restore does not change the configured
+            # catalog provider. Keep MCP mode active so startup does not fan
+            # out DB metadata loads for every connection; the selected
+            # connection will warm its reusable MCP catalog on demand.
+            logger.warning(
+                "startup: MCP L2 cache restore failed for %s; continuing with an empty L1 cache: %s",
+                active_srv.server_name,
+                exc,
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("startup: MCP cache warm-up skipped: %s", exc)
+        return False
 
 
 async def _seed_prompts(conn) -> None:
@@ -438,22 +475,15 @@ async def lifespan(_app: FastAPI):
         state.insights_eval_graph = None
 
     # ── Pre-warm MCP L1 cache from DB (if MCP mode is active) ────────────────
-    try:
-        catalog_src = await state.mcp_server_service.get_catalog_source()
-        if catalog_src == "mcp":
-            active_srv = await state.mcp_server_service.get_active()
-            if active_srv:
-                warmed = await state.mcp_cache_service.warm_from_db(active_srv.id)
-                logger.info("startup: MCP mode active (%s) — warmed %d cache entries", active_srv.server_name, warmed)
-            else:
-                logger.warning("startup: catalog_source=mcp but no active server; falling back to DB")
-        else:
-            logger.info("startup: DB catalog mode")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("startup: MCP cache warm-up skipped: %s", exc)
+    mcp_mode = await _restore_mcp_l1_cache()
 
     # ── Pre-warm caches (metadata + system prompt) for all connections ────
-    await _warm_caches(state.metadata_loader, state.connection_service, state.prompt_cache)
+    await _warm_caches(
+        state.metadata_loader,
+        state.connection_service,
+        state.prompt_cache,
+        warm_metadata=not mcp_mode,
+    )
 
     logger.info("✅ Jeen Insights ready")
     try:
@@ -472,6 +502,8 @@ async def lifespan(_app: FastAPI):
             await state.agent_registry.close()
         if state.dax_agent_registry:
             await state.dax_agent_registry.close()
+        if state.mcp_catalog_client:
+            await state.mcp_catalog_client.aclose()
         await close_metadata_pool()
         # Reset handles so a hot-reload cycle doesn't leave stale references.
         state.agent_registry       = None

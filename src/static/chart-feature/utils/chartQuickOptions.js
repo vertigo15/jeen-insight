@@ -7,9 +7,10 @@
  * @param {object} config
  * @param {{ dataLabels?: boolean, legend?: boolean, dataZoom?: boolean, sortDesc?: boolean }} toggles
  * @param {object|null} baselineConfig - original config for restoring category order
+ * @param {{restoreSort?: boolean}} options - restore baseline order only on an explicit sort-off action
  * @returns {object}
  */
-export function applyQuickOptions(config, toggles, baselineConfig = null) {
+export function applyQuickOptions(config, toggles, baselineConfig = null, options = {}) {
     if (!config || typeof config !== 'object') return config;
     let out;
     try {
@@ -55,7 +56,7 @@ export function applyQuickOptions(config, toggles, baselineConfig = null) {
     if (typeof toggles.sortDesc === 'boolean') {
         if (toggles.sortDesc) {
             _sortCategorySeriesDesc(out);
-        } else if (baselineConfig) {
+        } else if (baselineConfig && options.restoreSort) {
             _restoreCategoryOrder(out, baselineConfig);
         }
     }
@@ -88,6 +89,7 @@ function _setCategoryData(config, axisKey, categories) {
 }
 
 function _sortCategorySeriesDesc(config) {
+    _restoreRecordedSort(config);
     const axis = _getCategoryAxis(config);
     if (!axis || !Array.isArray(axis.data) || axis.data.length === 0) return;
 
@@ -99,10 +101,12 @@ function _sortCategorySeriesDesc(config) {
     const pairs = categories.map((cat, i) => ({
         cat,
         val: _seriesValue(primary.data[i]),
+        index: i,
     }));
-    pairs.sort((a, b) => b.val - a.val);
+    pairs.sort((a, b) => (b.val - a.val) || (a.index - b.index));
 
     const sortedCats = pairs.map((p) => p.cat);
+    const order = pairs.map((p) => p.index);
     const axisKey = config.xAxis && (Array.isArray(config.xAxis) ? config.xAxis.some((a) => a === axis || a.type === 'category') : config.xAxis === axis)
         ? 'xAxis'
         : 'yAxis';
@@ -110,15 +114,27 @@ function _sortCategorySeriesDesc(config) {
 
     config.series = series.map((s) => {
         if (!Array.isArray(s.data) || s.data.length !== categories.length) return s;
-        const byCat = new Map(categories.map((c, i) => [c, s.data[i]]));
-        return { ...s, data: sortedCats.map((c) => byCat.get(c)) };
+        return { ...s, data: order.map((index) => s.data[index]) };
     });
+    config.jeenSortState = { axisKey, order, categories };
 }
 
 function _restoreCategoryOrder(config, baseline) {
+    if (_restoreRecordedSort(config)) return;
+    // Legacy configs created before jeenSortState cannot be restored safely
+    // when categories repeat. Leaving them unchanged is safer than pairing a
+    // value with the wrong label or copying stale baseline series data.
     const baseAxis = _getCategoryAxis(baseline);
     if (!baseAxis || !Array.isArray(baseAxis.data)) return;
     const categories = baseAxis.data.slice();
+    if (new Set(categories.map((value) => JSON.stringify([typeof value, value]))).size !== categories.length) return;
+    const currentAxis = _getCategoryAxis(config);
+    if (!currentAxis || !Array.isArray(currentAxis.data)) return;
+    const positions = new Map(currentAxis.data.map((value, index) => [
+        JSON.stringify([typeof value, value]), index,
+    ]));
+    const order = categories.map((value) => positions.get(JSON.stringify([typeof value, value])));
+    if (order.some((index) => index === undefined)) return;
     const axisKey = baseline.xAxis && (Array.isArray(baseline.xAxis)
         ? baseline.xAxis.some((a) => a && a.type === 'category')
         : baseline.xAxis.type === 'category')
@@ -127,16 +143,36 @@ function _restoreCategoryOrder(config, baseline) {
     _setCategoryData(config, axisKey, categories);
 
     const series = Array.isArray(config.series) ? config.series : [];
-    const baseSeries = Array.isArray(baseline.series) ? baseline.series : [];
-    config.series = series.map((s, idx) => {
-        const base = baseSeries[idx];
-        if (base && Array.isArray(base.data) && base.data.length === categories.length) {
-            return { ...s, data: base.data.slice() };
-        }
+    config.series = series.map((s) => {
         if (!Array.isArray(s.data) || s.data.length !== categories.length) return s;
-        const byCat = new Map(categories.map((c, i) => [c, s.data[i]]));
-        return { ...s, data: categories.map((c) => byCat.get(c)) };
+        return { ...s, data: order.map((index) => s.data[index]) };
     });
+}
+
+function _restoreRecordedSort(config) {
+    const state = config && config.jeenSortState;
+    if (!state || !Array.isArray(state.order) || !Array.isArray(state.categories)) return false;
+    const { axisKey, order, categories } = state;
+    if (!['xAxis', 'yAxis'].includes(axisKey) || order.length !== categories.length) return false;
+    const inverse = Array(order.length);
+    order.forEach((originalIndex, sortedIndex) => {
+        if (Number.isInteger(originalIndex) && originalIndex >= 0 && originalIndex < order.length) {
+            inverse[originalIndex] = sortedIndex;
+        }
+    });
+    if (inverse.some((index) => index === undefined)) return false;
+    _setCategoryData(config, axisKey, categories.slice());
+    const series = Array.isArray(config.series) ? config.series : [];
+    config.series = series.map((item) => {
+        if (!item || !Array.isArray(item.data) || item.data.length !== inverse.length) return item;
+        return { ...item, data: inverse.map((sortedIndex) => item.data[sortedIndex]) };
+    });
+    delete config.jeenSortState;
+    return true;
+}
+
+export function restoreChartSortState(config) {
+    return _restoreRecordedSort(config);
 }
 
 function _seriesValue(point) {

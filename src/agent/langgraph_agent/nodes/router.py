@@ -442,6 +442,15 @@ def make_fused_router(
         if route == "history_lookup" and history_query is None:
             route, reason = "needs_query", f"{reason} (history_lookup without a query)".strip()
 
+        # A memory answer must identify the turn it depends on. Without a
+        # canonical prior ref, a plain data request such as "show total sales
+        # per month" can be incorrectly satisfied by an older forecast that
+        # merely used similar words. Fresh data questions should query again;
+        # explicit follow-ups keep their T<n> refs and stay on the memory path.
+        if route == "from_memory" and ledger and not prior_refs:
+            route = "needs_query"
+            reason = f"{reason} (memory route had no prior reference; querying fresh data)".strip()
+
         # Capability backstop: the router sometimes misfiles "which ML models can
         # I use?" as out_of_scope (or defaults to needs_query on a parse failure),
         # so a strict deterministic cue rescues it to the capability answer. Only

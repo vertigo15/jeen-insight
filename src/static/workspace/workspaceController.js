@@ -39,6 +39,7 @@
         history_search: 'memory',
         fused_router: 'router',
         capability_answer: 'router',
+        pre_graph_setup: 'catalog',
         catalog_help_answer: 'catalog',
         catalog_lookup: 'catalog',
         prior_data_binder: 'catalog',
@@ -230,7 +231,7 @@
             return /^\d+ rows/.test(event.detail || '') ? event.detail : t('conversation.trace.readOnlyQuery');
         }
         const safeNodes = new Set([
-            'context_composer', 'fused_router', 'catalog_lookup',
+            'context_composer', 'fused_router', 'pre_graph_setup', 'catalog_lookup',
             'dax_catalog_lookup', 'sqlglot_validate', 'dlp_check',
             'dax_static_validate', 'trivial_result_check', 'feedback_classifier',
             'dax_feedback_router', 'result_integrity_check', 'response_formatter',
@@ -278,6 +279,7 @@
         readOnly: false,
         _pendingOpen: null,
         _generation: 0,
+        _selectionVersion: 0,
         _streamAbort: null,
         _hydrateAbort: null,
         _hydration: null,
@@ -978,6 +980,7 @@
                 this.conversation = { id: String(data.session_id), title: turn.question, source_key: null };
             }
             this.render();
+            this._scrollThread();
         },
 
         _onError(turn, error, data) {
@@ -990,6 +993,7 @@
                 if (turn.phaseState[key] === 'running') turn.phaseState[key] = 'error';
             });
             this.render();
+            this._scrollThread();
         },
 
         _onEnrichment(turn, data) {
@@ -1002,6 +1006,7 @@
         selectTurn(id) {
             const turn = this.turns.find((item) => item.id === id);
             if (!turn) return;
+            if (id !== this.selectedTurnId) this._selectionVersion += 1;
             this._captureSelectedChart();
             const selection = selectionForTurn(this.selectedResultId, turn);
             this.selectedTurnId = selection.selectedTurnId;
@@ -1564,10 +1569,7 @@
             return `<article class="v3-turn${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showAnswerBadge')}" data-route-path="${esc(routePath)}" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="${h('conversation.turn.showAnswer', { question: iso(turn.question) })}" aria-current="${selected ? 'true' : 'false'}">
               <div class="v3-question-row"><span class="v3-mini-avatar">${esc(initials)}</span><div class="v3-question" dir="${directionOf(turn.question)}">${esc(turn.question)}</div></div>
               ${strip}
-              ${!turn.restored && turn.traceOpen ? `<div class="v3-trace">${trace.map((item) => `<div class="v3-trace-row">
-                <span class="v3-dot ${item.status === 'node_failed' ? '' : 'is-ok'}"></span>
-                <span>${esc(item.node)}</span><span class="v3-trace-note">${esc(safeTraceNote(item))}</span>
-                <span class="v3-trace-ms">${formatMs(item.elapsed_ms)}</span></div>`).join('')}</div>` : ''}
+              ${!turn.restored && turn.traceOpen ? this._traceHtml(turn, trace) : ''}
               <div class="v3-answer">
                 ${summary ? (wantsMarkdown(result) ? markdownDiv(summary) : `<div class="v3-summary" dir="${directionOf(summary)}">${esc(summary)}</div>`) : ''}
                 ${findings.length ? `<section class="v3-insights" aria-label="${h('conversation.turn.keyInsights')}" dir="${insightsDirection}">
@@ -1580,6 +1582,43 @@
                 ${followups.length ? `<div class="v3-followups">${followups.map((question) => `<button class="v3-chip" dir="${directionOf(question)}" data-followup="${esc(textOf(question))}">${esc(textOf(question))}</button>`).join('')}</div>` : ''}
               </div>
             </article>`;
+        },
+
+        _traceHtml(turn, trace) {
+            const rows = trace.map((item) => {
+                let html = `<div class="v3-trace-row">
+                  <span class="v3-dot ${item.status === 'node_failed' ? '' : 'is-ok'}"></span>
+                  <span>${esc(item.node)}</span><span class="v3-trace-note">${esc(safeTraceNote(item))}</span>
+                  <span class="v3-trace-ms">${formatMs(item.elapsed_ms)}</span></div>`;
+                const timing = item.node === 'pre_graph_setup' && item.mcp_timing;
+                if (timing && typeof timing === 'object') {
+                    const parts = [
+                        ['mcpFiltered', timing.filtered_tool_ms],
+                        ['mcpReusable', timing.full_restore_ms],
+                        ['mcpConnection', timing.connection_ms],
+                        ['mcpParse', timing.parse_ms],
+                    ];
+                    html += parts
+                        .filter(([, value]) => Number.isFinite(Number(value)))
+                        .map(([label, value]) => `<div class="v3-trace-row v3-trace-row--breakdown">
+                          <span></span><span>${h(`conversation.trace.${label}`)}</span>
+                          <span class="v3-trace-note">${h('conversation.trace.includedInPreGraph')}</span>
+                          <span class="v3-trace-ms">${formatMs(Number(value))}</span></div>`)
+                        .join('');
+                }
+                return html;
+            }).join('');
+            const graphMs = trace.reduce((total, item) => total + Number(item.elapsed_ms || 0), 0);
+            const wallMs = Number(turn.durationMs || 0);
+            const overheadMs = Math.max(0, wallMs - graphMs);
+            const reconcile = wallMs > 0 && graphMs > 0
+                ? `<div class="v3-trace-reconcile">${h('conversation.trace.reconcile', {
+                    wall: formatMs(wallMs),
+                    graph: formatMs(graphMs),
+                    overhead: formatMs(overheadMs),
+                })}</div>`
+                : '';
+            return `<div class="v3-trace">${rows}${reconcile}</div>`;
         },
 
         _routePillHtml(result) {
@@ -1967,7 +2006,7 @@
                 }
                 setBusy(true);
                 try {
-                    if (this.selectedResultId !== turn.id) this.selectedResultId = turn.id;
+                    if (this.selectedResultId !== turn.id) this.selectTurn(turn.id);
                     await this.rerunAnalysis(null, patch);
                     this._definitionOpenFor = null;  // the new answer is selected; its own card is a click away
                 } catch (error) {
@@ -2001,7 +2040,11 @@
             };
             if (patch && Object.keys(patch).length) body.params_patch = patch;
             else body.instruction = String(instruction || '').trim();
-            const run = { parentId: turn.id, startedAt: Date.now() };
+            const run = {
+                parentId: turn.id,
+                startedAt: Date.now(),
+                selectionVersion: this._selectionVersion,
+            };
             const generation = this._generation;
             const abort = new AbortController();
             this._analysisRerunInFlight = run;
@@ -2014,7 +2057,10 @@
                 });
                 if (generation !== this._generation || abort.signal.aborted) return;
                 const label = body.instruction ? `${turn.question} — ${body.instruction}` : turn.question;
-                const select = this.selectedResultId === turn.id;
+                const select = (
+                    this.selectedResultId === turn.id
+                    && this._selectionVersion === run.selectionVersion
+                );
                 this._appendServerTurn(data, { question: label, parent: turn, select });
                 if (!select && typeof window.showToast === 'function') {
                     window.showToast(t('charts.chat.rerunCompleted'), 'info');

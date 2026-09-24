@@ -273,12 +273,44 @@ def test_rerun_needs_a_parent_analysis(client, ml_state):
     assert r.status_code == 404
 
 
+def test_rerun_unusable_instruction_points_to_adjust_analysis(client, ml_state, monkeypatch):
+    from src.api.routes import analysis as routes
+
+    parent_id, session = uuid4(), uuid4()
+    ml_state.history_service.get_turn_analysis = AsyncMock(return_value={
+        "turn_id": str(parent_id),
+        "session_id": session,
+        "question": "Forecast sales",
+        "analysis": {"skill": "forecast", "params": _FORECAST_PARAMS},
+        "low_confidence": False,
+    })
+    monkeypatch.setattr(routes, "_patch_from_instruction", AsyncMock(return_value={}))
+
+    r = client.post("/api/analysis/rerun", json={
+        "connection": "sales_db",
+        "parent_query_id": str(parent_id),
+        "session_id": str(session),
+        "instruction": "make it different somehow",
+    })
+
+    assert r.status_code == 422
+    assert "Adjust analysis" in r.json()["detail"]
+    assert "chips" not in r.json()["detail"].lower()
+
+
 def test_rerun_with_patch_creates_a_child_turn_with_a_diff(client, ml_state):
     parent_id, session = uuid4(), uuid4()
     ml_state.history_service.get_turn_analysis = AsyncMock(return_value={
         "turn_id": str(parent_id), "session_id": session, "question": "Is anything weird in profit?",
         "analysis": {"skill": "anomaly_detection", "params": _PARAMS}, "low_confidence": False,
     })
+    ml_state.agent.process_confirmed_analysis.return_value = _result(trace=[
+        {"node": "analysis_guard", "elapsed_ms": 11},
+        {"node": "analysis_sql", "elapsed_ms": 12},
+        {"node": "execute_query", "elapsed_ms": 13},
+        {"node": "analysis_run", "elapsed_ms": 14},
+        {"node": "fused_eval_analytics", "elapsed_ms": 15},
+    ])
     r = client.post("/api/analysis/rerun", json={"connection": "sales_db", "parent_query_id": str(parent_id),
                                                  "session_id": str(session), "params_patch": {"grain": "month"}})
     assert r.status_code == 200, r.text
@@ -296,6 +328,13 @@ def test_rerun_with_patch_creates_a_child_turn_with_a_diff(client, ml_state):
     assert timing["analysis_ms"] >= 0 and timing["total_ms"] >= timing["analysis_ms"]
     assert set(timing["stages_ms"]) == {
         "guard_ms", "query_build_ms", "data_extraction_ms", "ml_execution_ms", "narration_ms",
+    }
+    assert timing["stages_ms"] == {
+        "guard_ms": 11,
+        "query_build_ms": 12,
+        "data_extraction_ms": 13,
+        "ml_execution_ms": 14,
+        "narration_ms": 15,
     }
     # The re-run was recorded as a consumed proposal carrying its child turn.
     rerun = next(p for p in ml_state.store.proposals.values() if p["kind"] == "rerun")

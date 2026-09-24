@@ -3,7 +3,7 @@
  * @module ChartOptionsPanel
  */
 
-import { applyQuickOptions, defaultLegendVisible, detectToggles } from '../utils/chartQuickOptions.js?v=71';
+import { applyQuickOptions, defaultLegendVisible, detectToggles } from '../utils/chartQuickOptions.js?v=73';
 import { CHART_PALETTES, DEFAULT_PALETTE_ID, isKnownPalette, paletteSwatches } from '../utils/chartPalettes.js?v=1';
 
 // Interface strings come from the locale catalog (static/i18n/i18n.js, loaded first).
@@ -49,7 +49,7 @@ export class ChartOptionsPanel {
      * @param {string} containerId
      * @param {{
      *   onColumnsChange: (mapping: { xColumn: string, yColumn: string, seriesColumn: string }) => void,
-     *   onQuickToggle: (toggles: object, applyToConfig: (cfg: object) => object) => void,
+     *   onQuickToggle: (toggles: object, applyToConfig: (cfg: object) => object, change: {key:string,value:boolean}) => void,
      *   onPaletteChange?: (paletteId: string) => void,
      *   getThemeColors?: () => string[],
      *   initialPalette?: string,
@@ -59,6 +59,7 @@ export class ChartOptionsPanel {
         this.containerId = containerId;
         this.hooks = hooks || {};
         this.palette = isKnownPalette(this.hooks.initialPalette) ? this.hooks.initialPalette : DEFAULT_PALETTE_ID;
+        this.customPalette = null;
         this._paletteOpen = false;
         this.columns = [];
         this.mapping = { xColumn: '', yColumn: '', seriesColumn: '' };
@@ -193,6 +194,17 @@ export class ChartOptionsPanel {
         return { ...this.toggles };
     }
 
+    setToggles(patch = {}) {
+        for (const [key, value] of Object.entries(patch)) {
+            if (key in this.toggles && typeof value === 'boolean') this.toggles[key] = value;
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'legend')) this.legendUserSet = true;
+        document.querySelectorAll('.chart-opt-toggle').forEach((btn) => {
+            const key = btn.dataset.key;
+            if (key in this.toggles) btn.classList.toggle('is-on', !!this.toggles[key]);
+        });
+    }
+
     /**
      * Mirror the toggle state encoded in a (chat-edited) config so re-applying
      * quick options doesn't undo an LLM change like "add data labels". Refreshes
@@ -217,8 +229,8 @@ export class ChartOptionsPanel {
     }
 
     /** Apply current toggles to a config copy (uses baseline for sort restore). */
-    applyTogglesTo(config, baselineConfig = null) {
-        return applyQuickOptions(config, this.toggles, baselineConfig);
+    applyTogglesTo(config, baselineConfig = null, options = {}) {
+        return applyQuickOptions(config, this.toggles, baselineConfig, options);
     }
 
     render() {
@@ -323,8 +335,20 @@ export class ChartOptionsPanel {
 
     /** Reflect an externally chosen palette (e.g. restored preference). */
     setPalette(id) {
-        if (!isKnownPalette(id) || id === this.palette) return;
+        if (!isKnownPalette(id)) return;
         this.palette = id;
+        this.customPalette = null;
+        if (this._mounted) this._renderPaletteChips();
+    }
+
+    setCustomPalette(name, colors) {
+        if (!Array.isArray(colors) || !colors.length) return;
+        this.customPalette = { name: String(name || 'custom'), colors: colors.slice() };
+        if (this._mounted) this._renderPaletteChips();
+    }
+
+    clearCustomPalette() {
+        this.customPalette = null;
         if (this._mounted) this._renderPaletteChips();
     }
 
@@ -356,11 +380,19 @@ export class ChartOptionsPanel {
     _renderPaletteChips() {
         const theme = this._themeColors();
         const dots = document.getElementById('chart-palette-dots');
-        if (dots) dots.innerHTML = this._dotsHtml(paletteSwatches(this.palette, theme));
+        const activeColors = this.customPalette?.colors || paletteSwatches(this.palette, theme);
+        if (dots) dots.innerHTML = this._dotsHtml(activeColors.slice(0, 4));
         const host = document.getElementById('chart-palette-expand');
         if (!host) return;
-        host.innerHTML = CHART_PALETTES.map((p) => {
-            const active = p.id === this.palette;
+        const custom = this.customPalette
+            ? `<button type="button" class="chart-palette-chip is-active" role="radio" aria-checked="true"
+                       data-palette="__custom__" title="${esc(t('charts.options.colorsCustomTitle'))}">
+                   <span class="chart-palette-dots" aria-hidden="true">${this._dotsHtml(this.customPalette.colors.slice(0, 4))}</span>
+                   <span>${esc(t('charts.options.colorsCustom'))}</span>
+               </button>`
+            : '';
+        host.innerHTML = custom + CHART_PALETTES.map((p) => {
+            const active = !this.customPalette && p.id === this.palette;
             return `<button type="button" class="chart-palette-chip${active ? ' is-active' : ''}" role="radio"
                         aria-checked="${active ? 'true' : 'false'}" data-palette="${p.id}" title="${p.label} palette">
                         <span class="chart-palette-dots" aria-hidden="true">${this._dotsHtml(paletteSwatches(p.id, theme))}</span>
@@ -373,8 +405,10 @@ export class ChartOptionsPanel {
     }
 
     _onPaletteChange(id) {
+        if (id === '__custom__') return;
         if (!isKnownPalette(id)) return;
         this.palette = id;
+        this.customPalette = null;
         this._renderPaletteChips();
         if (this.hooks.onPaletteChange) this.hooks.onPaletteChange(id);
     }
@@ -503,7 +537,11 @@ export class ChartOptionsPanel {
         const btn = document.querySelector(`.chart-opt-toggle[data-key="${key}"]`);
         if (btn) btn.classList.toggle('is-on', this.toggles[key]);
         if (this.hooks.onQuickToggle) {
-            this.hooks.onQuickToggle(this.getToggles(), (cfg, baseline) => this.applyTogglesTo(cfg, baseline));
+            this.hooks.onQuickToggle(
+                this.getToggles(),
+                (cfg, baseline, options) => this.applyTogglesTo(cfg, baseline, options),
+                { key, value: this.toggles[key] },
+            );
         }
     }
 

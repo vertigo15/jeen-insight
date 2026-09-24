@@ -12,11 +12,13 @@ import { collectNumericValues, makeLabelFormatter, makeValueFormatter } from './
 import { ChartContainer } from './components/ChartContainer.js?v=80';
 import { ChartToggle } from './components/ChartToggle.js?v=3';
 import { ChartTypeSelector } from './components/ChartTypeSelector.js?v=79';
-import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=75';
+import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=77';
 import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v=2';
 import { DEFAULT_PALETTE_ID, applyPalette, getPalette, isKnownPalette } from './utils/chartPalettes.js?v=1';
-import { ChartChat } from './components/ChartChat.js?v=105';
+import { ChartChat } from './components/ChartChat.js?v=107';
 import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js';
+import { parseChartQuickIntent } from './utils/chartQuickIntents.js?v=2';
+import { applyQuickOptions, detectToggles, restoreChartSortState } from './utils/chartQuickOptions.js?v=73';
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
 import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=8';
 import { CHART_TYPE_VALUES } from './chartTypes.js?v=79';
@@ -63,6 +65,7 @@ export class ChartManager {
         // User-chosen colour palette (a preference, so it follows the user across
         // charts). 'jeen' means "no override": theme tokens / server palette.
         this.paletteId = this._readPalettePreference();
+        this.customPalette = null;
 
         // Per-instance query context + view elements. When set (Chat mode)
         // these override the Ask-mode window globals / fixed element IDs so a
@@ -190,7 +193,7 @@ export class ChartManager {
                         this.handleChartTypeChange(selectedType);
                     }
                 },
-                onQuickToggle: () => this._reapplyQuickToggles(),
+                onQuickToggle: (_toggles, _apply, change) => this._reapplyQuickToggles(change),
                 onPaletteChange: (id) => this.setPalette(id),
                 getThemeColors: () => this._themeTokenColors(),
                 initialPalette: this.paletteId,
@@ -247,6 +250,7 @@ export class ChartManager {
                 onApply: (newConfig, derivedSpecs, notes, edit) => (
                     this.applyEditedConfig(newConfig, derivedSpecs, notes, edit)
                 ),
+                onQuickEdit: (instruction) => this.applyQuickInstruction(instruction),
                 onReset: () => this.resetChartEdits(),
                 // ML results: the bar re-runs the analysis as a new turn; the
                 // workspace owns that flow (proposal → /api/analysis/rerun).
@@ -722,13 +726,20 @@ export class ChartManager {
 
     /** Colours to draw with, or null when the server/theme default should stand. */
     _paletteColors() {
+        if (this.customPalette?.colors?.length) return this.customPalette.colors;
         const palette = getPalette(this.paletteId);
         if (palette.colors) return palette.colors;
         return this.workspaceMode ? this._themeTokenColors() : null;
     }
 
-    _withPalette(option) {
+    _withPalette(option, colorsOverride = undefined) {
         if (!option || this._isOsmMapOption(option) || isMapOption(option)) return option;
+        if (colorsOverride !== undefined) {
+            return Array.isArray(colorsOverride) && colorsOverride.length
+                ? applyPalette(option, colorsOverride)
+                : option;
+        }
+        if (this.customPalette?.colors?.length) return applyPalette(option, this.customPalette.colors);
         const palette = getPalette(this.paletteId);
         if (!palette.colors) return option; // default: leave theme/server colours alone
         return applyPalette(option, palette.colors);
@@ -739,14 +750,219 @@ export class ChartManager {
      * chart in place (no server round-trip, chat edits are preserved).
      */
     setPalette(id) {
-        if (!isKnownPalette(id) || id === this.paletteId) return;
+        if (!isKnownPalette(id) || (id === this.paletteId && !this.customPalette)) return;
         this.paletteId = id;
+        this.customPalette = null;
         try { window.JeenPreferences?.setChartPalette?.(id); } catch (_) { /* preference is best-effort */ }
         this.chartOptionsPanel?.setPalette(id);
         const current = this.currentEchartsOptions;
         if (!current || !this.chartContainer || this._isOsmMapOption(current) || isMapOption(current)) return;
         const displayConfig = this._withWorkspaceTheme(this._withPalette(current));
         this._renderDisplayConfig(displayConfig, 'Failed to apply palette');
+    }
+
+    _setCustomPalette(name, colors) {
+        if (!Array.isArray(colors) || !colors.length) return;
+        this.customPalette = { name: String(name || 'custom'), colors: colors.slice() };
+        this.chartOptionsPanel?.setCustomPalette(this.customPalette.name, this.customPalette.colors);
+    }
+
+    applyQuickInstruction(instruction) {
+        if (!this.currentEchartsOptions || this._isOsmMapOption(this.currentEchartsOptions)
+            || isMapOption(this.currentEchartsOptions)) return null;
+        const columns = this.chartOptionsPanel?.columns || this.state.currentData?.columns || [];
+        const parsed = parseChartQuickIntent(instruction, { columns });
+        if (!parsed) return null;
+
+        let base;
+        try { base = JSON.parse(JSON.stringify(this.currentEchartsOptions)); } catch (_) { base = this.currentEchartsOptions; }
+        const previousToggles = this.chartOptionsPanel?.getToggles?.() || {};
+        const candidateToggles = { ...previousToggles };
+        let candidatePaletteId = this.paletteId;
+        let candidateCustomPalette = this.customPalette
+            ? { name: this.customPalette.name, colors: this.customPalette.colors.slice() }
+            : null;
+        let paletteChanged = false;
+        let restoreSort = false;
+
+        for (const command of parsed.commands) {
+            if (command.type === 'toggle') {
+                restoreSort = restoreSort || (
+                    command.key === 'sortDesc'
+                    && previousToggles.sortDesc === true
+                    && command.value === false
+                );
+                candidateToggles[command.key] = command.value;
+            } else if (command.type === 'palette') {
+                candidateCustomPalette = null;
+                candidatePaletteId = command.id;
+                paletteChanged = true;
+            } else if (command.type === 'customPalette') {
+                candidateCustomPalette = {
+                    name: command.name,
+                    colors: command.colors.slice(),
+                };
+                paletteChanged = true;
+            } else if (command.type === 'binding') {
+                const rebound = this._withXAxisBinding(base, command.value);
+                if (!rebound) return null;
+                base = rebound;
+            }
+        }
+        const paletteColors = candidateCustomPalette?.colors
+            || getPalette(candidatePaletteId).colors;
+        let displayConfig = this._withQuickToggles(
+            base,
+            { restoreSort },
+            { toggles: candidateToggles, paletteColors },
+        );
+        displayConfig = this._withWorkspaceTheme(displayConfig, paletteColors);
+        displayConfig = this._finalizeForRender(displayConfig);
+        if (this._stableOptionJson(displayConfig) === this._stableOptionJson(this.currentEchartsOptions)) {
+            return { applied: false, noChange: true };
+        }
+
+        const applied = this._renderDisplayConfig(displayConfig, 'Failed to apply quick chart edit');
+        if (!applied) throw new Error(t('charts.chat.renderFailed'));
+        this.paletteId = candidatePaletteId;
+        this.customPalette = candidateCustomPalette;
+        this.chartOptionsPanel?.setToggles(candidateToggles);
+        if (paletteChanged) {
+            if (candidateCustomPalette) {
+                this.chartOptionsPanel?.setCustomPalette(
+                    candidateCustomPalette.name,
+                    candidateCustomPalette.colors,
+                );
+            } else {
+                this.chartOptionsPanel?.setPalette(candidatePaletteId);
+                try { window.JeenPreferences?.setChartPalette?.(candidatePaletteId); } catch (_) { /* best effort */ }
+            }
+        }
+        for (const command of parsed.commands) {
+            if (command.type !== 'binding') continue;
+            this.currentChartSpec = { ...(this.currentChartSpec || {}), x: command.value };
+            this.chartOptionsPanel?.syncFromSpec(this.currentChartSpec);
+        }
+        return {
+            applied: true,
+            summary: parsed.commands.map((command) => this._quickCommandSummary(command)).filter(Boolean).join(' · '),
+        };
+    }
+
+    _stableOptionJson(value) {
+        const normalize = (item) => {
+            if (Array.isArray(item)) return item.map(normalize);
+            if (!item || typeof item !== 'object') return item;
+            return Object.fromEntries(
+                Object.keys(item).sort().map((key) => [key, normalize(item[key])])
+            );
+        };
+        try { return JSON.stringify(normalize(value)); } catch (_) { return ''; }
+    }
+
+    _quickCommandSummary(command) {
+        if (command.type === 'customPalette') {
+            return t('charts.chat.summaryColor', { color: command.name });
+        }
+        if (command.type === 'palette') {
+            return t('charts.chat.summaryPalette', { palette: command.id });
+        }
+        if (command.type === 'binding') {
+            return t('charts.chat.summaryXAxis', { column: command.value });
+        }
+        const keys = {
+            dataLabels: command.value ? 'charts.chat.summaryLabelsOn' : 'charts.chat.summaryLabelsOff',
+            legend: command.value ? 'charts.chat.summaryLegendOn' : 'charts.chat.summaryLegendOff',
+            dataZoom: command.value ? 'charts.chat.summaryZoomOn' : 'charts.chat.summaryZoomOff',
+            sortDesc: command.value ? 'charts.chat.summarySortOn' : 'charts.chat.summarySortOff',
+        };
+        return keys[command.key] ? t(keys[command.key]) : '';
+    }
+
+    /**
+     * Rebind a category x-axis to another column already present in the result.
+     * This is deterministic and uses every row in the browser result; the LLM
+     * editor only receives a sample and historically changed neither chart_spec
+     * nor all category labels, which produced false "Applied" confirmations.
+     */
+    _withXAxisBinding(config, column) {
+        const data = this.state.currentData || {};
+        const names = (data.columns || []).map((item) => typeof item === 'string' ? item : item?.name);
+        const columnIndex = names.indexOf(column);
+        const rows = data.data || data.rows || [];
+        if (columnIndex < 0 || !Array.isArray(rows) || !rows.length) return null;
+        const categories = rows.map((row) => (
+            Array.isArray(row) ? row[columnIndex] : row?.[column]
+        ));
+        if (categories.some((value) => value === undefined)) return null;
+        const previousColumn = this.currentChartSpec?.x;
+        const previousIndex = names.indexOf(previousColumn);
+        const sourceCategories = previousIndex >= 0
+            ? rows.map((row) => Array.isArray(row) ? row[previousIndex] : row?.[previousColumn])
+            : null;
+
+        let out;
+        try { out = JSON.parse(JSON.stringify(config)); } catch (_) { return null; }
+        if (out.dataset) return null;
+        restoreChartSortState(out);
+        const axes = Array.isArray(out.xAxis) ? out.xAxis : out.xAxis ? [out.xAxis] : [];
+        if (axes.length !== 1 || axes[0]?.type !== 'category') return null;
+        const axis = axes[0];
+        if (!Array.isArray(axis.data) || axis.data.length !== categories.length) return null;
+        const currentCategories = axis.data.slice();
+        if (sourceCategories && sourceCategories.every((value) => value !== undefined)) {
+            const keys = sourceCategories.map((value) => JSON.stringify([typeof value, value]));
+            const hasDuplicates = new Set(keys).size !== keys.length;
+            const currentKeys = currentCategories.map((value) => JSON.stringify([typeof value, value]));
+            if (hasDuplicates && currentKeys.some((key, index) => key !== keys[index])) return null;
+        }
+        axes[0] = { ...axis, data: categories.slice(), name: column };
+        out.xAxis = Array.isArray(out.xAxis) ? axes : axes[0];
+
+        if (Array.isArray(out.series)) {
+            const unsupported = out.series.some((series) => (
+                series && (
+                    Number(series.xAxisIndex || 0) !== 0
+                    || series.datasetIndex !== undefined
+                    || series.encode !== undefined
+                    || (series.data !== undefined && !Array.isArray(series.data))
+                    || (Array.isArray(series.data) && series.data.length !== categories.length)
+                )
+            ));
+            if (unsupported) return null;
+            let alignmentFailed = false;
+            const reboundSeries = out.series.map((series) => {
+                if (!series || !Array.isArray(series.data)) return series;
+                let aligned = series.data.slice();
+                if (sourceCategories && sourceCategories.every((value) => value !== undefined)) {
+                    const queues = new Map();
+                    currentCategories.forEach((value, index) => {
+                        const key = JSON.stringify([typeof value, value]);
+                        if (!queues.has(key)) queues.set(key, []);
+                        queues.get(key).push(series.data[index]);
+                    });
+                    aligned = sourceCategories.map((value) => {
+                        const key = JSON.stringify([typeof value, value]);
+                        return queues.get(key)?.shift();
+                    });
+                    if (aligned.some((point) => point === undefined)) {
+                        alignmentFailed = true;
+                        return series;
+                    }
+                }
+                const points = aligned.map((point, index) => {
+                    if (Array.isArray(point) && point.length >= 2) return [categories[index], ...point.slice(1)];
+                    if (point && typeof point === 'object' && Array.isArray(point.value) && point.value.length >= 2) {
+                        return { ...point, value: [categories[index], ...point.value.slice(1)] };
+                    }
+                    return point;
+                });
+                return { ...series, data: points };
+            });
+            if (alignmentFailed) return null;
+            out.series = reboundSeries;
+        }
+        return out;
     }
 
     /**
@@ -770,12 +986,14 @@ export class ChartManager {
             this.chartContainer.render(chartConfig);
             this.currentEchartsOptions = displayConfig;
             this.state.currentConfig = chartConfig;
+            return true;
         } catch (error) {
             console.error(`[ChartManager] ${errorLabel}:`, error);
+            return false;
         }
     }
 
-    _withWorkspaceTheme(option) {
+    _withWorkspaceTheme(option, colorsOverride = undefined) {
         if (!this.workspaceMode || !option || typeof option !== 'object') return option;
         let themed;
         try { themed = JSON.parse(JSON.stringify(option)); } catch (_) { themed = { ...option }; }
@@ -783,7 +1001,9 @@ export class ChartManager {
         const token = (name, fallback) => style.getPropertyValue(name).trim() || fallback;
         // The chosen palette (or the theme tokens for the default) drives both
         // the option palette and the per-series colours below.
-        const colors = this._paletteColors() || this._themeTokenColors();
+        const colors = (
+            colorsOverride !== undefined ? colorsOverride : this._paletteColors()
+        ) || this._themeTokenColors();
         const faint = token('--faint', '#b8b8bf');
         const muted = token('--muted', '#98989f');
         const border = token('--border', '#e9e9ec');
@@ -1003,15 +1223,28 @@ export class ChartManager {
             derivedSpecs || [],
             this.state.currentData
         );
-        // Mirror the edit's visual state (e.g. label.show=true from "add data
-        // labels") into the quick toggles BEFORE re-applying them — otherwise a
-        // default-off toggle would immediately strip the change the user asked for.
-        if (this.chartOptionsPanel) {
-            this.chartOptionsPanel.syncTogglesFromConfig(withDerived);
+        const candidateToggles = {
+            ...(this.chartOptionsPanel?.getToggles?.() || {}),
+            ...detectToggles(withDerived),
+        };
+        if (!(withDerived.legend && typeof withDerived.legend === 'object')) {
+            candidateToggles.legend = this.chartOptionsPanel?.getToggles?.().legend;
         }
+        const editedPalette = this._explicitPaletteChange(previous, withDerived);
+        const paletteColors = editedPalette || this._paletteColors();
         const displayConfig = this._finalizeForRender(
-            this._withWorkspaceTheme(this._withQuickToggles(withDerived))
+            this._withWorkspaceTheme(
+                this._withQuickToggles(
+                    withDerived,
+                    {},
+                    { toggles: candidateToggles, paletteColors },
+                ),
+                paletteColors,
+            )
         );
+        if (this._stableOptionJson(displayConfig) === this._stableOptionJson(previous)) {
+            return { applied: false, noChange: true };
+        }
 
         const chartConfig = {
             type: this._optionChartType(displayConfig),
@@ -1023,6 +1256,11 @@ export class ChartManager {
             this.chartContainer.render(chartConfig);
             this.currentEchartsOptions = displayConfig;
             this.state.currentConfig = chartConfig;
+            this.chartOptionsPanel?.setToggles(candidateToggles);
+            if (editedPalette) {
+                this.customPalette = { name: 'custom', colors: editedPalette.slice() };
+                this.chartOptionsPanel?.setCustomPalette('custom', editedPalette);
+            }
             // Keep the saved spec honest about what is on screen: use the spec the
             // edit returned, else at least its chart type — restored conversations
             // and the type selector read the spec, not the ECharts option.
@@ -1034,6 +1272,7 @@ export class ChartManager {
             if (this.currentChartSpec) {
                 try { this.chartOptionsPanel?.syncFromSpec(this.currentChartSpec); } catch (_) { /* panel may be unmounted */ }
             }
+            return { applied: true };
         } catch (error) {
             console.error('[ChartManager] Failed to apply edited config:', error);
             // Roll back to the last known-good config so the user keeps a
@@ -1051,12 +1290,32 @@ export class ChartManager {
         }
     }
 
+    _explicitPaletteChange(previous, next) {
+        const extract = (option) => {
+            const series = Array.isArray(option?.series) ? option.series : [];
+            const seriesColors = series.map((item) => (
+                item?.itemStyle?.color || item?.lineStyle?.color || null
+            )).filter((color) => typeof color === 'string' && color);
+            if (seriesColors.length) return seriesColors;
+            return Array.isArray(option?.color)
+                ? option.color.filter((color) => typeof color === 'string' && color)
+                : [];
+        };
+        const before = extract(previous);
+        const after = extract(next);
+        return after.length && this._stableOptionJson(before) !== this._stableOptionJson(after)
+            ? after
+            : null;
+    }
+
     /**
      * Reverts the chart to the original LLM-generated config.
      * The chat transcript is cleared by ChartChat itself.
      */
     resetChartEdits() {
         if (!this.originalConfig) return;
+        this.customPalette = null;
+        this.chartOptionsPanel?.clearCustomPalette?.();
         let baseline;
         try {
             baseline = JSON.parse(JSON.stringify(this.originalConfig));
@@ -1082,6 +1341,8 @@ export class ChartManager {
             }
             return;
         }
+        this.chartOptionsPanel?.resetToggles?.();
+        this.chartOptionsPanel?.syncTogglesFromConfig?.(baseline);
         const displayConfig = this._withWorkspaceTheme(this._withQuickToggles(baseline));
         this._renderDisplayConfig(displayConfig, 'Failed to reset chart');
         // Reset means the original chart, spec included (the map branch above
@@ -1504,12 +1765,14 @@ export class ChartManager {
         return `chart_llm_v2_${dataHash}_${chartType}_${mapKey}${ctxKey}`;
     }
 
-    _withQuickToggles(config) {
+    _withQuickToggles(config, options = {}, overrides = null) {
         if (!config) return config;
         if (this._isOsmMapOption(config)) return config;
         let out = config;
         if (this.chartOptionsPanel && !isMapOption(config)) {
-            out = this.chartOptionsPanel.applyTogglesTo(config, this.originalConfig);
+            out = overrides?.toggles
+                ? applyQuickOptions(config, overrides.toggles, this.originalConfig, options)
+                : this.chartOptionsPanel.applyTogglesTo(config, this.originalConfig, options);
         }
         // Apply value formatting last so it covers initial render, chat edits,
         // quick toggles, and reset uniformly.
@@ -1520,7 +1783,12 @@ export class ChartManager {
             out = this._suppressCanvasTitle(out);
         }
         // The user's palette rides the same pipeline so it survives every path.
-        return this._withPalette(out);
+        return this._withPalette(
+            out,
+            overrides && Object.prototype.hasOwnProperty.call(overrides, 'paletteColors')
+                ? overrides.paletteColors
+                : undefined,
+        );
     }
 
     /**
@@ -1836,17 +2104,19 @@ export class ChartManager {
         return options;
     }
 
-    _reapplyQuickToggles() {
-        if (!this.originalConfig || !this.chartContainer) return;
+    _reapplyQuickToggles(change = null) {
+        if ((!this.currentEchartsOptions && !this.originalConfig) || !this.chartContainer) return;
         let baseline;
         try {
-            baseline = JSON.parse(JSON.stringify(this.originalConfig));
+            baseline = JSON.parse(JSON.stringify(this.currentEchartsOptions || this.originalConfig));
         } catch (_) {
-            baseline = this.originalConfig;
+            baseline = this.currentEchartsOptions || this.originalConfig;
         }
         // Same pipeline as the initial render (toggles -> palette -> workspace
         // theme) so a toggle never drops the theme or the chosen colours.
-        const displayConfig = this._withWorkspaceTheme(this._withQuickToggles(baseline));
+        const displayConfig = this._withWorkspaceTheme(this._withQuickToggles(baseline, {
+            restoreSort: change?.key === 'sortDesc' && change.value === false,
+        }));
         this._renderDisplayConfig(displayConfig, 'Failed to apply quick toggles');
     }
 
