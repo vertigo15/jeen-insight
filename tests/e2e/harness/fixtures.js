@@ -289,8 +289,13 @@
             ...sqlResult(
                 Q.sqlByYear,
                 'SELECT d.CalendarYear, MIN(d.DateKey) AS FirstDateKey, SUM(s.SalesAmount) AS total_sales\nFROM sales s JOIN dates d ON d.DateKey = s.OrderDateKey\nGROUP BY d.CalendarYear ORDER BY 1',
-                ['CalendarYear', 'FirstDateKey', 'total_sales'],
-                [[2005, 20050701, 3266373.86], [2006, 20060101, 6530343.49], [2007, 20070101, 9359103.12], [2008, 20080101, 9162324.85]],
+                ['CalendarYear', 'FirstDateKey', 'total_sales', 'MonthStart', 'UpdatedAt'],
+                [
+                    [2005, 20050701, 3266373.86, '2005-07-01 00:00:00', '2005-07-01 00:00:00'],
+                    [2006, 20060101, 6530343.49, '2006-01-01 00:00:00', '2006-01-01 13:45:00'],
+                    [2007, 20070101, 9359103.12, '2007-01-01 00:00:00', '2007-01-01 00:00:00'],
+                    [2008, 20080101, 9162324.85, '2008-01-01 00:00:00', '2008-01-01 00:00:00'],
+                ],
                 'Bikes sales grew from $3.27M in 2005 to a peak of $9.36M in 2007.',
             ),
             followups: [

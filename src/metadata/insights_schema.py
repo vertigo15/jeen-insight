@@ -50,6 +50,8 @@ BASELINE_COLUMNS = (
     ("insights_conversation_sessions", "node_trace"),
     ("insights_mcp_servers", "token_ciphertext"),
     ("insights_mcp_servers", "token_wrapped_dek"),
+    ("auth_users", "locale"),
+    ("auth_users", "date_format"),
 )
 
 INSIGHTS_MISSING_MESSAGE = (

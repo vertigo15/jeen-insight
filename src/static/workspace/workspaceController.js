@@ -140,9 +140,15 @@
         const rows = normalizeRows(results);
         const needle = String(query || '').trim().toLowerCase();
         if (!needle) return rows.slice();
-        return rows.filter((row) => columns.some((column, index) =>
-            String(rowValue(row, column, index) ?? '').toLowerCase().includes(needle)
-        ));
+        const metadata = resultColumnMetadata(results);
+        return rows.filter((row) => columns.some((column, index) => {
+            const raw = rowValue(row, column, index);
+            const rawText = String(raw ?? '').toLowerCase();
+            if (rawText.includes(needle)) return true;
+            const meta = metadata[index];
+            return meta?.type === 'datetime'
+                && formatResultDateTime(raw, meta.omitMidnightTime).toLowerCase().includes(needle);
+        }));
     }
 
     /**
@@ -179,8 +185,99 @@
         if (!present.length) return 'empty';
         if (present.every((v) => typeof v === 'number' || (typeof v === 'string' && Number.isFinite(numericValue(v))))) return 'number';
         if (present.every((v) => typeof v === 'boolean')) return 'boolean';
-        if (present.every((v) => !Number.isNaN(Date.parse(v)) && /[-/:T]/.test(String(v)))) return 'datetime';
+        if (present.every((v) => resultDateTimeParts(v)
+            || (!Number.isNaN(Date.parse(v)) && /[-/:T]/.test(String(v))))) return 'datetime';
         return 'text';
+    }
+
+    /**
+     * Parse a canonical SQL/ISO calendar timestamp without constructing a Date.
+     * Keeping the calendar components as strings prevents timezone conversion
+     * from shifting a database date to the previous or next day.
+     */
+    function resultDateTimeParts(value) {
+        const text = value == null ? '' : String(value).trim();
+        const match = /^(\d{4}-\d{2}-\d{2})(?:([ T])(\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?(Z|[+-]\d{2}(?::?\d{2})?)?)?$/.exec(text);
+        if (!match) return null;
+        const hasTime = Boolean(match[2]);
+        const fraction = match[6] || '';
+        return {
+            date: match[1],
+            hasTime,
+            time: hasTime ? text.slice(11) : '',
+            midnight: !hasTime || (
+                match[3] === '00'
+                && match[4] === '00'
+                && (!match[5] || match[5] === '00')
+                && (!fraction || /^\.[0]+$/.test(fraction))
+            ),
+        };
+    }
+
+    function formatResultDateTime(value, omitMidnightTime) {
+        const parts = resultDateTimeParts(value);
+        if (!parts) return String(value);
+        const date = window.I18n?.formatCalendarDate?.(parts.date) || parts.date;
+        if (!parts.hasTime || (omitMidnightTime && parts.midnight)) return date;
+        return `${date} ${parts.time}`;
+    }
+
+    const resultColumnMetaCache = new WeakMap();
+
+    /**
+     * Stable, preference-independent metadata for one result object. Filtering,
+     * sorting and map interactions re-render the same result, so scan its rows
+     * once rather than rebuilding date-column metadata on every interaction.
+     */
+    function resultColumnMetadata(results) {
+        if (!results || typeof results !== 'object') return [];
+        const columns = results.columns || [];
+        const rows = normalizeRows(results);
+        const cached = resultColumnMetaCache.get(results);
+        if (cached && cached.columns === columns && cached.rows === rows
+            && cached.columnCount === columns.length && cached.rowCount === rows.length) {
+            return cached.metadata;
+        }
+
+        const metadata = columns.map((name, index) => {
+            const sampled = rows.slice(0, 50).map((row) => rowValue(row, name, index));
+            const type = inferColumnType(sampled);
+            const numeric = type === 'number';
+            const plain = numeric && isPlainNumberColumn(
+                name,
+                rows.slice(0, 200).map((row) => rowValue(row, name, index)),
+            );
+            let sawDate = false;
+            let omitMidnightTime = type === 'datetime';
+            if (type === 'datetime') {
+                for (const row of rows) {
+                    const value = rowValue(row, name, index);
+                    if (value === null || value === undefined || value === '') continue;
+                    sawDate = true;
+                    const parts = resultDateTimeParts(value);
+                    if (!parts || !parts.midnight) {
+                        omitMidnightTime = false;
+                        break;
+                    }
+                }
+            }
+            return {
+                name,
+                sourceIndex: index,
+                type,
+                numeric,
+                plain,
+                omitMidnightTime: sawDate && omitMidnightTime,
+            };
+        });
+        resultColumnMetaCache.set(results, {
+            columns,
+            rows,
+            columnCount: columns.length,
+            rowCount: rows.length,
+            metadata,
+        });
+        return metadata;
     }
 
     const ID_WORDS = new Set(['id', 'key', 'pk', 'uuid', 'code']);
@@ -217,16 +314,21 @@
     function compactProfile(results) {
         const columns = (results && results.columns) || [];
         const rows = normalizeRows(results);
+        const metadata = resultColumnMetadata(results);
         return columns.map((name, index) => {
             const values = rows.map((row) => rowValue(row, name, index));
             const present = values.filter((v) => v !== null && v !== undefined && v !== '');
-            const type = inferColumnType(values);
+            const meta = metadata[index] || {};
+            const type = meta.type || inferColumnType(values);
             let range = t('results.profile.noValues');
             if (present.length) {
                 if (type === 'number') {
                     const nums = present.map(numericValue);
                     const show = isPlainNumberColumn(name, present) ? String : formatCompact;
                     range = `${show(Math.min(...nums))} – ${show(Math.max(...nums))}`;
+                } else if (type === 'datetime') {
+                    const strings = present.map(String).sort((a, b) => a.localeCompare(b));
+                    range = `${formatResultDateTime(strings[0], meta.omitMidnightTime)} – ${formatResultDateTime(strings[strings.length - 1], meta.omitMidnightTime)}`;
                 } else {
                     const strings = present.map(String).sort((a, b) => a.localeCompare(b));
                     range = `${strings[0]} – ${strings[strings.length - 1]}`;
@@ -341,6 +443,11 @@
             document.addEventListener('jeen:conversation-tabs', (event) => this.setTabsVisible(!!event.detail?.visible));
             // Send visibility depends on the signed-in user, which auth.js loads after the shell.
             document.addEventListener('jeen:current-user', () => this._setActionsEnabled(Boolean(this._actionsEnabled)));
+            document.addEventListener('jeen:preferences-changed', (event) => {
+                if (event.detail?.key !== 'dateFormat') return;
+                this.renderTable();
+                this.renderDock();
+            });
             this.setTabsVisible(conversationTabsPreferred());
             this.setTab('conversation');
             this._renderEmptySuggestions();
@@ -2882,12 +2989,16 @@
                 : cap.total ? t('results.grid.loadedMatched', { loaded: allRows.length, total: formatCompact(cap.total) }) : t('results.grid.rowsLoaded', { count: allRows.length });
             const grid = document.getElementById('v3-grid');
             const wrap = document.getElementById('v3-grid-wrap');
-            const numeric = new Set(columns.map((column, index) => inferColumnType(filtered.slice(0, 50).map((row) => rowValue(row, column, index))) === 'number' ? index : -1).filter((index) => index >= 0));
+            const columnMetadata = resultColumnMetadata(results);
             const descriptors = [];
             columns.forEach((name, index) => {
-                const plain = numeric.has(index) && !presentation.formats?.[index]
-                    && isPlainNumberColumn(name, allRows.map((row) => rowValue(row, name, index)));
-                descriptors.push({ name, sourceIndex: index, numeric: numeric.has(index), plain });
+                const meta = columnMetadata[index] || {
+                    name, sourceIndex: index, numeric: false, plain: false, type: 'text', omitMidnightTime: false,
+                };
+                descriptors.push({
+                    ...meta,
+                    plain: meta.plain && !presentation.formats?.[index],
+                });
                 const derived = (presentation.derived || []).find((item) => item.sourceIndex === index);
                 if (derived) descriptors.push({ name: derived.name, sourceIndex: index, numeric: true, derived });
             });
@@ -2923,6 +3034,8 @@
                     : rowValue(row, columns[descriptor.sourceIndex], descriptor.sourceIndex);
                 const rendered = descriptor.derived
                     ? (descriptor.derived.type === 'pct_total' && raw != null ? `${formatCompact(raw)}%` : formatCompact(raw))
+                    : (descriptor.type === 'datetime' && raw != null && raw !== '')
+                        ? formatResultDateTime(raw, descriptor.omitMidnightTime)
                     : (descriptor.plain && raw != null && raw !== '')
                         ? String(raw)
                         : (window.JeenLegacyBridge?.formatTableValue?.(raw, descriptor.sourceIndex, descriptor.numeric) ?? (raw ?? '—'));

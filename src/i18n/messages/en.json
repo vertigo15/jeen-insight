@@ -589,6 +589,15 @@
         "help": "Menus, buttons and messages use this language. Answers follow the language of your question.",
         "saveFailed": "Could not save the language. Try again."
       },
+      "dateFormat": {
+        "label": "Date format",
+        "help": "Controls dates in result tables. Automatic follows your browser's regional settings.",
+        "auto": "Automatic",
+        "dmy": "DD/MM/YYYY",
+        "mdy": "MM/DD/YYYY",
+        "iso": "YYYY-MM-DD",
+        "saveFailed": "Could not save the date format. Try again."
+      },
       "theme": {
         "label": "Theme",
         "help": "Light is the default; System follows your OS preference.",
