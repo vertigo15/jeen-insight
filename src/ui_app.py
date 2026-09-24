@@ -436,6 +436,9 @@ def _write_user_session(
     session["avatar_hue"] = user["avatar_hue"]
     # Account UI language (None until the user picks one in Settings).
     session["locale"] = normalize_locale(user.get("locale"))
+    # Account result-table date order. Loaded with the login query so the
+    # workspace can bootstrap it without a second startup request.
+    session["date_format"] = _normalize_date_format(user.get("date_format"))
     session["auth_provider"] = provider
     # Authoritative "as-of" time for the identity's directory claims. Group
     # membership captured below is only trusted for a bounded TTL measured from
@@ -463,6 +466,19 @@ def _admin_required():
 # The UI language is an account property (auth_users.locale, mirrored into the
 # session at login) with a readable `locale` cookie that carries the pre-login
 # choice and keeps a fresh tab flash-free. See src/i18n for the precedence rule.
+
+DATE_FORMATS = ("auto", "dmy", "mdy", "iso")
+
+
+def _normalize_date_format(value: Any) -> str:
+    """Return a supported result-table date format, preserving ISO by default."""
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in DATE_FORMATS else "iso"
+
+
+def _current_date_format() -> str:
+    """Account date format already cached in the signed login session."""
+    return _normalize_date_format(session.get("date_format"))
 
 def _current_locale() -> str:
     """Effective UI locale for this request (computed once, cached on ``g``)."""
@@ -906,6 +922,19 @@ def auth_me():
         get_agent_tools_enabled_sync,
         get_connectors_enabled_sync,
     )
+    from src.auth_db import get_user_preferences
+
+    # This request already starts in parallel with workspace boot. Refresh the
+    # account preference here so another device's change applies without adding
+    # another HTTP request or delaying first paint (the bootstrap uses session).
+    try:
+        account_preferences = get_user_preferences(int(session["user_id"]))
+        if account_preferences is not None:
+            session["date_format"] = _normalize_date_format(
+                account_preferences.get("date_format")
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning("auth_me: account preference refresh failed", exc_info=True)
 
     return jsonify({
         "id":         session["user_id"],
@@ -916,6 +945,7 @@ def auth_me():
         # Saved UI language (null until chosen); the page itself already renders
         # in the effective locale, so this only feeds the picker's initial state.
         "locale":     normalize_locale(session.get("locale")),
+        "date_format": _current_date_format(),
         # Surface flags the UI uses to gate connector surfaces.
         "is_entra":   bool(session.get("object_id")),
         "connectors_enabled": get_connectors_enabled_sync(),
@@ -954,6 +984,36 @@ def auth_set_locale():
     g.locale = locale
     response = jsonify({"locale": locale})
     return _set_locale_cookie(response, locale)
+
+
+@app.route("/api/auth/me/date-format", methods=["PATCH"])
+def auth_set_date_format():
+    """Persist the caller's result-table calendar date format."""
+    if "user_id" not in session:
+        return jsonify({"error": "Not authenticated", "code": "UNAUTHENTICATED"}), 401
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "error": "Request body must be a JSON object",
+            "code": "INVALID_REQUEST",
+        }), 400
+    raw = str(data.get("date_format") or "").strip().lower()
+    if raw not in DATE_FORMATS:
+        return jsonify({
+            "error": f"date_format must be one of: {', '.join(DATE_FORMATS)}",
+            "code": "INVALID_DATE_FORMAT",
+        }), 400
+    from src.auth_db import set_user_date_format
+
+    try:
+        updated = set_user_date_format(int(session["user_id"]), raw)
+    except Exception:  # noqa: BLE001
+        logger.exception("auth_set_date_format failed")
+        return jsonify({"error": "Could not save the date format preference", "code": "DB_ERROR"}), 500
+    if not updated:
+        return jsonify({"error": "Account not found", "code": "ACCOUNT_NOT_FOUND"}), 404
+    session["date_format"] = raw
+    return jsonify({"date_format": raw})
 
 
 # ── User management routes (— served by Flask, not proxied) ──────────────────
@@ -1063,9 +1123,11 @@ def index():
     # The workspace is a classic-script app that builds its shell at boot, so
     # the effective locale's merged catalog is embedded in the page (as a
     # non-executable JSON block) and parsed synchronously by static/i18n/i18n.js.
+    bootstrap = client_bootstrap(_current_locale())
+    bootstrap["dateFormat"] = _current_date_format()
     return render_template(
         "index.html",
-        i18n_bootstrap=client_bootstrap(_current_locale()),
+        i18n_bootstrap=bootstrap,
     )
 
 

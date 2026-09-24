@@ -374,6 +374,7 @@ def test_chart_builds_band_from_cache_and_persists_baseline(client, ml_state, mo
     roles = [s.get("jeenRole") for s in body["chart_config"]["series"]]
     assert "actual" in roles and "flagged" in roles
     assert persisted["query_id"] == qid and persisted["chart_spec"]["chart_type"] == "band"
+    assert persisted["request_started_at"].tzinfo is not None
 
     # Cache miss without rows → 409; with rows re-sent → 200.
     other = str(uuid4())

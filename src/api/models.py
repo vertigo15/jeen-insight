@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ----------------------------------------------------------------------
@@ -185,8 +185,8 @@ class AnalysisChartRequest(BaseModel):
 
 
 class ColumnInfo(BaseModel):
-    name: str
-    type: str
+    name: str = Field(max_length=256)
+    type: str = Field(max_length=32)
 
 
 # ----------------------------------------------------------------------
@@ -243,42 +243,118 @@ class EnhanceChartRequest(BaseModel):
 
 
 class ChatMessage(BaseModel):
-    role: str  # "user" | "assistant"
-    content: str
+    role: str = Field(max_length=16)  # "user" | "assistant"
+    content: str = Field(max_length=2_000)
 
 
 class EditChartRequest(BaseModel):
-    connection: str
-    instruction: str
+    connection: str = Field(max_length=255)
+    instruction: str = Field(max_length=500)
     current_config: Dict[str, Any]
-    columns: List[ColumnInfo]
-    column_names: List[str]
-    sample_data: List[List[Any]]
-    recent_messages: Optional[List[ChatMessage]] = None
+    columns: List[ColumnInfo] = Field(max_length=256)
+    column_names: List[str] = Field(max_length=256)
+    sample_data: List[List[Any]] = Field(max_length=20)
+    recent_messages: Optional[List[ChatMessage]] = Field(default=None, max_length=30)
     # OSM edits use the compact spec and rebuild deterministically from the
     # cached full dataset instead of letting the model alter point payloads.
     chart_spec: Optional[Dict[str, Any]] = None
-    query_id: Optional[str] = None
-    user_id: Optional[str] = None
-    all_data: Optional[List[List[Any]]] = None
+    query_id: Optional[str] = Field(default=None, max_length=64)
+    user_id: Optional[str] = Field(default=None, max_length=255)
+    all_data: Optional[List[List[Any]]] = Field(default=None, max_length=10_000)
+    # Existing overlays are session state. New clients can send them so a
+    # style-only edit returns the complete active set; older clients may omit.
+    active_derived_series: Optional[List["DerivedSeriesSpec"]] = Field(
+        default=None, max_length=4
+    )
+
+    @field_validator("current_config")
+    @classmethod
+    def _bounded_current_config(cls, value: Dict[str, Any]) -> Dict[str, Any]:
+        from src.api.chart_edit_validation import assert_bounded_chart_config
+
+        assert_bounded_chart_config(value)
+        return value
+
+    @field_validator("chart_spec")
+    @classmethod
+    def _bounded_chart_spec(
+        cls, value: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        if value is not None:
+            from src.api.chart_edit_validation import assert_bounded_chart_config
+
+            assert_bounded_chart_config(value)
+        return value
+
+    @field_validator("column_names")
+    @classmethod
+    def _bounded_column_names(cls, value: List[str]) -> List[str]:
+        if any(len(str(name)) > 256 for name in value):
+            raise ValueError("Chart column names must be at most 256 characters.")
+        return value
+
+    @field_validator("sample_data", "all_data")
+    @classmethod
+    def _bounded_chart_rows(
+        cls, value: Optional[List[List[Any]]]
+    ) -> Optional[List[List[Any]]]:
+        if value is None:
+            return value
+        import json
+
+        max_bytes = 256_000 if len(value) <= 20 else 5_000_000
+        try:
+            size = len(
+                json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Chart rows must contain finite JSON values.") from exc
+        if size > max_bytes:
+            raise ValueError("Chart row payload is too large.")
+        return value
 
 
 class DerivedSeriesSpec(BaseModel):
-    operator: str
-    source_column: Optional[str] = None
+    operator: str = Field(max_length=32)
+    source_column: Optional[str] = Field(default=None, max_length=256)
     params: Optional[Dict[str, Any]] = None
-    label: Optional[str] = None
+    label: Optional[str] = Field(default=None, max_length=80)
+
+    @field_validator("params")
+    @classmethod
+    def _bounded_params(
+        cls, value: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        if value is not None:
+            import json
+
+            try:
+                size = len(
+                    json.dumps(value, allow_nan=False).encode("utf-8")
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Derived-series params must be finite JSON.") from exc
+            if size > 16_384:
+                raise ValueError("Derived-series params are too large.")
+        return value
+
+
+class ChartEditError(BaseModel):
+    code: str
+    message: str
+    details: Dict[str, Any] = Field(default_factory=dict)
 
 
 class EditChartResponse(BaseModel):
     chart_config: Dict[str, Any]
     chart_type: str
-    derived_series: List[DerivedSeriesSpec] = []
+    derived_series: List[DerivedSeriesSpec] = Field(default_factory=list)
     notes: Optional[str] = None
     out_of_scope: bool = False
     chart_spec: Optional[Dict[str, Any]] = None
-    view_commands: List[Dict[str, Any]] = []
+    view_commands: List[Dict[str, Any]] = Field(default_factory=list)
     rebuild_required: bool = False
+    error: Optional[ChartEditError] = None
     prompt: Optional[str] = None
     system_message: Optional[str] = None
 
@@ -385,6 +461,7 @@ class SaveAnalysisRequest(BaseModel):
     results: Dict[str, Any]
     chart_spec: Optional[Dict[str, Any]] = None
     chart_config: Optional[Dict[str, Any]] = None
+    chart_state: Optional[Dict[str, Any]] = None
     insights: Optional[Dict[str, Any]] = None
 
 
@@ -393,6 +470,7 @@ class UpdateSavedAnalysisRequest(BaseModel):
     name: Optional[str] = None
     chart_spec: Optional[Dict[str, Any]] = None
     chart_config: Optional[Dict[str, Any]] = None
+    chart_state: Optional[Dict[str, Any]] = None
 
 
 # ----------------------------------------------------------------------

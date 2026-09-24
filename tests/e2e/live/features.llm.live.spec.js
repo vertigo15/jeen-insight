@@ -65,15 +65,16 @@ test.describe('LLM-backed features', { tag: ['@extras', '@feature'] }, () => {
       refine.locator('.chart-refine-apply').click(),
     ]);
     expect(response.ok(), `/api/edit-chart → ${response.status()}`).toBe(true);
+    const editBody = await response.json();
     const applied = refine.locator('.chart-refine-applied');
     await expect(applied).toBeVisible({ timeout: 60_000 });
     await expect(applied.locator('.chart-refine-applied-label')).toContainText(/Applied:/);
     await L.waitForChart(page);
     await expect.poll(() => L.renderedChartType(page), { timeout: 30_000 }).toBe(target);
-    // Diagnostic, not a gate: the saved spec lags the rendered chart in places (edit responses
-    // without a chart_spec; Reset restoring the config but not the spec). Recorded as findings.
     const specAfterEdit = ((await L.chartState(page)) || {}).chart_spec?.chart_type;
-    if (specAfterEdit !== target) L.annotate(testInfo, 'finding', `chart refined to ${target} but chart_spec.chart_type reports ${specAfterEdit} (edit-chart response carried no chart_spec)`);
+    if (!editBody.out_of_scope && editBody.chart_spec?.chart_type) {
+      expect(specAfterEdit, 'accepted edit keeps chart_spec aligned with the rendered chart').toBe(editBody.chart_spec.chart_type);
+    }
     L.annotate(testInfo, 'chart_type', `${baseline} → ${target}`);
 
     await refine.locator('.chart-refine-reset').click();
@@ -81,13 +82,8 @@ test.describe('LLM-backed features', { tag: ['@extras', '@feature'] }, () => {
     await L.waitForChart(page);
     // What the user sees must be the original chart again.
     await expect.poll(() => L.renderedChartType(page), { timeout: 30_000 }).toBe(baseline);
-    // The saved spec should follow; when it does not, restored conversations
-    // carry a spec that disagrees with the rendered chart (resetChartEdits only
-    // restores originalChartSpec on the map branch).
     const specAfterReset = ((await L.chartState(page)) || {}).chart_spec?.chart_type;
-    if (specAfterReset !== baseline) {
-      L.annotate(testInfo, 'finding', `after Reset the chart renders as ${baseline} but chart_spec.chart_type is still ${specAfterReset} (resetChartEdits does not restore originalChartSpec for non-map charts)`);
-    }
+    expect(specAfterReset, 'Reset restores the baseline chart_spec').toBe(baseline);
   });
 
   test('Key insights render one item per finding and a follow-up chip asks exactly its question', async ({}, testInfo) => {

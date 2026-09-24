@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -186,6 +187,36 @@ def test_migration_022_rekeys_cross_source_threads_and_adds_fk(pool):
     _run(pool, scenario())
 
 
+def test_migration_031_round_trips_account_date_format(pool):
+    p, _ = pool
+
+    async def scenario():
+        async with p.acquire() as conn:
+            await _apply_migrations_upto(conn, "031_user_date_format.sql")
+            email = f"date-format-{uuid.uuid4()}@example.test"
+            user_id = await conn.fetchval(
+                """
+                INSERT INTO auth_users (name, email, password_hash, role, status, avatar_hue)
+                VALUES ('Date Format Test', $1, 'unused', 'viewer', 'active', 0)
+                RETURNING id
+                """,
+                email,
+            )
+            try:
+                await conn.execute(
+                    "UPDATE auth_users SET date_format = 'dmy' WHERE id = $1",
+                    user_id,
+                )
+                assert await conn.fetchval(
+                    "SELECT date_format FROM auth_users WHERE id = $1",
+                    user_id,
+                ) == "dmy"
+            finally:
+                await conn.execute("DELETE FROM auth_users WHERE id = $1", user_id)
+
+    _run(pool, scenario())
+
+
 # ── service-level guarantees ─────────────────────────────────────────────────
 
 @pytest.fixture()
@@ -222,6 +253,80 @@ async def _turn(history, *, user=USER_A, src=SRC_A, session, question="q", sql="
         chart_config={"series": [{"type": "bar"}]}, chart_bytes=20,
     )
     return qid
+
+
+def test_chart_request_start_watermark_rejects_stale_write_and_clear(history, pool):
+    async def scenario():
+        session = uuid.uuid4()
+        qid = await _turn(history, session=session)
+        newer = datetime.now(timezone.utc) + timedelta(seconds=2)
+        older = newer - timedelta(seconds=1)
+
+        assert await history.upsert_turn_chart(
+            turn_id=qid,
+            user_id=USER_A,
+            chart_spec={"chart_type": "line"},
+            chart_config={"series": [{"type": "line"}]},
+            chart_bytes=30,
+            request_started_at=newer,
+        )
+        assert not await history.upsert_turn_chart(
+            turn_id=qid,
+            user_id=USER_A,
+            chart_spec={"chart_type": "pie"},
+            chart_config={"series": [{"type": "pie"}]},
+            chart_bytes=31,
+            request_started_at=older,
+        )
+        assert not await history.clear_turn_chart(
+            turn_id=qid, user_id=USER_A, request_started_at=older
+        )
+        artifact = await history.get_turn_artifact(
+            conversation_id=session, turn_id=qid, user_id=USER_A
+        )
+        assert artifact["chart_config"]["series"][0]["type"] == "line"
+
+        newest = newer + timedelta(seconds=1)
+        assert await history.clear_turn_chart(
+            turn_id=qid, user_id=USER_A, request_started_at=newest
+        )
+        assert not await history.upsert_turn_chart(
+            turn_id=qid,
+            user_id=USER_A,
+            chart_spec={"chart_type": "bar"},
+            chart_config={"series": [{"type": "bar"}]},
+            chart_bytes=20,
+            request_started_at=newer,
+        )
+        async with history.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT chart_config, chart_updated_at FROM insights_turn_artifacts WHERE turn_id = $1",
+                qid,
+            )
+        assert row["chart_config"] is None
+        assert row["chart_updated_at"] == newest
+
+        # A rerun replaces the result rows and establishes its own watermark.
+        # A chart request that started before the rerun must not attach a chart
+        # built from the obsolete rows after the rerun finishes.
+        before_rerun = datetime.now(timezone.utc) - timedelta(seconds=1)
+        assert await history.store_rerun_snapshot(
+            turn_id=qid,
+            user_id=USER_A,
+            result_snapshot={"columns": ["a"], "rows": [[99]], "row_count": 1},
+            snapshot_status="stored",
+            snapshot_bytes=16,
+        )
+        assert not await history.upsert_turn_chart(
+            turn_id=qid,
+            user_id=USER_A,
+            chart_spec={"chart_type": "bar"},
+            chart_config={"series": [{"type": "bar", "data": [1]}]},
+            chart_bytes=20,
+            request_started_at=before_rerun,
+        )
+
+    _run(pool, scenario())
 
 
 def test_log_query_is_atomic_and_refuses_foreign_session(history, pool):

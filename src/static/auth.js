@@ -49,6 +49,14 @@
       return; // network error — don't crash the rest of the app
     }
 
+    // /api/auth/me runs in parallel with workspace boot and refreshes durable
+    // account preferences. First paint uses the embedded value; a change made
+    // on another device is applied live when this existing request completes.
+    if (user.date_format && window.I18n?.setDateFormat
+        && user.date_format !== window.I18n.dateFormat) {
+      window.I18n.setDateFormat(user.date_format);
+    }
+
     window._currentUser = user;
     document.dispatchEvent(new CustomEvent('jeen:current-user', { detail: user }));
 

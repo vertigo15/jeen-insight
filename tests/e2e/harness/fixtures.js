@@ -25,6 +25,60 @@
         greeting: 'hello',
     };
 
+    const CHART = {
+        results: {
+            columns: ['region', 'sales'],
+            rows: [['North', 10], ['South', 30], ['West', 20]],
+            row_count: 3,
+        },
+        barSpec: {
+            chart_type: 'bar',
+            x: 'region',
+            y: ['sales'],
+            series: null,
+            aggregate: 'sum',
+            sort: 'none',
+            title: 'Sales by region',
+            x_label: 'Region',
+            y_label: 'Sales',
+            value_format: 'number',
+            stacked: false,
+            smooth: false,
+        },
+        barConfig: {
+            grid: { left: '3%', right: '4%', bottom: '8%', top: 32, containLabel: true },
+            xAxis: { type: 'category', data: ['North', 'South', 'West'], name: 'Region' },
+            yAxis: { type: 'value', name: 'Sales', axisLabel: {} },
+            series: [{ name: 'sales', type: 'bar', data: [10, 30, 20], label: { show: false } }],
+        },
+        lineEdit: {
+            chart_type: 'line',
+            chart_spec: {
+                chart_type: 'line',
+                x: 'region',
+                y: ['sales'],
+                series: null,
+                aggregate: 'sum',
+                sort: 'none',
+                title: 'Sales by region',
+                x_label: 'Region',
+                y_label: 'Sales',
+                value_format: 'number',
+                stacked: false,
+                smooth: false,
+            },
+            chart_config: {
+                grid: { left: '3%', right: '4%', bottom: '8%', top: 32, containLabel: true },
+                xAxis: { type: 'category', data: ['North', 'South', 'West'], name: 'Region' },
+                yAxis: { type: 'value', name: 'Sales', axisLabel: {} },
+                series: [{ name: 'sales', type: 'line', data: [10, 30, 20], label: { show: true } }],
+            },
+            derived_series: [],
+            notes: 'Changed the chart to a line and enabled labels.',
+            out_of_scope: false,
+        },
+    };
+
     // Which fixture a typed question streams back. Routing (ML vs SQL) is decided
     // by routing.generated.js; the *outcome* (confirm vs guard vs clarify) is a
     // planner/guard decision and is fixed per question here.
@@ -235,8 +289,13 @@
             ...sqlResult(
                 Q.sqlByYear,
                 'SELECT d.CalendarYear, MIN(d.DateKey) AS FirstDateKey, SUM(s.SalesAmount) AS total_sales\nFROM sales s JOIN dates d ON d.DateKey = s.OrderDateKey\nGROUP BY d.CalendarYear ORDER BY 1',
-                ['CalendarYear', 'FirstDateKey', 'total_sales'],
-                [[2005, 20050701, 3266373.86], [2006, 20060101, 6530343.49], [2007, 20070101, 9359103.12], [2008, 20080101, 9162324.85]],
+                ['CalendarYear', 'FirstDateKey', 'total_sales', 'MonthStart', 'UpdatedAt'],
+                [
+                    [2005, 20050701, 3266373.86, '2005-07-01 00:00:00', '2005-07-01 00:00:00'],
+                    [2006, 20060101, 6530343.49, '2006-01-01 00:00:00', '2006-01-01 13:45:00'],
+                    [2007, 20070101, 9359103.12, '2007-01-01 00:00:00', '2007-01-01 00:00:00'],
+                    [2008, 20080101, 9162324.85, '2008-01-01 00:00:00', '2008-01-01 00:00:00'],
+                ],
                 'Bikes sales grew from $3.27M in 2005 to a peak of $9.36M in 2007.',
             ),
             followups: [
@@ -369,5 +428,5 @@
         },
     };
 
-    window.__FIXTURES__ = { SESSION, Q, QUESTION_TO_SCENARIO, SCENARIOS };
+    window.__FIXTURES__ = { SESSION, Q, CHART, QUESTION_TO_SCENARIO, SCENARIOS };
 })();

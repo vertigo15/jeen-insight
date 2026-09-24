@@ -3,7 +3,7 @@
  * @module ChartOptionsPanel
  */
 
-import { applyQuickOptions, defaultLegendVisible, detectToggles } from '../utils/chartQuickOptions.js?v=71';
+import { applyQuickOptions, defaultLegendVisible, detectToggles } from '../utils/chartQuickOptions.js?v=3';
 import { CHART_PALETTES, DEFAULT_PALETTE_ID, isKnownPalette, paletteSwatches } from '../utils/chartPalettes.js?v=1';
 
 // Interface strings come from the locale catalog (static/i18n/i18n.js, loaded first).
@@ -26,6 +26,27 @@ const IDENTIFIER_RE = /(id|key|code|number|no|num|year|month|day|quarter|qtr|wee
 
 function looksLikeIdentifier(name) {
     return IDENTIFIER_RE.test(name || '');
+}
+
+/**
+ * Paint every toggle facet from one state value so visuals and accessibility
+ * metadata cannot drift apart. "mixed" is supported for aggregate controls.
+ */
+export function syncToggleButton(button, state, {
+    disabled = false,
+    describedBy = '',
+    title = '',
+} = {}) {
+    if (!button) return;
+    const pressed = state === 'mixed' ? 'mixed' : (state ? 'true' : 'false');
+    button.classList.toggle('is-on', pressed === 'true');
+    button.classList.toggle('is-mixed', pressed === 'mixed');
+    button.setAttribute('aria-pressed', pressed);
+    button.disabled = Boolean(disabled);
+    button.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+    if (describedBy) button.setAttribute('aria-describedby', describedBy);
+    else button.removeAttribute('aria-describedby');
+    if (title) button.title = title;
 }
 
 /**
@@ -95,8 +116,7 @@ export class ChartOptionsPanel {
     applyLegendDefault(config) {
         if (this.legendUserSet || !config || typeof config !== 'object') return;
         this.toggles.legend = defaultLegendVisible(config);
-        const btn = document.querySelector('.chart-opt-toggle[data-key="legend"]');
-        if (btn) btn.classList.toggle('is-on', this.toggles.legend);
+        this._syncToggleButtons();
     }
 
     /**
@@ -210,10 +230,7 @@ export class ChartOptionsPanel {
         if (config && config.legend && typeof config.legend === 'object') {
             this.toggles.legend = typeof config.legend.show === 'boolean' ? config.legend.show : true;
         }
-        document.querySelectorAll('.chart-opt-toggle').forEach((btn) => {
-            const key = btn.dataset.key;
-            if (key in this.toggles) btn.classList.toggle('is-on', !!this.toggles[key]);
-        });
+        this._syncToggleButtons();
     }
 
     /** Apply current toggles to a config copy (uses baseline for sort restore). */
@@ -249,7 +266,8 @@ export class ChartOptionsPanel {
                 <span class="chart-palette-dots" id="chart-palette-dots" aria-hidden="true"></span><span>${esc(t('charts.options.colors'))}</span>${caret}
             </button>
             <div class="chart-opts-divider" aria-hidden="true"></div>
-            <div class="chart-opts-toggles" id="chart-opt-toggles"></div>
+            <div class="chart-opts-toggles" id="chart-opt-toggles" role="group"
+                 aria-label="${esc(t('charts.options.quickOptionsGroup'))}"></div>
             ${this.analysisMode ? `<span class="chart-analysis-lock-note" id="chart-analysis-lock-note" role="note">${esc(t('charts.options.analysisLockedHint'))}</span>` : ''}
             <div class="chart-cols-expand chart-palette-expand" id="chart-palette-expand" role="radiogroup"
                  aria-label="${esc(t('charts.options.paletteTitle'))}"${this._paletteOpen ? '' : ' hidden'}></div>
@@ -281,10 +299,11 @@ export class ChartOptionsPanel {
                 const disabled = this.analysisMode && def.key === 'sortDesc';
                 const title = disabled ? t('charts.options.analysisSortLocked') : t(def.title);
                 return (
-                `<button type="button" class="chart-opt-toggle${this.toggles[def.key] ? ' is-on' : ''}"
-                    data-key="${def.key}" title="${esc(title)}"${disabled ? ' disabled aria-disabled="true" aria-describedby="chart-analysis-lock-note"' : ''}>${esc(t(def.label))}</button>`
+                `<button type="button" class="chart-opt-toggle"
+                    data-key="${def.key}" aria-pressed="false" title="${esc(title)}">${esc(t(def.label))}</button>`
                 );
             }).join('');
+            this._syncToggleButtons();
         }
 
         this._renderPaletteChips();
@@ -498,13 +517,28 @@ export class ChartOptionsPanel {
     _onToggle(key) {
         if (!(key in this.toggles)) return;
         if (this.analysisMode && key === 'sortDesc') return;
-        this.toggles[key] = !this.toggles[key];
+        this.toggles[key] = this.toggles[key] === 'mixed' ? true : !this.toggles[key];
         if (key === 'legend') this.legendUserSet = true;
-        const btn = document.querySelector(`.chart-opt-toggle[data-key="${key}"]`);
-        if (btn) btn.classList.toggle('is-on', this.toggles[key]);
+        this._syncToggleButtons();
         if (this.hooks.onQuickToggle) {
             this.hooks.onQuickToggle(this.getToggles(), (cfg, baseline) => this.applyTogglesTo(cfg, baseline));
         }
+    }
+
+    _syncToggleButtons() {
+        const container = document.getElementById(this.containerId);
+        if (!container) return;
+        container.querySelectorAll('.chart-opt-toggle[data-key]').forEach((button) => {
+            const key = button.dataset.key;
+            if (!(key in this.toggles)) return;
+            const def = TOGGLE_DEFS.find((item) => item.key === key);
+            const disabled = this.analysisMode && key === 'sortDesc';
+            syncToggleButton(button, this.toggles[key], {
+                disabled,
+                describedBy: disabled ? 'chart-analysis-lock-note' : '',
+                title: t(disabled ? 'charts.options.analysisSortLocked' : def.title),
+            });
+        });
     }
 
     show() {
@@ -550,9 +584,6 @@ export class ChartOptionsPanel {
     resetToggles() {
         this.toggles = { dataLabels: false, legend: true, dataZoom: false, sortDesc: false };
         this.legendUserSet = false;
-        document.querySelectorAll('.chart-opt-toggle').forEach((btn) => {
-            const key = btn.dataset.key;
-            btn.classList.toggle('is-on', !!this.toggles[key]);
-        });
+        this._syncToggleButtons();
     }
 }

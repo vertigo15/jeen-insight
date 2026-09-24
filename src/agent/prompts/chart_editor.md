@@ -11,6 +11,7 @@ You MUST return a single JSON object with this shape:
 {{
   "chart_config": <full ECharts option object>,
   "chart_type": <string, primary chart type, e.g. "bar" | "line" | "pie">,
+  "spec_patch": {{ "chart_type": <optional>, "x": <optional>, "y": <optional list>, "series": <optional string|null>, "stacked": <optional bool>, "sort": <optional "asc"|"desc"|"none"> }},
   "jeenFormat": {{ "kind": "number" | "currency" | "percent", "compact": <bool>, "symbol": <currency symbol like "$"/"€"/"₪", or "" if unknown> }},
   "derived_series": [
     {{
@@ -23,6 +24,13 @@ You MUST return a single JSON object with this shape:
   "notes": <short string, optional, max 200 chars>,
   "out_of_scope": <bool>
 }}
+
+`spec_patch` is OPTIONAL and is only for semantic edits: changing chart type,
+X/Y bindings, series grouping, stacking, or sort. When one of those changes is
+requested, put the semantic change in `spec_patch` and leave `chart_config`
+data arrays unchanged; the server validates exact column names and rebuilds
+the chart from the cached full result set. For style/view edits, omit
+`spec_patch`.
 
 `jeenFormat` controls value formatting (axis labels + tooltips). Include it ONLY
 when the user asks to change number formatting (e.g. "show as dollars",
@@ -44,6 +52,8 @@ naming one, set kind="currency" and symbol="" (a plain number, no symbol).
   labels, tooltips, and data labels, use template strings such as
   "{{value}}", "{{c}}", "{{b}}: {{c}}", or with units like "${{value}}M",
   "{{value}}%".
+- Never emit `graphic`, `dataset`, `transform`, `geo`, `map`, `jeenMap`,
+  `jeenOsmMap`, URL/image-backed values, HTML, CSS, or external resources.
 
 # WHAT YOU MAY CHANGE (chart visualization)
 - Title, subtitle, legend, grid, tooltip styling
@@ -51,13 +61,13 @@ naming one, set kind="currency" and symbol="" (a plain number, no symbol).
   the measure values)
 - Series colors, color palette, series item styling
 - Show/hide data labels (label.show)
-- Chart type: switch between bar, line, area (line + areaStyle), scatter,
+- Chart type via `spec_patch.chart_type`: switch between bar, line, area, scatter,
   pie, donut (pie + radius), horizontal bar, stacked bar/area (stack: 'total'),
   combo (bar + line, dual axis when needed), heatmap, gauge
 - For an existing map chart only: styling changes such as title, colors,
   tooltip text, label visibility, and visualMap placement
 - Value formatting via jeenFormat (currency / percent / compact)
-- Sort order of category axis (asc / desc / by value)
+- Sort order via `spec_patch.sort` (`asc`, `desc`, or `none`)
 - Smoothing on line series, stacking, opacity
 - Symbol size, line width, bar gap
 
@@ -128,8 +138,8 @@ Output:
 
 ## Example 2 — Switch to a line chart
 Instruction: "make it a line chart instead"
-Output: full config with `series[].type = "line"` and any bar-specific
-options (`barWidth`, `barGap`) removed; chart_type = "line".
+Output: keep the config data unchanged and include
+`"spec_patch": {{ "chart_type": "line" }}`. The server rebuilds the line chart.
 
 ## Example 3 — Add a 3-month moving average
 Instruction: "add a 3 month moving average"
@@ -160,8 +170,8 @@ user wants full numbers.
 
 ## Example 5 — Sort descending
 Instruction: "sort highest to lowest"
-Reorder both `xAxis.data` and the matching `series[].data` arrays so the
-largest value comes first. Keep arrays the same length and aligned.
+Output includes `"spec_patch": {{ "sort": "desc" }}`. Do not reorder arrays
+yourself; the server rebuilds all categories and series in aligned order.
 
 ## Example 6 — Out of scope
 Instruction: "group by quarter instead of month"

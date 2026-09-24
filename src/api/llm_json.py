@@ -14,10 +14,16 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _reject_non_finite_constant(value: str) -> None:
+    raise ValueError(f"non-finite number: {value}")
+
+
 # ----------------------------------------------------------------------
 # Generic JSON extraction
 # ----------------------------------------------------------------------
-def extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
+def extract_json_object(
+    raw: str, *, reject_non_finite: bool = False
+) -> Optional[Dict[str, Any]]:
     """Best-effort decoder for LLM-produced JSON payloads.
 
     Strategy:
@@ -44,15 +50,17 @@ def extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
         if start != -1 and end != -1 and end > start:
             text = text[start : end + 1]
 
+    parse_constant = _reject_non_finite_constant if reject_non_finite else None
+    load_kwargs = {"parse_constant": parse_constant} if parse_constant else {}
     try:
-        return json.loads(text)
-    except json.JSONDecodeError as e:
+        return json.loads(text, **load_kwargs)
+    except (json.JSONDecodeError, ValueError) as e:
         logger.warning("Strict JSON parse failed (%s); attempting cleanup", e)
 
     cleaned = sanitize_llm_json(text)
     try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError as e:
+        return json.loads(cleaned, **load_kwargs)
+    except (json.JSONDecodeError, ValueError) as e:
         logger.error("Lenient JSON parse failed too: %s", e)
         logger.debug("Cleaned LLM text was: %s", cleaned[:1500])
         return None

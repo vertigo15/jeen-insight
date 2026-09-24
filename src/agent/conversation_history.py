@@ -1246,11 +1246,15 @@ class ConversationHistoryService:
         chart_spec: Optional[Dict[str, Any]],
         chart_config: Optional[Dict[str, Any]],
         chart_bytes: int,
+        request_started_at: Optional[datetime] = None,
     ) -> bool:
         """Persist the server-built chart baseline for a turn.
 
         Only turns whose snapshot is ``stored`` take a chart: a chart cannot be
-        restored without its rows, and ``pruned`` stays terminal.
+        restored without its rows, and ``pruned`` stays terminal. When a
+        request-start timestamp is supplied, ``chart_updated_at`` is a
+        last-writer watermark: a slower request that started earlier cannot
+        replace a chart produced by a newer request.
         """
         if not self.conversation_schema_ready:
             return False
@@ -1262,28 +1266,60 @@ class ConversationHistoryService:
                     SET chart_spec       = $3::jsonb,
                         chart_config     = $4::jsonb,
                         chart_bytes      = $5,
-                        chart_updated_at = NOW(),
+                        chart_updated_at = COALESCE($6::timestamptz, NOW()),
                         updated_at       = NOW()
                     FROM insights_conversation_sessions cs
                     WHERE a.turn_id = $1
                       AND cs.id = a.turn_id
                       AND cs.user_id = $2
                       AND a.snapshot_status = 'stored'
+                      AND (
+                          $6::timestamptz IS NULL
+                          OR a.chart_updated_at IS NULL
+                          OR a.chart_updated_at <= $6::timestamptz
+                      )
                     """,
                     turn_id,
                     user_id,
                     json.dumps(chart_spec) if chart_spec is not None else None,
                     json.dumps(chart_config) if chart_config is not None else None,
                     chart_bytes,
+                    request_started_at,
                 )
                 return result.endswith(" 1")
         except Exception:
             logger.exception("Failed to persist chart for turn %s", turn_id)
             return False
 
-    async def clear_turn_chart(self, *, turn_id: UUID, user_id: str) -> bool:
+    async def get_chart_request_watermark(self) -> Optional[datetime]:
+        """Return a database-clock watermark for ordering chart writes.
+
+        Both request-start ordering and rerun invalidation then use PostgreSQL's
+        clock, so API replica clock skew cannot let an obsolete chart win.
+        """
+        if not self.conversation_schema_ready:
+            return None
+        try:
+            async with self.pool.acquire() as conn:
+                return await conn.fetchval("SELECT clock_timestamp()")
+        except Exception:
+            logger.exception("Failed to obtain chart request watermark")
+            return None
+
+    async def clear_turn_chart(
+        self,
+        *,
+        turn_id: UUID,
+        user_id: str,
+        request_started_at: Optional[datetime] = None,
+    ) -> bool:
         """Drop a stored chart baseline (e.g. the new chart exceeded the byte cap
-        and must not be restored from an obsolete config)."""
+        and must not be restored from an obsolete config).
+
+        A guarded clear retains its request timestamp as a watermark even
+        though the chart columns become null. This prevents an older in-flight
+        generation from repopulating the obsolete baseline afterward.
+        """
         if not self.conversation_schema_ready:
             return False
         try:
@@ -1292,13 +1328,27 @@ class ConversationHistoryService:
                     """
                     UPDATE insights_turn_artifacts a
                     SET chart_spec = NULL, chart_config = NULL, chart_bytes = NULL,
-                        chart_updated_at = NULL, updated_at = NOW()
+                        chart_updated_at = CASE
+                            WHEN $3::timestamptz IS NULL THEN NULL
+                            ELSE $3::timestamptz
+                        END,
+                        updated_at = NOW()
                     FROM insights_conversation_sessions cs
                     WHERE a.turn_id = $1 AND cs.id = a.turn_id AND cs.user_id = $2
-                      AND a.chart_config IS NOT NULL
+                      AND (
+                          ($3::timestamptz IS NULL AND a.chart_config IS NOT NULL)
+                          OR (
+                              $3::timestamptz IS NOT NULL
+                              AND (
+                                  a.chart_updated_at IS NULL
+                                  OR a.chart_updated_at <= $3::timestamptz
+                              )
+                          )
+                      )
                     """,
                     turn_id,
                     user_id,
+                    request_started_at,
                 )
                 return result.endswith(" 1")
         except Exception:
@@ -1325,10 +1375,11 @@ class ConversationHistoryService:
                     """
                     INSERT INTO insights_turn_artifacts (
                         turn_id, result_kind, result_snapshot, snapshot_status,
-                        snapshot_bytes, snapshot_at
+                        snapshot_bytes, snapshot_at, chart_updated_at
                     )
                     SELECT $1::uuid, 'table', $3::jsonb, $4::text, $5::int,
-                           CASE WHEN $4::text = 'stored' THEN NOW() END
+                           CASE WHEN $4::text = 'stored' THEN NOW() END,
+                           NOW()
                     WHERE EXISTS (
                         SELECT 1 FROM insights_conversation_sessions
                         WHERE id = $1::uuid AND user_id = $2::text
@@ -1341,7 +1392,7 @@ class ConversationHistoryService:
                             chart_spec       = NULL,
                             chart_config     = NULL,
                             chart_bytes      = NULL,
-                            chart_updated_at = NULL,
+                            chart_updated_at = NOW(),
                             updated_at       = NOW()
                     """,
                     turn_id,
@@ -1872,6 +1923,7 @@ class ConversationHistoryService:
         rows: List[Any],
         chart_spec: Optional[Dict[str, Any]] = None,
         chart_config: Optional[Dict[str, Any]] = None,
+        chart_state: Optional[Dict[str, Any]] = None,
         insights_payload: Optional[Dict[str, Any]] = None,
         connection_id: Optional[str] = None,
     ) -> UUID:
@@ -1887,8 +1939,8 @@ class ConversationHistoryService:
                 INSERT INTO insights_saved_analyses (
                     user_id, source_key, connection_id, query_id, name, question,
                     generated_sql, columns, row_count, result_snapshot,
-                    chart_spec, chart_config, insights_payload
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                    chart_spec, chart_config, chart_state, insights_payload
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 RETURNING id
                 """,
                 user_id,
@@ -1903,6 +1955,7 @@ class ConversationHistoryService:
                 json.dumps(snapshot),
                 json.dumps(chart_spec) if chart_spec else None,
                 json.dumps(chart_config) if chart_config else None,
+                json.dumps(chart_state) if chart_state else None,
                 json.dumps(insights_payload) if insights_payload else None,
             )
             return saved_id
@@ -1970,7 +2023,10 @@ class ConversationHistoryService:
             if not row:
                 return None
             data = dict(row)
-            for key in ("columns", "result_snapshot", "chart_spec", "chart_config", "insights_payload"):
+            for key in (
+                "columns", "result_snapshot", "chart_spec", "chart_config",
+                "chart_state", "insights_payload",
+            ):
                 val = data.get(key)
                 if isinstance(val, str):
                     try:
@@ -1996,6 +2052,7 @@ class ConversationHistoryService:
         name: Optional[str] = None,
         chart_spec: Optional[Dict[str, Any]] = None,
         chart_config: Optional[Dict[str, Any]] = None,
+        chart_state: Optional[Dict[str, Any]] = None,
     ) -> bool:
         try:
             async with self.pool.acquire() as conn:
@@ -2005,12 +2062,14 @@ class ConversationHistoryService:
                     SET name = COALESCE($1, name),
                         chart_spec = COALESCE($2::jsonb, chart_spec),
                         chart_config = COALESCE($3::jsonb, chart_config),
+                        chart_state = COALESCE($4::jsonb, chart_state),
                         updated_at = NOW()
-                    WHERE id = $4 AND user_id = $5 AND deleted_at IS NULL
+                    WHERE id = $5 AND user_id = $6 AND deleted_at IS NULL
                     """,
                     name.strip()[:180] if isinstance(name, str) and name.strip() else None,
                     json.dumps(chart_spec) if chart_spec is not None else None,
                     json.dumps(chart_config) if chart_config is not None else None,
+                    json.dumps(chart_state) if chart_state is not None else None,
                     saved_id,
                     user_id,
                 )

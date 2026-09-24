@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, List
 from unittest.mock import MagicMock
@@ -269,6 +270,91 @@ def test_new_schema_methods_short_circuit_without_schema():
     }
     assert run(svc.prune_user_conversations(user_id="u", source_key="s", keep_last=1, keep_last_turns=1, min_interval_seconds=0)) == {"skipped": "schema_missing"}
     assert pool.acquired == 0, "no query is attempted against missing tables"
+
+
+def test_chart_writes_use_request_start_as_ordering_watermark():
+    started = datetime(2026, 9, 24, 7, 0, tzinfo=timezone.utc)
+    watermark_conn = _FakeConn(responses=[started])
+    watermark_service = ConversationHistoryService(
+        _FakePool(watermark_conn), conversation_schema_ready=True
+    )
+    assert asyncio.run(watermark_service.get_chart_request_watermark()) == started
+    assert "SELECT clock_timestamp()" in _sql_of(watermark_conn)
+
+    upsert_conn = _FakeConn(responses=["UPDATE 1"])
+    service = ConversationHistoryService(
+        _FakePool(upsert_conn), conversation_schema_ready=True
+    )
+    assert asyncio.run(service.upsert_turn_chart(
+        turn_id=QID,
+        user_id="u",
+        chart_spec={"chart_type": "bar"},
+        chart_config={"series": [{"type": "bar"}]},
+        chart_bytes=12,
+        request_started_at=started,
+    ))
+    upsert_sql = _sql_of(upsert_conn)
+    assert "a.chart_updated_at <= $6::timestamptz" in upsert_sql
+    assert upsert_conn.calls[0][2][5] == started
+
+    clear_conn = _FakeConn(responses=["UPDATE 1"])
+    clear_service = ConversationHistoryService(
+        _FakePool(clear_conn), conversation_schema_ready=True
+    )
+    assert asyncio.run(clear_service.clear_turn_chart(
+        turn_id=QID, user_id="u", request_started_at=started
+    ))
+    clear_sql = _sql_of(clear_conn)
+    assert "a.chart_updated_at <= $3::timestamptz" in clear_sql
+    assert "ELSE $3::timestamptz" in clear_sql
+    assert clear_conn.calls[0][2][2] == started
+
+    rerun_conn = _FakeConn(responses=["INSERT 0 1"])
+    rerun_service = ConversationHistoryService(
+        _FakePool(rerun_conn), conversation_schema_ready=True
+    )
+    assert asyncio.run(rerun_service.store_rerun_snapshot(
+        turn_id=QID,
+        user_id="u",
+        result_snapshot={"columns": ["a"], "rows": [[1]], "row_count": 1},
+        snapshot_status="stored",
+        snapshot_bytes=12,
+    ))
+    rerun_sql = _sql_of(rerun_conn)
+    assert "snapshot_at, chart_updated_at" in rerun_sql
+    assert "chart_updated_at = NOW()" in rerun_sql
+
+
+def test_saved_analysis_persists_versioned_chart_state():
+    saved_id = uuid.uuid4()
+    conn = _FakeConn(responses=[saved_id])
+    service = ConversationHistoryService(
+        _FakePool(conn), conversation_schema_ready=True
+    )
+    chart_state = {
+        "chart_config": {"series": [{"type": "line", "data": [1]}]},
+        "chart_toggles": {"dataLabels": True},
+        "derived_specs": [{"operator": "moving_avg", "source_column": "value"}],
+    }
+    result = asyncio.run(service.save_analysis(
+        user_id="u",
+        source_key="sales",
+        connection_id="sales",
+        name="Saved",
+        question="show value",
+        generated_sql="select 1",
+        query_id=None,
+        columns=["value"],
+        rows=[[1]],
+        chart_spec={"chart_type": "line"},
+        chart_config=chart_state["chart_config"],
+        chart_state=chart_state,
+    ))
+    assert result == saved_id
+    sql = _sql_of(conn)
+    assert "chart_spec, chart_config, chart_state, insights_payload" in sql
+    args = conn.calls[0][2]
+    assert '"chart_toggles"' in args[12]
 
 
 @pytest.mark.parametrize(

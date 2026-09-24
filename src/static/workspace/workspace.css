@@ -698,7 +698,6 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-chart-edit { margin-top: 10px; display: flex; align-items: center; gap: 8px; }
 .v3-chart-edit[hidden] { display: none !important; }
 .v3-chart-edit input { flex: 1; height: 34px; padding: 0 14px; border: 1px solid var(--border); border-radius: 9999px; outline: 0; background: var(--bg); font-size: 13px; font-weight: 300; }
-.v3-chart-edit button { height: 34px; padding: 0 16px; border: 0; border-radius: 9999px; background: var(--text); color: var(--bg); font-size: 13px; }
 .v3-chart-edit .chart-refine { width: 100%; margin: 0; padding: 0; border: 0; background: transparent; }
 .v3-chart-edit .chart-refine-row { display: flex; align-items: center; gap: 8px; }
 .v3-chart-edit .chart-refine-icon { display: none; }
@@ -711,6 +710,17 @@ body.v3-ready > .app-layout { display: none !important; }
 .v3-chart-edit .chart-refine-apply {
   height: 34px; padding: 0 16px; border: 0; border-radius: 9999px; background: var(--text); color: var(--bg); font-size: 13px;
 }
+.v3-chart-edit .chart-refine-apply:focus-visible,
+.v3-chart-edit .chart-refine-reset:focus-visible,
+.v3-chart-edit .chart-refine-input:focus-visible {
+  outline: 2px solid var(--rose); outline-offset: 2px;
+}
+.v3-chart-edit .chart-refine-applied { width: fit-content; max-width: 100%; padding-inline-start: 0; }
+.v3-chart-edit .chart-refine-reset {
+  height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: 9999px;
+  background: transparent; color: var(--muted); font-size: 12px;
+}
+.v3-chart-edit .chart-refine-reset:hover { border-color: var(--border2); background: var(--soft); color: var(--text); }
 .v3-chart-edit .chart-refine-status { margin-top: 6px; color: var(--muted); font-size: 12px; }
 .v3-analysis-adjust {
   margin-bottom: 14px; padding: 14px 16px; display: grid; grid-template-columns: minmax(150px, 220px) 1fr;
@@ -1093,6 +1103,10 @@ body.v3-ready .sp-overlay {
   .v3-analysis-adjust .chart-refine-entry { align-items: stretch; flex-direction: column; }
   .v3-analysis-adjust .chart-refine-input,
   .v3-analysis-adjust .chart-refine-apply { min-height: 40px; width: 100%; }
+  .v3-chart-edit .chart-refine-entry { align-items: stretch; flex-direction: column; }
+  .v3-chart-edit .chart-refine-input,
+  .v3-chart-edit .chart-refine-apply { min-height: 40px; width: 100%; }
+  .v3-chart-edit .chart-refine-applied { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
