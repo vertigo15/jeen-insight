@@ -968,6 +968,7 @@ body.v3-ready .sp-overlay {
 .v3-route-pill.is-ml { background: var(--rosesoft); color: var(--rose); }
 .v3-route-pill.is-sql { background: var(--soft); color: var(--muted); }
 .v3-status.is-blocked { background: var(--errsoft); color: var(--err); }
+.v3-status.is-expired { background: var(--soft2); color: var(--text); }
 .v3-ml-meta { font-family: var(--font-mono); font-size: 11.5px; }
 .v3-chip--ml { border-color: var(--rose); color: var(--rose); }
 .v3-chip--ml::before { content: "✦ "; }
@@ -993,6 +994,31 @@ body.v3-ready .sp-overlay {
 .v3-ml-tier { margin-inline-start: auto; color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
 .v3-ml-message { margin: 0; color: var(--text); font-size: 15px; line-height: 1.45; }
 .v3-ml-refusal { font-weight: 500; }
+.v3-ml-expired-notice {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px;
+  padding: 14px 16px; border: 1px solid var(--err); border-radius: 14px;
+  background: var(--errsoft); color: var(--text);
+}
+.v3-ml-expired-icon {
+  display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--err); color: var(--bg); font-size: 14px; font-weight: 700; line-height: 1;
+}
+.v3-ml-expired-copy { min-width: 0; display: grid; justify-items: start; gap: 6px; }
+.v3-ml-expired-badge {
+  display: inline-flex; align-items: center; min-height: 20px; padding: 1px 8px;
+  border: 1px solid var(--border2); border-radius: 9999px;
+  background: var(--bg); color: var(--muted); font-size: 11px; font-weight: 500;
+}
+.v3-ml-expired-copy strong { color: var(--text); font-size: 14px; }
+.v3-ml-expired-copy p { margin: 0; color: var(--text); font-size: 12.5px; line-height: 1.5; }
+.v3-ml-expired-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 2px; }
+.v3-ml-expired-hint { color: var(--err); font-size: 12px; line-height: 1.4; }
+.v3-ml-card.is-expired .v3-ml-field.is-required .v3-ml-label::after { display: none; }
+.v3-ml-exit.is-static {
+  display: inline-flex; align-items: center; cursor: default;
+  background: var(--soft); color: var(--muted);
+}
+.v3-turn.is-expired .v3-run-meta { color: var(--err); }
 
 /* Confirm card — planning line (the live summary) + framed setup form.
    Labels read at --text; --muted is for help only; --faint never carries copy
