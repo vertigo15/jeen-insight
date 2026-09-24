@@ -7,6 +7,8 @@ Jeen Insights answers a data question two ways:
 
 This page lists the skills that ship today, the algorithm behind each, and how to activate them. The list is defined in code in [`src/analysis/contracts.py`](../src/analysis/contracts.py) (`SKILLS`); each engine lives under [`src/analysis/engines/`](../src/analysis/engines/).
 
+> For how the ML branch is wired into the agent graph (`analysis_planner → analysis_guard → analysis_sql → analysis_run`) and where it sits among the other routes, see [agent-state-flow.md](./agent-state-flow.md) (§10.3).
+
 ## How to activate a skill
 
 1. **Enable the feature.** ML skills are gated by the `ML_SKILLS_ENABLED` setting; it must be on for the deployment. When off, every data question is text-to-SQL.

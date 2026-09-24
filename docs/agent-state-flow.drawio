@@ -1,12 +1,12 @@
 <?xml version="1.0" ?>
 <mxfile host="app.diagrams.net" agent="jeen-insight-generator" version="22.1.0" type="device">
   <diagram id="7c2e9b41-5d3a-4f08-9a6e-0b1c2d3e4f50" name="1 - Overview (grouped)">
-    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1320" pageHeight="1620" math="0" shadow="0">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1320" pageHeight="1690" math="0" shadow="0">
       <root>
         <mxCell id="0"/>
         <mxCell id="1" parent="0"/>
 
-        <mxCell id="o-title" value="&lt;b&gt;Jeen Insights — main LangGraph (overview)&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;25 nodes · 58 arcs · src/agent/langgraph_agent/graph.py&lt;br&gt;Purple = LLM · Green = DB / MCP · Gray = logic · Orange = validation · Blue = ML&lt;br&gt;Dashed gray = short-circuit to response_formatter · Red = repair loop · Blue = ML branch&lt;br&gt;Node and arc descriptions: see page 2.&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+        <mxCell id="o-title" value="&lt;b&gt;Jeen Insights — main LangGraph (overview)&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;27 nodes · 63 arcs · src/agent/langgraph_agent/graph.py&lt;br&gt;Purple = LLM · Green = DB / MCP · Gray = logic · Orange = validation · Blue = ML&lt;br&gt;Dashed gray = short-circuit to response_formatter · Red = repair loop · Blue = ML branch&lt;br&gt;Node and arc descriptions: see page 2.&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
           <mxGeometry x="30" y="10" width="290" height="90" as="geometry"/>
         </mxCell>
 
@@ -18,13 +18,13 @@
           <mxGeometry x="330" y="380" width="530" height="230" as="geometry"/>
         </mxCell>
         <mxCell id="o-g3" value="SQL_Exec" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#fafafa;strokeColor=#9e9e9e;fontColor=#555555;verticalAlign=top;align=left;spacingLeft=8;spacingTop=2;fontSize=10;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="330" y="650" width="530" height="580" as="geometry"/>
+          <mxGeometry x="330" y="650" width="530" height="650" as="geometry"/>
         </mxCell>
         <mxCell id="o-g4" value="ML_branch" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#f3f7fc;strokeColor=#6c8ebf;fontColor=#3b6ea5;verticalAlign=top;align=left;spacingLeft=8;spacingTop=2;fontSize=10;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="930" y="650" width="280" height="380" as="geometry"/>
         </mxCell>
         <mxCell id="o-g5" value="Tail" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;fillColor=#fafafa;strokeColor=#9e9e9e;fontColor=#555555;verticalAlign=top;align=left;spacingLeft=8;spacingTop=2;fontSize=10;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="520" y="1280" width="360" height="230" as="geometry"/>
+          <mxGeometry x="520" y="1350" width="360" height="230" as="geometry"/>
         </mxCell>
 
         <!-- ── Terminals ────────────────────────────────────────────────── -->
@@ -32,7 +32,7 @@
           <mxGeometry x="660" y="10" width="80" height="40" as="geometry"/>
         </mxCell>
         <mxCell id="o-e" value="END" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1e293b;strokeColor=#0f172a;fontColor=#ffffff;fontSize=11;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="660" y="1540" width="80" height="40" as="geometry"/>
+          <mxGeometry x="660" y="1610" width="80" height="40" as="geometry"/>
         </mxCell>
 
         <!-- ── Memory_Routing ───────────────────────────────────────────── -->
@@ -62,6 +62,9 @@
         <mxCell id="o-fg" value="filter_grounder" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="610" y="550" width="180" height="40" as="geometry"/>
         </mxCell>
+        <mxCell id="o-cha" value="catalog_help_answer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="370" y="470" width="180" height="40" as="geometry"/>
+        </mxCell>
         <mxCell id="o-pdb" value="prior_data_binder" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="370" y="550" width="180" height="40" as="geometry"/>
         </mxCell>
@@ -85,11 +88,14 @@
         <mxCell id="o-efc" value="empty_filter_result_check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="610" y="1030" width="180" height="40" as="geometry"/>
         </mxCell>
-        <mxCell id="o-trc" value="trivial_result_check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="o-erc" value="empty_result_check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="610" y="1100" width="180" height="40" as="geometry"/>
         </mxCell>
-        <mxCell id="o-fea" value="fused_eval_analytics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="o-trc" value="trivial_result_check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="610" y="1170" width="180" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="o-fea" value="fused_eval_analytics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="1240" width="180" height="40" as="geometry"/>
         </mxCell>
         <mxCell id="o-fc" value="feedback_classifier" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#b85450;strokeWidth=1.5;fontSize=11;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="360" y="900" width="180" height="40" as="geometry"/>
@@ -111,13 +117,13 @@
 
         <!-- ── Tail ─────────────────────────────────────────────────────── -->
         <mxCell id="o-rf" value="response_formatter" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="560" y="1310" width="280" height="40" as="geometry"/>
+          <mxGeometry x="560" y="1380" width="280" height="40" as="geometry"/>
         </mxCell>
         <mxCell id="o-stm" value="save_to_memory" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="610" y="1390" width="180" height="40" as="geometry"/>
+          <mxGeometry x="610" y="1460" width="180" height="40" as="geometry"/>
         </mxCell>
         <mxCell id="o-ol" value="observability_log" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="610" y="1460" width="180" height="40" as="geometry"/>
+          <mxGeometry x="610" y="1530" width="180" height="40" as="geometry"/>
         </mxCell>
 
         <!-- ── Arcs ─────────────────────────────────────────────────────── -->
@@ -142,7 +148,7 @@
           <mxGeometry x="-0.9" y="-9" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="300" y="200"/>
-              <mxPoint x="300" y="1322"/>
+              <mxPoint x="300" y="1392"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -151,7 +157,7 @@
             <Array as="points">
               <mxPoint x="460" y="330"/>
               <mxPoint x="340" y="330"/>
-              <mxPoint x="340" y="1120"/>
+              <mxPoint x="340" y="1190"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -169,7 +175,7 @@
           <mxGeometry x="-0.85" y="-9" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="300" y="570"/>
-              <mxPoint x="300" y="1330"/>
+              <mxPoint x="300" y="1400"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -191,12 +197,12 @@
           <mxGeometry x="-0.984" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="900" y="230"/>
-              <mxPoint x="900" y="1324"/>
+              <mxPoint x="900" y="1394"/>
             </Array>
             <mxPoint x="105" y="-9" as="offset"/>
           </mxGeometry>
         </mxCell>
-        <mxCell id="o09" value="needs_query / needs_analysis" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-fr" target="o-cl">
+        <mxCell id="o09" value="needs_query / needs_analysis / catalog_help" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-fr" target="o-cl">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
         <mxCell id="o10" value="escape hatch: needs_query" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-mag" target="o-cl">
@@ -211,7 +217,7 @@
           <mxGeometry x="0.8" y="-9" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="300" y="300"/>
-              <mxPoint x="300" y="1322"/>
+              <mxPoint x="300" y="1392"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -219,7 +225,7 @@
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="1240" y="300"/>
-              <mxPoint x="1240" y="1336"/>
+              <mxPoint x="1240" y="1406"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -233,7 +239,7 @@
           <mxGeometry x="-0.897" y="-9" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="900" y="430"/>
-              <mxPoint x="900" y="1324"/>
+              <mxPoint x="900" y="1394"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -249,7 +255,7 @@
           <mxGeometry x="-0.889" y="-9" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="900" y="500"/>
-              <mxPoint x="900" y="1324"/>
+              <mxPoint x="900" y="1394"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -257,7 +263,7 @@
           <mxGeometry x="-0.882" y="-9" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="900" y="560"/>
-              <mxPoint x="900" y="1324"/>
+              <mxPoint x="900" y="1394"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -281,7 +287,7 @@
           <mxGeometry x="-0.857" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="1240" y="700"/>
-              <mxPoint x="1240" y="1336"/>
+              <mxPoint x="1240" y="1406"/>
             </Array>
             <mxPoint x="8" as="offset"/>
           </mxGeometry>
@@ -293,7 +299,7 @@
           <mxGeometry x="-0.846" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="1240" y="778"/>
-              <mxPoint x="1240" y="1336"/>
+              <mxPoint x="1240" y="1406"/>
             </Array>
             <mxPoint x="8" as="offset"/>
           </mxGeometry>
@@ -302,7 +308,7 @@
           <mxGeometry x="-0.836" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="1240" y="840"/>
-              <mxPoint x="1240" y="1336"/>
+              <mxPoint x="1240" y="1406"/>
             </Array>
             <mxPoint x="8" as="offset"/>
           </mxGeometry>
@@ -325,8 +331,13 @@
         <mxCell id="o32" value="rows, SQL path" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-eq" target="o-efc">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
-        <mxCell id="o33" value="no reground" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-efc" target="o-trc">
-          <mxGeometry relative="1" as="geometry"/>
+        <mxCell id="o33" value="has rows" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-efc" target="o-trc">
+          <mxGeometry x="-0.2" y="10" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="820" y="1060"/>
+              <mxPoint x="820" y="1190"/>
+            </Array>
+          </mxGeometry>
         </mxCell>
         <mxCell id="o34" value="non-trivial &amp; eval on" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-trc" target="o-fea">
           <mxGeometry relative="1" as="geometry"/>
@@ -335,7 +346,7 @@
           <mxGeometry x="-0.848" y="-9" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="900" y="770"/>
-              <mxPoint x="900" y="1324"/>
+              <mxPoint x="900" y="1394"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -350,7 +361,7 @@
           <mxGeometry x="-0.834" y="-9" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="900" y="830"/>
-              <mxPoint x="900" y="1324"/>
+              <mxPoint x="900" y="1394"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -358,7 +369,7 @@
           <mxGeometry x="-0.812" y="-9" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="900" y="910"/>
-              <mxPoint x="900" y="1324"/>
+              <mxPoint x="900" y="1394"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -373,7 +384,7 @@
           <mxGeometry x="-0.79" y="-9" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="900" y="970"/>
-              <mxPoint x="900" y="1324"/>
+              <mxPoint x="900" y="1394"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -383,7 +394,7 @@
         <mxCell id="o42" value="ok" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-ar" target="o-trc">
           <mxGeometry x="0.317" y="9" relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="1070" y="1130"/>
+              <mxPoint x="1070" y="1200"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -391,7 +402,7 @@
           <mxGeometry x="-0.809" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="1240" y="980"/>
-              <mxPoint x="1240" y="1336"/>
+              <mxPoint x="1240" y="1406"/>
             </Array>
             <mxPoint x="8" as="offset"/>
           </mxGeometry>
@@ -406,8 +417,8 @@
         <mxCell id="o45" value="trivial or eval off" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=1;entryY=0.35;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-trc" target="o-rf">
           <mxGeometry x="-0.714" y="-9" relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="900" y="1110"/>
-              <mxPoint x="900" y="1324"/>
+              <mxPoint x="900" y="1180"/>
+              <mxPoint x="900" y="1394"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -417,11 +428,11 @@
         <mxCell id="o47" value="wrong" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.17;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fea" target="o-fc">
           <mxGeometry x="-0.532" y="-9" relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="390" y="1190"/>
+              <mxPoint x="390" y="1260"/>
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="o48" value="syntax / exec / semantic" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0.25;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fc" target="o-sg">
+        <mxCell id="o48" value="syntax / exec / semantic / empty_recheck" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0.25;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-fc" target="o-sg">
           <mxGeometry x="0.403" y="-9" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="405" y="770"/>
@@ -448,7 +459,7 @@
           <mxGeometry x="0.8" y="9" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="300" y="928"/>
-              <mxPoint x="300" y="1338"/>
+              <mxPoint x="300" y="1408"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -461,24 +472,52 @@
         <mxCell id="o54" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-ol" target="o-e">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
+        <mxCell id="o59" value="catalog_help" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=0;exitY=0.9;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-cl" target="o-cha">
+          <mxGeometry x="-0.3" y="10" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="460" y="446"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o60" value="catalog listing" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-cha" target="o-rf">
+          <mxGeometry x="-0.9" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="300" y="490"/>
+              <mxPoint x="300" y="1392"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o61" value="0 rows" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-efc" target="o-erc">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="o62" value="needs_sql_recheck" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.67;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="o-erc" target="o-fc">
+          <mxGeometry x="-0.4" y="-9" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="480" y="1120"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="o63" value="plausible empty" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="o-erc" target="o-trc">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
       </root>
     </mxGraphModel>
   </diagram>
   <diagram id="1a3f0d2c-9b7e-4c61-8d55-2f4e6a7b8c90" name="2 - Nodes and arcs (detailed)">
-    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1620" pageHeight="1780" math="0" shadow="0">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1620" pageHeight="1880" math="0" shadow="0">
       <root>
         <mxCell id="0"/>
         <mxCell id="1" parent="0"/>
 
         <!-- ── Title, legend, notes ─────────────────────────────────────── -->
-        <mxCell id="t-title" value="&lt;b&gt;&lt;font style=&quot;font-size:14px&quot;&gt;Jeen Insights — main LangGraph&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px&quot;&gt;src/agent/langgraph_agent/graph.py · build_graph() · 25 nodes · 58 arcs · 20 conditional routers&lt;br&gt;Box = node name + what it does. Arc label = the routing condition (first match wins). Recursion limit 48, no checkpointer.&lt;br&gt;Memory: context_composer builds the turn ledger (question · SQL · answer · result shape · data availability); prior rows are recovered by reference (cache → snapshot → re-run) and computed over in the metadata Postgres as jsonb_to_recordset CTEs (no tables created), never pasted into prompts.&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;" vertex="1" parent="1">
+        <mxCell id="t-title" value="&lt;b&gt;&lt;font style=&quot;font-size:14px&quot;&gt;Jeen Insights — main LangGraph&lt;/font&gt;&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px&quot;&gt;src/agent/langgraph_agent/graph.py · build_graph() · 27 nodes · 63 arcs · 20 conditional routers&lt;br&gt;Box = node name + what it does. Arc label = the routing condition (first match wins). Recursion limit 72 (longest legal path 59 supersteps), no checkpointer.&lt;br&gt;Memory: context_composer builds the turn ledger (question · SQL · answer · result shape · data availability); prior rows are recovered by reference (cache → snapshot → re-run) and computed over in the metadata Postgres as jsonb_to_recordset CTEs (no tables created), never pasted into prompts.&lt;/font&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;" vertex="1" parent="1">
           <mxGeometry x="40" y="20" width="500" height="80" as="geometry"/>
         </mxCell>
         <mxCell id="t-legend" value="&lt;b&gt;Legend&lt;/b&gt;&lt;br&gt;Purple = LLM node (router = small model, primary = large) · Green = DB / MCP · Gray = logic · Orange = validation / governance tools · Blue = ML runner&lt;br&gt;Black arc = main path · Dashed gray = short-circuit to response_formatter · Red = repair / feedback loop · Blue = ML skills branch · Blue dashed = re-entry from /api/analysis/run" style="text;html=1;strokeColor=#bbbbbb;fillColor=#fafafa;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=9;spacing=6;rounded=1;" vertex="1" parent="1">
           <mxGeometry x="1160" y="20" width="420" height="100" as="geometry"/>
         </mxCell>
-        <mxCell id="t-notes" value="&lt;b&gt;Bounded cycles&lt;/b&gt;&lt;br&gt;• SQL repair: sql_generator → … → feedback_classifier → sql_generator; ends when retry_count &amp;gt; LANGGRAPH_MAX_RETRIES (3) → exhausted&lt;br&gt;• Catalog refresh: missing_table → catalog_lookup → filter_planner → filter_grounder → prompt_builder → sql_generator (same retry budget)&lt;br&gt;• Filter reground: 0 rows + (unverified literal or metadata-only resolution) → filter_grounder once, escalated: cache bypassed, metadata values re-confirmed on the source (empty_filter_diagnostics &amp;lt; 1; retry_count untouched)&lt;br&gt;The ML branch and the memory branch have no cycle: on_analysis_branch() / on_memory_branch() divert every failure straight to response_formatter (a memory table has no system prompt to retry with).&lt;br&gt;Every node is wrapped by _timed → progress events + one entry in the trace reducer (operator.add)." style="text;html=1;strokeColor=#bbbbbb;fillColor=#fafafa;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=9;spacing=6;rounded=1;" vertex="1" parent="1">
-          <mxGeometry x="40" y="1490" width="360" height="190" as="geometry"/>
+        <mxCell id="t-notes" value="&lt;b&gt;Bounded cycles&lt;/b&gt;&lt;br&gt;• SQL repair: sql_generator → … → feedback_classifier → sql_generator; ends when retry_count &amp;gt; LANGGRAPH_MAX_RETRIES (3) → exhausted&lt;br&gt;• Catalog refresh: missing_table → catalog_lookup → filter_planner → filter_grounder → prompt_builder → sql_generator (same retry budget)&lt;br&gt;• Filter reground: 0 rows + (unverified literal or metadata-only resolution) → filter_grounder once, escalated: cache bypassed, metadata values re-confirmed on the source (empty_filter_diagnostics &amp;lt; 1; retry_count untouched)&lt;br&gt;• Empty-result recheck: suspicious 0 rows (aggregate / GROUP BY / INNER JOIN, no user filter) → empty_result_check → feedback_classifier → sql_generator once (empty_result_diagnostics &amp;lt; 1; retry_count untouched; LANGGRAPH_EMPTY_RECHECK)&lt;br&gt;The ML branch and the memory branch have no cycle: on_analysis_branch() / on_memory_branch() divert every failure straight to response_formatter (a memory table has no system prompt to retry with).&lt;br&gt;Every node is wrapped by _timed → progress events + one entry in the trace reducer (operator.add)." style="text;html=1;strokeColor=#bbbbbb;fillColor=#fafafa;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=9;spacing=6;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1590" width="360" height="240" as="geometry"/>
         </mxCell>
 
         <!-- ── ML branch container (behind the nodes) ───────────────────── -->
@@ -491,14 +530,14 @@
           <mxGeometry x="640" y="20" width="80" height="40" as="geometry"/>
         </mxCell>
         <mxCell id="n-end" value="END" style="ellipse;whiteSpace=wrap;html=1;fillColor=#1e293b;strokeColor=#0f172a;fontColor=#ffffff;fontSize=11;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="640" y="1680" width="80" height="40" as="geometry"/>
+          <mxGeometry x="640" y="1780" width="80" height="40" as="geometry"/>
         </mxCell>
 
         <!-- ── Spine (centre column) ────────────────────────────────────── -->
         <mxCell id="n-cc" value="&lt;b&gt;context_composer&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · build the turn ledger (T1…TN: question, SQL, answer, result shape, data status) from the last conversation_context_turns turns → memory_ledger, memory_telemetry&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;spacing=3;" vertex="1" parent="1">
           <mxGeometry x="560" y="100" width="240" height="64" as="geometry"/>
         </mxCell>
-        <mxCell id="n-fr" value="&lt;b&gt;fused_router&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;LLM (router) · greeting regex short-circuit; else one call over the ledger → route + prior_refs (T3) + history_query; ML gate, keyword-cue upgrade, low-confidence clarify_route&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;spacing=3;" vertex="1" parent="1">
+        <mxCell id="n-fr" value="&lt;b&gt;fused_router&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;LLM (router) · greeting regex short-circuit; else one call over the ledger → route + prior_refs (T3) + history_query; capability / catalog_help cues; ML gate, keyword-cue upgrade, low-confidence clarify_route&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;spacing=3;" vertex="1" parent="1">
           <mxGeometry x="560" y="200" width="240" height="64" as="geometry"/>
         </mxCell>
         <mxCell id="n-cl" value="&lt;b&gt;catalog_lookup&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;DB / MCP · consume the pre-graph bundle once, else load (MCP → metadata-DB fallback); build known_tables / table_columns allowlists; fail closed&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;spacing=3;" vertex="1" parent="1">
@@ -525,23 +564,26 @@
         <mxCell id="n-eq" value="&lt;b&gt;execute_query&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;DB · read-only SqlRunner with limit / max_result_rows / statement_timeout → query_result, exec_error&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;spacing=3;" vertex="1" parent="1">
           <mxGeometry x="560" y="1000" width="240" height="64" as="geometry"/>
         </mxCell>
-        <mxCell id="n-efc" value="&lt;b&gt;empty_filter_result_check&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · 0 rows + unresolved text filter + no earlier pass → needs_filter_reground&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;spacing=3;" vertex="1" parent="1">
+        <mxCell id="n-efc" value="&lt;b&gt;empty_filter_result_check&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · 0 rows + (unverified text filter or metadata-only resolution) + no earlier pass → needs_filter_reground&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;spacing=3;" vertex="1" parent="1">
           <mxGeometry x="560" y="1100" width="240" height="64" as="geometry"/>
         </mxCell>
-        <mxCell id="n-trc" value="&lt;b&gt;trivial_result_check&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · ≤ 1 row and ≤ 5 columns → is_trivial (skip the eval call)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;spacing=3;" vertex="1" parent="1">
+        <mxCell id="n-erc" value="&lt;b&gt;empty_result_check&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;LLM (router) · 0-row result only: heuristic (aggregate / GROUP BY / INNER JOIN, no user filter) gates one call → needs_sql_recheck + empty_hint; one pass&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;spacing=3;" vertex="1" parent="1">
           <mxGeometry x="560" y="1200" width="240" height="64" as="geometry"/>
         </mxCell>
-        <mxCell id="n-fea" value="&lt;b&gt;fused_eval_analytics&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;LLM (primary) · SQL: stats + 12-row sample → answers_intent, summary, insights, follow-ups · ML: analysis_narration, never rejects&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;spacing=3;" vertex="1" parent="1">
+        <mxCell id="n-trc" value="&lt;b&gt;trivial_result_check&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · ≤ 1 row and ≤ 5 columns → is_trivial (skip the eval call)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;spacing=3;" vertex="1" parent="1">
           <mxGeometry x="560" y="1300" width="240" height="64" as="geometry"/>
         </mxCell>
+        <mxCell id="n-fea" value="&lt;b&gt;fused_eval_analytics&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;LLM (primary) · SQL: stats + 12-row sample → answers_intent, summary, insights, follow-ups · ML: analysis_narration, never rejects&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1400" width="240" height="64" as="geometry"/>
+        </mxCell>
         <mxCell id="n-rf" value="&lt;b&gt;response_formatter&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · pick the answer by terminal state (proposal › analysis_error › analysis › clarification › dlp › route › eval › trivial › error) and build the API contract: sql, results, answer, metrics, routing, status, findings&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;spacing=3;" vertex="1" parent="1">
-          <mxGeometry x="420" y="1400" width="520" height="64" as="geometry"/>
+          <mxGeometry x="420" y="1500" width="520" height="64" as="geometry"/>
         </mxCell>
         <mxCell id="n-stm" value="&lt;b&gt;save_to_memory&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;DB · persist SQL, execution status, preview, result artifact and turn artifact (best effort, never fails the answer)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;spacing=3;" vertex="1" parent="1">
-          <mxGeometry x="560" y="1490" width="240" height="64" as="geometry"/>
+          <mxGeometry x="560" y="1590" width="240" height="64" as="geometry"/>
         </mxCell>
         <mxCell id="n-ol" value="&lt;b&gt;observability_log&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · emit one QUERY_EVENT structured log (route, retries, tokens, latency, slim node trace)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;spacing=3;" vertex="1" parent="1">
-          <mxGeometry x="560" y="1580" width="240" height="64" as="geometry"/>
+          <mxGeometry x="560" y="1680" width="240" height="64" as="geometry"/>
         </mxCell>
 
         <!-- ── Left column: memory / routing side nodes + feedback ──────── -->
@@ -557,7 +599,10 @@
         <mxCell id="n-pdb" value="&lt;b&gt;prior_data_binder&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;LLM (router) · extract the values a new query needs from a prior result (SELECT over its stored rows) and bind them to a live catalog column as a resolved IN filter → filter_plan, prior_bindings&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;spacing=3;" vertex="1" parent="1">
           <mxGeometry x="40" y="500" width="240" height="64" as="geometry"/>
         </mxCell>
-        <mxCell id="n-fc" value="&lt;b&gt;feedback_classifier&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · classify the failure → resolve_filters | missing_table | syntax | exec | semantic | exhausted (retry_count &amp;gt; LANGGRAPH_MAX_RETRIES = 3)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#b85450;strokeWidth=1.5;fontSize=11;spacing=3;" vertex="1" parent="1">
+        <mxCell id="n-cha" value="&lt;b&gt;catalog_help_answer&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · &quot;which measures / dimensions can I ask about?&quot; — each table's columns as measures / numeric / dimensions / dates from metadata_bundle; governed + sensitive columns hidden; no LLM → answer (Markdown)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;spacing=3;" vertex="1" parent="1">
+          <mxGeometry x="40" y="650" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="n-fc" value="&lt;b&gt;feedback_classifier&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px&quot;&gt;logic · classify the failure → resolve_filters | empty_recheck (own budgets, retry_count untouched) | missing_table | syntax | exec | semantic | exhausted (retry_count &amp;gt; LANGGRAPH_MAX_RETRIES = 3)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#b85450;strokeWidth=1.5;fontSize=11;spacing=3;" vertex="1" parent="1">
           <mxGeometry x="40" y="800" width="240" height="64" as="geometry"/>
         </mxCell>
 
@@ -603,17 +648,17 @@
           <mxGeometry x="-0.92" y="-8" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="24" y="182"/>
-              <mxPoint x="24" y="1432"/>
+              <mxPoint x="24" y="1532"/>
             </Array>
           </mxGeometry>
         </mxCell>
         <mxCell id="e55" value="memory_action == compute — table computed from stored rows gets narrated like a live result" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;align=left;exitX=1;exitY=0.9;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-mag" target="n-trc">
-          <mxGeometry x="0.82" relative="1" as="geometry">
+          <mxGeometry x="0.96" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="540" y="408"/>
-              <mxPoint x="540" y="1232"/>
+              <mxPoint x="540" y="1332"/>
             </Array>
-            <mxPoint x="-330" y="-10" as="offset"/>
+            <mxPoint x="-590" y="-30" as="offset"/>
           </mxGeometry>
         </mxCell>
         <mxCell id="e56" value="prior_refs set — bind values from the referenced result first" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fg" target="n-pdb">
@@ -630,7 +675,7 @@
           <mxGeometry x="-0.85" y="-8" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="24" y="532"/>
-              <mxPoint x="24" y="1432"/>
+              <mxPoint x="24" y="1532"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -659,7 +704,7 @@
             <mxPoint x="110" y="-10" as="offset"/>
           </mxGeometry>
         </mxCell>
-        <mxCell id="e09" value="needs_query | needs_analysis (default)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-fr" target="n-cl">
+        <mxCell id="e09" value="needs_query | needs_analysis | catalog_help (default)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-fr" target="n-cl">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
         <mxCell id="e10" value="always" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.192;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-cap" target="n-rf">
@@ -846,13 +891,18 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="e41" value="no reground" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-efc" target="n-trc">
-          <mxGeometry relative="1" as="geometry"/>
+        <mxCell id="e41" value="has rows" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-efc" target="n-trc">
+          <mxGeometry x="-0.2" y="10" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="830" y="1148"/>
+              <mxPoint x="830" y="1332"/>
+            </Array>
+          </mxGeometry>
         </mxCell>
         <mxCell id="e42" value="analysis_result — envelope becomes query_result + headline" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#6c8ebf;fontColor=#3b6ea5;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.3;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-ar" target="n-trc">
           <mxGeometry x="0.4" y="-8" relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="1240" y="1219"/>
+              <mxPoint x="1240" y="1319"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -867,7 +917,7 @@
         <mxCell id="e44" value="is_trivial | eval disabled (eval_analytics_override ?? EVAL_ANALYTICS_ENABLED)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;align=left;exitX=1;exitY=0.7;exitDx=0;exitDy=0;entryX=0.923;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-trc" target="n-rf">
           <mxGeometry x="-0.97" relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="900" y="1245"/>
+              <mxPoint x="900" y="1345"/>
             </Array>
             <mxPoint x="110" y="-10" as="offset"/>
           </mxGeometry>
@@ -881,13 +931,13 @@
         <mxCell id="e47" value="answers_intent == false → semantic" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.25;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fea" target="n-fc">
           <mxGeometry x="-0.7" y="-8" relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="100" y="1332"/>
+              <mxPoint x="100" y="1432"/>
             </Array>
           </mxGeometry>
         </mxCell>
 
         <!-- ── Arcs: feedback_classifier outputs ────────────────────────── -->
-        <mxCell id="e48" value="syntax | exec | semantic → regenerate (retry_count += 1)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fc" target="n-sg">
+        <mxCell id="e48" value="syntax | exec | semantic → regenerate (retry_count += 1) · empty_recheck → regenerate once" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fc" target="n-sg">
           <mxGeometry x="0.3" y="-8" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="160" y="732"/>
@@ -913,7 +963,7 @@
         <mxCell id="e51" value="exhausted (retry_count &amp;gt; max_retries)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0.1;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-fc" target="n-rf">
           <mxGeometry x="0.6" y="-8" relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="64" y="1432"/>
+              <mxPoint x="64" y="1532"/>
             </Array>
           </mxGeometry>
         </mxCell>
@@ -926,6 +976,37 @@
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
         <mxCell id="e54" value="always" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-ol" target="n-end">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ── Arcs: catalog help and empty-result recheck ──────────────── -->
+        <mxCell id="e59" value="route == catalog_help — needs the bundle first" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;exitX=0;exitY=0.9;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-cl" target="n-cha">
+          <mxGeometry x="0.5" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="500" y="358"/>
+              <mxPoint x="500" y="682"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e60" value="always — catalog listed" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#8a8a8a;dashed=1;fontColor=#555555;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-cha" target="n-rf">
+          <mxGeometry x="-0.85" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="24" y="682"/>
+              <mxPoint x="24" y="1532"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e61" value="0 rows (no reground)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-efc" target="n-erc">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e62" value="needs_sql_recheck → empty_recheck (once)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;strokeColor=#b85450;fontColor=#b85450;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.83;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="n-erc" target="n-fc">
+          <mxGeometry x="-0.4" y="-8" relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="240" y="1232"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e63" value="plausible empty | gate off → &quot;no records&quot; + empty_hint" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;fontSize=9;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="n-erc" target="n-trc">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
       </root>

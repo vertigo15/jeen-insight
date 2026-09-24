@@ -44,7 +44,7 @@ flowchart TB
     end
 
     subgraph LangGraph["LangGraph text-to-SQL graph"]
-        LG["25 nodes: memory ledger → router → SQL / ML / memory → validate → execute → eval → format"]
+        LG["27 nodes: memory ledger → router → SQL / ML / memory → validate → execute → eval → format"]
     end
 
     subgraph DataSources["Data & catalog"]
@@ -178,7 +178,7 @@ flowchart TD
 
 ## 5. LangGraph agent (core question → SQL → answer)
 
-The compiled graph has **25 nodes** and 58 arcs. Every node appends a timed event to `state.trace` (shown in the UI developer panel). The full node reference, the arc table with routing conditions, and the conversation-memory design live in [agent-state-flow.md](./agent-state-flow.md) (diagrams: [agent-state-flow.drawio](./agent-state-flow.drawio)); the overview below is the same graph grouped by phase — the graph follows one route through it for a given question.
+The compiled graph has **27 nodes** and 63 arcs. Every node appends a timed event to `state.trace` (shown in the UI developer panel). The full node reference, the arc table with routing conditions, and the conversation-memory design live in [agent-state-flow.md](./agent-state-flow.md) (diagrams: [agent-state-flow.drawio](./agent-state-flow.drawio)); the overview below is the same graph grouped by phase — the graph follows one route through it for a given question.
 
 ```mermaid
 flowchart TD
