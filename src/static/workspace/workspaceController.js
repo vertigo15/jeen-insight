@@ -245,7 +245,7 @@
             const numeric = type === 'number';
             const plain = numeric && isPlainNumberColumn(
                 name,
-                rows.slice(0, 200).map((row) => rowValue(row, name, index)),
+                rows.map((row) => rowValue(row, name, index)),
             );
             let sawDate = false;
             let omitMidnightTime = type === 'datetime';
