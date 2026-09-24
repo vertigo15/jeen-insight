@@ -65,12 +65,21 @@ def test_saved_analyses_save_and_restore_are_user_scoped(client, fake_state):
         "sql": "select 1",
         "results": {"columns": ["x"], "rows": [[1]]},
         "chart_config": {"series": [{"type": "bar", "data": [1]}]},
+        "chart_state": {
+            "chart_config": {"series": [{"type": "bar", "data": [1]}]},
+            "chart_toggles": {"dataLabels": True},
+            "derived_specs": [{"operator": "moving_avg", "source_column": "x"}],
+        },
         "insights": {"summary": "ok", "findings": [], "suggestions": []},
     }
     resp = client.post("/api/saved-analyses", json=payload)
     assert resp.status_code == 200
     fake_state.history_service.save_analysis.assert_awaited_once()
     assert fake_state.history_service.save_analysis.await_args.kwargs["user_id"] == "user-a"
+    assert (
+        fake_state.history_service.save_analysis.await_args.kwargs["chart_state"]
+        == payload["chart_state"]
+    )
 
     fake_state.history_service.get_saved_analysis = AsyncMock(return_value=None)
     # A spoofed user_id in the query string must NOT widen the lookup: the

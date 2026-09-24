@@ -4,6 +4,7 @@
  */
 import assert from 'node:assert/strict';
 import {
+    OsmMapRenderer,
     colorForValue,
     fitMapView,
     projectMercator,
@@ -61,5 +62,20 @@ const pannedTileKeys = smallPan.tiles.map((tile) =>
 const panReconcile = reconcileTileKeys(initialTileKeys, pannedTileKeys);
 assert.equal(panReconcile.create.length, 0);
 assert.equal(panReconcile.reuse.length, initialTileKeys.length);
+
+const renderer = new OsmMapRenderer('unused');
+renderer.map = {};
+renderer.center = { lat: 32.0853, lng: 34.7818 };
+renderer.zoom = 8;
+renderer.activeOverlayIds = new Set();
+renderer.activeDataLayerIds = new Set();
+const savedView = renderer.getViewState();
+assert.deepEqual(savedView.center, { lat: 32.0853, lng: 34.7818 });
+
+renderer.center = { lat: 0, lng: 0 };
+renderer.restoreViewState(savedView);
+assert.deepEqual(renderer.center, { lat: 32.0853, lng: 34.7818 });
+renderer.restoreViewState({ center: [31.5, 35.25] });
+assert.deepEqual(renderer.center, { lat: 31.5, lng: 35.25 });
 
 console.log('osm map renderer JS tests passed');

@@ -35,16 +35,16 @@ export class MapOptionsPanel {
         el.classList.add('map-options-panel-container');
         el.innerHTML = `
             <div class="map-options-panel">
-                <div class="map-options-section">
+                <div class="map-options-section" role="group" aria-label="${t('charts.map.controls')}">
                     <span class="chart-options-heading">${th('charts.map.controls')}</span>
                     <div class="map-options-row">
                         <button type="button" class="chart-opt-toggle" data-map-action="reset">${th('charts.map.resetView')}</button>
                         <button type="button" class="chart-opt-toggle" data-map-action="fit">${th('charts.map.fit')}</button>
                         <button type="button" class="chart-opt-toggle" data-map-action="zoom-in">${th('charts.map.zoomIn')}</button>
                         <button type="button" class="chart-opt-toggle" data-map-action="zoom-out">${th('charts.map.zoomOut')}</button>
-                        <button type="button" class="chart-opt-toggle" data-map-toggle="labels">${th('charts.options.labels')}</button>
-                        <button type="button" class="chart-opt-toggle is-on" data-map-toggle="roam">${th('charts.map.panZoom')}</button>
-                        <button type="button" class="chart-opt-toggle is-on" data-map-toggle="noData">${th('charts.map.noDataAreas')}</button>
+                        <button type="button" class="chart-opt-toggle" data-map-toggle="labels" aria-pressed="false">${th('charts.options.labels')}</button>
+                        <button type="button" class="chart-opt-toggle" data-map-toggle="roam" aria-pressed="true">${th('charts.map.panZoom')}</button>
+                        <button type="button" class="chart-opt-toggle" data-map-toggle="noData" aria-pressed="true">${th('charts.map.noDataAreas')}</button>
                     </div>
                 </div>
                 <div class="map-options-section">
@@ -69,6 +69,7 @@ export class MapOptionsPanel {
             this.state.palette = event.target.value;
             this._emit('palette', this.state.palette);
         });
+        this._syncButtons();
         this._mounted = true;
         this.hide();
     }
@@ -93,9 +94,9 @@ export class MapOptionsPanel {
     }
 
     _toggle(key, btn) {
-        if (!(key in this.state)) return;
-        this.state[key] = !this.state[key];
-        btn.classList.toggle('is-on', !!this.state[key]);
+        if (!(key in this.state) || btn.disabled) return;
+        this.state[key] = this.state[key] === 'mixed' ? true : !this.state[key];
+        this._syncToggleButton(btn, this.state[key]);
         this._emit(key, this.state[key]);
     }
 
@@ -110,10 +111,20 @@ export class MapOptionsPanel {
         if (!el) return;
         el.querySelectorAll('[data-map-toggle]').forEach((btn) => {
             const key = btn.dataset.mapToggle;
-            btn.classList.toggle('is-on', !!this.state[key]);
+            this._syncToggleButton(btn, this.state[key]);
         });
         const palette = el.querySelector('#map-opt-palette');
         if (palette) palette.value = this.state.palette;
+    }
+
+    _syncToggleButton(button, state, disabled = false) {
+        if (!button) return;
+        const pressed = state === 'mixed' ? 'mixed' : (state ? 'true' : 'false');
+        button.classList.toggle('is-on', pressed === 'true');
+        button.classList.toggle('is-mixed', pressed === 'mixed');
+        button.setAttribute('aria-pressed', pressed);
+        button.disabled = Boolean(disabled);
+        button.setAttribute('aria-disabled', disabled ? 'true' : 'false');
     }
 }
 

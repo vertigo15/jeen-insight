@@ -589,6 +589,7 @@ def test_generate_chart_persists_baseline_with_principal(client, fake_state, mon
     assert persisted["user_id"] == "user-a"
     assert str(persisted["turn_id"]) == TURN_ID
     assert persisted["chart_config"] == resp.json()["chart_config"]
+    assert persisted["request_started_at"].tzinfo is not None
 
 
 def test_generate_chart_skips_persistence_without_query_id_or_over_cap(client, fake_state, monkeypatch):
@@ -625,6 +626,7 @@ def test_generate_chart_skips_persistence_without_query_id_or_over_cap(client, f
     h.clear_turn_chart.assert_awaited_once()
     assert str(h.clear_turn_chart.await_args.kwargs["turn_id"]) == TURN_ID
     assert h.clear_turn_chart.await_args.kwargs["user_id"] == "user-a"
+    assert h.clear_turn_chart.await_args.kwargs["request_started_at"].tzinfo is not None
 
 
 # ── save_to_memory capture ──────────────────────────────────────────────────

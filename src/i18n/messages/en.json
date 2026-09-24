@@ -1453,6 +1453,7 @@
       "zoomTitle": "Enable slider + scroll zoom",
       "sortDesc": "Sort ↓",
       "sortDescTitle": "Sort categories high to low",
+      "quickOptionsGroup": "Chart display options",
       "columns": "Columns",
       "columnsTitle": "Choose X / Y / Series columns",
       "more": "Chart options",
@@ -1498,16 +1499,21 @@
       "adjustHelp": "Recomputes the analysis as a new result. The current result is kept.",
       "enhance": "Enhance",
       "reset": "Reset chart",
-      "resetTitle": "Revert to the original chart. Edits are session-only — your data is never changed.",
+      "resetTitle": "Revert to the original chart. Edits are session-only and are not saved.",
       "needChart": "Generate a chart first, then I can refine it.",
       "working": "Working on it…",
       "applyFailed": "Couldn’t apply that change: {detail}",
       "outOfScope": "That request needs a new query — please ask it in the main question box.",
       "renderFailed": "Got a config back but failed to render it. The chart was not changed.",
       "updated": "Updated the chart.",
-      "applied": "Applied: {label}",
+      "appliedPrefix": "Applied:",
+      "appliedAnnouncement": "Chart updated. This edit is session-only and is not saved.",
+      "sessionOnlyHint": "Session only — not saved",
       "applying": "Applying…",
       "apply": "Apply",
+      "resetting": "Resetting the chart…",
+      "resetComplete": "Chart reset to its original state.",
+      "resetFailed": "Couldn’t reset the chart. The current chart was kept.",
       "rerun": "Re-run",
       "rerunAnalysis": "Re-run analysis",
       "rerunningButton": "Re-running…",
@@ -1560,7 +1566,9 @@
       "cannotBuild": "Could not build a chart for this data",
       "noImageData": "No image data",
       "libraryLoadFailed": "Failed to load the chart library",
-      "libraryNotLoaded": "Chart library not loaded"
+      "libraryNotLoaded": "Chart library not loaded",
+      "staleOperation": "This chart operation was superseded",
+      "sessionNotInitialized": "Chart session is not initialized"
     }
   }
 }

@@ -163,21 +163,21 @@ test('chart edits survive apply and Reset restores the original baseline', async
       yAxis: { type: 'value' },
       series: [{ type: 'bar', data: [1, 2], label: { show: false } }],
     };
-    manager.chartContainer = { render() {}, dispose() {} };
+    manager.chartContainer = { async init() {}, render() {}, dispose() {} };
+    manager.state.isEChartsLoaded = true;
     manager.state.currentData = { columns: ['region', 'sales'], rows: [['A', 1], ['B', 2]] };
-    manager.currentEchartsOptions = structuredClone(baseline);
-    manager.originalConfig = structuredClone(baseline);
-    manager.currentChartSpec = { chart_type: 'bar', x: 'region', y: 'sales' };
-    manager.originalChartSpec = structuredClone(manager.currentChartSpec);
+    const spec = { chart_type: 'bar', x: 'region', y: 'sales' };
+    manager._adoptBaseline(structuredClone(baseline), spec);
 
     const edited = structuredClone(baseline);
     edited.series[0].label.show = true;
-    manager.applyEditedConfig(edited, [], null, { chart_spec: manager.currentChartSpec });
+    await manager.applyEditedConfig(edited, [], null, { chart_spec: spec });
     const applied = manager.currentEchartsOptions.series[0].label.show;
-    manager.resetChartEdits();
+    await manager.resetChartEdits();
     const reset = manager.currentEchartsOptions.series[0].label.show;
+    const type = manager.getSaveState().chart_spec.chart_type;
     manager.dispose();
-    return { applied, reset, type: manager.currentChartSpec.chart_type };
+    return { applied, reset, type };
   });
 
   expect(state).toEqual({ applied: true, reset: false, type: 'bar' });

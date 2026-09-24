@@ -6,10 +6,9 @@
 /**
  * @param {object} config
  * @param {{ dataLabels?: boolean, legend?: boolean, dataZoom?: boolean, sortDesc?: boolean }} toggles
- * @param {object|null} baselineConfig - original config for restoring category order
  * @returns {object}
  */
-export function applyQuickOptions(config, toggles, baselineConfig = null) {
+export function applyQuickOptions(config, toggles) {
     if (!config || typeof config !== 'object') return config;
     let out;
     try {
@@ -55,8 +54,6 @@ export function applyQuickOptions(config, toggles, baselineConfig = null) {
     if (typeof toggles.sortDesc === 'boolean') {
         if (toggles.sortDesc) {
             _sortCategorySeriesDesc(out);
-        } else if (baselineConfig) {
-            _restoreCategoryOrder(out, baselineConfig);
         }
     }
 
@@ -97,10 +94,11 @@ function _sortCategorySeriesDesc(config) {
     if (!primary) return;
 
     const pairs = categories.map((cat, i) => ({
+        index: i,
         cat,
         val: _seriesValue(primary.data[i]),
     }));
-    pairs.sort((a, b) => b.val - a.val);
+    pairs.sort((a, b) => (b.val - a.val) || (a.index - b.index));
 
     const sortedCats = pairs.map((p) => p.cat);
     const axisKey = config.xAxis && (Array.isArray(config.xAxis) ? config.xAxis.some((a) => a === axis || a.type === 'category') : config.xAxis === axis)
@@ -110,32 +108,7 @@ function _sortCategorySeriesDesc(config) {
 
     config.series = series.map((s) => {
         if (!Array.isArray(s.data) || s.data.length !== categories.length) return s;
-        const byCat = new Map(categories.map((c, i) => [c, s.data[i]]));
-        return { ...s, data: sortedCats.map((c) => byCat.get(c)) };
-    });
-}
-
-function _restoreCategoryOrder(config, baseline) {
-    const baseAxis = _getCategoryAxis(baseline);
-    if (!baseAxis || !Array.isArray(baseAxis.data)) return;
-    const categories = baseAxis.data.slice();
-    const axisKey = baseline.xAxis && (Array.isArray(baseline.xAxis)
-        ? baseline.xAxis.some((a) => a && a.type === 'category')
-        : baseline.xAxis.type === 'category')
-        ? 'xAxis'
-        : 'yAxis';
-    _setCategoryData(config, axisKey, categories);
-
-    const series = Array.isArray(config.series) ? config.series : [];
-    const baseSeries = Array.isArray(baseline.series) ? baseline.series : [];
-    config.series = series.map((s, idx) => {
-        const base = baseSeries[idx];
-        if (base && Array.isArray(base.data) && base.data.length === categories.length) {
-            return { ...s, data: base.data.slice() };
-        }
-        if (!Array.isArray(s.data) || s.data.length !== categories.length) return s;
-        const byCat = new Map(categories.map((c, i) => [c, s.data[i]]));
-        return { ...s, data: categories.map((c) => byCat.get(c)) };
+        return { ...s, data: pairs.map((p) => s.data[p.index]) };
     });
 }
 

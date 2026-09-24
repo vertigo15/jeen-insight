@@ -50,9 +50,10 @@ export class ChartChat {
      *   getCurrentResults: () => object|null,
      *   getConnection: () => string,
      *   getCurrentSpec?: () => object|null,
+     *   getCurrentDerivedSpecs?: () => Array,
      *   getQueryId?: () => string|null,
-     *   onApply: (config: object, derivedSeries: Array, notes?: string|null, edit?: object) => void,
-     *   onReset: () => void
+     *   onApply: (config: object, derivedSeries: Array, notes?: string|null, edit?: object) => void|Promise<void>,
+     *   onReset: () => void|Promise<void>
      * }} hooks
      */
     constructor(containerId, hooks) {
@@ -63,6 +64,7 @@ export class ChartChat {
         this.enabled = false;
         this.externalBusy = false;
         this.inFlight = null;   // AbortController
+        this._localBusy = false;
         this.idCounter = 0;
     }
 
@@ -78,7 +80,7 @@ export class ChartChat {
         container.classList.add('chart-refine');
         container.innerHTML = '';
 
-        // Slim single row: sparkle · (input + Apply) | (Applied · Reset)
+        // Entry row: sparkle · input · Apply. Confirmation is rendered below.
         const row = document.createElement('div');
         row.className = 'chart-refine-row';
 
@@ -98,6 +100,8 @@ export class ChartChat {
         input.maxLength = MAX_INSTRUCTION_LEN;
         input.disabled = true;
         input.setAttribute('aria-label', t('charts.chat.refine'));
+        input.setAttribute('aria-busy', 'false');
+        input.addEventListener('input', () => this._syncControls());
         input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
                 e.preventDefault();
@@ -110,6 +114,7 @@ export class ChartChat {
         applyBtn.className = 'chart-refine-apply';
         applyBtn.innerHTML = `<span>${th('charts.chat.enhance')}</span>${ARROW_SVG}`;
         applyBtn.disabled = true;
+        applyBtn.setAttribute('aria-disabled', 'true');
         applyBtn.addEventListener('click', () => this._handleSend());
 
         entry.appendChild(input);
@@ -120,8 +125,22 @@ export class ChartChat {
         applied.className = 'chart-refine-applied';
         applied.hidden = true;
 
-        const appliedLabel = document.createElement('span');
-        appliedLabel.className = 'chart-refine-applied-label';
+        const appliedCheck = document.createElement('span');
+        appliedCheck.className = 'chart-refine-applied-check';
+        appliedCheck.setAttribute('aria-hidden', 'true');
+        appliedCheck.textContent = '✓';
+
+        const appliedPrefix = document.createElement('span');
+        appliedPrefix.className = 'chart-refine-applied-label';
+        appliedPrefix.textContent = t('charts.chat.appliedPrefix');
+
+        const appliedInstruction = document.createElement('bdi');
+        appliedInstruction.className = 'chart-refine-applied-instruction';
+        appliedInstruction.setAttribute('dir', 'auto');
+
+        const appliedHint = document.createElement('span');
+        appliedHint.className = 'chart-refine-session-hint';
+        appliedHint.textContent = t('charts.chat.sessionOnlyHint');
 
         const dot = document.createElement('span');
         dot.className = 'chart-refine-dot';
@@ -134,23 +153,27 @@ export class ChartChat {
         resetBtn.title = t('charts.chat.resetTitle');
         resetBtn.addEventListener('click', () => this._handleReset());
 
-        applied.appendChild(appliedLabel);
+        applied.appendChild(appliedCheck);
+        applied.appendChild(appliedPrefix);
+        applied.appendChild(appliedInstruction);
         applied.appendChild(dot);
+        applied.appendChild(appliedHint);
+        applied.appendChild(dot.cloneNode(true));
         applied.appendChild(resetBtn);
 
         row.appendChild(icon);
         row.appendChild(entry);
-        row.appendChild(applied);
 
-        // Inline single-line status (progress / warning / error). Success is
-        // conveyed by the "Applied" state instead, so this stays hidden then.
+        // Keep one live region mounted for every status transition. An empty
+        // region is hidden visually by CSS without removing it from the DOM.
         const status = document.createElement('div');
         status.className = 'chart-refine-status';
         status.setAttribute('role', 'status');
         status.setAttribute('aria-live', 'polite');
-        status.hidden = true;
+        status.setAttribute('aria-atomic', 'true');
 
         container.appendChild(row);
+        container.appendChild(applied);
         container.appendChild(status);
 
         this._rowEl = row;
@@ -158,24 +181,24 @@ export class ChartChat {
         this._applyBtnEl = applyBtn;
         this._entryEl = entry;
         this._appliedEl = applied;
-        this._appliedLabelEl = appliedLabel;
+        this._appliedLabelEl = appliedPrefix;
+        this._appliedInstructionEl = appliedInstruction;
         this._resetBtnEl = resetBtn;
         this._statusEl = status;
         this.setAnalysisMode(this._analysisMode);
+        this._syncControls();
     }
 
     enable() {
         this.enabled = true;
         if (!this.mounted) return;
-        this._inputEl.disabled = this.externalBusy;
-        this._applyBtnEl.disabled = this.externalBusy;
+        this._syncControls();
     }
 
     disable() {
         this.enabled = false;
         if (!this.mounted) return;
-        this._inputEl.disabled = true;
-        this._applyBtnEl.disabled = true;
+        this._syncControls();
     }
 
     reset() {
@@ -188,6 +211,8 @@ export class ChartChat {
         this._clearStatus();
         this._inputEl.value = '';
         this._showEntry();
+        this._localBusy = false;
+        this._syncControls();
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -202,7 +227,8 @@ export class ChartChat {
 
     _showApplied(label) {
         if (!this.mounted) return;
-        this._appliedLabelEl.textContent = t('charts.chat.applied', { label });
+        this._appliedLabelEl.textContent = t('charts.chat.appliedPrefix');
+        this._appliedInstructionEl.textContent = label;
         // Keep the edit box available after a successful change. Chart chat is
         // conversational: users commonly follow an edit with "open layers" or
         // another styling adjustment before deciding whether to reset.
@@ -220,13 +246,11 @@ export class ChartChat {
         // textContent — never innerHTML — to avoid XSS from LLM output.
         this._statusEl.textContent = text;
         this._statusEl.dataset.kind = kind || '';
-        this._statusEl.hidden = false;
     }
 
     _clearStatus() {
         if (!this._statusEl) return;
         this._statusEl.textContent = '';
-        this._statusEl.hidden = true;
         delete this._statusEl.dataset.kind;
     }
 
@@ -241,10 +265,33 @@ export class ChartChat {
 
     _setBusy(busy) {
         if (!this.mounted) return;
-        const active = Boolean(busy || this.externalBusy || this.inFlight);
-        this._inputEl.disabled = active || !this.enabled;
-        this._applyBtnEl.disabled = active || !this.enabled;
+        this._localBusy = Boolean(busy);
+        this._syncControls();
+    }
+
+    _syncControls() {
+        if (!this.mounted) return;
+        const active = Boolean(this._localBusy || this.externalBusy || this.inFlight);
+        // The renderer temporarily disables chart controls while an edit/reset
+        // it owns is drawing. Keep this input available and read-only for that
+        // interval so the browser does not discard its current focus.
+        const available = Boolean(this.enabled || this._localBusy || this.inFlight);
+        const hasInstruction = Boolean((this._inputEl.value || '').trim());
+        const canSubmit = available && !active && hasInstruction;
+
+        // Native disabled is reserved for a genuinely unavailable component.
+        // Busy inputs stay focused and become read-only; blank/busy Apply stays
+        // in the tab order while aria-disabled communicates that it cannot run.
+        this._inputEl.disabled = !available;
+        this._inputEl.readOnly = available && active;
+        this._inputEl.setAttribute('aria-busy', active ? 'true' : 'false');
+        this._applyBtnEl.disabled = !available;
+        this._applyBtnEl.setAttribute('aria-disabled', canSubmit ? 'false' : 'true');
         this._applyBtnEl.classList.toggle('is-busy', active);
+        if (this._resetBtnEl) {
+            this._resetBtnEl.disabled = !available || active;
+            this._resetBtnEl.setAttribute('aria-disabled', (!available || active) ? 'true' : 'false');
+        }
         const label = this._applyBtnEl.querySelector('span');
         if (label) {
             label.textContent = active
@@ -253,9 +300,25 @@ export class ChartChat {
         }
     }
 
+    _canSubmit() {
+        return Boolean(
+            this.mounted
+            && this.enabled
+            && !this._localBusy
+            && !this.externalBusy
+            && !this.inFlight
+            && (this._inputEl.value || '').trim()
+        );
+    }
+
+    _focusInput() {
+        if (!this.mounted || !this.enabled || typeof this._inputEl.focus !== 'function') return;
+        this._inputEl.focus({ preventScroll: true });
+    }
+
     setExternalBusy(busy) {
         this.externalBusy = Boolean(busy);
-        this._setBusy(false);
+        this._syncControls();
     }
 
     /**
@@ -273,12 +336,12 @@ export class ChartChat {
         if (label && !this._applyBtnEl.classList.contains('is-busy')) {
             label.textContent = this._analysisMode ? t('charts.chat.rerunAnalysis') : t('charts.chat.apply');
         }
+        this._syncControls();
     }
 
     async _handleSend() {
-        if (!this.enabled || !this.mounted) return;
+        if (!this._canSubmit()) return;
         const instruction = (this._inputEl.value || '').trim();
-        if (!instruction) return;
 
         if (this._analysisMode && typeof this.hooks.onAnalysisRerun === 'function') {
             this._setStatus(t('charts.chat.rerunning'), 'progress');
@@ -286,13 +349,14 @@ export class ChartChat {
             try {
                 await this.hooks.onAnalysisRerun(instruction);
                 this._inputEl.value = '';
-                this._setStatus('', null);
+                this._setStatus(t('charts.chat.rerunCompleted'), 'success');
             } catch (error) {
                 if (error && error.name === 'AbortError') return;
                 this._setStatus(t('charts.chat.rerunFailed', { detail: String(error && error.message ? error.message : error) }), 'error');
             } finally {
                 this._setBusy(false);
                 this.setAnalysisMode(this._analysisMode);
+                this._focusInput();
             }
             return;
         }
@@ -303,10 +367,12 @@ export class ChartChat {
 
         if (!config) {
             this._setStatus(t('charts.chat.needChart'), 'warn');
+            this._focusInput();
             return;
         }
         if (!connection) {
             this._setStatus(t('errors.selectConnectionFirst'), 'warn');
+            this._focusInput();
             return;
         }
 
@@ -329,10 +395,10 @@ export class ChartChat {
                 body: JSON.stringify(payload),
                 signal: this.inFlight.signal,
             });
-            if (resp.status === 409 && config?.jeenOsmMap) {
-                // Result caches are deliberately short-lived. Only resend full
-                // rows for a map rebuild after that rare miss, never on the
-                // normal view-only edit path.
+            if (resp.status === 409) {
+                // Semantic edits and map rebuilds require the full result set.
+                // Result caches are short-lived and replica-local, so retry
+                // once with rows after a cache miss.
                 resp = await fetch('/api/edit-chart', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -367,7 +433,7 @@ export class ChartChat {
             // Apply via the parent (ChartManager owns the render loop + undo).
             if (this.hooks.onApply) {
                 try {
-                    this.hooks.onApply(newConfig, derived, note || null, data);
+                    await this.hooks.onApply(newConfig, derived, note || null, data);
                 } catch (e) {
                     console.error('[ChartChat] onApply threw', e);
                     this._setStatus(t('charts.chat.renderFailed'), 'error');
@@ -376,9 +442,9 @@ export class ChartChat {
             }
 
             this._appendMessage('assistant', note || t('charts.chat.updated'));
-            this._clearStatus();
             this._inputEl.value = '';
             this._showApplied(instruction);
+            this._setStatus(t('charts.chat.appliedAnnouncement'), 'success');
         } catch (e) {
             if (e && e.name === 'AbortError') return; // silent — superseded or reset
             console.error('[ChartChat] send failed', e);
@@ -387,6 +453,7 @@ export class ChartChat {
             if (myRequestId === this.idCounter) {
                 this.inFlight = null;
                 this._setBusy(false);
+                this._focusInput();
             }
         }
     }
@@ -406,6 +473,9 @@ export class ChartChat {
             instruction,
             current_config: config,
             chart_spec: this.hooks.getCurrentSpec ? this.hooks.getCurrentSpec() : null,
+            active_derived_series: this.hooks.getCurrentDerivedSpecs
+                ? this.hooks.getCurrentDerivedSpecs()
+                : [],
             query_id: this.hooks.getQueryId ? this.hooks.getQueryId() : null,
             columns: typed,
             column_names: cols,
@@ -424,10 +494,22 @@ export class ChartChat {
         };
     }
 
-    _handleReset() {
-        this.reset();
-        if (this.hooks.onReset) {
-            try { this.hooks.onReset(); } catch (e) { console.error('[ChartChat] onReset threw', e); }
+    async _handleReset() {
+        if (!this.mounted || !this.enabled || this._localBusy || this.externalBusy || this.inFlight) return;
+        this._setStatus(t('charts.chat.resetting'), 'progress');
+        this._setBusy(true);
+        try {
+            if (this.hooks.onReset) await this.hooks.onReset();
+            this.messages = [];
+            this._inputEl.value = '';
+            this._showEntry();
+            this._setStatus(t('charts.chat.resetComplete'), 'success');
+        } catch (e) {
+            console.error('[ChartChat] onReset threw', e);
+            this._setStatus(t('charts.chat.resetFailed'), 'error');
+        } finally {
+            this._setBusy(false);
+            this._focusInput();
         }
     }
 }

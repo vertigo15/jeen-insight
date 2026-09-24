@@ -54,6 +54,41 @@ function extractColumn(results, columnName) {
     });
 }
 
+function pointNumber(point) {
+    const raw = point && typeof point === 'object' && !Array.isArray(point) && 'value' in point
+        ? point.value
+        : point;
+    if (Array.isArray(raw)) return toNumber(raw[raw.length - 1]);
+    return toNumber(raw);
+}
+
+/**
+ * Prefer the already aligned/aggregated values in the semantic chart option.
+ * Raw result-row order can differ after grouping, category completion or a
+ * deterministic rebuild, so overlays must follow the chart series whenever
+ * one can be identified.
+ */
+function extractChartSeries(config, spec) {
+    const series = Array.isArray(config?.series)
+        ? config.series.filter((item) => item && !item.__derived && Array.isArray(item.data))
+        : [];
+    if (!series.length) return null;
+    const requested = String(spec?.source_series || spec?.source_column || '').trim();
+    const source = (
+        (requested && series.find((item) => String(item.name || '') === requested))
+        || series.find((item) => item.jeenRole === 'actual')
+        || series.find((item) => item.type !== 'pie' && item.data.some((point) => pointNumber(point) !== null))
+    );
+    if (!source || source.type === 'pie') return null;
+    const values = source.data.map(pointNumber);
+    if (!values.length || values.every((value) => value === null)) return null;
+    return {
+        values,
+        sourceName: requested || String(source.name || 'series'),
+        source,
+    };
+}
+
 /**
  * Choose the first numeric column in the dataset.
  * Used as a fallback when the LLM's source_column is missing or invalid.
@@ -197,16 +232,17 @@ const OPERATORS = {
  * @param {{columns: string[], data?: any[][], rows?: any[][]}} results
  * @returns {object|null} ECharts series object, or null
  */
-export function buildDerivedSeries(spec, results) {
+export function buildDerivedSeries(spec, results, config = null) {
     if (!spec || typeof spec !== 'object') return null;
     const operator = String(spec.operator || '').toLowerCase();
     if (!ALLOWED_OPERATORS.has(operator)) return null;
     const fn = OPERATORS[operator];
     if (!fn) return null;
 
-    const sourceColumn = spec.source_column || inferNumericColumn(results);
+    const aligned = extractChartSeries(config, spec);
+    const sourceColumn = aligned?.sourceName || spec.source_column || inferNumericColumn(results);
     if (!sourceColumn) return null;
-    const values = extractColumn(results, sourceColumn);
+    const values = aligned?.values || extractColumn(results, sourceColumn);
     if (values.length === 0) return null;
     if (values.every(v => v === null)) return null;
 
@@ -263,7 +299,7 @@ export function applyDerivedSeries(config, specs, results) {
     let needsAuxAxis = false;
     let applied = 0;
     for (const spec of specs) {
-        const series = buildDerivedSeries(spec, results);
+        const series = buildDerivedSeries(spec, results, next);
         if (!series) continue;
         if (series.yAxisIndex === 1) needsAuxAxis = true;
         // Avoid duplicating an identical derived series the user already has.
