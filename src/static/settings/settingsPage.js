@@ -102,6 +102,7 @@ export class SettingsPage {
         this._promptsLoading = null; // in-flight _loadPrompts() promise (shared, never duplicated)
         this._promptsError = null;  // last _loadPrompts() failure message, if any
         this._models     = null;    // cached model list (Array)
+        this._modelSearch = '';     // model-list filter; supports * and ? wildcards
         this._onApplyTheme = null;
         this._promptContexts = null; // connection choices for resolved prompt view
         this._promptContextSource = 'db';
@@ -432,6 +433,11 @@ export class SettingsPage {
                 <p class="sp-section-desc">${h('settings.models.desc')}</p>
                 <div class="sp-models-toolbar">
                     <span class="sp-models-health-summary" id="sp-models-health-summary"></span>
+                    <input class="table-search-input sp-model-search" id="sp-models-search"
+                           type="search" dir="auto"
+                           value="${_escAttr(this._modelSearch)}"
+                           placeholder="${h('settings.models.searchPlaceholder')}"
+                           aria-label="${h('settings.models.searchLabel')}">
                     <button class="sp-btn-ghost sp-btn-ghost-sm" id="sp-models-recheck">${h('settings.models.recheck')}</button>
                 </div>
             </div>
@@ -462,6 +468,13 @@ export class SettingsPage {
 
         const recheck = document.getElementById('sp-models-recheck');
         if (recheck) recheck.addEventListener('click', () => this._loadHealth(true));
+        const search = document.getElementById('sp-models-search');
+        if (search) {
+            search.addEventListener('input', () => {
+                this._modelSearch = search.value;
+                this._renderModelCards();
+            });
+        }
 
         // Pull the (cached) health snapshot and update the dots without blocking
         // the initial render.
@@ -513,10 +526,14 @@ export class SettingsPage {
         const container = document.getElementById('sp-models-list');
         if (!container || !this._models) return;
 
-        const available = this._models.filter(m => m.available);
-        const unavailable = this._models.filter(m => !m.available);
+        const filtered = this._models.filter(m => this._modelMatchesSearch(m));
+        const available = filtered.filter(m => m.available);
+        const unavailable = filtered.filter(m => !m.available);
 
         container.innerHTML = [
+            filtered.length === 0
+                ? `<p class="sp-models-empty">${h('settings.models.noMatches')}</p>`
+                : '',
             available.length ? `<div class="sp-model-group-label">${h('settings.models.available')}</div>` : '',
             ...available.map(m => this._modelCard(m)),
             unavailable.length ? `<div class="sp-model-group-label sp-model-group-label--dim" style="margin-top:16px">${h('settings.models.notConfigured')}</div>` : '',
@@ -529,6 +546,24 @@ export class SettingsPage {
             if (!card) return;
             card.addEventListener('click', () => this._selectModel(m.name));
         });
+    }
+
+    _modelMatchesSearch(model) {
+        const query = this._modelSearch.trim().toLocaleLowerCase();
+        if (!query) return true;
+
+        const fields = [model.display_name, model.name, model.description]
+            .map(value => String(value || '').toLocaleLowerCase());
+        if (!query.includes('*') && !query.includes('?')) {
+            return fields.some(value => value.includes(query));
+        }
+
+        const pattern = query
+            .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+            .replace(/\*/g, '.*')
+            .replace(/\?/g, '.');
+        const wildcard = new RegExp(`^${pattern}$`, 'u');
+        return fields.some(value => wildcard.test(value));
     }
 
     _modelCard(m) {
