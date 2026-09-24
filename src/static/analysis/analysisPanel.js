@@ -379,6 +379,26 @@
 
     // ── Confirm / clarify / guard card ────────────────────────────────────────
 
+    function expiredNoticeHtml() {
+        return `<section class="v3-ml-expired-notice" role="status" aria-labelledby="v3-ml-expired-title">
+          <span class="v3-ml-expired-icon" aria-hidden="true">!</span>
+          <div class="v3-ml-expired-copy">
+            <span class="v3-ml-expired-badge">${h('analysis.proposal.expiredBadge')}</span>
+            <strong id="v3-ml-expired-title">${h('analysis.proposal.expiredHeading')}</strong>
+            <p>${h('analysis.proposal.expiredBody')}</p>
+            <div class="v3-ml-expired-actions">
+              <button type="button" class="v3-ml-run" data-recreate>${h('analysis.proposal.askAgain')}</button>
+              <button type="button" class="v3-text-btn v3-ml-sql" data-sql-instead>${h('analysis.proposal.sqlInstead')}</button>
+            </div>
+            <span class="v3-ml-expired-hint" data-recreate-hint aria-live="polite" hidden></span>
+          </div>
+        </section>`;
+    }
+
+    function staticExitOptions(options) {
+        return (options || []).map((o) => `<span class="v3-ml-exit is-static">${esc(o.label)}</span>`).join('');
+    }
+
     function guardList(guardResults, onlyFailed) {
         const rows = (guardResults || []).filter((g) => !onlyFailed || !g.passed);
         if (!rows.length) return '';
@@ -400,6 +420,7 @@
      */
     function proposalHtml(proposal) {
         const kind = proposal.kind;
+        const expired = proposalExpired(proposal);
         const series = (proposal.params || {}).series || {};
         const skill = esc(SKILL_LABEL[proposal.skill] || proposal.skill || t('conversation.empty.analysis'));
         const head = `<div class="v3-ml-card-head">
@@ -409,19 +430,21 @@
           </div>`;
         if (kind === 'confirm') {
             const chips = (proposal.chips || []).map(normalizeChip);
+            const displayChips = expired ? chips.map((chip) => ({ ...chip, editable: false })) : chips;
             const grain = grainAdj(series.grain) || series.grain || '';
             const summary = summarySentence(proposal.skill, valuesOf(chips), chips);
             const egress = proposal.egress_summary || t('analysis.proposal.egressDefault', { grain });
-            return `<div class="v3-ml-card is-confirm" data-skill="${esc(proposal.skill || '')}" data-tier="${esc(proposal.tier || '')}">
+            return `<div class="v3-ml-card is-confirm${expired ? ' is-expired' : ''}" data-skill="${esc(proposal.skill || '')}" data-tier="${esc(proposal.tier || '')}">
+              ${expired ? expiredNoticeHtml() : ''}
               <div class="v3-ml-plan" title="${esc(proposal.message)}">
-                <span class="v3-ml-phase">${h('analysis.proposal.planning')}</span>
+                ${expired ? '' : `<span class="v3-ml-phase">${h('analysis.proposal.planning')}</span>`}
                 <span class="v3-skill-chip">${skill}</span>
                 <span class="v3-ml-summary" data-summary>${summary || esc(proposal.message)}</span>
               </div>
               <div class="v3-ml-panel">
-                ${setupFormHtml(chips, 'ml-confirm')}
+                ${setupFormHtml(displayChips, 'ml-confirm')}
                 <p class="v3-ml-egress" data-egress data-egress-original="${esc(egress)}">${esc(egress)}</p>
-                <div class="v3-ml-actions">
+                ${expired ? '' : `<div class="v3-ml-actions">
                   <button type="button" class="v3-ml-run" data-run>${h('analysis.proposal.run')}</button>
                   <button type="button" class="v3-ml-alt" data-switch-skill title="${h('analysis.proposal.rephraseTitle')}">${h('analysis.proposal.rephrase')}</button>
                   <button type="button" class="v3-text-btn v3-ml-sql" data-sql-instead>${h('analysis.proposal.sqlInstead')}</button>
@@ -431,21 +454,25 @@
                     ${tierMetaHtml(proposal.tier, proposal.estimated_seconds)}
                   </span>
                 </div>
-                <label class="v3-ml-remember"><input type="checkbox" data-remember> ${t('analysis.proposal.dontAsk', { skill })}</label>
+                <label class="v3-ml-remember"><input type="checkbox" data-remember> ${t('analysis.proposal.dontAsk', { skill })}</label>`}
               </div>
             </div>`;
         }
         if (kind === 'clarify') {
-            return `<div class="v3-ml-card is-clarify">${head}
+            return `<div class="v3-ml-card is-clarify${expired ? ' is-expired' : ''}">
+              ${expired ? expiredNoticeHtml() : ''}
+              ${head}
               <p class="v3-ml-message" dir="auto">${esc(proposal.message)}</p>
-              <div class="v3-ml-exits">${exitButtons(proposal.options)}</div>
-              <div class="v3-ml-actions"><button type="button" class="v3-text-btn" data-sql-instead>${h('analysis.proposal.sqlInstead')}</button></div>
+              <div class="v3-ml-exits">${expired ? staticExitOptions(proposal.options) : exitButtons(proposal.options)}</div>
+              ${expired ? '' : `<div class="v3-ml-actions"><button type="button" class="v3-text-btn" data-sql-instead>${h('analysis.proposal.sqlInstead')}</button></div>`}
             </div>`;
         }
-        return `<div class="v3-ml-card is-guard">${head}
+        return `<div class="v3-ml-card is-guard${expired ? ' is-expired' : ''}">
+          ${expired ? expiredNoticeHtml() : ''}
+          ${head}
           <p class="v3-ml-message v3-ml-refusal" dir="auto">${esc(proposal.message)}</p>
           ${guardList(proposal.guard_results, true)}
-          <div class="v3-ml-exits">${exitButtons(proposal.options)}</div>
+          <div class="v3-ml-exits">${expired ? staticExitOptions(proposal.options) : exitButtons(proposal.options)}</div>
           <p class="v3-ml-egress">${h('analysis.proposal.guardEgress')}</p>
         </div>`;
     }
