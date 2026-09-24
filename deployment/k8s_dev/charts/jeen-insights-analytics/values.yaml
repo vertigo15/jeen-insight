@@ -41,6 +41,14 @@ resources:
 # Per-run tmpfs for numba's JIT cache and scratch files.
 tmpSizeLimit: 512Mi
 
+# Numeric IDs pinned on the pod/container. Set a value to null to omit the
+# field: OpenShift's restricted SCC assigns UID/fsGroup from the project's
+# range and rejects a pod that pins values outside it.
+securityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

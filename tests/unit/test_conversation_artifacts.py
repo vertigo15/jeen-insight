@@ -32,11 +32,30 @@ def test_coerce_json_safe_rows_handles_dict_and_positional_rows():
         [decimal.Decimal("2"), ts, uid, b"\xff\xfe"],
     ]
     out = coerce_json_safe_rows(rows)
-    assert out[0] == {"amount": 1.5, "when": str(ts), "id": str(uid), "blob": "hi"}
-    assert out[1][0] == 2.0
+    # Decimal is kept as an exact string (not float) so a recompute or restore
+    # never loses precision; "1.50" keeps its trailing zero, unlike float(1.5).
+    assert out[0] == {"amount": "1.50", "when": str(ts), "id": str(uid), "blob": "hi"}
+    assert out[1][0] == "2"
     assert out[1][1] == str(ts)
     assert out[1][2] == str(uid)
     assert out[1][3] == "fffe"  # undecodable bytes fall back to hex
+
+
+def test_high_precision_decimal_survives_snapshot_and_recompute_without_float_drift():
+    """The reason Decimal is stored as a string: a snapshotted value must
+    reconstruct exactly for a later compute, which float would not guarantee."""
+    from src.agent.snapshot_sql import prepare_table
+
+    exact = decimal.Decimal("12345678901234.87654321")
+    snapshot, status, _size, _rc = build_result_snapshot(
+        {"columns": ["amount"], "rows": [{"amount": exact}]}, max_rows=10, max_bytes=10_000
+    )
+    assert status == SNAPSHOT_STORED
+    assert snapshot["rows"][0]["amount"] == str(exact)          # stored losslessly
+    assert decimal.Decimal(snapshot["rows"][0]["amount"]) == exact
+    # ...and the memory engine re-types it back to the exact NUMERIC value.
+    _cols, types, records = prepare_table(snapshot)
+    assert types == ["NUMERIC"] and records[0][0] == exact
 
 
 def test_build_result_snapshot_stores_full_envelope_under_caps():

@@ -17,6 +17,10 @@ image references or public hostname. `values.aks-dev.yaml` supplies the AKS
 development registry, node selector, ingress host/TLS secret, resource values,
 and browser-facing `PUBLIC_APP_URL`.
 
+For air-gapped OpenShift, the overlay is `deployment/openshift/values.openshift.yaml`
+and the delivery flow (image tarballs, Secret, Route) is documented in
+[deployment/openshift/README.md](../openshift/README.md).
+
 Use both files, with the environment overlay last:
 
 ```sh

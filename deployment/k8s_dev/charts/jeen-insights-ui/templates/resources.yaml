@@ -2,6 +2,8 @@
 {{- $apiBaseUrl := default (printf "http://%s-jeen-insights-api:8000" .Release.Name) .Values.apiBaseUrl }}
 {{- $env := mergeOverwrite (deepCopy (default dict .Values.global.env)) (dict "API_BASE_URL" $apiBaseUrl) (default dict .Values.env) }}
 {{- $nodeSelector := default (default dict .Values.global.nodeSelector) .Values.nodeSelector }}
+{{- $sc := default dict .Values.securityContext }}
+{{- $route := default dict .Values.route }}
 {{- if .Values.serviceAccount.create }}
 apiVersion: v1
 kind: ServiceAccount
@@ -33,14 +35,14 @@ metadata:
   name: {{ include "jeen-insights-ui.fullname" . }}
   labels:
     {{- include "jeen-insights-ui.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   type: {{ default "ClusterIP" .Values.service.type }}
   {{- if and (eq (default "ClusterIP" .Values.service.type) "LoadBalancer") .Values.service.loadBalancerIP }}
   loadBalancerIP: {{ .Values.service.loadBalancerIP }}
-  {{- end }}
-  {{- with .Values.service.annotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
   {{- end }}
   ports:
     - name: http
@@ -136,8 +138,12 @@ spec:
                 - ALL
             readOnlyRootFilesystem: true
             runAsNonRoot: true
-            runAsUser: 10001
-            runAsGroup: 10001
+            {{- with $sc.runAsUser }}
+            runAsUser: {{ . }}
+            {{- end }}
+            {{- with $sc.runAsGroup }}
+            runAsGroup: {{ . }}
+            {{- end }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp
@@ -202,6 +208,51 @@ spec:
                   name: http
           {{- end }}
     {{- end }}
+{{- end }}
+{{- if $route.enabled }}
+---
+# OpenShift Route (the platform's ingress). TLS terminates at the router; the
+# long timeout keeps the UI's streaming (SSE) insight responses open.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "jeen-insights-ui.fullname" . }}
+  labels:
+    {{- include "jeen-insights-ui.labels" . | nindent 4 }}
+  annotations:
+    haproxy.router.openshift.io/timeout: {{ default "360s" $route.timeout | quote }}
+    {{- with $route.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- with $route.host }}
+  host: {{ . | quote }}
+  {{- end }}
+  to:
+    kind: Service
+    name: {{ include "jeen-insights-ui.fullname" . }}
+    weight: 100
+  port:
+    targetPort: http
+  {{- $tls := default dict $route.tls }}
+  {{- if $tls.enabled }}
+  tls:
+    termination: {{ default "edge" $tls.termination }}
+    insecureEdgeTerminationPolicy: {{ default "Redirect" $tls.insecureEdgeTerminationPolicy }}
+    {{- with $tls.certificate }}
+    certificate: |-
+      {{- . | nindent 6 }}
+    {{- end }}
+    {{- with $tls.key }}
+    key: |-
+      {{- . | nindent 6 }}
+    {{- end }}
+    {{- with $tls.caCertificate }}
+    caCertificate: |-
+      {{- . | nindent 6 }}
+    {{- end }}
+  {{- end }}
+  wildcardPolicy: None
 {{- end }}
 {{- if .Values.podDisruptionBudget.enabled }}
 ---

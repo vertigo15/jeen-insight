@@ -307,7 +307,7 @@ test.describe('Conversation & history features', { tag: ['@history', '@feature']
 
   test('the conversation drawer collapses at a narrow viewport and Escape/overlay restores focus', async () => {
     await page.setViewportSize({ width: 800, height: 900 });
-    const toggle = page.locator('#v3-conversation-toggle');
+    const toggle = page.locator('[data-rail="conversation"]');
     await expect(toggle).toBeVisible();
     await toggle.click();
     await expect(page.locator('#v3-conversation')).toHaveClass(/v3-force-open/);

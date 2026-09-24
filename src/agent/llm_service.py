@@ -106,6 +106,46 @@ def _supports_custom_temperature(chat_model: Any, model_name: str = "") -> bool:
     return _NO_CUSTOM_TEMPERATURE_RE.search(haystack) is None
 
 
+# ── Unconfigured placeholder ──────────────────────────────────────────────────
+
+UNCONFIGURED_MODEL_NAME = "unconfigured"
+
+_UNCONFIGURED_MESSAGE = (
+    "no LLM is configured. Add a model in Settings → AI Models (for an on-prem "
+    "OpenAI-compatible endpoint use provider 'vllm' or 'remote' with its baseURL) "
+    "and set it as the active model."
+)
+
+
+class _UnconfiguredChatModel:
+    """Stand-in chat model for installs with no LLM credentials anywhere.
+
+    Lets the API boot when the DB has no model row and the AZURE_OPENAI_* env
+    fallback is blank (a fresh air-gapped deployment), so an admin can reach
+    Settings → AI Models and add one. Every call raises ``LLMUnavailableError``
+    with that instruction; the service swaps this out the moment a real model
+    is activated (``set_model`` / auto-fallback promotion).
+    """
+
+    model_name = UNCONFIGURED_MODEL_NAME
+
+    def bind(self, **_kwargs: Any) -> "_UnconfiguredChatModel":
+        return self
+
+    def bind_tools(self, *_args: Any, **_kwargs: Any) -> "_UnconfiguredChatModel":
+        return self
+
+    def invoke(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise LLMUnavailableError(_UNCONFIGURED_MESSAGE)
+
+    async def ainvoke(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise LLMUnavailableError(_UNCONFIGURED_MESSAGE)
+
+    async def astream(self, *_args: Any, **_kwargs: Any) -> AsyncGenerator[Any, None]:
+        raise LLMUnavailableError(_UNCONFIGURED_MESSAGE)
+        yield  # pragma: no cover — makes this an async generator
+
+
 # ── Per-prompt model override ─────────────────────────────────────────────────
 
 class ModelOverride(NamedTuple):
@@ -439,7 +479,26 @@ class LangChainLlmService:
         Used when the DB has no model rows (e.g. a fresh install without seed
         data). Pass *deployment_override* to pin a specific Azure deployment
         (e.g. a cheaper router/summarizer deployment).
+
+        When the env fallback is blank too, returns a service wrapping
+        :class:`_UnconfiguredChatModel` so startup succeeds and the first LLM
+        call fails with an actionable message instead of a provider error.
         """
+        endpoint = (getattr(settings, "AZURE_OPENAI_ENDPOINT", "") or "").strip()
+        api_key = (getattr(settings, "AZURE_OPENAI_API_KEY", "") or "").strip()
+        if not endpoint or not api_key:
+            logger.warning(
+                "llm_service: no active model in the DB and AZURE_OPENAI_ENDPOINT / "
+                "AZURE_OPENAI_API_KEY are blank; starting unconfigured — add a model "
+                "in Settings → AI Models"
+            )
+            return cls(
+                pool,
+                UNCONFIGURED_MODEL_NAME,
+                _UnconfiguredChatModel(),
+                provider_name=UNCONFIGURED_MODEL_NAME,
+            )
+
         from langchain_openai import AzureChatOpenAI
 
         deployment = deployment_override or settings.AZURE_OPENAI_DEPLOYMENT_NAME

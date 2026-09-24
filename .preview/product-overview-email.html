@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<title>Jeen Insights - what we built and what it enables</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f4f6;font-family:Segoe UI,Helvetica,Arial,sans-serif;color:#1f1f24;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f4f6;">
+<tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="720" cellpadding="0" cellspacing="0" border="0" style="width:720px;max-width:720px;background:#ffffff;border:1px solid #e6e6ea;">
+
+<!-- Header -->
+<tr><td style="background:#8e1a6b;padding:26px 32px;">
+  <div style="font-size:12px;letter-spacing:1px;color:#f3d9ea;text-transform:uppercase;">Product overview</div>
+  <div style="font-size:26px;font-weight:700;color:#ffffff;margin-top:6px;">Jeen Insights</div>
+  <div style="font-size:15px;color:#f3d9ea;margin-top:6px;">Ask your data in plain language - and see exactly how the answer was made</div>
+</td></tr>
+
+<tr><td style="padding:28px 32px 8px 32px;font-size:15px;line-height:1.55;">
+<p style="margin:0 0 14px 0;">Hi all,</p>
+<p style="margin:0 0 14px 0;">Below is a walkthrough of Jeen Insights, the natural-language analytics assistant we have been building. A user picks a data connection and asks a question in plain language - English or Hebrew - and the assistant writes a read-only query, runs it, and returns an answer with a chart, a table, key insights and clickable follow-up questions. When a single query is not enough (forecasts, anomalies, drivers, segments), it runs a validated statistical model instead. It reads curated business metadata straight from the shared Jeen Metadata catalog, so it understands your tables, columns and terms without any training or embeddings.</p>
+<p style="margin:0;">This email is organized as <b>what it enables</b> and then a <b>feature-by-feature tour</b> with screenshots from the live product.</p>
+</td></tr>
+
+<!-- What it enables -->
+<tr><td style="padding:20px 32px 6px 32px;">
+<h2 style="margin:0 0 10px 0;font-size:19px;color:#8e1a6b;">What it enables</h2>
+<ul style="margin:0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li><b>Anyone can query the data by asking.</b> No SQL knowledge required, and a first-time user gets suggested starter questions per connection. The generated SQL is always there for those who want to check it, in English or Hebrew.</li>
+  <li><b>Answers you can trust and verify.</b> Every answer shows the exact query that produced it, a step-by-step run breakdown (what ran, how long, how many tokens), and insights grounded strictly in the returned rows - never invented numbers.</li>
+  <li><b>More than a single query.</b> Built-in analysis skills - forecast, anomaly detection, drivers, segmentation, A/B tests and more - run validated models over the data, and you can <b>choose the model/method</b> and settings before it runs.</li>
+  <li><b>Shape the result by talking to it.</b> Refine any chart in plain words ("make it a horizontal bar chart, sorted high to low"), and ask the assistant itself what it can do or which models apply.</li>
+  <li><b>It remembers the conversation.</b> Follow-up questions build on earlier answers and their data, and a searchable history keeps every past conversation.</li>
+  <li><b>Governed and portable.</b> Read-only by construction, sensitive-data scanning, source credentials that never leave the internal service, bring-your-own or self-hosted model, and deployment on Docker, Kubernetes or OpenShift - including fully air-gapped sites.</li>
+</ul>
+</td></tr>
+
+<!-- 1 Getting started -->
+<tr><td style="padding:22px 32px 6px 32px;">
+<h2 style="margin:0 0 8px 0;font-size:19px;color:#8e1a6b;">1. Getting started</h2>
+<ul style="margin:0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li>A first-time user lands on a guided empty state: quick-start cards ("try a question", "see a chart", "look around first") and a set of <b>suggested questions tailored to the connected data</b>.</li>
+  <li>A getting-started checklist and short coaching tour point out the connection picker, the composer, and where answers appear - all dismissible, and remembered per user.</li>
+  <li>The rest is just typing a question; there is nothing to configure to get the first answer.</li>
+</ul>
+</td></tr>
+
+<!-- 2 Ask -->
+<tr><td style="padding:22px 32px 6px 32px;">
+<h2 style="margin:0 0 8px 0;font-size:19px;color:#8e1a6b;">2. Ask a question, get an answer</h2>
+<ul style="margin:0 0 12px 0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li>Type a question in plain language. The assistant classifies intent, loads the connection's curated metadata, writes a read-only <code>SELECT</code>, runs it, and answers in one to two sentences grounded strictly in the rows.</li>
+  <li><b>Key insights</b> - a few algorithm-aware findings built from the actual results, not free-text guesses.</li>
+  <li><b>Follow-up chips</b> - clickable next questions that reference the concrete things the answer surfaced, so exploration keeps flowing.</li>
+  <li>While it works, the pipeline shows each step live (route &rsaquo; catalog &rsaquo; generate &rsaquo; validate &rsaquo; execute &rsaquo; analyze), and a route pill states why the answer took the path it did.</li>
+</ul>
+<img src="shots/01-answer.png" width="656" alt="An answer with insights, follow-up questions and a table" style="display:block;width:656px;max-width:100%;border:1px solid #e6e6ea;">
+<div style="font-size:12px;color:#6b6b75;margin-top:6px;">A question answered: summary, key insights, clickable follow-up questions, and the result table.</div>
+</td></tr>
+
+<!-- 3 Transparency -->
+<tr><td style="padding:22px 32px 6px 32px;">
+<h2 style="margin:0 0 8px 0;font-size:19px;color:#8e1a6b;">3. See exactly how the answer was made</h2>
+<ul style="margin:0 0 12px 0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li><b>SQL &amp; run details</b>: the generated query is shown in full, with the grounded filter it resolved ("Bikes" &rarr; the product-category column), the tables it used, row count, execution time, LLM time, token count and retries.</li>
+  <li>A <b>step-by-step run breakdown</b> lists every stage the question went through and how long each took - router, catalog lookup, filter grounding, SQL generation, validation, governance, execution, analysis - so nothing is a black box.</li>
+  <li>Every query is parsed and validated before it runs - table-name allowlist, single-statement enforcement, SELECT-only - and scanned for sensitive columns.</li>
+</ul>
+<img src="shots/02-sql.png" width="656" alt="Generated SQL, tokens and run details" style="display:block;width:656px;max-width:100%;border:1px solid #e6e6ea;">
+<div style="font-size:12px;color:#6b6b75;margin-top:6px;">The exact read-only SQL behind the answer, with rows, time, tokens and the grounded filter.</div>
+<img src="shots/14-run-details.png" width="656" alt="Per-step execution breakdown with timings" style="display:block;width:656px;max-width:100%;border:1px solid #e6e6ea;margin-top:14px;">
+<div style="font-size:12px;color:#6b6b75;margin-top:6px;">Run details: every step that ran and how long it took, end to end.</div>
+</td></tr>
+
+<!-- 4 Charts & tables -->
+<tr><td style="padding:22px 32px 6px 32px;">
+<h2 style="margin:0 0 8px 0;font-size:19px;color:#8e1a6b;">4. Charts and tables - and edit them by chatting</h2>
+<ul style="margin:0 0 12px 0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li>The result is charted automatically - bar, line, area, pie/donut, scatter, heatmap, gauge, combo - with a table view alongside; an optional map layer plots geographic results.</li>
+  <li><b>Edit the chart in plain words.</b> "Make it a horizontal bar chart sorted high to low", "stack by channel", "log scale" - the assistant applies it and shows an "Applied" note with one-click Reset. The chart type and appearance change; the underlying query never does.</li>
+  <li>Sortable, paged tables with the full result set, per-column profiling, and exports when you need the data elsewhere.</li>
+</ul>
+<img src="shots/20-yoy.png" width="656" alt="Monthly sales 2006 vs 2007 as a grouped bar chart" style="display:block;width:656px;max-width:100%;border:1px solid #e6e6ea;">
+<div style="font-size:12px;color:#6b6b75;margin-top:6px;">A monthly 2006-vs-2007 comparison, charted automatically - refine it right below with "edit this chart in words".</div>
+<img src="shots/13-chart-chat.png" width="656" alt="Editing a chart with a natural-language instruction" style="display:block;width:656px;max-width:100%;border:1px solid #e6e6ea;margin-top:14px;">
+<div style="font-size:12px;color:#6b6b75;margin-top:6px;">Chart edited from chat: "make it a horizontal bar chart sorted from high to low" - applied, with Reset.</div>
+</td></tr>
+
+<!-- 5 Grounded filters -->
+<tr><td style="padding:22px 32px 6px 32px;">
+<h2 style="margin:0 0 8px 0;font-size:19px;color:#8e1a6b;">5. It understands the words in your question</h2>
+<ul style="margin:0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li><b>Value and entity grounding.</b> When you name a value ("Bikes", "Moscow", a customer), the assistant links it to the right column using the catalog and the source's own values, and even corrects a typo ("mosco" &rsaquo; Moscow).</li>
+  <li><b>It asks when it is unsure.</b> If "city" could mean the customer's or the dealer's city, it offers a short, clickable choice instead of guessing - and remembers your preference next time.</li>
+  <li><b>Every assumption is disclosed.</b> The applied filters are shown as "Filtered by..." chips on the answer, with one-click switches to a different field - so nothing is ever silently wrong.</li>
+</ul>
+</td></tr>
+
+<!-- 6 Memory & history -->
+<tr><td style="padding:22px 32px 6px 32px;">
+<h2 style="margin:0 0 8px 0;font-size:19px;color:#8e1a6b;">6. Conversation memory and history</h2>
+<ul style="margin:0 0 12px 0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li>Follow-ups build on earlier answers <b>and their data</b>: "of those four products, which grew fastest?" is computed over the previous result, not re-guessed.</li>
+  <li>"Did I ask about EMEA sales last week?" searches your own history and takes you back to the answer.</li>
+  <li>Conversations are saved per user and connection and restored when you return - every turn's question, answer, SQL, insights, and the chart and rows for recent turns.</li>
+</ul>
+<img src="shots/08-history.png" width="656" alt="Conversation history" style="display:block;width:656px;max-width:100%;border:1px solid #e6e6ea;">
+<div style="font-size:12px;color:#6b6b75;margin-top:6px;">History: open, continue or search previous conversations.</div>
+</td></tr>
+
+<!-- 7 ML skills -->
+<tr><td style="padding:22px 32px 6px 32px;">
+<h2 style="margin:0 0 8px 0;font-size:19px;color:#8e1a6b;">7. Analysis skills: beyond a single query - and you pick the model</h2>
+<ul style="margin:0 0 12px 0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li>When a question needs a model, not just a query, Jeen Insights runs a <b>validated statistical/ML skill</b> and explains the finding in plain language:
+  forecast, anomaly detection, changepoints, seasonality, correlation, contribution ("what drove the change?"), clustering/segmentation, driver analysis, regression, classification, cohort retention and A/B tests.</li>
+  <li>Before it runs, a <b>confirm card</b> shows the exact setup (measure, grain, look-back, horizon, sensitivity) with editable fields and validity ranges, and states what leaves the database ("aggregates only" or "row-level, capped").</li>
+  <li><b>You choose the method.</b> Anomaly detection offers Auto / Seasonal (MSTL) / Trend (LOWESS) / 3-sigma; forecast offers Auto / ARIMA / ETS / Theta / Drift / Seasonal naive - in the card or just by saying it ("flag anomalies using 3-sigma").</li>
+  <li>Results include a chart, algorithm-aware insights, and a <b>Model details</b> tab with the method, the validation metric (WAPE / MASE / R2 / AUC), the candidate models compared, and data provenance. "Edit setup" lets you change a value and re-run.</li>
+</ul>
+<img src="shots/15-anomaly-confirm.png" width="656" alt="Anomaly detection confirm card with model selection" style="display:block;width:656px;max-width:100%;border:1px solid #e6e6ea;">
+<div style="font-size:12px;color:#6b6b75;margin-top:6px;">Anomaly detection: the setup card with the model (Auto / Seasonal / Trend / 3-sigma), grain, look-back and sensitivity - editable before it runs.</div>
+<img src="shots/22-anomaly-result.png" width="656" alt="Anomaly detection result with flagged points" style="display:block;width:656px;max-width:100%;border:1px solid #e6e6ea;margin-top:14px;">
+<div style="font-size:12px;color:#6b6b75;margin-top:6px;">The result: actual vs. expected with a confidence band and flagged anomalies - plus insights and one-line "adjust and re-run".</div>
+<img src="shots/05-ml-confirm.png" width="656" alt="Forecast confirm card" style="display:block;width:656px;max-width:100%;border:1px solid #e6e6ea;margin-top:14px;">
+<div style="font-size:12px;color:#6b6b75;margin-top:6px;">The same flow for a forecast: measure, grain, look-back, horizon and model, with the egress notice.</div>
+</td></tr>
+
+<!-- 8 Capability -->
+<tr><td style="padding:22px 32px 6px 32px;">
+<h2 style="margin:0 0 8px 0;font-size:19px;color:#8e1a6b;">8. Ask the assistant what it can do</h2>
+<ul style="margin:0 0 12px 0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li>Questions about the assistant itself are answered directly, without running a query: <i>"which ML models and analyses can I run on this data?"</i>, <i>"what can this app do?"</i>, <i>"can I use 3-sigma on profit?"</i></li>
+  <li>The answer is grounded in what is actually available for the connected data - each skill, the methods it offers, and a one-line "use it when..." - so users discover capabilities in context.</li>
+</ul>
+<img src="shots/16-capability.png" width="656" alt="The assistant listing available ML models and analyses" style="display:block;width:656px;max-width:100%;border:1px solid #e6e6ea;">
+<div style="font-size:12px;color:#6b6b75;margin-top:6px;">"Which ML models and analyses can I run?" - answered directly, grouped by category with the methods each offers.</div>
+</td></tr>
+
+<!-- 9 Multi-connection -->
+<tr><td style="padding:22px 32px 6px 32px;">
+<h2 style="margin:0 0 8px 0;font-size:19px;color:#8e1a6b;">9. One assistant, many data sources</h2>
+<ul style="margin:0 0 12px 0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li>Switch between connections from the top bar; each carries its own curated metadata from the shared catalog.</li>
+  <li>Supported platforms today: <b>PostgreSQL</b>, <b>Trino / Presto</b>, <b>Databricks / Spark SQL</b>, and <b>Power BI semantic models via generated DAX</b> (run with the signed-in user's own Power BI permissions, so row-level security applies).</li>
+  <li>The read-only safety machinery - single statement, row caps, statement timeouts, secret sanitization - is shared across every connector.</li>
+  <li>Each connection carries its own curated metadata, so the same assistant answers correctly whether it is pointed at a warehouse, a lakehouse or a semantic model.</li>
+</ul>
+</td></tr>
+
+<!-- 10 Bring your own model -->
+<tr><td style="padding:22px 32px 6px 32px;">
+<h2 style="margin:0 0 8px 0;font-size:19px;color:#8e1a6b;">10. Bring your own model, manage your prompts</h2>
+<ul style="margin:0 0 12px 0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li>The model catalog lives in the deployment: Azure OpenAI (default), OpenAI, Anthropic, Google, or any OpenAI-compatible / self-hosted endpoint. A separate cheaper model can run the light steps.</li>
+  <li>Live credential health checks flag a misconfigured model before users hit it.</li>
+  <li>Every prompt the assistant uses is <b>editable in-product and versioned</b>, with reset to default - so behavior can be tuned without a code change. This matters for on-prem and regulated sites.</li>
+</ul>
+<img src="shots/09-settings-models.png" width="656" alt="AI models management" style="display:block;width:656px;max-width:100%;border:1px solid #e6e6ea;">
+<div style="font-size:12px;color:#6b6b75;margin-top:6px;">AI models: choose the provider/model per deployment, with health checks.</div>
+<img src="shots/10-settings-prompts.png" width="656" alt="Prompt management" style="display:block;width:656px;max-width:100%;border:1px solid #e6e6ea;margin-top:14px;">
+<div style="font-size:12px;color:#6b6b75;margin-top:6px;">Prompt management: edit, version and reset the assistant's prompts.</div>
+</td></tr>
+
+<!-- 11 Metadata catalog -->
+<tr><td style="padding:22px 32px 6px 32px;">
+<h2 style="margin:0 0 8px 0;font-size:19px;color:#8e1a6b;">11. Grounded in your curated metadata - no training, no embeddings</h2>
+<ul style="margin:0 0 12px 0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li>Business descriptions for tables and columns, relationships, business terms and question&rarr;SQL knowledge pairs come straight from the shared Jeen Metadata catalog (built in Schema Modeler).</li>
+  <li>That curated context is injected into the model at every turn and used to validate every generated query - so answers reflect <b>your</b> definitions, and the same catalog serves all Jeen products.</li>
+  <li>Deny-by-default: with no catalog for a connection, the assistant will not query it. Sensitive and hidden columns are never shown or probed.</li>
+</ul>
+<img src="shots/11-settings-catalog.png" width="656" alt="Metadata catalog source" style="display:block;width:656px;max-width:100%;border:1px solid #e6e6ea;">
+<div style="font-size:12px;color:#6b6b75;margin-top:6px;">The curated metadata catalog that grounds every answer.</div>
+</td></tr>
+
+<!-- 12 Languages -->
+<tr><td style="padding:22px 32px 6px 32px;">
+<h2 style="margin:0 0 8px 0;font-size:19px;color:#8e1a6b;">12. English and Hebrew, right-to-left</h2>
+<ul style="margin:0 0 12px 0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li>The whole interface is available in English and Hebrew, with a proper mirrored right-to-left layout; the language is a per-user preference.</li>
+  <li>Questions and answers work in either language, and the analysis skills, charts and insights render fully right-to-left.</li>
+</ul>
+<img src="shots/21-hebrew-rtl.png" width="656" alt="Hebrew right-to-left interface with an anomaly chart" style="display:block;width:656px;max-width:100%;border:1px solid #e6e6ea;">
+<div style="font-size:12px;color:#6b6b75;margin-top:6px;">The same assistant in Hebrew, mirrored right-to-left - here an anomaly result with its band chart.</div>
+</td></tr>
+
+<!-- 13 Governance -->
+<tr><td style="padding:22px 32px 6px 32px;">
+<h2 style="margin:0 0 8px 0;font-size:19px;color:#8e1a6b;">13. Security and governance</h2>
+<ul style="margin:0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li><b>Read-only by construction.</b> Only <code>SELECT</code>/<code>WITH</code> runs; anything that mutates data is blocked before it reaches the database.</li>
+  <li><b>Credentials stay put.</b> The public web tier never holds source credentials; it calls the internal service with a short-lived signed token, and connector secrets are encrypted at rest.</li>
+  <li><b>Sensitive-data governance.</b> A DLP scan and a deny-by-default catalog keep sensitive columns out of queries and answers.</li>
+  <li><b>Enterprise sign-in.</b> Microsoft Entra ID SSO with group-based roles; Power BI is queried under the user's own delegated permissions.</li>
+</ul>
+</td></tr>
+
+<!-- 14 Deployment -->
+<tr><td style="padding:22px 32px 6px 32px;">
+<h2 style="margin:0 0 8px 0;font-size:19px;color:#8e1a6b;">14. Deployment</h2>
+<ul style="margin:0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li>Two services (a public UI and an internal API) plus a sandboxed analytics service for the ML skills, all on the shared Jeen Metadata Postgres in an Insights-owned schema. No separate analytics database to run.</li>
+  <li>Docker Compose for a laptop or a small install; Helm charts for AKS, EKS, vanilla Kubernetes and OpenShift.</li>
+  <li><b>Air-gapped ready</b>: internal registries, digest-pinned images, no runtime downloads, bundled fonts and offline map tiles, and an SMTP relay where email is needed.</li>
+</ul>
+</td></tr>
+
+<!-- Next -->
+<tr><td style="padding:22px 32px 6px 32px;">
+<h2 style="margin:0 0 8px 0;font-size:19px;color:#8e1a6b;">What is next</h2>
+<ul style="margin:0;padding-left:20px;font-size:15px;line-height:1.6;">
+  <li>More connector types beyond PostgreSQL, Trino, Databricks and Power BI.</li>
+  <li>Encrypted connection secrets at rest, and streaming answers on the analysis path.</li>
+  <li>More interface languages (a translation-catalog task) on top of English and Hebrew.</li>
+</ul>
+</td></tr>
+
+<tr><td style="padding:22px 32px 30px 32px;font-size:15px;line-height:1.55;">
+<p style="margin:0 0 10px 0;">Happy to walk anyone through a live demo.</p>
+<p style="margin:0;">Eldad</p>
+</td></tr>
+
+<tr><td style="background:#f4f4f6;border-top:1px solid #e6e6ea;padding:12px 32px;font-size:11px;color:#8a8a94;">Screenshots were taken from the live product on Sep 21, 2026 using sample AdventureWorks data.</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>

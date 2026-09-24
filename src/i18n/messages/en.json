@@ -141,11 +141,9 @@
       "savedLabel": "Saved answers and questions",
       "history": "History",
       "historyLabel": "Conversation history",
-      "settings": "Settings"
-    },
-    "topbar": {
+      "settings": "Settings",
       "hideConversation": "Hide conversation",
-      "showConversation": "Conversation"
+      "showConversation": "Show conversation"
     },
     "tabs": {
       "sections": "Conversation sections",
@@ -283,7 +281,14 @@
       "routeMl": "ML skill",
       "routeSql": "SQL",
       "showAnswerBadge": "Show answer",
-      "showCardBadge": "Show card"
+      "showCardBadge": "Show card",
+      "you": "You",
+      "agent": "Jeen",
+      "edit": "Edit",
+      "editAgain": "Edit again",
+      "editing": "Editing",
+      "edited": "edited",
+      "saveRerun": "Save & rerun"
     },
     "trace": {
       "modelStep": "model step completed",

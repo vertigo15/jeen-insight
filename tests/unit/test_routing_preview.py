@@ -75,6 +75,51 @@ def test_plain_lookup_stays_sql():
     assert d["skill_hint"] is None
 
 
+def test_low_confidence_no_cue_asks_the_user():
+    """Genuinely ambiguous SQL-vs-ML (low confidence, no strong cue) → clarify."""
+    d = resolve_ml_route(
+        "needs_query", "could go either way", "how are sales doing this year?",
+        ml_skills_enabled=True, analysis_override=None, confidence=0.4,
+    )
+    assert d["route"] == "clarify_route"
+    assert d["source"] == "route_uncertain"
+
+
+def test_low_confidence_with_strong_cue_does_not_ask():
+    """A strong cue is a confident signal — never ask, even at low confidence."""
+    d = resolve_ml_route(
+        "needs_query", "", "forecast revenue next quarter",
+        ml_skills_enabled=True, analysis_override=None, confidence=0.3,
+    )
+    assert d["route"] == "needs_analysis"
+
+
+def test_high_confidence_does_not_ask():
+    d = resolve_ml_route(
+        "needs_query", "clear lookup", "total sales last quarter",
+        ml_skills_enabled=True, analysis_override=None, confidence=0.95,
+    )
+    assert d["route"] == "needs_query"
+
+
+def test_no_confidence_never_asks():
+    d = resolve_ml_route(
+        "needs_query", "", "how are sales doing?",
+        ml_skills_enabled=True, analysis_override=None, confidence=None,
+    )
+    assert d["route"] == "needs_query"
+
+
+def test_override_true_forces_analysis():
+    """The clarify "Run the analysis" pick (analysis=true) forces the ML branch."""
+    d = resolve_ml_route(
+        "needs_query", "", "how are sales doing?",
+        ml_skills_enabled=True, analysis_override=True, confidence=0.4,
+    )
+    assert d["route"] == "needs_analysis"
+    assert d["source"] == ROUTE_SOURCE_OVERRIDE
+
+
 # ── explain_routing: the dry-run prediction ────────────────────────────────────
 
 @pytest.mark.parametrize("q", ["hi", "hello", "good morning"])

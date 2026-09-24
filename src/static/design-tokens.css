@@ -40,6 +40,11 @@
   --faint: #8b8b93;
   --rose: #8878c4;
   --rosesoft: #f2effb;
+  /* Conversation-panel review palette: a readable muted for meta lines, and the
+     lavender pair for the "Save & rerun" edit action. */
+  --muted-strong: #6b6b73;
+  --edit-border: #d9d2f0;
+  --edit-text: #5f4fa0;
   --insight-bg: rgba(136, 120, 196, .055);
   --link: #2b7fd4;
   --linksoft: #eaf4fd;
@@ -81,6 +86,9 @@
   --faint: #6a6a74;
   --rose: #b9a8f0;
   --rosesoft: #262238;
+  --muted-strong: #b0b0b8;
+  --edit-border: #4a4170;
+  --edit-text: #cfc4f4;
   --insight-bg: rgba(185, 168, 240, .065);
   --link: #6cb6f5;
   --linksoft: #16283a;
