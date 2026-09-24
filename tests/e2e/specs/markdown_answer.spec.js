@@ -26,6 +26,18 @@ test('capability answer renders Markdown in the result pane', async ({ page }) =
   await expect(paneMd).toHaveCount(1);
   await expect(paneMd.locator('ul li')).toHaveCount(2);
   await expect(paneMd.locator('table tbody tr')).toHaveCount(1);
+  // Bold labels stay inline with their description (the pane title style must not leak in).
+  const label = paneMd.locator('li strong').first();
+  await expect(label).toHaveCSS('display', 'inline');
+  await expect(label).toHaveCSS('font-weight', '600');
+});
+
+test('a plain-text answer in the result pane reads as body text', async ({ page }) => {
+  await ask(page, Q.greeting);
+  const answer = page.locator('#v3-placeholder .v3-text-answer');
+  await expect(answer).toHaveText('Hello! Ask me anything about your data.');
+  await expect(answer).toHaveCSS('font-size', '14.5px');
+  await expect(answer).toHaveCSS('text-align', 'start');
 });
 
 test('an embedded HTML/script payload is escaped, never executed', async ({ page }) => {

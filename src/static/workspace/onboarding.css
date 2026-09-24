@@ -68,7 +68,7 @@
 .jo-checklist-count {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--faint);
+  color: var(--muted);
   letter-spacing: .04em;
 }
 .jo-chevron {
@@ -375,7 +375,7 @@
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: .04em;
-  color: var(--faint);
+  color: var(--muted);
 }
 
 /* --- Guided tour (States 02, 03, 05) ------------------------------------- */

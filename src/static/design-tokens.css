@@ -34,8 +34,10 @@
   --border: #e9e9ec;
   --border2: #d8d8dd;
   --text: #1f1f24;
-  --muted: #98989f;
-  --faint: #b8b8bf;
+  /* --muted is the readable secondary text (WCAG AA: 5.3:1 on --bg, 4.9:1 on
+     --soft). --faint is for icons, markers and strikethrough only (3.4:1). */
+  --muted: #6b6b73;
+  --faint: #8b8b93;
   --rose: #8878c4;
   --rosesoft: #f2effb;
   --insight-bg: rgba(136, 120, 196, .055);
@@ -76,7 +78,7 @@
   --border2: #3b3b43;
   --text: #f0f0f2;
   --muted: #8a8a94;
-  --faint: #5d5d67;
+  --faint: #6a6a74;
   --rose: #b9a8f0;
   --rosesoft: #262238;
   --insight-bg: rgba(185, 168, 240, .065);

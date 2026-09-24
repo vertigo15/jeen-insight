@@ -14,6 +14,12 @@ window.__ROUTING_TRUTH__ = {
       "skill_hint": null,
       "reason": "no keyword cue; the router LLM decides between text-to-SQL and an ML skill from the question's intent"
     },
+    "Total sales for the Bikes category by year": {
+      "would_route": "router_decides",
+      "source": "router_llm",
+      "skill_hint": null,
+      "reason": "no keyword cue; the router LLM decides between text-to-SQL and an ML skill from the question's intent"
+    },
     "Forecast profit for the next 8 weeks": {
       "would_route": "needs_analysis",
       "source": "keyword_cue",
@@ -65,6 +71,12 @@ window.__ROUTING_TRUTH__ = {
       "reason": "ML_SKILLS_ENABLED is off on this deployment; every data question is text-to-SQL"
     },
     "How many orders shipped yesterday?": {
+      "would_route": "needs_query",
+      "source": "ml_disabled",
+      "skill_hint": null,
+      "reason": "ML_SKILLS_ENABLED is off on this deployment; every data question is text-to-SQL"
+    },
+    "Total sales for the Bikes category by year": {
       "would_route": "needs_query",
       "source": "ml_disabled",
       "skill_hint": null,

@@ -183,6 +183,37 @@
         return 'text';
     }
 
+    const ID_WORDS = new Set(['id', 'key', 'pk', 'uuid', 'code']);
+    // Hebrew puts the identifier word first: "מזהה_לקוח", "קוד_מוצר".
+    const HE_ID_WORDS = new Set(['מזהה', 'קוד', 'מפתח']);
+    const YEAR_WORDS = new Set(['year', 'yr', 'fy', 'שנה', 'שנת']);
+
+    /** "CustomerKey" / "order_year" -> ["customer", "key"] / ["order", "year"]. */
+    function nameWords(name) {
+        return String(name || '')
+            .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+            .toLowerCase()
+            .split(/[^a-z0-9\u0590-\u05ff]+/)
+            .filter(Boolean);
+    }
+
+    /**
+     * Numbers that name something rather than measure it: ids and keys (by the
+     * column name alone) and years (a year word plus 4-digit integers in every
+     * row, so "sales_per_year" totals still get separators).
+     */
+    function isPlainNumberColumn(name, values) {
+        const words = nameWords(name);
+        if (!words.length) return false;
+        if (ID_WORDS.has(words[words.length - 1]) || HE_ID_WORDS.has(words[0])) return true;
+        if (!words.some((word) => YEAR_WORDS.has(word))) return false;
+        const present = values.filter((v) => v !== null && v !== undefined && v !== '');
+        return present.length > 0 && present.every((v) => {
+            const n = numericValue(v);
+            return Number.isInteger(n) && n >= 1000 && n <= 9999;
+        });
+    }
+
     function compactProfile(results) {
         const columns = (results && results.columns) || [];
         const rows = normalizeRows(results);
@@ -194,7 +225,8 @@
             if (present.length) {
                 if (type === 'number') {
                     const nums = present.map(numericValue);
-                    range = `${formatCompact(Math.min(...nums))} – ${formatCompact(Math.max(...nums))}`;
+                    const show = isPlainNumberColumn(name, present) ? String : formatCompact;
+                    range = `${show(Math.min(...nums))} – ${show(Math.max(...nums))}`;
                 } else {
                     const strings = present.map(String).sort((a, b) => a.localeCompare(b));
                     range = `${strings[0]} – ${strings[strings.length - 1]}`;
@@ -246,7 +278,6 @@
         conversation: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></svg>',
         railConversation: '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/><path d="M8 10h8M8 14h5"/></svg>',
         pin: '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 3h6l-1 6 3 3H7l3-3-1-6Z"/></svg>',
-        bell: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>',
         export: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3v12M7 8l5-5 5 5M5 14v6h14v-6"/></svg>',
         copy: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
         star: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></svg>',
@@ -308,6 +339,8 @@
             });
             document.addEventListener('jeen:osm-map-ready', () => this.renderTable());
             document.addEventListener('jeen:conversation-tabs', (event) => this.setTabsVisible(!!event.detail?.visible));
+            // Send visibility depends on the signed-in user, which auth.js loads after the shell.
+            document.addEventListener('jeen:current-user', () => this._setActionsEnabled(Boolean(this._actionsEnabled)));
             this.setTabsVisible(conversationTabsPreferred());
             this.setTab('conversation');
             this._renderEmptySuggestions();
@@ -344,7 +377,6 @@
                   <div id="v3-connection-slot" class="v3-connection-slot"></div>
                   <div class="v3-topbar-spacer"></div>
                   <div id="v3-theme-slot"></div>
-                  <button class="v3-topbar-icon" aria-label="${h('shell.topbar.notifications')}" title="${h('shell.topbar.notifications')}">${ICON.bell}</button>
                   <div id="v3-user-slot"></div>
                 </header>
                 <div class="v3-body">
@@ -2562,7 +2594,7 @@
                   <span class="v3-result-meta">${h('conversation.text.textAnswer')}${turn.restored ? ` · ${h('conversation.restored.restored')}` : ''}</span>`;
                 const answerBody = wantsMarkdown(data)
                     ? markdownDiv(answer)
-                    : `<span dir="${directionOf(answer)}">${esc(answer || t('conversation.text.noDataNeeded'))}</span>`;
+                    : `<div class="v3-text-answer" dir="${directionOf(answer)}">${esc(answer || t('conversation.text.noDataNeeded'))}</div>`;
                 placeholder.innerHTML = `<strong>${h('conversation.text.answer')}</strong>${answerBody}`;
             }
             placeholder.hidden = false;
@@ -2853,7 +2885,9 @@
             const numeric = new Set(columns.map((column, index) => inferColumnType(filtered.slice(0, 50).map((row) => rowValue(row, column, index))) === 'number' ? index : -1).filter((index) => index >= 0));
             const descriptors = [];
             columns.forEach((name, index) => {
-                descriptors.push({ name, sourceIndex: index, numeric: numeric.has(index) });
+                const plain = numeric.has(index) && !presentation.formats?.[index]
+                    && isPlainNumberColumn(name, allRows.map((row) => rowValue(row, name, index)));
+                descriptors.push({ name, sourceIndex: index, numeric: numeric.has(index), plain });
                 const derived = (presentation.derived || []).find((item) => item.sourceIndex === index);
                 if (derived) descriptors.push({ name: derived.name, sourceIndex: index, numeric: true, derived });
             });
@@ -2889,7 +2923,9 @@
                     : rowValue(row, columns[descriptor.sourceIndex], descriptor.sourceIndex);
                 const rendered = descriptor.derived
                     ? (descriptor.derived.type === 'pct_total' && raw != null ? `${formatCompact(raw)}%` : formatCompact(raw))
-                    : (window.JeenLegacyBridge?.formatTableValue?.(raw, descriptor.sourceIndex, descriptor.numeric) ?? (raw ?? '—'));
+                    : (descriptor.plain && raw != null && raw !== '')
+                        ? String(raw)
+                        : (window.JeenLegacyBridge?.formatTableValue?.(raw, descriptor.sourceIndex, descriptor.numeric) ?? (raw ?? '—'));
                     return `<div class="v3-grid-cell${descriptor.numeric ? ' is-numeric' : ''}${descriptor.derived ? ' is-derived' : ''}"${descriptor.numeric ? ' dir="ltr"' : ''} title="${esc(rendered)}">${esc(rendered)}</div>`;
                 }).join('')}</div>`;
             };
@@ -3082,18 +3118,24 @@
         },
 
         _setActionsEnabled(enabled) {
+            this._actionsEnabled = enabled;
             ['export-btn', 'copy-results-btn', 'send-result-btn', 'describe-btn'].forEach((id) => {
                 const button = document.getElementById(id);
                 if (!button) return;
                 button.disabled = !enabled;
                 button.setAttribute('aria-disabled', String(!enabled));
                 button.style.display = '';
-                if (id === 'send-result-btn' && enabled) {
+                if (id === 'send-result-btn') {
                     const me = window._currentUser || {};
-                    const canSend = Boolean(me.connectors_enabled && me.is_entra && window._resultHandle);
+                    // Without Entra and a delivery connector Send can never work: hide it
+                    // instead of showing a permanently disabled primary button.
+                    const eligible = Boolean(me.connectors_enabled && me.is_entra);
+                    const canSend = enabled && eligible && Boolean(window._resultHandle);
+                    button.style.display = eligible ? '' : 'none';
                     button.disabled = !canSend;
                     button.setAttribute('aria-disabled', String(!canSend));
-                    button.title = canSend ? t('results.actions.sendResult') : t('results.actions.sendDisabled');
+                    if (canSend) button.title = t('results.actions.sendResult');
+                    else button.title = enabled ? t('send.noSnapshot') : t('results.actions.sendLabel');
                 }
             });
         },

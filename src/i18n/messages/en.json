@@ -145,8 +145,7 @@
     },
     "topbar": {
       "hideConversation": "Hide conversation",
-      "showConversation": "Conversation",
-      "notifications": "Notifications"
+      "showConversation": "Conversation"
     },
     "tabs": {
       "sections": "Conversation sections",
@@ -1542,6 +1541,19 @@
       "label": "Enhance with AI",
       "loading": "Enhancing…",
       "done": "Enhanced!"
+    },
+    "series": {
+      "actual": "Actual",
+      "expected": "Expected",
+      "forecast": "Forecast",
+      "flagged": "Flagged",
+      "segmentLevel": "Segment level",
+      "changepoint": "Changepoint",
+      "lower": "Lower",
+      "upper": "Upper",
+      "band": "{percent}% band",
+      "interval": "{percent}% interval",
+      "forecastStart": "forecast"
     },
     "errors": {
       "rerunUnavailable": "Analysis re-run is unavailable here",

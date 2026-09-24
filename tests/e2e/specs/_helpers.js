@@ -8,6 +8,7 @@ const HARNESS = '/tests/e2e/harness/index.html';
 const Q = {
   sqlAggregate: 'Show me total sales by region last month',
   sqlCount: 'How many orders shipped yesterday?',
+  sqlByYear: 'Total sales for the Bikes category by year',
   forecast: 'Forecast profit for the next 8 weeks',
   anomaly: 'Is anything unusual in weekly profit?',
   guard: 'Forecast weekly revenue for a brand-new product line',
