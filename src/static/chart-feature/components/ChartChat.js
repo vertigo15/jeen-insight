@@ -2,7 +2,8 @@
  * Chart Chat ("Refine this chart") component
  *
  * Renders one slim row under the chart that lets the user request
- * visualization-only changes in natural language. Each message hits
+ * visualization-only changes in natural language. Common intents are resolved
+ * in code (chartIntentMatcher.js) with no network call; anything else hits
  * /api/edit-chart exactly once with the compact v2 manifest and receives
  * validated local chart operations.
  *
@@ -27,6 +28,8 @@
  *
  * @module ChartChat
  */
+
+import { matchChartIntent } from '../utils/chartIntentMatcher.js?v=1';
 
 const MAX_INSTRUCTION_LEN = 500;
 const MAX_TRANSCRIPT_MESSAGES = 30;
@@ -173,10 +176,19 @@ export class ChartChat {
         status.setAttribute('aria-live', 'polite');
         status.setAttribute('aria-atomic', 'true');
 
+        // What-if badge: shown while a scenario series is on the canvas.
+        const scenarioBadge = document.createElement('div');
+        scenarioBadge.className = 'chart-scenario-badge';
+        scenarioBadge.setAttribute('role', 'note');
+        scenarioBadge.textContent = t('charts.chat.scenarioBadge');
+        scenarioBadge.hidden = true;
+
+        container.appendChild(scenarioBadge);
         container.appendChild(row);
         container.appendChild(applied);
         container.appendChild(status);
 
+        this._scenarioBadgeEl = scenarioBadge;
         this._rowEl = row;
         this._inputEl = input;
         this._applyBtnEl = applyBtn;
@@ -325,6 +337,12 @@ export class ChartChat {
         this._syncControls();
     }
 
+    /** Show/hide the "scenario shown" cue; driven by the renderer on every draw. */
+    setScenarioBadge(visible) {
+        if (!this._scenarioBadgeEl) return;
+        this._scenarioBadgeEl.hidden = !visible;
+    }
+
     /** Kept as a compatibility no-op: compact chat is always chart-only. */
     setAnalysisMode(_on) {
         this._analysisMode = false;
@@ -354,6 +372,15 @@ export class ChartChat {
         if (!connection) {
             this._setStatus(t('errors.selectConnectionFirst'), 'warn');
             this._focusInput();
+            return;
+        }
+
+        // Fast path: common intents are resolved in code without a model call.
+        // The matcher is strict and returns null whenever it is not certain.
+        const chartKind = this.hooks.getChartKind ? this.hooks.getChartKind() : 'sql';
+        const local = matchChartIntent(instruction, { chartKind });
+        if (local) {
+            await this._applyLocalIntent(instruction, local, revision);
             return;
         }
 
@@ -401,7 +428,7 @@ export class ChartChat {
             const outOfScope = !!data.out_of_scope;
 
             if (outOfScope || operations.length === 0) {
-                const fallback = note || reasonCode || t('charts.chat.outOfScope');
+                const fallback = this._describeReason(reasonCode, note);
                 this._setStatus(fallback, 'warn');
                 this._appendMessage('assistant', fallback);
                 return;
@@ -416,11 +443,13 @@ export class ChartChat {
             let applyTelemetry = {};
             if (this.hooks.onApply) {
                 try {
-                    applyTelemetry = await this.hooks.onApply(operations, revision) || {};
+                    applyTelemetry = await this.hooks.onApply(operations, revision, {
+                        onProgress: (stage) => this._reportProgress(stage),
+                    }) || {};
                 } catch (e) {
                     if (e && e.name === 'AbortError') return;
                     console.error('[ChartChat] onApply threw', e);
-                    this._setStatus(t('charts.chat.renderFailed'), 'error');
+                    this._setStatus(this._describeApplyError(e), 'error');
                     return;
                 }
             }
@@ -454,6 +483,90 @@ export class ChartChat {
                 this._focusInput();
             }
         }
+    }
+
+    /**
+     * Apply operations produced by the code-only intent matcher. Shares the
+     * apply/telemetry path with model answers so the chart behaves identically.
+     */
+    async _applyLocalIntent(instruction, local, revision) {
+        if (local.reset) {
+            await this._handleReset();
+            return;
+        }
+        const started = performance.now();
+        this._appendMessage('user', instruction);
+        this._setStatus(t('charts.chat.working'), 'progress');
+        this._setBusy(true);
+        const myRequestId = ++this.idCounter;
+        try {
+            let applyTelemetry = {};
+            if (this.hooks.onApply) {
+                applyTelemetry = await this.hooks.onApply(local.operations, revision, {
+                    onProgress: (stage) => this._reportProgress(stage),
+                }) || {};
+            }
+            if (myRequestId !== this.idCounter) return;
+            this.hooks.onTiming?.({
+                wall_ms: Math.round(performance.now() - started),
+                request_ms: 0,
+                parse_ms: 0,
+                apply_ms: Math.round(performance.now() - started),
+                server_timing: '',
+                rebuild_server_timing: applyTelemetry.server_timing || '',
+                request_count: Number(applyTelemetry.request_count || 0),
+                rows_uploaded: Number(applyTelemetry.rows_uploaded || 0),
+                retries: 0,
+                operation_count: local.operations.length,
+                stale_dropped: false,
+                matched_locally: true,
+            });
+            this._appendMessage('assistant', t('charts.chat.updated'));
+            this._inputEl.value = '';
+            this._showApplied(instruction);
+            this._setStatus(t('charts.chat.appliedAnnouncement'), 'success');
+        } catch (e) {
+            if (e && e.name === 'AbortError') return;
+            console.error('[ChartChat] local intent apply failed', e);
+            this._setStatus(this._describeApplyError(e), 'error');
+        } finally {
+            if (myRequestId === this.idCounter) {
+                this._setBusy(false);
+                this._focusInput();
+            }
+        }
+    }
+
+    /**
+     * Rejection text is code-owned: a catalogued `reason_code` wins over the
+     * model's free-text note so users see consistent, translated messages.
+     */
+    _describeReason(reasonCode, note) {
+        if (reasonCode) {
+            const key = `charts.chat.reasons.${reasonCode}`;
+            const text = t(key);
+            if (text && text !== key) return text;
+        }
+        return note || t('charts.chat.outOfScope');
+    }
+
+    _reportProgress(stage) {
+        if (stage === 'rebuild') this._setStatus(t('charts.chat.rebuilding'), 'progress');
+    }
+
+    /** Prefer a server/validator code the catalogue knows over the generic message. */
+    _describeApplyError(error) {
+        const code = error && (error.code || error.reasonCode);
+        if (code) {
+            const key = `charts.chat.reasons.${code}`;
+            const text = t(key);
+            if (text && text !== key) return text;
+        }
+        const detail = error && error.detailMessage;
+        if (detail) {
+            return t('charts.chat.applyFailed', { detail: window.I18n ? window.I18n.isolate(detail) : detail });
+        }
+        return t('charts.chat.renderFailed');
     }
 
     _buildPayload(connection, instruction, chartManifest) {

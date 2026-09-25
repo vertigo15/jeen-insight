@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jeen Insights - architecture and installation guide</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6f8;color:#172033;font-family:Arial,Helvetica,sans-serif;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
+    Short architecture and installation guide for Jeen Insights DevOps teams.
+  </div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
+         style="width:100%;background:#f4f6f8;">
+    <tr>
+      <td align="center" style="padding:24px 12px;">
+        <table role="presentation" width="680" cellspacing="0" cellpadding="0" border="0"
+               style="width:100%;max-width:680px;background:#ffffff;border:1px solid #dfe4ea;border-radius:8px;">
+          <tr>
+            <td style="padding:28px 32px 12px 32px;">
+              <p style="margin:0 0 8px 0;font-size:13px;color:#657087;">
+                <strong>Subject:</strong> Jeen Insights - architecture and installation guide
+              </p>
+              <h1 style="margin:0;font-size:24px;line-height:32px;color:#172033;">
+                Jeen Insights deployment overview
+              </h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:12px 32px 0 32px;font-size:15px;line-height:23px;">
+              <p style="margin:0 0 16px 0;">Hello team,</p>
+              <p style="margin:0 0 16px 0;">
+                Jeen Insights is a governed natural-language analytics application. Users ask
+                business questions in plain language; the service uses curated Schema Modeler
+                metadata, an approved LLM, and read-only data connections to generate and run
+                SQL/DAX, explain results, create charts, and run optional ML analysis.
+              </p>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:8px 32px 0 32px;">
+              <h2 style="margin:0 0 10px 0;font-size:18px;line-height:25px;color:#172033;">
+                Architecture in short
+              </h2>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
+                     style="width:100%;border-collapse:collapse;font-size:14px;line-height:21px;">
+                <tr>
+                  <td valign="top" width="150"
+                      style="padding:8px;border-top:1px solid #e5e9ef;font-weight:bold;">UI image</td>
+                  <td valign="top" style="padding:8px;border-top:1px solid #e5e9ef;">
+                    Flask/Gunicorn browser entry point and BFF. It owns login, sessions, CSRF,
+                    and signed UI-to-API tokens. This is the only externally exposed service.
+                  </td>
+                </tr>
+                <tr>
+                  <td valign="top" style="padding:8px;border-top:1px solid #e5e9ef;font-weight:bold;">API image</td>
+                  <td valign="top" style="padding:8px;border-top:1px solid #e5e9ef;">
+                    Internal FastAPI/LangGraph service for catalog lookup, governed query
+                    generation, execution, charts, conversations, connectors, and LLM calls.
+                  </td>
+                </tr>
+                <tr>
+                  <td valign="top" style="padding:8px;border-top:1px solid #e5e9ef;font-weight:bold;">Analytics image</td>
+                  <td valign="top" style="padding:8px;border-top:1px solid #e5e9ef;">
+                    Internal isolated sandbox for validated statistical and ML operations. It
+                    uses a separate internal secret and is deployed without external egress.
+                  </td>
+                </tr>
+                <tr>
+                  <td valign="top" style="padding:8px;border-top:1px solid #e5e9ef;font-weight:bold;">PostgreSQL</td>
+                  <td valign="top" style="padding:8px;border-top:1px solid #e5e9ef;">
+                    Required shared metadata database: Schema Modeler catalog plus
+                    Insights-owned users, settings, conversations, saved artifacts, and
+                    connector records.
+                  </td>
+                </tr>
+                <tr>
+                  <td valign="top" style="padding:8px;border-top:1px solid #e5e9ef;font-weight:bold;">Data and LLM</td>
+                  <td valign="top" style="padding:8px;border-top:1px solid #e5e9ef;">
+                    Runtime data connections can include PostgreSQL, Trino/Presto, Databricks,
+                    and Power BI. The LLM is selected from the shared model catalog or the
+                    documented environment fallback.
+                  </td>
+                </tr>
+                <tr>
+                  <td valign="top" style="padding:8px;border-top:1px solid #e5e9ef;font-weight:bold;">Identity</td>
+                  <td valign="top" style="padding:8px;border-top:1px solid #e5e9ef;">
+                    Local accounts, direct Microsoft Entra ID, or OIDC through Keycloak/Zitadel.
+                    Client secrets remain in the target platform's secret manager.
+                  </td>
+                </tr>
+                <tr>
+                  <td valign="top" style="padding:8px;border-top:1px solid #e5e9ef;font-weight:bold;">Blob / S3</td>
+                  <td valign="top" style="padding:8px;border-top:1px solid #e5e9ef;">
+                    Not required. Persistent product data and saved artifacts are stored in
+                    PostgreSQL; container images are stored in ACR, ECR, or the OpenShift
+                    internal registry.
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:10px 0 16px 0;font-size:14px;">
+                Full reference:
+                <a href="https://github.com/vertigo15/jeen-insight/blob/main/docs/architecture-and-tech-stack.md"
+                   style="color:#175cd3;text-decoration:underline;">Architecture and technology stack</a>
+              </p>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:8px 32px 0 32px;font-size:14px;line-height:21px;">
+              <h2 style="margin:0 0 10px 0;font-size:18px;line-height:25px;color:#172033;">
+                Installation process
+              </h2>
+              <ol style="margin:0 0 16px 22px;padding:0;">
+                <li style="margin-bottom:5px;"><strong>Prepare the registry:</strong> push the three immutable images.</li>
+                <li style="margin-bottom:5px;"><strong>Configure values and secrets:</strong> database, LLM, public URL, TLS, identity, and internal signing keys.</li>
+                <li style="margin-bottom:5px;"><strong>Preflight:</strong> lint/render Helm, verify pulls, DNS, TLS, PostgreSQL, IdP, and network paths.</li>
+                <li style="margin-bottom:5px;"><strong>Migrate:</strong> back up PostgreSQL, run the explicit migration Job, wait, and review logs.</li>
+                <li style="margin-bottom:5px;"><strong>Install:</strong> deploy the same immutable image set with Helm or allow Argo CD to sync it.</li>
+                <li><strong>Verify:</strong> check all rollouts, health JSON, login, one governed query, and one ML operation when enabled.</li>
+              </ol>
+              <p style="margin:0 0 16px 0;">
+                Start here:
+                <a href="https://github.com/vertigo15/jeen-insight/blob/main/deployment/README.md"
+                   style="color:#175cd3;text-decoration:underline;">Common deployment guide</a>
+                and
+                <a href="https://github.com/vertigo15/jeen-insight/blob/main/deployment/k8s_dev/README.md"
+                   style="color:#175cd3;text-decoration:underline;">Helm umbrella chart</a>.
+              </p>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:8px 32px 0 32px;font-size:14px;line-height:21px;">
+              <h2 style="margin:0 0 10px 0;font-size:18px;line-height:25px;color:#172033;">
+                Choose the target environment
+              </h2>
+              <ul style="margin:0 0 16px 20px;padding:0;">
+                <li style="margin-bottom:6px;">
+                  <a href="https://github.com/vertigo15/jeen-insight/blob/main/deployment/aks/INSTALL.md"
+                     style="color:#175cd3;text-decoration:underline;">Azure AKS installation</a>
+                  - ACR, Workload Identity, Key Vault/External Secrets, ingress or internal LoadBalancer.
+                </li>
+                <li style="margin-bottom:6px;">
+                  <a href="https://github.com/vertigo15/jeen-insight/blob/main/deployment/eks/INSTALL.md"
+                     style="color:#175cd3;text-decoration:underline;">AWS EKS installation</a>
+                  - ECR, IRSA/Pod Identity, Secrets Manager, ALB/NLB, ACM, and Route 53.
+                </li>
+                <li style="margin-bottom:6px;">
+                  <a href="https://github.com/vertigo15/jeen-insight/blob/main/deployment/openshift/INSTALL.md"
+                     style="color:#175cd3;text-decoration:underline;">Air-gapped OpenShift installation</a>
+                  - offline bundle, internal registry, restricted SCC, Route, and checksum validation.
+                </li>
+                <li>
+                  <a href="https://github.com/vertigo15/jeen-insight/blob/main/deployment/argocd/README.md"
+                     style="color:#175cd3;text-decoration:underline;">Argo CD / GitOps installation</a>
+                  - reviewed image promotion and separate secret, migration, and workload phases.
+                </li>
+              </ul>
+              <p style="margin:0 0 16px 0;">
+                Use either direct Helm or Argo CD as the release owner for an environment,
+                never both at the same time.
+              </p>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:8px 32px 0 32px;font-size:14px;line-height:21px;">
+              <h2 style="margin:0 0 10px 0;font-size:18px;line-height:25px;color:#172033;">
+                Configuration references
+              </h2>
+              <ul style="margin:0 0 16px 20px;padding:0;">
+                <li><a href="https://github.com/vertigo15/jeen-insight/blob/main/.env.example"
+                       style="color:#175cd3;text-decoration:underline;">Environment example</a></li>
+                <li><a href="https://github.com/vertigo15/jeen-insight/blob/main/deployment/configuration.md"
+                       style="color:#175cd3;text-decoration:underline;">Environment-variable and secret reference</a></li>
+                <li><a href="https://github.com/vertigo15/jeen-insight/blob/main/deployment/migrations.md"
+                       style="color:#175cd3;text-decoration:underline;">Database migration runbook</a></li>
+                <li><a href="https://github.com/vertigo15/jeen-insight/blob/main/deployment/oidc.md"
+                       style="color:#175cd3;text-decoration:underline;">Keycloak, Zitadel, and OIDC setup</a></li>
+              </ul>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:8px 32px 28px 32px;font-size:14px;line-height:21px;">
+              <p style="margin:0 0 12px 0;">
+                Before installation, please confirm the target platform, registry, namespace,
+                public URL/TLS, PostgreSQL endpoint and migration role, identity provider,
+                LLM endpoint/model, and required outbound network access.
+              </p>
+              <p style="margin:0 0 16px 0;padding:10px 12px;background:#fff7e6;border:1px solid #f2cf82;">
+                <strong>Security note:</strong> do not send credentials by email and do not
+                commit populated values. Store secrets in Azure Key Vault, AWS Secrets
+                Manager, an approved OpenShift/Kubernetes Secret process, or the organization's
+                designated secret manager.
+              </p>
+              <p style="margin:0;">Regards,<br>Jeen Engineering</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

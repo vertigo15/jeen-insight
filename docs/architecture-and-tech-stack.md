@@ -6,32 +6,37 @@ a multi-connection, natural-language analytics application. (The repo folder is
 
 ## High-level architecture
 
-It's a **two-container system** orchestrated by Docker Compose, with a strict
-internal auth boundary between them:
+It is a **three-image system** deployed with Docker Compose or the Helm
+umbrella chart, with strict internal boundaries between components:
 
 ```
-┌─────────────────────┐        ┌──────────────────────────┐
-│  jeen-insights-ui   │ ─────▶ │   jeen-insights-api      │
-│  Flask (gunicorn)   │  HTTP  │   FastAPI + LangGraph     │
-│  :8501 (public)     │ +token │   :8000 (internal-only)   │
-└─────────────────────┘        └────────────┬─────────────┘
-                                             │
-                                   LangGraph agent pipeline
-                                             │
-                          ┌──────────────────┴──────────────────┐
-                          │ LLM (LangChain, multi-provider)      │
-                          │ Shared metadata DB (curated schema)  │
-                          │ Per-connection data sources (runtime)│
-                          └──────────────────────────────────────┘
+┌─────────────────────┐       ┌──────────────────────────┐
+│ jeen-insights-ui    │ ────▶ │ jeen-insights-api       │
+│ Flask / Gunicorn    │ token │ FastAPI / LangGraph      │
+│ public entry point  │       │ internal-only service    │
+└──────────┬──────────┘       └────────────┬─────────────┘
+           │                               │
+     local / OIDC                    ┌─────┴───────────────────┐
+     identity                        │ LLM provider            │
+                                     │ shared metadata DB      │
+                                     │ runtime data sources    │
+                                     └──────────┬──────────────┘
+                                                │
+                                     ┌──────────▼──────────────┐
+                                     │ jeen-insights-analytics │
+                                     │ isolated ML sandbox     │
+                                     │ internal, no egress     │
+                                     └─────────────────────────┘
 ```
 
 Key design point: the **UI is the only public surface** (`:8501`). The API is not
 published to the host — the UI reaches it over the compose network, and the API
 default-denies any request that lacks a valid signed token minted by the UI. See
 the deliberate `expose` (not `ports`) in `docker-compose.yml` and the
-`InternalAuthMiddleware` in `src/api/app_factory.py`.
+`InternalAuthMiddleware` in `src/api/app_factory.py`. The analytics sandbox is
+reachable only by the API and receives a separate audience-bound secret.
 
-## The two services
+## The three services
 
 **1. UI layer** — `src/ui_app.py` (a single ~54 KB Flask app)
 
@@ -39,6 +44,8 @@ the deliberate `expose` (not `ports`) in `docker-compose.yml` and the
 - Acts as a **proxy/BFF**: handles login/session, CSRF (flask-wtf), login
   rate-limiting (flask-limiter), then forwards requests to the FastAPI backend.
 - It is the **sole issuer** of internal service tokens (see auth below).
+- Supports local accounts, direct Microsoft Entra ID, and generic OIDC through
+  Keycloak or Zitadel.
 
 **2. API layer** — `src/main.py` → `src/api/`
 
@@ -48,6 +55,33 @@ the deliberate `expose` (not `ports`) in `docker-compose.yml` and the
   health, settings, mcp, saved_analyses, etc.).
 - `src/api/lifespan.py` handles startup: DB schema/prompt seeding and compiling the
   LangGraph graph. Shared services live in `src/api/state.py`.
+
+**3. Analytics sandbox** — `src/analytics_service/`
+
+- Runs validated statistical and ML operations for analysis skills.
+- Uses a dedicated image (`Dockerfile.analytics`) and internal service on port
+  8100.
+- Runs with a read-only root filesystem, bounded temporary storage, no
+  privileges, and no external egress in the production Helm profiles.
+
+## Required platform services
+
+- **Container registry** — stores the three immutable application images. Use
+  ACR on AKS, ECR on EKS, or the internal OpenShift registry.
+- **PostgreSQL metadata database** — required. It contains the curated Schema
+  Modeler catalog plus Insights-owned operational objects (`insights_*`,
+  connector tables, users, settings, conversations, and saved artifacts).
+- **Runtime data sources** — resolved per connection; supported paths include
+  PostgreSQL, Trino/Presto, Databricks, and delegated Power BI.
+- **LLM provider** — configured in the shared model catalog or through the
+  documented environment fallback. It may be Azure OpenAI or another supported
+  OpenAI-compatible/multi-provider endpoint.
+- **Identity provider** — optional. Local accounts are supported; enterprise
+  login can use direct Entra ID or OIDC through Keycloak/Zitadel.
+- **Blob/S3 object storage** — **not required** by the current deployment.
+  Persisted conversations, result snapshots, chart state, and connector secrets
+  live in PostgreSQL. Do not provision object storage unless a separate
+  customer integration explicitly requires it.
 
 ## The agent (the core value)
 
@@ -250,7 +284,7 @@ and geocoder.
 | Auth / security | MSAL (Entra ID), bcrypt, cryptography (AES-GCM), itsdangerous |
 | Integrations | Slack, Jira, MS Graph, Tavily, Power BI (DAX), MCP |
 | Data profiling | pandas, numpy, ydata-profiling, sweetviz |
-| Packaging / infra | Docker + docker-compose, uv (`uv.lock`), pytest (unit + opt-in integration) |
+| Packaging / infra | Docker/Compose, Helm, Kubernetes (AKS/EKS/OpenShift), optional Argo CD, uv (`uv.lock`), pytest |
 
 ## Project layout at a glance
 

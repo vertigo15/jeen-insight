@@ -159,7 +159,7 @@ test('ML small chat edits only the ECharts config and collapses with the chart',
   await expect.poll(() => page.evaluate(() => (
     (window.__calls || []).some((call) => call.url.includes('/api/edit-chart'))
   ))).toBe(true);
-  expect(await page.evaluate(() => window.__mlChartOnly)).toEqual({ applies: 1 });
+  await expect.poll(() => page.evaluate(() => window.__mlChartOnly)).toEqual({ applies: 1 });
 
   await page.locator('#v3-chart-toggle').click();
   await expect(page.locator('#v3-chart-types')).toBeHidden();

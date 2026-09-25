@@ -309,6 +309,9 @@ _MAP_CHART_EDITOR_PROMPT_PATH = (
     / "chart_map_editor.md"
 )
 _CHART_EDITOR_MAX_INSTRUCTION_CHARS = 500
+# Upper bound for the single chart-edit model call; the browser gives up on a
+# refinement that takes longer than a conversational pause.
+EDIT_CHART_LLM_TIMEOUT_SECONDS = 8
 _CHART_EDITOR_MAX_RECENT_MESSAGES = 6
 _CHART_EDITOR_MAX_RECENT_CHARS = 1500
 
@@ -1643,7 +1646,7 @@ async def rebuild_chart_bindings(
     response: Response,
     principal: Principal = Depends(get_principal),
 ) -> EditChartRebuildResponse:
-    """Rebuild a SQL chart from cached rows after validated binding changes."""
+    """Rebuild a SQL chart from cached rows after validated binding or chart-type changes."""
 
     total_started = time.monotonic()
     phases = {"cache": 0.0, "profile": 0.0, "build": 0.0, "validate": 0.0}
@@ -1774,12 +1777,15 @@ async def rebuild_chart_bindings(
         )
 
     merged = {**request.chart_spec, **(patch or {})}
+    # A validated type change wins; otherwise keep the chart's current type so
+    # a binding-only edit never silently re-picks a chart kind.
+    target_type = str((patch or {}).get("chart_type") or base_type)
     spec = _validate_chart_spec(
         merged,
         column_names=column_names,
         numeric_cols=numeric_cols,
         date_cols=date_cols,
-        forced_type=base_type,
+        forced_type=target_type,
         osm_enabled=False,
     )
     phases["validate"] += round(
@@ -1907,8 +1913,10 @@ async def _edit_chart_v2(
                 temperature=EDIT_CHART_OPERATIONS_PARAMS.temperature,
                 max_tokens=EDIT_CHART_OPERATIONS_PARAMS.max_tokens,
                 model_override=model_override,
-                timeout=15,
-                max_fallbacks=1,
+                # A chat box must fail fast: one bounded attempt, no provider
+                # fallback chain that could double the wait.
+                timeout=EDIT_CHART_LLM_TIMEOUT_SECONDS,
+                max_fallbacks=0,
             )
             finish_reason = model_response.get("finish_reason")
             raw_usage = model_response.get("usage")

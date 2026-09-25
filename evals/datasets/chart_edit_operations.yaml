@@ -30,6 +30,25 @@ cases:
   - {id: sql_binding_x, kind: sql, instruction: "use month_name on the x axis", ops: [set_binding]}
   - {id: sql_binding_y, kind: sql, instruction: "use gross_profit as the value", ops: [set_binding]}
   - {id: sql_group_binding, kind: sql, instruction: "group the series by channel", ops: [set_binding]}
+  - {id: sql_pie_india_colors, kind: sql, instruction: "change to pie chart with india colors", ops: [set_chart_type, set_palette]}
+  - {id: sql_donut, kind: sql, instruction: "make it a donut", ops: [set_chart_type]}
+  - {id: sql_horizontal_sorted, kind: sql, instruction: "horizontal bars, biggest first", ops: [set_chart_type, set_sort]}
+  - {id: sql_scatter, kind: sql, instruction: "show this as a scatter plot", ops: [set_chart_type]}
+  - {id: sql_stacked_area, kind: sql, instruction: "use a stacked area chart", ops: [set_chart_type]}
+  - {id: sql_pastel_palette, kind: sql, instruction: "use pastel colors", ops: [set_palette]}
+  - {id: he_pie, kind: sql, instruction: "הפוך לגרף עוגה", ops: [set_chart_type]}
+  - {id: sql_whatif_point, kind: sql, instruction: "what if Bikes sold 30K", ops: [scenario_set_point]}
+  - {id: sql_whatif_growth, kind: sql, instruction: "show 10% growth from June", ops: [scenario_scale]}
+  - {id: sql_whatif_shift, kind: sql, instruction: "add 500 to every month", ops: [scenario_shift]}
+  - {id: sql_whatif_clear, kind: sql, instruction: "remove the scenario", ops: [scenario_clear]}
+  - {id: sql_target_line, kind: sql, instruction: "add a target line at 20K", ops: [add_reference_line]}
+  - {id: sql_average_line, kind: sql, instruction: "show the average line", ops: [add_reference_line]}
+  - {id: sql_highlight_below, kind: sql, instruction: "highlight months below 10K", ops: [highlight_points]}
+  - {id: sql_highlight_named, kind: sql, instruction: "highlight Bikes and Clothing", ops: [highlight_points]}
+  - {id: sql_whatif_total_ambiguous, kind: sql, instruction: "what if total revenue were 1M", out_of_scope: true, reason: ambiguous}
+  - {id: he_whatif_point, kind: sql, instruction: "מה אם אופניים היו 30K", ops: [scenario_set_point]}
+  - {id: ml_whatif_locked, kind: ml_band, instruction: "what if the forecast were 20% higher", out_of_scope: true, reason: ml_locked}
+  - {id: ml_average_line, kind: ml_band, instruction: "show the average line", ops: [add_reference_line]}
   - {id: sql_query_change, kind: sql, instruction: "group the data by quarter", out_of_scope: true, reason: needs_new_query}
   - {id: ml_actual_green, kind: ml_band, instruction: "make the actual line green", ops: [set_color]}
   - {id: ml_forecast_blue, kind: ml_band, instruction: "make the forecast line blue", ops: [set_color]}
