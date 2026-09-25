@@ -503,10 +503,12 @@ class ConversationHistoryService:
 
         Ownership is enforced in the INSERT: the row is only written when the
         turn belongs to ``user_id``; ``source_key`` is copied from the turn,
-        never taken from the client. Returns ``{"id", "thumb", "source_key"}``
-        where ``thumb`` is the turn's current thumb after this event, or
-        ``None`` when the turn is not the caller's. Database errors propagate
-        so the route can answer 5xx instead of a misleading 404.
+        never taken from the client. Returns ``{"id", "thumb", "source_key",
+        "question", "session_id"}`` where ``thumb`` is the turn's current thumb
+        after this event (``question``/``session_id`` let the caller mirror the
+        event into the usage ledger without a second lookup), or ``None`` when
+        the turn is not the caller's. Database errors propagate so the route
+        can answer 5xx instead of a misleading 404.
         """
         if not self.answer_feedback_schema_ready:
             return None
@@ -518,7 +520,7 @@ class ConversationHistoryService:
             row = await conn.fetchrow(
                 """
                 WITH owned AS (
-                    SELECT id, source_key
+                    SELECT id, source_key, session_id, natural_language_query
                     FROM insights_conversation_sessions
                     WHERE id = $1 AND user_id = $2
                 ), inserted AS (
@@ -529,11 +531,13 @@ class ConversationHistoryService:
                     RETURNING id, query_id, source_key, thumb
                 )
                 SELECT inserted.id, inserted.source_key,
+                       owned.session_id, owned.natural_language_query AS question,
                        COALESCE(inserted.thumb,
                                 (SELECT f.thumb FROM insights_answer_feedback f
                                   WHERE f.query_id = inserted.query_id AND f.thumb IS NOT NULL
                                   ORDER BY f.event_seq DESC LIMIT 1)) AS thumb
                 FROM inserted
+                JOIN owned ON owned.id = inserted.query_id
                 """,
                 query_id,
                 user_id,
@@ -545,7 +549,13 @@ class ConversationHistoryService:
         if not row:
             return None
         current = row["thumb"] if row["thumb"] in ("thumbs_up", "thumbs_down") else None
-        return {"id": str(row["id"]), "thumb": current, "source_key": row["source_key"]}
+        return {
+            "id": str(row["id"]),
+            "thumb": current,
+            "source_key": row["source_key"],
+            "question": row["question"],
+            "session_id": row["session_id"],
+        }
 
     def _thumb_select(self, turn_alias: str = "cs") -> str:
         """Current thumb per turn: newest thumb event, 'cleared' reads as none.

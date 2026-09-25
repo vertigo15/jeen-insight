@@ -161,6 +161,17 @@ def get_action_gate():
     return _require(state.action_gate, "ActionGate")
 
 
+# ── Usage ledger / admin analytics ──────────────────────────────────────────
+
+def get_usage_ledger():
+    return _require(state.usage_ledger, "UsageLedger")
+
+
+def get_usage_analytics():
+    """The analytics read side; 503 until migration 036 is applied."""
+    return _require(state.usage_analytics, "Usage analytics (migration 036_usage_events)")
+
+
 def _configured_tenant() -> str:
     from src.config import settings
 

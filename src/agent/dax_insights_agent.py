@@ -105,11 +105,13 @@ class DaxInsightsAgent:
         user_resolver: SimpleUserResolver,
         prompt_loader: DaxPromptLoader,
         token_provider_factory: Optional[TokenProviderFactory] = None,
+        usage_ledger: Any = None,
     ) -> None:
         self.connection = connection
         self.source_key = connection.source_key
         self.display_name = connection.display_name
         self.database_type = "powerbi"
+        self.usage_ledger = usage_ledger
         self.workspace_id = connection.workspace_id
         self.dataset_id = connection.dataset_id
         self.model_version = connection.model_version
@@ -138,6 +140,7 @@ class DaxInsightsAgent:
             entity_match_threshold=settings.DAX_ENTITY_MATCH_THRESHOLD,
             entity_cross_column_enabled=settings.DAX_ENTITY_CROSS_COLUMN_ENABLED,
             token_provider_factory=token_provider_factory,
+            usage_ledger=usage_ledger,
         )
         logger.info(
             "✅ DAX agent ready for source_key=%s (workspace=%s dataset=%s)",
@@ -469,8 +472,10 @@ class DaxAgentRegistry:
         prompt_loader: Optional[DaxPromptLoader] = None,
         prompt_cache: Optional[Any] = None,
         token_provider_factory: Optional[TokenProviderFactory] = None,
+        usage_ledger: Any = None,
     ) -> None:
         self.token_provider_factory = token_provider_factory
+        self.usage_ledger = usage_ledger
         self.llm = llm_service
         self.router_llm = router_llm_service or llm_service
         self.metadata_loader = metadata_loader
@@ -500,6 +505,7 @@ class DaxAgentRegistry:
                 user_resolver=self.user_resolver,
                 prompt_loader=self.prompt_loader,
                 token_provider_factory=self.token_provider_factory,
+                usage_ledger=self.usage_ledger,
             )
             self._agents[source_key] = agent
             logger.info("✅ Built DaxInsightsAgent for source_key=%s", source_key)

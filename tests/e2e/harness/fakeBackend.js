@@ -395,6 +395,17 @@
         }
         if (url.indexOf('/api/conversations') >= 0) return json({ items: conversationItems, next_cursor: null });
 
+        // Admin analytics (Settings › Analytics, migration 036). Deterministic
+        // fixtures; specs can force the "migration not applied" path with
+        // __ANALYTICS_UNAVAILABLE__ and read every request from __calls.
+        const analyticsMatch = url.match(/\/api\/admin\/analytics\/([a-z-]+)(?:\?|$)/);
+        if (analyticsMatch) {
+            if (window.__ANALYTICS_UNAVAILABLE__) return json({ detail: 'Usage analytics (migration 036_usage_events) not initialised' }, 503);
+            const params = new URL(url, location.origin).searchParams;
+            const days = Number(params.get('days')) || 30;
+            return json(F.ANALYTICS[analyticsMatch[1]] ? F.ANALYTICS[analyticsMatch[1]](days, params) : {});
+        }
+
         // Anything else that is same-origin gets a benign empty object; let true
         // cross-origin requests (none expected) fall through to the real fetch.
         if (url.startsWith('/') || url.startsWith(location.origin)) return json({});

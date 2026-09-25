@@ -785,6 +785,161 @@ class PinQuestionRequest(BaseModel):
     question: str
 
 
+# ----------------------------------------------------------------------
+# Admin analytics (usage ledger, migration 036)
+# ----------------------------------------------------------------------
+# Metric definitions (also in src/analytics/usage_ledger.py and the UI tooltips):
+#   active user  — distinct user with a query or analysis event that UTC day;
+#                  logins are a separate series and never count towards DAU.
+#   question     — a query event on a SQL/ML route; greetings, capability
+#                  answers, clarifications and memory answers are text-only turns.
+#   success rate — success / (success + error) over questions; refused (an ML
+#                  guard declined) is reported separately.
+#   thumbs       — CURRENT thumb per turn (newest thumb event, 'cleared' = none);
+#                  *_events are the raw click counts.
+
+class AnalyticsPeriod(BaseModel):
+    questions: int = 0
+    text_only_turns: int = 0
+    active_users: int = 0
+    active_connections: int = 0
+    successes: int = 0
+    errors: int = 0
+    refused: int = 0
+    success_rate: Optional[float] = None
+    avg_graph_time_ms: Optional[float] = None
+    total_tokens: int = 0
+    logins: int = 0
+    comments: int = 0
+    feedback_events: int = 0
+    avg_rating: Optional[float] = None
+    thumbs_up: int = 0
+    thumbs_down: int = 0
+    thumbs_up_events: int = 0
+    thumbs_down_events: int = 0
+
+
+class AnalyticsOverview(BaseModel):
+    days: int
+    start: str
+    end: str
+    dau: int = 0
+    wau: int = 0
+    mau: int = 0
+    current: AnalyticsPeriod
+    previous: AnalyticsPeriod
+
+
+class AnalyticsDayPoint(BaseModel):
+    day: str
+    active_users: int = 0
+    questions: int = 0
+    errors: int = 0
+    thumbs_up: int = 0
+    thumbs_down: int = 0
+    logins: int = 0
+
+
+class AnalyticsTimeseries(BaseModel):
+    days: int
+    points: List[AnalyticsDayPoint]
+
+
+class AnalyticsTopUser(BaseModel):
+    user_id: str
+    name: Optional[str] = None
+    email: Optional[str] = None
+    role: Optional[str] = None
+    questions: int = 0
+    analyses: int = 0
+    success_rate: Optional[float] = None
+    last_active: Optional[str] = None
+    thumbs_up: int = 0
+    thumbs_down: int = 0
+    avg_rating: Optional[float] = None
+
+
+class AnalyticsTopUsers(BaseModel):
+    days: int
+    items: List[AnalyticsTopUser]
+
+
+class AnalyticsTopConnection(BaseModel):
+    source_key: str
+    questions: int = 0
+    distinct_users: int = 0
+    success_rate: Optional[float] = None
+    avg_graph_time_ms: Optional[float] = None
+    last_used: Optional[str] = None
+    thumbs_up: int = 0
+    thumbs_down: int = 0
+    thumbs_down_rate: Optional[float] = None
+
+
+class AnalyticsTopConnections(BaseModel):
+    days: int
+    items: List[AnalyticsTopConnection]
+
+
+class AnalyticsFeedbackItem(BaseModel):
+    id: int
+    occurred_at: Optional[str] = None
+    user_id: str
+    name: Optional[str] = None
+    email: Optional[str] = None
+    source_key: Optional[str] = None
+    thumb: Optional[str] = None
+    rating: Optional[int] = None
+    feedback_type: Optional[str] = None
+    message: Optional[str] = None
+    question: Optional[str] = None
+    query_id: Optional[str] = None
+
+
+class AnalyticsFeedbackFeed(BaseModel):
+    days: int
+    items: List[AnalyticsFeedbackItem]
+    # Pass back as ``before`` to fetch the next (older) page; None at the end.
+    next_before: Optional[int] = None
+
+
+class AnalyticsSkillUsage(BaseModel):
+    skill: str
+    runs: int = 0
+    ok: int = 0
+    guard_failed: int = 0
+    errors: int = 0
+    avg_execution_ms: Optional[float] = None
+    distinct_users: int = 0
+    thumbs_up: int = 0
+    thumbs_down: int = 0
+
+
+class AnalyticsSkills(BaseModel):
+    days: int
+    items: List[AnalyticsSkillUsage]
+
+
+class AnalyticsErrorGroup(BaseModel):
+    error_type: str
+    source_key: Optional[str] = None
+    failures: int = 0
+
+
+class AnalyticsFailingQuestion(BaseModel):
+    question: str
+    failures: int = 0
+    distinct_users: int = 0
+    distinct_connections: int = 0
+    last_seen: Optional[str] = None
+
+
+class AnalyticsErrors(BaseModel):
+    days: int
+    by_type: List[AnalyticsErrorGroup]
+    top_failing_questions: List[AnalyticsFailingQuestion]
+
+
 class OnboardingPatch(BaseModel):
     """Partial update to a user's onboarding (FTUE) state.
 

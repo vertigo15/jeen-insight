@@ -3363,6 +3363,9 @@ td.cell-id {
   position: relative;
   transition: background 100ms ease, color 100ms ease;
 }
+/* Gated entries (admin / connectors) are hidden via the attribute; the class's
+   display:flex would otherwise beat the UA [hidden] rule. */
+.sp-nav-item[hidden] { display: none; }
 .sp-nav-item:hover { background: var(--color-surface-2); color: var(--color-text); }
 .sp-nav-item.is-active {
   background: var(--color-dim-bg);
@@ -4376,6 +4379,124 @@ a.sp-nav-item {
   font-size: var(--text-xs); color: var(--color-error);
   margin-top: var(--space-2); min-height: 16px;
 }
+
+/* =============================================================
+   SETTINGS — ANALYTICS (admin usage dashboard)
+   ============================================================= */
+
+.sp-an-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--space-4); flex-wrap: wrap;
+}
+.sp-an-toolbar { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.sp-an-range {
+  display: inline-flex; padding: 2px;
+  border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+}
+.sp-an-range-btn {
+  height: 26px; padding: 0 10px; border: 0; border-radius: calc(var(--radius-md) - 2px);
+  background: transparent; color: var(--color-muted);
+  font-family: var(--font-sans); font-size: var(--text-xs); font-weight: var(--weight-medium);
+  cursor: pointer; transition: background 0.12s, color 0.12s;
+}
+.sp-an-range-btn:hover { color: var(--color-text); }
+.sp-an-range-btn.is-active { background: var(--color-surface); color: var(--color-text); box-shadow: var(--shadow); }
+
+.sp-an-body { display: flex; flex-direction: column; gap: var(--space-4); }
+.sp-an-body[hidden] { display: none; }
+.sp-an-skeleton { height: 96px; border-radius: var(--radius-md); margin-bottom: var(--space-3); }
+
+.sp-an-notice { padding: var(--space-4); font-size: var(--text-sm); color: var(--color-muted); }
+.sp-an-notice strong { color: var(--color-text); }
+.sp-an-notice p { margin: var(--space-2) 0 0; }
+.sp-an-notice-error { border-color: var(--color-error); }
+
+/* KPI cards */
+.sp-an-kpis {
+  display: grid; gap: var(--space-3);
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+.sp-an-kpi {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  background: var(--color-surface); min-width: 0;
+}
+.sp-an-kpi-label {
+  font-size: var(--text-xs); color: var(--color-muted);
+  text-transform: uppercase; letter-spacing: 0.05em; font-weight: var(--weight-semibold);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sp-an-kpi-value {
+  margin-top: 4px; display: flex; align-items: baseline; gap: var(--space-2); flex-wrap: wrap;
+  font-size: 1.35rem; font-weight: var(--weight-semibold); color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+.sp-an-kpi-delta { font-size: var(--text-xs); font-weight: var(--weight-medium); }
+.sp-an-kpi-delta.is-good    { color: var(--color-success); }
+.sp-an-kpi-delta.is-bad     { color: var(--color-error); }
+.sp-an-kpi-delta.is-neutral { color: var(--color-muted); }
+
+/* Cards */
+.sp-an-card { padding: var(--space-4); min-width: 0; }
+.sp-an-card-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.sp-an-card-head-wrap { flex-wrap: wrap; }
+.sp-an-card-title { margin: 0; font-size: var(--text-sm); font-weight: var(--weight-semibold); color: var(--color-text); }
+.sp-an-card-sub { font-size: var(--text-xs); color: var(--color-muted); }
+.sp-an-subtitle {
+  margin: var(--space-4) 0 var(--space-2); font-size: var(--text-xs); font-weight: var(--weight-semibold);
+  text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-muted);
+}
+.sp-an-grid-2 { display: grid; gap: var(--space-4); grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.sp-an-chart { width: 100%; height: 280px; }
+
+/* Tables */
+.sp-an-table-wrap { overflow-x: auto; }
+.sp-an-table td, .sp-an-table th { white-space: nowrap; }
+.sp-an-table td:first-child, .sp-an-table th:first-child { white-space: normal; }
+.sp-an-table .is-num { text-align: end; font-variant-numeric: tabular-nums; }
+.sp-an-mono { font-family: var(--font-mono); font-size: var(--text-xs); }
+.sp-an-muted { color: var(--color-muted); }
+.sp-an-question { display: inline-block; max-width: 420px; white-space: normal; }
+.sp-an-empty {
+  padding: var(--space-4); text-align: center;
+  font-size: var(--text-sm); color: var(--color-muted);
+}
+.sp-an-empty-wide { grid-column: 1 / -1; padding: var(--space-3); text-align: start; }
+.sp-an-thumbs { display: inline-flex; gap: var(--space-2); }
+.sp-an-thumb-up { color: var(--color-success); }
+.sp-an-thumb-down { color: var(--color-error); }
+
+/* Badges */
+.sp-an-badge {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
+  border-radius: var(--radius-full); font-size: 11px; font-weight: var(--weight-medium);
+  background: var(--color-surface-2); color: var(--color-muted); border: 1px solid var(--color-border);
+}
+.sp-an-badge-up      { color: var(--color-success); background: var(--oksoft); border-color: transparent; }
+.sp-an-badge-down    { color: var(--color-error);   background: var(--errsoft); border-color: transparent; }
+.sp-an-badge-cleared { text-decoration: line-through; }
+.sp-an-badge-rating  { color: #d4a017; letter-spacing: 1px; background: transparent; border-color: transparent; padding: 0; }
+.sp-an-badge-role    { height: 16px; padding: 0 6px; font-size: 10px; }
+
+/* Feedback feed */
+.sp-an-filters { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.sp-an-filters select.sp-role-select { width: auto; max-width: 200px; flex: 0 0 auto; }
+.sp-an-feed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.sp-an-feed-item { padding: var(--space-3) 0; border-top: 1px solid var(--color-border); }
+.sp-an-feed-item:first-child { border-top: 0; padding-top: 0; }
+.sp-an-feed-meta {
+  display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
+  font-size: var(--text-xs); color: var(--color-muted);
+}
+.sp-an-feed-user { font-weight: var(--weight-medium); color: var(--color-text); }
+.sp-an-feed-message { margin: var(--space-2) 0 0; font-size: var(--text-sm); color: var(--color-text); white-space: pre-wrap; }
+.sp-an-feed-question { margin: var(--space-1) 0 0; font-size: var(--text-xs); color: var(--color-muted); }
+.sp-an-feed-foot { display: flex; justify-content: center; margin-top: var(--space-3); }
+.sp-an-more[hidden] { display: none; }
 
 /* =============================================================
    DEVELOPER PANEL — Run Header, SQL Stats, Log Toolbar, Prompts

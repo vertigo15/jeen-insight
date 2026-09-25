@@ -154,6 +154,36 @@ Use forward-only expand/contract changes:
 3. backfill with bounded, observable work; and
 4. contract only in a later release after all readers have moved.
 
+## Migration 036: usage ledger (admin Analytics)
+
+`036_usage_events.sql` creates `insights_usage_events`, the durable copy of
+logins, completed turns, feedback events and ML runs behind Settings ›
+Analytics. It has no foreign key to the turn, so it survives conversation
+retention (`CONVERSATION_KEEP_LAST`). The file also backfills the turns and
+feedback rows that retention has not yet deleted (naive `created_at` values
+are interpreted as UTC) and is repeat-safe through partial unique indexes.
+
+Operational notes:
+
+- **Grants.** Both the API role (asyncpg) and the UI role (psycopg, writes the
+  `login` event from `auth_db.touch_last_active`) need `INSERT` on
+  `insights_usage_events`; the API role also needs `SELECT` and `DELETE`
+  (batched retention prune). Before the migration is applied the API logs a
+  startup warning, records nothing, and the Analytics tab shows a
+  "not available" notice; the login write is savepoint-guarded and never
+  affects sign-in.
+- **Retention and privacy.** Rows are immutable until they expire.
+  `USAGE_EVENTS_RETENTION_DAYS` (default 400) bounds how long the ledger keeps a
+  500-character question excerpt and free-text feedback messages — longer than
+  conversation retention, which is the point. `detail` holds allowlisted names
+  and categories only (method, guard names, error category), never row values,
+  SQL or message bodies. The prune runs at API startup and then daily, in
+  batches of 5 000 under an advisory lock so replicas never overlap.
+- **Audit.** Every admin read of the feedback feed writes a
+  `connector_audit` row with `event_type='analytics.read'` (who, when, which
+  filters; no bodies). `USAGE_EVENTS_ENABLED=false` disables both writing and
+  the Analytics API.
+
 ## Failure and recovery
 
 1. Stop before workload upgrade and save Job logs/events.

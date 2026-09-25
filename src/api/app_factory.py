@@ -14,6 +14,7 @@ from src.api.lifespan import lifespan
 from src.api.middleware import InternalAuthMiddleware, RequestContextMiddleware
 from src.api.routes import (
     actions as actions_routes,
+    admin_analytics as admin_analytics_routes,
     analysis as analysis_routes,
     autocomplete,
     charts,
@@ -84,6 +85,8 @@ def create_app() -> FastAPI:
     app.include_router(runtime_settings_routes.router)
     app.include_router(mcp_routes.router)
     app.include_router(saved_analyses.router)
+    # Admin-only usage analytics (usage ledger, migration 036).
+    app.include_router(admin_analytics_routes.router)
     # Connector / integration platform.
     app.include_router(connectors_routes.router)
     app.include_router(me_connections.router)

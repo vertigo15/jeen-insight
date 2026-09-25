@@ -24,6 +24,12 @@ questions in plain language against any registered data connection.
   injected directly into the system prompt at every turn.
 - 🐘 **Shared Jeen metadata DB** — writes only to tables with the `insights_`
   prefix; reads from `metadata_*` / `knowledge_pairs`.
+- 📊 **Admin analytics** — Settings › Analytics (admin role only): DAU/WAU/MAU,
+  questions per day, top users and connections, success and failure breakdown,
+  ML-skill usage and the thumbs / ratings / comments feed. Backed by the durable
+  usage ledger `insights_usage_events` (migration 036), so numbers survive
+  conversation retention. Metric definitions are shown as tooltips; see
+  `deployment/migrations.md` for grants, retention and privacy notes.
 - 🐳 **Docker-first** — `docker compose up -d --build` brings up API + UI.
 
 ## Architecture
@@ -125,6 +131,7 @@ Pick a connection from the dropdown in the top bar and ask a question.
 | POST   | `/api/generate-insights`                          | Body must include `connection` + `dataset` + `question`.|
 | POST   | `/api/generate-chart` / `/api/enhance-chart`      | Same: `connection` is required.                        |
 | POST   | `/api/feedback`                                   | Records `thumbs_up` / `thumbs_down` / `edited` / `catalog_gap` (+ optional `notes`). |
+| GET    | `/api/admin/analytics/{overview,timeseries,top-users,top-connections,feedback,analysis,errors}?days=7\|30\|90` | Admin only. Usage / quality reports from the durable ledger; `feedback` reads are audited. 503 until migration 036 is applied. |
 | GET    | `/api/conversation/{session_id}`                  | Legacy raw dump of one conversation (superseded below).|
 | GET    | `/api/conversations/last?connection=`             | Hydration payload for the user's newest conversation on a connection; spawns the retention prune. |
 | GET    | `/api/conversations?connection=` or `?all=true`   | Cursor-paged list of the user's conversations (`all` includes removed connections). |
