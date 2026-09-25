@@ -1,0 +1,154 @@
+# Canonical OpenShift (air-gapped) overlay for this chart.
+#
+# Images use the cluster's internal registry, the Secret is hand-created from
+# deployment/openshift/secrets.env.example, no UID/GID is pinned (restricted-v2
+# assigns an arbitrary UID), and only the UI is exposed through a Route.
+#
+# deployment/openshift/build-images.sh supplies the target project and immutable
+# tag. To render by hand:
+#
+#   helm dependency build deployment/k8s_dev
+#   helm template jeen-insights deployment/k8s_dev --namespace <project> \
+#     --values deployment/k8s_dev/values.openshift.yaml \
+#     --set-string jeen-insights-api.image.repository=image-registry.openshift-image-registry.svc:5000/<project>/jeen-insights-api \
+#     --set-string jeen-insights-ui.image.repository=image-registry.openshift-image-registry.svc:5000/<project>/jeen-insights-ui \
+#     --set-string jeen-insights-analytics.image.repository=image-registry.openshift-image-registry.svc:5000/<project>/jeen-insights-analytics \
+#     --set-string jeen-insights-api.image.tag=<immutable-tag> \
+#     --set-string jeen-insights-ui.image.tag=<immutable-tag> \
+#     --set-string jeen-insights-analytics.image.tag=<immutable-tag>
+#
+# Replace the project placeholder and keep PUBLIC_APP_URL equal to route.host.
+
+global:
+  environment: onprem
+  cloudProvider: openshift
+  commonLabels:
+    app.kubernetes.io/part-of: jeen-insights
+  # Created from secrets.env; the chart never renders a Secret.
+  existingSecret:
+    name: jeen-insights-secrets
+    optional: false
+  externalSecrets:
+    enabled: false
+  strategy:
+    type: Recreate
+  env:
+    JEEN_DEV_MODE: "false"
+    INTERNAL_AUTH_ENABLED: "true"
+    LOG_LEVEL: INFO
+    LOG_FORMAT: json
+    HOME: /tmp
+    MPLCONFIGDIR: /tmp/mpl
+    METADATA_DB_SSL: "true"
+    LLM_TIMEOUT_SECONDS: "120"
+    LANGGRAPH_MAX_RETRIES: "3"
+    DB_STATEMENT_TIMEOUT_MS: "30000"
+    MAX_RESULT_ROWS: "10000"
+    CONVERSATION_CONTEXT_TURNS: "5"
+    CONVERSATION_PERSISTENCE_ENABLED: "true"
+
+jeen-insights-api:
+  enabled: true
+  fullnameOverride: jeen-insights-api
+  image:
+    repository: image-registry.openshift-image-registry.svc:5000/replace-with-project/jeen-insights-api
+    pullPolicy: IfNotPresent
+  # restricted-v2 chooses the runtime UID; the image is readable by GID 0.
+  securityContext:
+    runAsUser: null
+    runAsGroup: null
+  env:
+    # Apply the separately rendered migration Job before workloads. API pods
+    # only verify the Insights baseline and never issue DDL at startup.
+    RUN_MIGRATIONS_ON_START: "false"
+    SCHEMA_BOOTSTRAP_ON_START: "false"
+    ML_SKILLS_ENABLED: "true"
+    ANALYSIS_RUNNER: sandbox
+    ANALYSIS_SANDBOX_URL: http://jeen-insights-analytics:8100
+    ANALYSIS_SANDBOX_AUDIENCE: jeen-insights-analytics
+    ANALYSIS_TIMEOUT_SECONDS: "30"
+    ANALYSIS_MEMORY_MB: "1024"
+    ANALYSIS_MAX_SERIES_ROWS: "1500"
+    ANALYSIS_MAX_ENTITY_ROWS: "50000"
+    ANALYSIS_RUNS_PER_HOUR_PER_USER: "60"
+    OSM_MAPS_ENABLED: "false"
+    OSM_SEAMARKS_ENABLED: "false"
+    OSM_TERRAIN_ENABLED: "false"
+    OSM_GEOCODER_PROVIDER: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  # Keep disabled until the customer supplies explicit database/LLM egress
+  # CIDRs. When enabled, use openshift-dns rather than kube-system for DNS.
+  networkPolicy:
+    enabled: false
+    dnsNamespaces:
+      - openshift-dns
+
+jeen-insights-analytics:
+  enabled: true
+  fullnameOverride: jeen-insights-analytics
+  image:
+    repository: image-registry.openshift-image-registry.svc:5000/replace-with-project/jeen-insights-analytics
+    pullPolicy: IfNotPresent
+  securityContext:
+    runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+  env:
+    ANALYSIS_SANDBOX_AUDIENCE: jeen-insights-analytics
+    ANALYSIS_TIMEOUT_SECONDS: "30"
+    ANALYSIS_MEMORY_MB: "1024"
+    ANALYSIS_MAX_SERIES_ROWS: "1500"
+    ANALYSIS_MAX_CONCURRENT: "2"
+  # API ingress only and no egress; OVN-Kubernetes/OpenShift SDN enforce this.
+  networkPolicy:
+    enabled: true
+
+jeen-insights-ui:
+  enabled: true
+  fullnameOverride: jeen-insights-ui
+  image:
+    repository: image-registry.openshift-image-registry.svc:5000/replace-with-project/jeen-insights-ui
+    pullPolicy: IfNotPresent
+  securityContext:
+    runAsUser: null
+    runAsGroup: null
+  apiBaseUrl: http://jeen-insights-api:8000
+  env:
+    UI_PORT: "8501"
+    SESSION_COOKIE_SECURE: "true"
+    RATELIMIT_STORAGE_URI: memory://
+    PUBLIC_APP_URL: https://insights.apps.example.invalid
+    AZURE_AD_CLIENT_ID: ""
+    AZURE_AD_TENANT_ID: ""
+    AZURE_AD_REDIRECT_URI: ""
+  ingress:
+    enabled: false
+  route:
+    enabled: true
+    host: insights.apps.example.invalid
+    timeout: 360s
+    tls:
+      enabled: true
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  # Admit only the OpenShift router, allow UI-to-API, and resolve through the
+  # OpenShift DNS namespace. No external egress is granted.
+  networkPolicy:
+    enabled: true
+    ingressNamespaces:
+      - openshift-ingress
+    dnsNamespaces:
+      - openshift-dns

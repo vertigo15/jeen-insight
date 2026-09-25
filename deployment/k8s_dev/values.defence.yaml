@@ -58,7 +58,7 @@ jeen-insights-api:
     pullPolicy: IfNotPresent
   env:
     # The metadata DB is shared with the live Schema Modeler: schema revisions
-    # are applied by the explicit migrate-job.template.yaml Job, never by an
+    # are applied by the chart's explicit migration Job, never by an
     # API pod at boot. SCHEMA_BOOTSTRAP_ON_START=false makes the API verify
     # its baseline objects instead of creating them (no DDL from pods; it
     # refuses to start with a clear message if the Job has not run). Prompt

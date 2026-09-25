@@ -81,6 +81,7 @@ spec:
         {{- end }}
       annotations:
         checksum/config: {{ toJson $env | sha256sum }}
+        secrets.jeen.ai/version: {{ .Values.global.secretVersion | quote }}
       {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -96,7 +97,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: ui
-          image: "{{ required "jeen-insights-ui.image.repository is required" .Values.image.repository }}:{{ required "jeen-insights-ui.image.tag is required" .Values.image.tag }}"
+          image: {{ include "jeen-insights-ui.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
@@ -104,8 +105,8 @@ spec:
               protocol: TCP
           envFrom:
             - secretRef:
-                name: {{ required "global.existingSecret.name is required" .Values.global.existingSecret.name }}
-                optional: {{ .Values.global.existingSecret.optional }}
+                name: {{ include "jeen-insights-ui.existingSecretName" . }}
+                optional: {{ include "jeen-insights-ui.existingSecretOptional" . }}
             - configMapRef:
                 name: {{ include "jeen-insights-ui.fullname" . }}
           startupProbe:

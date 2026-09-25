@@ -18,7 +18,7 @@ global:
       APP_ENCRYPTION_KEY: JEEN-INSIGHTS-APP-ENCRYPTION-KEY
       OSM_GEOCODER_API_KEY: JEEN-INSIGHTS-OSM-GEOCODER-API-KEY
   commonLabels:
-    app.kubernetes.io/component: analytics
+    app.kubernetes.io/part-of: jeen-insights
   nodeSelector:
     workload: backend
   strategy:
@@ -29,6 +29,10 @@ jeen-insights-api:
     repository: jeendevregistry.azurecr.io/jeen-insights-api
     tag: 83c797be
   env:
+    # This database is shared with Schema Modeler. Migrations are rendered and
+    # applied separately; workload pods only verify the Insights baseline.
+    RUN_MIGRATIONS_ON_START: "false"
+    SCHEMA_BOOTSTRAP_ON_START: "false"
     # MapTiler uses the existing server-side tile credential for geocoding too;
     # no browser response ever contains it.
     OSM_GEOCODER_PROVIDER: maptiler
@@ -53,7 +57,6 @@ jeen-insights-analytics:
   enabled: false
   image:
     repository: jeendevregistry.azurecr.io/jeen-insights-analytics
-    tag: ""
   nodeSelector:
     workload: backend
 

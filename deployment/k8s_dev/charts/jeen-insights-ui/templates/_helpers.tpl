@@ -33,3 +33,24 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{- define "jeen-insights-ui.image" -}}
+{{- $repository := required "jeen-insights-ui.image.repository is required" .Values.image.repository -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" $repository .Values.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" $repository (required "jeen-insights-ui.image.tag is required when image.digest is empty" .Values.image.tag) -}}
+{{- end -}}
+{{- end }}
+
+{{- define "jeen-insights-ui.existingSecretName" -}}
+{{- default (required "global.existingSecret.name is required" .Values.global.existingSecret.name) .Values.existingSecret.name -}}
+{{- end }}
+
+{{- define "jeen-insights-ui.existingSecretOptional" -}}
+{{- $optional := .Values.global.existingSecret.optional -}}
+{{- if ne .Values.existingSecret.optional nil -}}
+{{- $optional = .Values.existingSecret.optional -}}
+{{- end -}}
+{{- $optional -}}
+{{- end }}

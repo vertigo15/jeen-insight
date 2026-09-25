@@ -1,6 +1,7 @@
 apiVersion: v2
 name: jeen-insights-api
-description: Jeen Insights FastAPI service
+description: FastAPI backend service for Jeen Insights
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "2.0.0"
+kubeVersion: ">=1.24.0-0"

@@ -1,7 +1,22 @@
 Jeen Insights has been rendered for namespace {{ .Release.Namespace }}.
 
-The UI service is {{ .Release.Name }}-jeen-insights-ui on port 8501.
-The API service is {{ .Release.Name }}-jeen-insights-api on port 8000.
+{{- $api := index .Values "jeen-insights-api" }}
+{{- $ui := index .Values "jeen-insights-ui" }}
+{{- $analytics := index .Values "jeen-insights-analytics" }}
+{{- if $api.enabled }}
+API service: {{ default (printf "%s-jeen-insights-api" .Release.Name) $api.fullnameOverride }}:{{ $api.service.port }}
+{{- end }}
+{{- if $ui.enabled }}
+UI service: {{ default (printf "%s-jeen-insights-ui" .Release.Name) $ui.fullnameOverride }}:{{ $ui.service.port }} ({{ default "ClusterIP" $ui.service.type }})
+{{- if and $ui.route $ui.route.enabled }}
+OpenShift Route: https://{{ default "<router-assigned-host>" $ui.route.host }}
+{{- else if and $ui.ingress.enabled $ui.ingress.hosts }}
+Ingress host: {{ (first $ui.ingress.hosts).host }}
+{{- end }}
+{{- end }}
+{{- if $analytics.enabled }}
+Analytics service: {{ default (printf "%s-jeen-insights-analytics" .Release.Name) $analytics.fullnameOverride }}:{{ $analytics.service.port }}
+{{- end }}
 
 Confirm that the external Secret {{ include "jeen-insights.existingSecretName" . }}
 contains the required runtime credentials before installing this release.

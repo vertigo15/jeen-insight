@@ -2,6 +2,7 @@ enabled: true
 
 global:
   commonLabels: {}
+  secretVersion: ""
   imagePullSecrets: []
   env: {}
   nodeSelector: {}
@@ -19,7 +20,14 @@ image:
   # the deployable image reference.
   repository: registry.invalid/jeen-insights-ui
   tag: "0.0.0"
+  # When set, digest takes precedence over tag and renders repository@digest.
+  digest: ""
   pullPolicy: IfNotPresent
+
+# Blank/null fields inherit global.existingSecret.
+existingSecret:
+  name: ""
+  optional: null
 
 replicaCount: 1
 podAnnotations: {}

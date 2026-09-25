@@ -2,135 +2,171 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "title": "Jeen Insights Helm deployment values",
   "type": "object",
-  "required": ["global", "jeen-insights-api", "jeen-insights-ui"],
+  "additionalProperties": false,
+  "required": ["global", "migration", "jeen-insights-api", "jeen-insights-ui", "jeen-insights-analytics"],
   "properties": {
     "global": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["existingSecret"],
       "properties": {
-        "existingSecret": {
-          "type": "object",
-          "required": ["name"],
-          "properties": {
-            "name": {
-              "type": "string",
-              "minLength": 1
-            },
-            "optional": {
-              "type": "boolean"
-            }
-          }
-        },
+        "environment": { "type": "string" },
+        "cloudProvider": { "type": "string" },
+        "commonLabels": { "$ref": "#/definitions/stringMap" },
+        "secretVersion": { "type": ["string", "number"] },
         "imagePullSecrets": {
           "type": "array",
           "items": {
             "type": "object",
+            "additionalProperties": false,
             "required": ["name"],
             "properties": {
-              "name": {
-                "type": "string",
-                "minLength": 1
+              "name": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "nodeSelector": { "$ref": "#/definitions/stringMap" },
+        "env": { "$ref": "#/definitions/environment" },
+        "strategy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "enum": ["Recreate", "RollingUpdate"] },
+            "rollingUpdate": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "maxUnavailable": { "$ref": "#/definitions/intOrString" },
+                "maxSurge": { "$ref": "#/definitions/intOrString" }
               }
             }
           }
         },
-        "env": {
-          "$ref": "#/definitions/environment"
+        "existingSecret": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "optional": { "type": "boolean" }
+          }
         },
         "externalSecrets": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "refreshInterval": {
-              "type": "string",
-              "minLength": 1
-            },
-            "creationPolicy": {
-              "enum": ["Owner", "Merge", "Orphan", "None"]
-            },
+            "enabled": { "type": "boolean" },
+            "refreshInterval": { "type": "string", "minLength": 1 },
+            "creationPolicy": { "enum": ["Owner", "Merge", "Orphan", "None"] },
             "secretStoreRef": {
               "type": "object",
+              "additionalProperties": false,
               "properties": {
-                "name": {
-                  "type": "string"
-                },
-                "kind": {
-                  "enum": ["SecretStore", "ClusterSecretStore"]
-                }
+                "name": { "type": "string" },
+                "kind": { "enum": ["SecretStore", "ClusterSecretStore"] }
               }
             },
             "secretMappings": {
               "type": "object",
-              "additionalProperties": {
-                "type": "string",
-                "minLength": 1
-              }
+              "additionalProperties": { "type": "string", "minLength": 1 }
             }
           }
         }
       }
     },
-    "jeen-insights-api": {
-      "$ref": "#/definitions/component"
-    },
-    "jeen-insights-ui": {
-      "$ref": "#/definitions/component"
-    }
+    "migration": { "$ref": "#/definitions/migration" },
+    "jeen-insights-api": { "$ref": "#/definitions/component" },
+    "jeen-insights-ui": { "$ref": "#/definitions/component" },
+    "jeen-insights-analytics": { "$ref": "#/definitions/component" }
   },
   "definitions": {
     "component": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["image"],
       "properties": {
-        "image": {
+        "global": { "$ref": "#/properties/global" },
+        "enabled": { "type": "boolean" },
+        "nameOverride": { "type": "string" },
+        "fullnameOverride": { "type": "string" },
+        "image": { "$ref": "#/definitions/image" },
+        "existingSecret": {
           "type": "object",
-          "required": ["repository", "tag"],
+          "additionalProperties": false,
           "properties": {
-            "repository": {
-              "type": "string",
-              "minLength": 1
-            },
-            "tag": {
-              "type": "string",
-              "minLength": 1
-            },
-            "pullPolicy": {
-              "enum": ["Always", "IfNotPresent", "Never"]
-            }
+            "name": { "type": "string" },
+            "optional": { "type": ["boolean", "null"] }
           }
         },
-        "replicaCount": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "enabled": {
-          "type": "boolean"
-        },
-        "env": {
-          "$ref": "#/definitions/environment"
-        },
-        "autoscaling": {
+        "replicaCount": { "type": "integer", "minimum": 1 },
+        "podAnnotations": { "$ref": "#/definitions/stringMap" },
+        "serviceAccount": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "minReplicas": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "maxReplicas": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "targetCPUUtilizationPercentage": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 100
-            }
+            "create": { "type": "boolean" },
+            "name": { "type": "string" },
+            "annotations": { "$ref": "#/definitions/stringMap" }
           }
+        },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "type": {
+              "enum": ["ClusterIP", "LoadBalancer", "NodePort"]
+            },
+            "annotations": { "$ref": "#/definitions/stringMap" },
+            "loadBalancerIP": { "type": "string" }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requests": { "$ref": "#/definitions/resourceList" },
+            "limits": { "$ref": "#/definitions/resourceList" }
+          }
+        },
+        "nodeSelector": { "$ref": "#/definitions/stringMap" },
+        "tolerations": { "type": "array", "items": { "type": "object" } },
+        "affinity": { "type": "object" },
+        "topologySpreadConstraints": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "securityContext": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runAsUser": { "type": ["integer", "null"] },
+            "runAsGroup": { "type": ["integer", "null"] },
+            "fsGroup": { "type": ["integer", "null"] }
+          }
+        },
+        "env": { "$ref": "#/definitions/environment" },
+        "apiBaseUrl": { "type": "string" },
+        "tmpSizeLimit": { "type": ["string", "integer"] },
+        "autoscaling": { "$ref": "#/definitions/autoscaling" },
+        "podDisruptionBudget": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "minAvailable": { "$ref": "#/definitions/intOrString" }
+          }
+        },
+        "networkPolicy": { "$ref": "#/definitions/networkPolicy" },
+        "ingress": { "$ref": "#/definitions/ingress" },
+        "route": { "$ref": "#/definitions/route" },
+        "extraVolumes": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "extraVolumeMounts": {
+          "type": "array",
+          "items": { "type": "object" }
         }
       },
       "allOf": [
@@ -138,11 +174,7 @@
           "if": {
             "properties": {
               "autoscaling": {
-                "properties": {
-                  "enabled": {
-                    "const": true
-                  }
-                },
+                "properties": { "enabled": { "const": true } },
                 "required": ["enabled"]
               }
             }
@@ -161,11 +193,235 @@
         }
       ]
     },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "image", "bundleId"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": { "$ref": "#/definitions/image" },
+        "bundleId": { "type": "string" },
+        "backoffLimit": { "type": "integer", "minimum": 0 },
+        "activeDeadlineSeconds": { "type": "integer", "minimum": 1 },
+        "ttlSecondsAfterFinished": { "type": ["integer", "null"], "minimum": 0 },
+        "lockWaitSeconds": { "type": ["number", "string"] },
+        "lockTimeout": { "type": "string", "minLength": 1 },
+        "statementTimeout": { "type": "string", "minLength": 1 },
+        "encryptMcpTokensBackfill": { "type": "boolean" },
+        "existingSecret": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "optional": { "type": ["boolean", "null"] }
+          }
+        },
+        "apiConfigMap": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "optional": { "type": "boolean" }
+          }
+        },
+        "podSecurityContext": { "type": "object" },
+        "securityContext": { "type": "object" },
+        "nodeSelector": { "$ref": "#/definitions/stringMap" },
+        "tolerations": { "type": "array", "items": { "type": "object" } },
+        "affinity": { "type": "object" },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requests": { "$ref": "#/definitions/resourceList" },
+            "limits": { "$ref": "#/definitions/resourceList" }
+          }
+        },
+        "extraEnv": { "type": "array", "items": { "type": "object" } },
+        "imagePullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "enabled": { "const": true } },
+            "required": ["enabled"]
+          },
+          "then": {
+            "properties": {
+              "bundleId": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Set repository and either tag or digest. A non-empty digest takes precedence over tag.",
+      "required": ["repository"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "digest": {
+          "type": "string",
+          "pattern": "^$|^sha256:[a-fA-F0-9]{64}$"
+        },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+      },
+      "anyOf": [
+        {
+          "properties": { "tag": { "type": "string", "minLength": 1 } },
+          "required": ["tag"]
+        },
+        {
+          "properties": {
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[a-fA-F0-9]{64}$"
+            }
+          },
+          "required": ["digest"]
+        }
+      ]
+    },
+    "autoscaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minReplicas": { "type": "integer", "minimum": 1 },
+        "maxReplicas": { "type": "integer", "minimum": 1 },
+        "targetCPUUtilizationPercentage": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "annotations": { "$ref": "#/definitions/stringMap" },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "host": { "type": "string" },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": { "type": "string" },
+                    "pathType": {
+                      "enum": ["Exact", "ImplementationSpecific", "Prefix"]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tls": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "host": { "type": "string" },
+        "timeout": { "type": "string" },
+        "annotations": { "$ref": "#/definitions/stringMap" },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "termination": {
+              "enum": ["edge"]
+            },
+            "insecureEdgeTerminationPolicy": {
+              "enum": ["Allow", "None", "Redirect"]
+            },
+            "certificate": { "type": "string" },
+            "key": { "type": "string" },
+            "caCertificate": { "type": "string" }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ingressNamespaces": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "dnsNamespaces": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "externalEgressCIDRs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "externalEgressPorts": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        },
+        "analyticsPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
     "environment": {
+      "type": "object",
+      "additionalProperties": {
+        "type": ["string", "number", "boolean", "null"]
+      }
+    },
+    "stringMap": {
       "type": "object",
       "additionalProperties": {
         "type": ["string", "number", "boolean"]
       }
+    },
+    "resourceList": {
+      "type": "object",
+      "additionalProperties": {
+        "type": ["string", "number"]
+      }
+    },
+    "intOrString": {
+      "oneOf": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "string", "minLength": 1 }
+      ]
     }
   }
 }

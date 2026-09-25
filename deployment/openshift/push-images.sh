@@ -33,6 +33,7 @@ REGISTRY_PUBLIC=""
 TLS_VERIFY="true"
 SKIP_CHECKSUMS=0
 ONLY=""
+IMAGES_BUILT=1
 
 # Defaults recorded by build-images.sh.
 if [ -f images.env ]; then
@@ -59,6 +60,8 @@ log() { printf '\n==> %s\n' "$*"; }
 die() { echo "error: $*" >&2; exit 1; }
 
 [ -n "$TAG" ] || die "--tag is required (images.env not found)"
+[ "$IMAGES_BUILT" = 1 ] \
+  || die "this is a chart/docs-only fixture; build a production bundle without --no-images"
 [ -n "$ONLY" ] && IMAGES="$(echo "$ONLY" | tr ',' ' ')"
 [ -n "$IMAGES" ] || IMAGES="api ui analytics"
 
@@ -140,4 +143,4 @@ printf '\nIn-cluster references (already set in manifests.yaml / values.openshif
 for name in $IMAGES; do
   printf '  image-registry.openshift-image-registry.svc:5000/%s/jeen-insights-%s:%s\n' "$NAMESPACE" "$name" "$TAG"
 done
-printf '\nNext: create the Secret and ConfigMap (README.md, step 3), then oc apply -f manifests.yaml.\n'
+printf '\nNext: follow INSTALL.md: create the Secret, apply and verify migration-job.yaml, then apply manifests.yaml.\n'

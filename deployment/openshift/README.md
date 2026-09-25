@@ -3,6 +3,13 @@
 **Customer install (images already built, Schema Modeler already there):**
 see [INSTALL.md](INSTALL.md).
 
+The customer install follows the common six-step operator sequence:
+prepare registry/images, configure values/secrets, preflight, run migration,
+install/upgrade, and verify. Use the canonical
+[configuration](../configuration.md), [migration](../migrations.md), and
+[OIDC](../oidc.md) references for policy details; this page preserves the
+connected-side air-gap build and hand-off procedure.
+
 Delivery of the three Jeen Insights images (API, UI, ML-skills sandbox) as
 tarballs plus the environment they need, for an OpenShift cluster with no
 internet access. Nothing in this flow requires cluster-admin, root, or a
@@ -27,12 +34,16 @@ single tar to the bastion and extract it there.
 | --- | --- |
 | `jeen-insights-{api,ui,analytics}_<tag>.tar.gz` | Images (docker-archive, linux/amd64, `gzip -t` verified) |
 | `jeen-insights-*_<tag>.requirements.lock` | Exact `pip freeze --all` of each image, for your security review |
-| `SHA256SUMS`, `MANIFEST.txt`, `images.env` | Integrity, build time / git commit / image ids; `push-images.sh` reads `images.env` |
+| `SHA256SUMS`, `MANIFEST.txt`, `bundle-manifest.tsv`, `images.env` | Integrity plus human/machine-readable build, chart, and image metadata |
+| `jeen-insights-<chart-version>.tgz` + `.sha256` | Packaged umbrella chart with all three dependencies vendored for offline Helm |
 | `push-images.sh` | Loads the tars into the internal registry |
+| `validate-bundle.sh` | Verifies checksums, image metadata, docs, and offline Helm lint/render |
 | `secrets.env.example`, `config.env.example` | The complete environment: secret and non-secret halves |
+| `docs/{configuration,migrations,oidc}.md` | Canonical deployment configuration, migration, and identity references |
 | `manifests.yaml` | Rendered Deployments/Services/ConfigMaps/Route (`oc apply -f`) |
-| `migrate-job.yaml` | Optional one-off schema migration Job (the API migrates on start by default) |
-| `values.openshift.yaml` | Helm overlay used to render `manifests.yaml`; re-render if you have `helm` |
+| `migration-job.yaml` | Migration-only Job rendered from the packaged chart; apply before workloads |
+| `values.openshift.yaml`, `values.migration.example.yaml` | Canonical overlays used for the two renders |
+| `*.sbom.spdx.json`, `*.scan.grype.json` | Optional standalone Syft/Grype outputs when those tools are available |
 
 No secrets are ever written into the bundle; the `*.env.example` files are
 templates, and the pods refuse to start (`JEEN_DEV_MODE=false`) when a
@@ -55,9 +66,9 @@ Built for a security review against the `restricted-v2` SCC:
   capabilities dropped, `allowPrivilegeEscalation: false`, seccomp
   `RuntimeDefault`.
 - Everything is runtime-configured through env; there are no build-time
-  arguments, so one image serves every environment. The API image also
-  carries `db/migrations` and applies them on start when
-  `RUN_MIGRATIONS_ON_START=true` (advisory-locked, idempotent).
+  arguments, so one image serves every environment. The API image carries
+  `db/migrations`; the separately rendered Job runs them with an advisory lock
+  before workload pods start.
 - Only the three application images are shipped: PostgreSQL (the Schema
   Modeler metadata database) and the LLM are the customer's.
 
@@ -79,8 +90,8 @@ Cluster / customer side:
   registry (`admin_models`, `admin_providers`, `admin_models_providers`) that
   Schema Modeler provisions with its `sql/init-metadata-db.sql`. Deploy the
   Schema Modeler bundle first (or at least initialise its database) and point
-  `METADATA_DB_*` at that same PostgreSQL database. Insights adds its own
-  `insights_*` / `app_settings` tables there on first start; it needs no
+  `METADATA_DB_*` at that same PostgreSQL database. The migration Job adds
+  Insights' own `insights_*` / `app_settings` tables there; it needs no
   extensions or superuser of its own. It refuses to start against a database
   without those tables and says so in the log.
 - An OpenAI-compatible LLM endpoint reachable from the API pod (vLLM, Ollama,
@@ -89,15 +100,16 @@ Cluster / customer side:
   every question answers with "no LLM is configured".
 - Bastion tools: `oc` (logged in) and either `skopeo` (preferred) or `podman`.
 
-Connected build box: `podman` (rootless is fine) or Docker Desktop, `git`,
-and `helm` if you want `manifests.yaml` rendered. See the header of
-`build-images.sh` for the rootless-podman note.
+Connected build box: `podman` (rootless is fine) or Docker Desktop, `git`, and
+Helm 3. Helm is required because every hand-off includes and validates the
+packaged chart and both rendered manifests.
 
 ## 1. Build the bundle (connected side)
 
 ```sh
 # from the repo root, on a clean tree; tag defaults to the git short SHA
-deployment/openshift/build-images.sh --namespace <project> [--tag 2026.09.1]
+export PROJECT=replace-with-project
+deployment/openshift/build-images.sh --namespace "$PROJECT" --tag 2026.09.1
 ```
 
 The script always builds `linux/amd64` (Apple Silicon included) and refuses to
@@ -106,8 +118,12 @@ export an image whose `Os/Architecture` differs, uses `docker buildx build
 manifests break older `podman load`/`skopeo`), and warns when the working tree
 is dirty because those changes end up inside the images.
 
-Before building, set the two site-specific values in
-`deployment/openshift/values.openshift.yaml` so `manifests.yaml` is ready to
+If `syft` and/or `grype` are installed, the script writes separate SBOM and
+scan files; it never enables OCI/buildx attestations. Missing optional tools
+only warn. Use `--require-security-tools` when both outputs are mandatory.
+
+Before building, set the two site-specific values in the canonical OpenShift
+overlay (`values.openshift.yaml` in the completed bundle) so `manifests.yaml` is ready to
 apply: `jeen-insights-ui.env.PUBLIC_APP_URL` and `jeen-insights-ui.route.host`
 (the same hostname, under the cluster's `*.apps.<domain>`). They can also be
 edited in the rendered `manifests.yaml` on the bastion (ConfigMap
@@ -116,10 +132,14 @@ edited in the rendered `manifests.yaml` on the bastion (ConfigMap
 ## 2. Push the images (bastion)
 
 ```sh
-sha256sum -c jeen-insights-openshift-<tag>.tar.sha256
-tar -xf jeen-insights-openshift-<tag>.tar && cd <tag>
+export TAG=replace-with-immutable-tag
+export PROJECT=replace-with-project
+sha256sum -c "jeen-insights-openshift-${TAG}.tar.sha256"
+tar -xf "jeen-insights-openshift-${TAG}.tar"
+cd "$TAG"
+./validate-bundle.sh
 oc login ...                      # a normal user with edit on the project
-./push-images.sh --namespace <project>
+./push-images.sh --namespace "$PROJECT"
 ```
 
 The script verifies `SHA256SUMS`, logs in to the registry route with your
@@ -136,7 +156,8 @@ secret inside the same namespace:
 
 ```sh
 cp secrets.env.example secrets.env     # fill in; see the comments in the file
-oc -n <project> create secret generic jeen-insights-secrets \
+export PROJECT=replace-with-project
+oc -n "$PROJECT" create secret generic jeen-insights-secrets \
     --from-env-file=secrets.env --dry-run=client -o yaml | oc apply -f -
 shred -u secrets.env                    # or otherwise remove it from the bastion
 ```
@@ -156,21 +177,27 @@ fail-closed behaviour.
 ## 4. Deploy
 
 ```sh
-oc -n <project> apply -f manifests.yaml
-oc -n <project> rollout status deployment/jeen-insights-api deployment/jeen-insights-ui deployment/jeen-insights-analytics
-oc -n <project> logs deployment/jeen-insights-api | grep -i migration   # "migrations complete"
-oc -n <project> get route jeen-insights-ui
+export PROJECT=replace-with-project
+BUNDLE_ID="$(awk -F '\t' '$1 == "bundle" && $2 == "migration_bundle_id" { print $3; exit }' bundle-manifest.tsv)"
+[ -n "$BUNDLE_ID" ] || { echo "bundle manifest has no migration bundle ID" >&2; exit 1; }
+oc -n "$PROJECT" apply -f migration-job.yaml
+oc -n "$PROJECT" wait --for=condition=complete \
+  "job/jeen-insights-migrate-${BUNDLE_ID}" --timeout=15m
+oc -n "$PROJECT" logs "job/jeen-insights-migrate-${BUNDLE_ID}"
+
+# Only after the migration completes and its log is reviewed:
+oc -n "$PROJECT" apply -f manifests.yaml
+oc -n "$PROJECT" rollout status deployment/jeen-insights-api deployment/jeen-insights-ui deployment/jeen-insights-analytics
+oc -n "$PROJECT" logs deployment/jeen-insights-api | grep -i baseline
+oc -n "$PROJECT" get route jeen-insights-ui
 ```
 
-The API pod applies the schema migrations before it starts serving
-(`RUN_MIGRATIONS_ON_START=true` in its ConfigMap). If your DBA wants
-migrations to run under a different role, set that key to `false`, give the
-Job its own credentials and run it instead:
-
-```sh
-oc -n <project> apply -f migrate-job.yaml
-oc -n <project> wait --for=condition=complete job/jeen-insights-migrate-<tag> --timeout=5m
-```
+`build-images.sh` renders `migration-job.yaml` from the packaged chart's
+`templates/migration-job.yaml` with the OpenShift overlay and
+`values.migration.example.yaml`; there is no duplicate raw Job template.
+Both migration/bootstrap-on-start settings are false, so workload pods only
+verify the schema. For a dedicated migration DB role, render with
+`migration.existingSecret.name` pointing to its Secret.
 
 Only the UI is exposed (Route, TLS edge, HTTP redirected to HTTPS, 360 s
 timeout for streaming answers). The API and the sandbox are ClusterIP
@@ -197,31 +224,34 @@ from the API pods only and allows no egress.
 Health endpoints (all return 200 when healthy; the UI's also checks the API):
 
 ```sh
-oc -n <project> exec deploy/jeen-insights-api -- python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/health').status)"
-oc -n <project> exec deploy/jeen-insights-analytics -- python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8100/health').read().decode())"
-curl -k https://<route host>/health
+export PROJECT=replace-with-project
+export ROUTE_HOST="$(oc -n "$PROJECT" get route jeen-insights-ui -o jsonpath='{.spec.host}')"
+oc -n "$PROJECT" exec deploy/jeen-insights-api -- python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8000/health').status)"
+oc -n "$PROJECT" exec deploy/jeen-insights-analytics -- python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:8100/health').read().decode())"
+curl --fail --show-error --silent "https://${ROUTE_HOST}/health"
 ```
 
 | Symptom | Cause / fix |
 | --- | --- |
 | `ImagePullBackOff` | Tag mismatch between `manifests.yaml` and what `push-images.sh` pushed (`oc get istag`). Both come from `images.env`; re-render or `oc set image`. |
-| Pod rejected: `unable to validate against any security context constraint ... runAsUser` | A UID is pinned. `values.openshift.yaml` sets `securityContext.*: null`; make sure `manifests.yaml` was rendered with it. |
+| Pod rejected: `unable to validate against any security context constraint ... runAsUser` | A UID is pinned. The bundled `values.openshift.yaml` sets `securityContext.*: null`; make sure `manifests.yaml` was rendered with it. |
 | API/UI `CrashLoopBackOff`, log says a key is missing or weak | `JEEN_DEV_MODE=false` fail-closed check. Fix the value in `secrets.env`, re-create the Secret, restart the Deployment. |
-| API `CrashLoopBackOff`, log starts with `entrypoint: applying schema migrations` then a SQL error | Migration failed (wrong DB, role lacks CREATE, network policy). Fix and let the pod restart; applied revisions are not re-run. |
+| Migration Job fails with a SQL error | Wrong DB, role lacks DDL/DML, lock timeout, or connectivity failure. Inspect `oc logs job/<name>`, fix the cause, and render a new immutable bundle ID before retrying. |
+| API `CrashLoopBackOff`, log reports a missing baseline | The migration Job was not completed before workloads. Run and verify it, then restart the API. |
 | API log: `The metadata database has not been initialised by Jeen Schema Modeler (missing table(s): admin_models ...)` | `METADATA_DB_*` points at a database Schema Modeler never initialised. Use the Schema Modeler metadata DB, or run its `sql/init-metadata-db.sql` there first. |
 | Questions answer "no LLM is configured" | Step 5.2 not done: no enabled model/credential row in `admin_models_providers`, or none is marked active. |
 | Answers cut off after ~60 s | Router timeout. The Route carries `haproxy.router.openshift.io/timeout: 360s`; check it survived edits. |
 | Sandbox unreachable (`ML skills unavailable`) | `oc get networkpolicy jeen-insights-analytics`; the API pods must carry labels `app.kubernetes.io/name=jeen-insights-api`, `app.kubernetes.io/instance=jeen-insights`. |
-| Registry push: `no public route` | Prerequisite in section 0; or pass `--registry <host>` if the route has a custom name. |
+| Registry push: `no public route` | Prerequisite in section 0; or pass `--registry replace-with-host` if the route has a custom name. |
 | Registry push: x509 error | Bastion does not trust the ingress CA: `--tls-verify false`, or add the CA to the bastion's trust store. |
 
 ## 7. Upgrades
 
-Build a new bundle with a new tag, push it, then either re-apply the new
-`manifests.yaml` (recommended) or, for image-only changes,
-`oc set image deployment/jeen-insights-api api=<new ref>` and the same for
-`ui`/`analytics`. New schema revisions are applied by the API pod on its first
-start; already-applied ones are skipped.
+Build a new bundle with a new tag, push it, apply/wait/log its new immutable
+`migration-job.yaml`, then either re-apply the new `manifests.yaml` (recommended)
+or, for image-only changes,
+`oc set image deployment/jeen-insights-api api=replace-with-new-image-ref` and the same for
+`ui`/`analytics`. Workload pods never apply schema revisions.
 
 ## 8. Not available without internet egress
 

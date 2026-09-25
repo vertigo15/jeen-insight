@@ -1,0 +1,51 @@
+resourceCounts:
+  ConfigMap: 3
+  Deployment: 3
+  NetworkPolicy: 1
+  Service: 3
+  ServiceAccount: 3
+forbiddenKinds:
+  - ExternalSecret
+  - HorizontalPodAutoscaler
+  - Ingress
+  - PodDisruptionBudget
+  - Route
+deployments:
+  jeen-insights-api:
+    image: acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-api:validation
+    strategy: Recreate
+    nodeSelector:
+      agentpool: apps
+  jeen-insights-ui:
+    image: acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-ui:validation
+    strategy: Recreate
+    nodeSelector:
+      agentpool: apps
+  jeen-insights-analytics:
+    image: acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-analytics:validation
+    strategy: Recreate
+    nodeSelector:
+      agentpool: apps
+services:
+  jeen-insights-api:
+    type: ClusterIP
+    port: 8000
+  jeen-insights-ui:
+    type: LoadBalancer
+    port: 80
+    annotations:
+      service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+  jeen-insights-analytics:
+    type: ClusterIP
+    port: 8100
+configMaps:
+  jeen-insights-api:
+    RUN_MIGRATIONS_ON_START: "false"
+    SCHEMA_BOOTSTRAP_ON_START: "false"
+    ML_SKILLS_ENABLED: "true"
+  jeen-insights-ui:
+    PUBLIC_APP_URL: http://jeen-insights.dev161.internal
+    SESSION_COOKIE_SECURE: "false"
+    API_BASE_URL: http://jeen-insights-api:8000
+  jeen-insights-analytics:
+    ANALYSIS_SANDBOX_AUDIENCE: jeen-insights-analytics

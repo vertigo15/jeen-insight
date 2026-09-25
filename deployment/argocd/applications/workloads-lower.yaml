@@ -1,0 +1,53 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jeen-insights-lower-workloads
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: jeen-insights-example
+  source:
+    repoURL: https://git.example.invalid/platform/jeen-insight.git
+    targetRevision: "1111111111111111111111111111111111111111"
+    path: deployment/k8s_dev
+    helm:
+      releaseName: jeen-insights
+      values: |
+        global:
+          environment: lower
+          secretVersion: "example-1"
+          env:
+            RUN_MIGRATIONS_ON_START: "false"
+            SCHEMA_BOOTSTRAP_ON_START: "false"
+          existingSecret:
+            name: jeen-insights-secrets
+            optional: false
+          externalSecrets:
+            enabled: false
+        migration:
+          enabled: false
+        jeen-insights-api:
+          image:
+            repository: registry.example.invalid/jeen-insights-api
+            tag: release-20260925-1208-deadbee
+            digest: ""
+        jeen-insights-ui:
+          image:
+            repository: registry.example.invalid/jeen-insights-ui
+            tag: release-20260925-1208-deadbee
+            digest: ""
+        jeen-insights-analytics:
+          enabled: true
+          image:
+            repository: registry.example.invalid/jeen-insights-analytics
+            tag: release-20260925-1208-deadbee
+            digest: ""
+  destination:
+    server: https://kubernetes.example.invalid
+    namespace: jeen-insights-lower
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - PruneLast=true
+      - FailOnSharedResource=true

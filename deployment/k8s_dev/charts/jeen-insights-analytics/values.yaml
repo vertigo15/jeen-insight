@@ -2,6 +2,7 @@ enabled: true
 
 global:
   commonLabels: {}
+  secretVersion: ""
   imagePullSecrets: []
   env: {}
   nodeSelector: {}
@@ -17,7 +18,15 @@ global:
 image:
   repository: registry.invalid/jeen-insights-analytics
   tag: "0.0.0"
+  # When set, digest takes precedence over tag and renders repository@digest.
+  digest: ""
   pullPolicy: IfNotPresent
+
+# Blank/null fields inherit global.existingSecret. Only
+# INTERNAL_ANALYTICS_SECRET is projected from this Secret.
+existingSecret:
+  name: ""
+  optional: null
 
 replicaCount: 1
 podAnnotations: {}
@@ -28,6 +37,8 @@ serviceAccount:
 
 service:
   port: 8100
+  type: ClusterIP
+  annotations: {}
 
 # Sandbox limits (also enforced inside the process; these are the pod's).
 resources:
@@ -53,6 +64,8 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 topologySpreadConstraints: []
+extraVolumes: []
+extraVolumeMounts: []
 
 podDisruptionBudget:
   enabled: false

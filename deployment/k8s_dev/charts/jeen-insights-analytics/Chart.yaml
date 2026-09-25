@@ -1,6 +1,7 @@
 apiVersion: v2
 name: jeen-insights-analytics
-description: Jeen Insights ML-skills sandbox (runs pinned engines with validated parameters; no egress)
+description: Isolated analytics sandbox for Jeen Insights ML skills
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "2.0.0"
+kubeVersion: ">=1.24.0-0"

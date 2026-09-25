@@ -9,6 +9,11 @@ on idempotent DDL), this records each applied revision in
 order, inside its own transaction. This supports non-idempotent changes and
 crypto backfills.
 
+Before skipping an already-recorded SQL revision, the runner verifies its
+stored non-null SHA-256 checksum against the current file. Checksum drift fails
+closed unless an operator explicitly sets ``MIGRATION_ALLOW_CHECKSUM_DRIFT=true``.
+Historical rows with a NULL checksum remain accepted.
+
 After the SQL files, it runs registered Python backfills (e.g. encrypting the
 catalog MCP bearer token at rest). A backfill that cannot complete yet (e.g. no
 KEK configured) is left unrecorded so it retries on the next run.
@@ -63,6 +68,10 @@ class MigrationConfigError(ValueError):
     """A MIGRATION_* knob would disable or unbound a safety limit."""
 
 
+class MigrationChecksumMismatch(RuntimeError):
+    """An applied SQL revision no longer matches its recorded checksum."""
+
+
 def _parse_wait_seconds(raw: str) -> float:
     try:
         value = float(str(raw).strip())
@@ -91,6 +100,11 @@ async def _configure_session_timeouts(conn) -> None:
                 f"MIGRATION_{setting.upper()}={value!r} must be a positive interval (e.g. '15s')"
             )
         await conn.fetchval("SELECT set_config($1, $2, false)", setting, value)
+    # Keep every unqualified migration/baseline object in the Insights schema.
+    # set_config is parameterised so neither the setting nor its value is
+    # interpolated into SQL. PostgreSQL still searches pg_catalog implicitly
+    # before this explicit path.
+    await conn.fetchval("SELECT set_config($1, $2, false)", "search_path", "public")
     logger.info(
         "session timeouts: lock_timeout=%s statement_timeout=%s | search_path=%s",
         _LOCK_TIMEOUT, _STATEMENT_TIMEOUT,
@@ -118,7 +132,7 @@ async def _acquire_migration_lock(conn, *, wait_seconds: float | str = _LOCK_WAI
 async def _ensure_history(conn) -> None:
     await conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS insights_schema_migrations (
+        CREATE TABLE IF NOT EXISTS public.insights_schema_migrations (
             revision    TEXT PRIMARY KEY,
             checksum    TEXT,
             applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -127,12 +141,72 @@ async def _ensure_history(conn) -> None:
     )
 
 
-async def _applied(conn) -> set[str]:
-    rows = await conn.fetch("SELECT revision FROM insights_schema_migrations")
-    return {r["revision"] for r in rows}
+async def _history_exists(conn) -> bool:
+    """Check for migration history without creating or altering anything."""
+    return bool(
+        await conn.fetchval(
+            "SELECT to_regclass($1) IS NOT NULL",
+            "public.insights_schema_migrations",
+        )
+    )
 
 
-async def _apply_sql_files(conn) -> int:
+async def _applied(conn) -> dict[str, str | None]:
+    rows = await conn.fetch(
+        "SELECT revision, checksum FROM public.insights_schema_migrations"
+    )
+    return {r["revision"]: r["checksum"] for r in rows}
+
+
+def _migration_checksum(path: Path) -> tuple[str, str]:
+    sql = path.read_text(encoding="utf-8")
+    return sql, hashlib.sha256(sql.encode("utf-8")).hexdigest()
+
+
+def _verify_applied_checksum(
+    revision: str, stored_checksum: str | None, current_checksum: str
+) -> None:
+    if stored_checksum is None:
+        logger.warning(
+            "• %s already applied with a historical NULL checksum — accepting",
+            revision,
+        )
+        return
+    if stored_checksum == current_checksum:
+        return
+    message = (
+        f"checksum mismatch for applied migration {revision}: "
+        f"database={stored_checksum} current={current_checksum}"
+    )
+    if not _opt_in("MIGRATION_ALLOW_CHECKSUM_DRIFT"):
+        raise MigrationChecksumMismatch(
+            f"{message}. Refusing to continue; restore the original SQL file or, "
+            "only after an explicit review, set MIGRATION_ALLOW_CHECKSUM_DRIFT=true."
+        )
+    logger.critical(
+        "CHECKSUM DRIFT OVERRIDE ENABLED: %s; skipping the modified applied revision",
+        message,
+    )
+
+
+async def _preflight_applied_sql(conn) -> None:
+    """Validate complete on-disk history before any baseline DDL can run."""
+    paths = {path.name: path for path in MIGRATIONS_DIR.glob("*.sql")}
+    done = await _applied(conn)
+    recorded_sql = {revision for revision in done if revision.endswith(".sql")}
+    missing = sorted(recorded_sql - paths.keys())
+    if missing:
+        raise MigrationChecksumMismatch(
+            "recorded SQL migration file(s) missing from the image: "
+            + ", ".join(missing)
+            + ". Applied migrations are append-only; restore the exact files."
+        )
+    for revision in sorted(recorded_sql):
+        _, checksum = _migration_checksum(paths[revision])
+        _verify_applied_checksum(revision, done[revision], checksum)
+
+
+async def _apply_sql_files(conn, *, checksums_preflighted: bool = False) -> int:
     files = sorted(MIGRATIONS_DIR.glob("*.sql"))
     if not files:
         logger.warning("No migration files found in %s", MIGRATIONS_DIR)
@@ -141,16 +215,17 @@ async def _apply_sql_files(conn) -> int:
     done = await _applied(conn)
     count = 0
     for path in files:
+        sql, checksum = _migration_checksum(path)
         if path.name in done:
+            if not checksums_preflighted:
+                _verify_applied_checksum(path.name, done[path.name], checksum)
             logger.info("• %s already applied — skipping", path.name)
             continue
-        sql = path.read_text(encoding="utf-8")
-        checksum = hashlib.sha256(sql.encode("utf-8")).hexdigest()
         logger.info("→ Applying %s", path.name)
         async with conn.transaction():
             await conn.execute(sql)
             await conn.execute(
-                "INSERT INTO insights_schema_migrations (revision, checksum) "
+                "INSERT INTO public.insights_schema_migrations (revision, checksum) "
                 "VALUES ($1, $2) ON CONFLICT (revision) DO NOTHING",
                 path.name,
                 checksum,
@@ -254,7 +329,7 @@ async def _run_backfills(conn) -> None:
         completed = await fn(conn)
         if completed:
             await conn.execute(
-                "INSERT INTO insights_schema_migrations (revision, checksum) "
+                "INSERT INTO public.insights_schema_migrations (revision, checksum) "
                 "VALUES ($1, NULL) ON CONFLICT (revision) DO NOTHING",
                 name,
             )
@@ -272,12 +347,18 @@ async def run() -> None:
             await _configure_session_timeouts(conn)
             await _acquire_migration_lock(conn)
             try:
+                history_exists = await _history_exists(conn)
+                if history_exists:
+                    # Fail before ensure_insights_baseline can issue any DDL.
+                    await _preflight_applied_sql(conn)
                 # Revisions 012/017 INSERT into app_settings, which the API
                 # otherwise creates at start-up; create the baseline first so a
                 # fresh database can be migrated before the API ever ran.
                 await ensure_insights_baseline(conn, require_platform=False, lock_timeout=None)
                 await _ensure_history(conn)
-                applied = await _apply_sql_files(conn)
+                applied = await _apply_sql_files(
+                    conn, checksums_preflighted=history_exists
+                )
                 await _run_backfills(conn)
             finally:
                 await conn.execute("SELECT pg_advisory_unlock(hashtext($1))", _ADVISORY_LOCK_KEY)

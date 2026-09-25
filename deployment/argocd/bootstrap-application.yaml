@@ -1,0 +1,21 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: jeen-insights-example-bootstrap
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://git.example.invalid/platform/jeen-insight.git
+    targetRevision: "1111111111111111111111111111111111111111"
+    path: deployment/argocd
+  destination:
+    server: https://kubernetes.example.invalid
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - PruneLast=true
+      - FailOnSharedResource=true

@@ -24,10 +24,15 @@ nothing else:
 1. Build **linux/amd64** images from the working tree with an immutable tag
    `$(date +%Y%m%d-%H%M)-$(git rev-parse --short HEAD)`; `az acr login` then push.
    Only rebuild the components whose code changed; keep the other tags.
-2. Schema changes go through the Job, never through pods:
-   render `deployment/k8s_dev/migrate-job.template.yaml` with the API image and
-   apply it before the Helm upgrade (pods run with `SCHEMA_BOOTSTRAP_ON_START=false`
-   and refuse to start if the baseline is missing).
+2. Schema changes go through the chart's disabled-by-default, non-hook Job,
+   never through pods. Render only that template, then apply/wait/log it:
+   `helm template jeen-insights deployment/k8s_dev --namespace jeen-insights --values deployment/k8s_dev/values.defence.yaml --values deployment/k8s_dev/values.migration.example.yaml --set-string migration.bundleId=<dns-safe-immutable-id> --set-string migration.image.repository=acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-api --set-string migration.image.tag=<api-tag> --set-string migration.existingSecret.name=jeen-insights-secrets --show-only templates/migration-job.yaml > /tmp/jeen-insights-migration.yaml`;
+   `kubectl --context defence-aks-openmetadata-dev161 --namespace jeen-insights apply -f /tmp/jeen-insights-migration.yaml`;
+   `kubectl --context defence-aks-openmetadata-dev161 --namespace jeen-insights wait --for=condition=complete job/jeen-insights-migrate-<dns-safe-immutable-id> --timeout=15m`;
+   `kubectl --context defence-aks-openmetadata-dev161 --namespace jeen-insights logs job/jeen-insights-migrate-<dns-safe-immutable-id>`.
+   Review success before upgrading workloads. Pods run with both
+   `RUN_MIGRATIONS_ON_START=false` and `SCHEMA_BOOTSTRAP_ON_START=false` and
+   refuse to start if the baseline is missing.
 3. `helm dependency build deployment/k8s_dev` (the packaged subcharts go stale
    when a chart template changes), then
    `helm upgrade --install jeen-insights deployment/k8s_dev --kube-context defence-aks-openmetadata-dev161 --namespace jeen-insights --values deployment/k8s_dev/values.defence.yaml --set jeen-insights-api.image.tag=… --set jeen-insights-ui.image.tag=… --set jeen-insights-analytics.image.tag=… --rollback-on-failure --wait --timeout 10m`.
