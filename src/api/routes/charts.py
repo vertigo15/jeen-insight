@@ -309,6 +309,9 @@ _MAP_CHART_EDITOR_PROMPT_PATH = (
     / "chart_map_editor.md"
 )
 _CHART_EDITOR_MAX_INSTRUCTION_CHARS = 500
+# Upper bound for the single chart-edit model call; the browser gives up on a
+# refinement that takes longer than a conversational pause.
+EDIT_CHART_LLM_TIMEOUT_SECONDS = 8
 _CHART_EDITOR_MAX_RECENT_MESSAGES = 6
 _CHART_EDITOR_MAX_RECENT_CHARS = 1500
 
@@ -372,9 +375,6 @@ def _profile_blob(profile: dict) -> str:
     """Render a server-computed data profile into compact prompt text."""
     cols = profile.get("columns") if isinstance(profile, dict) else None
     row_count = profile.get("row_count") if isinstance(profile, dict) else None
-# Upper bound for the single chart-edit model call; the browser gives up on a
-# refinement that takes longer than a conversational pause.
-EDIT_CHART_LLM_TIMEOUT_SECONDS = 8
 
     lines: list[str] = []
     if row_count is not None:
@@ -1777,6 +1777,9 @@ async def rebuild_chart_bindings(
         )
 
     merged = {**request.chart_spec, **(patch or {})}
+    # A validated type change wins; otherwise keep the chart's current type so
+    # a binding-only edit never silently re-picks a chart kind.
+    target_type = str((patch or {}).get("chart_type") or base_type)
     spec = _validate_chart_spec(
         merged,
         column_names=column_names,
@@ -1840,9 +1843,6 @@ def _v2_rejection(code: str, message: str) -> EditChartV2Response:
         reason_code=code,
     )
 
-    # A validated type change wins; otherwise keep the chart's current type so
-    # a binding-only edit never silently re-picks a chart kind.
-    target_type = str((patch or {}).get("chart_type") or base_type)
 
 async def _edit_chart_v2(
     request: EditChartRequest,
