@@ -23,6 +23,7 @@ lives here too: it needs the same fully-doubled agent.
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -82,7 +83,10 @@ async def test_question_uses_filtered_mcp_prompt():
     server_service = AsyncMock()
     server_service.get_catalog_source = AsyncMock(return_value="mcp")
     client = AsyncMock()
-    client.load_filtered = AsyncMock(return_value=_BUNDLE)
+    client.load_filtered_with_meta = AsyncMock(return_value=(
+        _BUNDLE,
+        {"connection_ms": 1, "filtered_tool_ms": 2, "parse_ms": 0, "full_restore_ms": 1, "total_ms": 4},
+    ))
 
     with patch.object(api_state, "mcp_server_service", server_service):
         with patch.object(api_state, "mcp_catalog_client", client):
@@ -92,12 +96,13 @@ async def test_question_uses_filtered_mcp_prompt():
                 question="sales by product",
             )
 
-    client.load_filtered.assert_awaited_once_with(
+    client.load_filtered_with_meta.assert_awaited_once_with(
         "test_db", "sales by product"
     )
     assert bundle is _BUNDLE
     assert meta["source"] == "mcp"
     assert meta["filtered"] is True
+    assert meta["mcp_timing"]["filtered_tool_ms"] == 2
 
 
 # ── SQL catalog_lookup ────────────────────────────────────────────────────────
@@ -145,9 +150,10 @@ class TestSqlCatalogLookup:
         ctx, loader = _loader_patch()
         with ctx:
             node = make_catalog_lookup(MagicMock())
-            updates = await node(_state())
+            updates = await node(_state(question="sales by product"))
 
         assert loader.await_count == 1
+        assert loader.await_args.kwargs["question"] == "sales by product"
         assert "dimcustomer" in updates["known_tables"]
 
     @pytest.mark.asyncio
@@ -161,13 +167,18 @@ class TestSqlCatalogLookup:
         ctx, loader = _loader_patch()
         with ctx:
             node = make_catalog_lookup(MagicMock())
-            first = await node(_state(metadata_bundle=_BUNDLE, catalog_seeded=True))
+            first = await node(_state(
+                question="sales by product",
+                metadata_bundle=_BUNDLE,
+                catalog_seeded=True,
+            ))
             assert first["catalog_seeded"] is False
 
             # Second visit carries the first pass's state, bundle included.
-            second = await node(_state(**first))
+            second = await node(_state(question="sales by product", **first))
 
         assert loader.await_count == 1
+        assert loader.await_args.kwargs["question"] == ""
         assert "dimcustomer" in second["known_tables"]
 
     @pytest.mark.asyncio
@@ -236,10 +247,15 @@ class TestDaxCatalogLookup:
         ctx, loader = _loader_patch()
         with ctx:
             node = make_dax_catalog_lookup(MagicMock())
-            first = await node(_state(metadata_bundle=_BUNDLE, catalog_seeded=True))
-            await node(_state(**first))
+            first = await node(_state(
+                question="sales by product",
+                metadata_bundle=_BUNDLE,
+                catalog_seeded=True,
+            ))
+            await node(_state(question="sales by product", **first))
 
         assert loader.await_count == 1
+        assert loader.await_args.kwargs["question"] == ""
 
     @pytest.mark.asyncio
     async def test_failed_load_fails_closed_with_dax_wording(self):
@@ -325,6 +341,95 @@ def _history_mock():
 
 class TestPreGraphCatalogFailure:
     @pytest.mark.asyncio
+    async def test_dax_agent_emits_the_same_pre_graph_timing(self):
+        from src.agent.dax_insights_agent import DaxInsightsAgent
+
+        captured = {}
+        agent = object.__new__(DaxInsightsAgent)
+        agent.source_key = "powerbi-test"
+        agent.display_name = "Power BI"
+        agent.workspace_id = "workspace"
+        agent.dataset_id = "dataset"
+        agent.model_version = "v1"
+        agent.metadata_loader = MagicMock()
+        agent.history = _history_mock()
+        agent.user_resolver = MagicMock()
+        agent.user_resolver.resolve_user = AsyncMock(return_value=MagicMock(id=uuid4()))
+        agent._fetch_conversation_context = AsyncMock(return_value=[])
+        agent._safe_log_query = AsyncMock(return_value=None)
+        agent._safe_persist_trace = AsyncMock()
+
+        async def _invoke(state):
+            captured.update(state)
+            return {"formatted_response": {}, "trace": state["trace"]}
+
+        agent.graph = MagicMock()
+        agent.graph.ainvoke = _invoke
+        pre_graph = AsyncMock(return_value=(
+            _BUNDLE,
+            {
+                "source": "mcp",
+                "load_ms": 40,
+                "mcp_timing": {
+                    "connection_ms": 2,
+                    "filtered_tool_ms": 24,
+                    "parse_ms": 1,
+                    "full_restore_ms": 8,
+                    "total_ms": 35,
+                },
+            },
+        ))
+        with patch("src.agent.dax_insights_agent._load_catalog_bundle", pre_graph), \
+             patch("src.metadata.runtime_settings.get_runtime_settings",
+                   AsyncMock(return_value=_runtime_defaults())):
+            result = await agent.process_question(question="sales by month")
+
+        event = result["trace"][0]
+        assert event["node"] == "pre_graph_setup"
+        assert event["catalog_source"] == "mcp"
+        assert "question-specific catalog 24ms" in event["detail"]
+        assert event["mcp_timing"]["full_restore_ms"] == 8
+        assert captured["start_time"] <= time.monotonic()
+
+    @pytest.mark.asyncio
+    async def test_filtered_mcp_timing_is_visible_in_pre_graph_trace(self):
+        history = _history_mock()
+        agent = _build_agent(history)
+        pre_graph = AsyncMock(return_value=(
+            _BUNDLE,
+            {
+                "source": "mcp",
+                "load_ms": 41,
+                "mcp_timing": {
+                    "connection_ms": 3,
+                    "filtered_tool_ms": 25,
+                    "parse_ms": 1,
+                    "full_restore_ms": 7,
+                    "total_ms": 36,
+                },
+            },
+        ))
+
+        with patch("src.agent.jeen_insights_agent._load_catalog_bundle", pre_graph), \
+             patch("src.metadata.runtime_settings.get_runtime_settings",
+                   AsyncMock(return_value=_runtime_defaults())):
+            result = await agent.process_question(
+                question="What are total sales?", eval_analytics=False,
+            )
+
+        event = next(ev for ev in result["trace"] if ev["node"] == "pre_graph_setup")
+        assert "question-specific catalog 25ms" in event["detail"]
+        assert "reusable catalog 7ms" in event["detail"]
+        assert "connection lookup 3ms" in event["detail"]
+        assert event["mcp_timing"] == {
+            "connection_ms": 3,
+            "filtered_tool_ms": 25,
+            "parse_ms": 1,
+            "full_restore_ms": 7,
+            "total_ms": 36,
+        }
+
+    @pytest.mark.asyncio
     async def test_recovered_pre_graph_failure_is_not_reported_to_the_user(self):
         """Pre-load fails, the node's own load succeeds → no error in the response.
 
@@ -366,11 +471,14 @@ class TestPreGraphCatalogFailure:
         history.update_node_trace.assert_awaited_once()
         stored = history.update_node_trace.await_args.kwargs["node_trace"]
         assert stored, "expected at least one node timing"
-        assert {e["node"] for e in stored} >= {"catalog_lookup", "sql_generator"}
+        assert {e["node"] for e in stored} >= {"pre_graph_setup", "catalog_lookup", "sql_generator"}
         for entry in stored:
             assert set(entry) == {"node", "elapsed_ms", "type"}
 
         # The response still gets the rich, prompt-bearing trace.
+        pre_graph_event = next(ev for ev in result["trace"] if ev["node"] == "pre_graph_setup")
+        assert pre_graph_event["elapsed_ms"] >= 0
+        assert "catalog/history/audit pre-load" in pre_graph_event["detail"]
         assert any("prompt" in ev for ev in result["trace"])
 
 

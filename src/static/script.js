@@ -2685,7 +2685,7 @@ function _traceEventLevel(ev) {
     if (ev.feedback_type || ev.status === 'blocked' || ev.status === 'retry') return 'warn';
     // Catalog loaded via MCP is not a database query — keep it out of the DB
     // filter. A metadata-DB catalog load is still a real DB read, so stays 'db'.
-    if (ev.node === 'catalog_lookup') {
+    if (['pre_graph_setup', 'catalog_lookup', 'dax_catalog_lookup'].includes(ev.node)) {
         const src = ev.catalog_source || (/mcp/i.test(ev.detail || '') ? 'mcp' : 'db');
         return src === 'mcp' ? 'info' : 'db';
     }
@@ -2815,7 +2815,7 @@ const _TRACE_FLOW_COLUMNS_SQL = [
     {
         title: 'Catalog + Prompt',
         hint: 'Loads MCP/DB metadata, binds values from prior results, and builds the system prompt.',
-        nodes: ['catalog_lookup', 'prior_data_binder', 'prompt_builder'],
+        nodes: ['pre_graph_setup', 'catalog_lookup', 'prior_data_binder', 'prompt_builder'],
     },
     {
         title: 'SQL + Safety',
@@ -2888,7 +2888,7 @@ const _TRACE_FLOW_COLUMNS_DAX = [
     {
         title: 'Catalog + Plan',
         hint: 'Loads the Power BI model catalog, builds a typed query plan, and assembles the DAX prompt.',
-        nodes: ['dax_catalog_lookup', 'dax_query_planner', 'dax_prompt_builder'],
+        nodes: ['pre_graph_setup', 'dax_catalog_lookup', 'dax_query_planner', 'dax_prompt_builder'],
     },
     {
         title: 'DAX + Safety',
@@ -3352,6 +3352,12 @@ function _renderTraceEvents() {
     let html = '<div class="trace-summary">';
     html += `<span class="trace-summary-chip" title="${_METRIC_TIPS.nodes}">nodes: <strong>${events.length}</strong></span>`;
     if (retries > 0) html += `<span class="trace-summary-chip" title="${_METRIC_TIPS.retries}">retries: <strong>${retries}</strong></span>`;
+    const preGraph = events.find(e => e.node === 'pre_graph_setup' && e.mcp_timing);
+    const mcpTiming = preGraph && preGraph.mcp_timing;
+    if (mcpTiming && typeof mcpTiming === 'object') {
+        html += `<span class="trace-summary-chip" title="Question-specific MCP call; included in pre-graph wall time">MCP filtered: <strong>${_fmtMs(Number(mcpTiming.filtered_tool_ms) || 0)}</strong></span>`;
+        html += `<span class="trace-summary-chip" title="Reusable full-catalog fetch/cache and date-column restoration; included in pre-graph wall time">catalog restore: <strong>${_fmtMs(Number(mcpTiming.full_restore_ms) || 0)}</strong></span>`;
+    }
     html += '</div>';
 
     // Stacked breakdown bar (where the time went).
@@ -3753,6 +3759,7 @@ const _NODE_INFO = {
     memory_answer_generator: 'Serves a follow-up about a prior answer or its data from the stored result: replays the table, computes over the stored rows (one SELECT in the metadata Postgres, rows passed as a JSONB parameter, no tables created), answers from the ledger, or falls through to a live query.',
     history_search:          'Answers "did I ask about X last week?" by searching the persisted questions of this user on this connection. No LLM call.',
     capability_answer:       'Answers questions about the assistant itself ("what can you do?", "can I change the model?") from a help prompt. No query, no data lookup.',
+    pre_graph_setup:         'Prepares the request before LangGraph starts: resolves the user and runtime settings, then loads catalog metadata, conversation history, audit state and filter preferences in parallel.',
     prior_data_binder:       'When the new question builds on a prior result ("the top 4 products from the previous answer"), extracts the values from the stored rows and binds them as a verified filter for the SQL generator.',
     catalog_lookup:          'Loads the metadata catalog (tables, columns, relationships) from the MCP server or the metadata DB. Detail shows the source, cache HIT/MISS and load time.',
     prompt_builder:          'Assembles the system prompt and the structured prompt shown in the Prompt tab.',
@@ -3788,6 +3795,7 @@ const _NODE_LABELS = {
     memory_answer_generator: 'Answer from memory',
     history_search:          'Search history',
     capability_answer:       'Capability answer',
+    pre_graph_setup:         'Request pre-load',
     prior_data_binder:       'Bind prior data',
     catalog_lookup:          'Catalog lookup',
     prompt_builder:          'Prompt build',

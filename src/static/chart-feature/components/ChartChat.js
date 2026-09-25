@@ -39,6 +39,7 @@ const CHART_PLACEHOLDER = () => t('charts.chat.placeholder');
 
 const SPARKLE_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3zM19 16l.9 2.1L22 19l-2.1.9L19 22l-.9-2.1L16 19l2.1-.9L19 16z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
 const ARROW_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const RESET_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 export class ChartChat {
     /**
@@ -148,8 +149,9 @@ export class ChartChat {
         const resetBtn = document.createElement('button');
         resetBtn.type = 'button';
         resetBtn.className = 'chart-refine-reset';
-        resetBtn.textContent = t('charts.chat.reset');
+        resetBtn.innerHTML = RESET_SVG;
         resetBtn.title = t('charts.chat.resetTitle');
+        resetBtn.setAttribute('aria-label', t('charts.chat.reset'));
         resetBtn.addEventListener('click', () => this._handleReset());
 
         applied.appendChild(appliedCheck);
@@ -439,7 +441,7 @@ export class ChartChat {
 
             this._appendMessage('assistant', note || t('charts.chat.updated'));
             this._inputEl.value = '';
-            this._showApplied(instruction);
+            this._showApplied(note || instruction || t('charts.chat.updated'));
             this._setStatus(t('charts.chat.appliedAnnouncement'), 'success');
         } catch (e) {
             if (e && e.name === 'AbortError') return; // silent — superseded or reset

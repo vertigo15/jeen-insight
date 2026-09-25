@@ -418,6 +418,31 @@ class TestFusedRouter:
         result = await router(state)
         assert result["route"] == "from_memory"
 
+    @pytest.mark.asyncio
+    async def test_memory_route_without_prior_ref_queries_fresh_data(self, mock_llm, prompt_loader):
+        mock_llm.generate.return_value = {
+            "content": json.dumps({
+                "route": "from_memory",
+                "reason": "similar wording appeared before",
+                "prior_refs": [],
+            }),
+            "finish_reason": "stop",
+            "usage": {},
+        }
+        router = make_fused_router(mock_llm, prompt_loader)
+        state = {
+            "question": "show total sales per month",
+            "connection_display_name": "DB",
+            "conversation_history": self._HISTORY,
+            "llm_call_count": 0,
+            "llm_latency_ms": 0,
+            "token_usage": {},
+        }
+        result = await router(state)
+        assert result["route"] == "needs_query"
+        assert result["prior_refs"] == []
+        assert "querying fresh data" in result["route_reason"]
+
     _HISTORY = [
         {"id": "q1", "natural_language_query": "products and prices", "generated_sql": "SELECT p, price FROM p",
          "result_artifact": {"columns": ["p", "price"], "row_count": 3}, "snapshot_status": "stored",

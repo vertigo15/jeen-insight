@@ -110,4 +110,26 @@ function labelledBarConfig() {
     assert.equal(out.legend.show, false);
 }
 
+// sort=false is ordinary state. The chart session supplies a fresh semantic
+// config for every render, so leaving sorting off preserves that config.
+{
+    const rebound = {
+        xAxis: { type: 'category', data: ['January', 'February'] },
+        series: [{ type: 'bar', data: [1, 2] }],
+    };
+    const preserved = applyQuickOptions(rebound, { sortDesc: false });
+    assert.deepEqual(preserved.xAxis.data, ['January', 'February']);
+}
+
+// Duplicate category labels must retain row identity through a stable sort.
+{
+    const baseline = {
+        xAxis: { type: 'category', data: ['Jan', 'Jan', 'Feb'] },
+        series: [{ type: 'bar', data: [1, 5, 3] }],
+    };
+    const sorted = applyQuickOptions(baseline, { sortDesc: true });
+    assert.deepEqual(sorted.xAxis.data, ['Jan', 'Feb', 'Jan']);
+    assert.deepEqual(sorted.series[0].data, [5, 3, 1]);
+}
+
 console.log('chart_quick_options JS tests passed');

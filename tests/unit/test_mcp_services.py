@@ -13,6 +13,7 @@ No real DB or HTTP connections are made.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import datetime, timezone
@@ -942,6 +943,57 @@ class TestMcpCatalogClientLoadAll:
         assert "AdventureWorks" in bundle["sources"]
 
     @pytest.mark.asyncio
+    async def test_filtered_prompt_stays_dynamic_while_full_catalog_becomes_warm(self):
+        health = _health_with_tools({
+            NEED_LIST_SOURCES: "list_connections",
+            NEED_LIST_TABLES: "get_catalog_prompt",
+            NEED_DESCRIBE_TABLE: "get_filtered_prompt",
+        })
+        server = _make_server(health=health)
+        client = self._make_client(server)
+        client._resolve_connection_id = AsyncMock(return_value=42)
+
+        async def _tool(_server, tool, args):
+            if tool == "get_filtered_prompt":
+                await asyncio.sleep(0.02)
+                question = args["question"]
+                return {"prompt": (
+                    f"## Tables\n- FactSales\n## Columns\n- FactSales.Amount - Type: money\n"
+                    f"## Business Terms\n- {question}\n## Source\nAdventureWorks"
+                )}
+            await asyncio.sleep(0.03)
+            return (
+                "## Tables\n- FactSales\n"
+                "## Columns\n- FactSales.Amount - Type: money\n- FactSales.OrderDate - Type: date\n"
+                "## Source\nAdventureWorks"
+            )
+
+        client._call_tool = AsyncMock(side_effect=_tool)
+        first, first_timing = await client.load_filtered_with_meta("AdventureWorks", "sales by month")
+        second, second_timing = await client.load_filtered_with_meta("AdventureWorks", "sales by region")
+
+        filtered_calls = [
+            call for call in client._call_tool.await_args_list
+            if call.args[1] == "get_filtered_prompt"
+        ]
+        full_calls = [
+            call for call in client._call_tool.await_args_list
+            if call.args[1] == "get_catalog_prompt"
+        ]
+        assert len(filtered_calls) == 2, "each question must receive its own filtered prompt"
+        assert len(full_calls) == 1, "the reusable full catalog should be warm after the first query"
+        assert "sales by month" in first["business_terms"]
+        assert "sales by region" in second["business_terms"]
+        assert set(first_timing) == {
+            "connection_ms", "filtered_tool_ms", "parse_ms", "full_restore_ms", "total_ms",
+        }
+        assert first_timing["filtered_tool_ms"] >= 15
+        assert second_timing["filtered_tool_ms"] >= 15
+        assert first_timing["full_restore_ms"] >= 25
+        assert second_timing["full_restore_ms"] < first_timing["full_restore_ms"]
+        assert first_timing["total_ms"] > second_timing["total_ms"]
+
+    @pytest.mark.asyncio
     async def test_load_filtered_restores_only_the_kept_tables_date_columns(self):
         """The filtered prompt kept a fact table's keys and measure but dropped its
         timestamp; the (cached) full catalog puts the date back and nothing else."""
@@ -979,6 +1031,195 @@ class TestMcpCatalogClientLoadAll:
         assert bundle["columns"].splitlines() == [
             "- FactInternetSales.OrderDateKey - Type: integer", "- FactInternetSales.SalesAmount - Type: money",
         ]
+
+    @pytest.mark.asyncio
+    async def test_full_restore_timing_includes_date_column_merge_work(self):
+        server = _make_server(health=_health_with_tools({
+            NEED_LIST_SOURCES: "list_connections",
+            NEED_LIST_TABLES: "get_catalog_prompt",
+            NEED_DESCRIBE_TABLE: "get_filtered_prompt",
+        }))
+        client = self._make_client(server)
+        client._resolve_connection_id = AsyncMock(return_value=42)
+        client._call_tool = AsyncMock(return_value={"prompt": (
+            "## Tables\n- FactSales\n"
+            "## Columns\n- FactSales.Amount - Type: money\n"
+            "## Source\nAdventureWorks"
+        )})
+        client.load_all = AsyncMock(return_value={
+            **_empty_bundle(),
+            "columns": "- FactSales.OrderDate - Type: date",
+        })
+
+        def _slow_restore(filtered, full):
+            time.sleep(0.02)
+            return restore_date_columns(filtered, full)
+
+        with patch(
+            "src.metadata.mcp_catalog_client.restore_date_columns",
+            side_effect=_slow_restore,
+        ):
+            _bundle, timing = await client.load_filtered_with_meta(
+                "AdventureWorks", "sales by month"
+            )
+
+        assert timing["full_restore_ms"] >= 15
+
+    @pytest.mark.asyncio
+    async def test_concurrent_full_catalog_misses_share_one_provider_call(self):
+        server = _make_server(health=_health_with_tools({
+            NEED_LIST_SOURCES: "list_connections",
+            NEED_LIST_TABLES: "get_catalog_prompt",
+        }))
+        client = self._make_client(server)
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+        ready = False
+        populated = {**_empty_bundle(), "tables": "- FactSales"}
+
+        async def _ensure(_server, _source_key):
+            nonlocal calls, ready
+            calls += 1
+            started.set()
+            await release.wait()
+            ready = True
+
+        async def _bundle(_server, _source_key):
+            return populated if ready else None
+
+        client._ensure_catalog = _ensure
+        client._bundle_from_cache = _bundle
+        first = asyncio.create_task(client.load_all("AdventureWorks"))
+        await started.wait()
+        second = asyncio.create_task(client.load_all("AdventureWorks"))
+        await asyncio.sleep(0)
+        release.set()
+        results = await asyncio.gather(first, second)
+        assert calls == 1
+        assert results == [populated, populated]
+
+    @pytest.mark.asyncio
+    async def test_cancelling_one_coalesced_waiter_does_not_cancel_the_other(self):
+        server = _make_server(health=_health_with_tools({
+            NEED_LIST_SOURCES: "list_connections",
+            NEED_LIST_TABLES: "get_catalog_prompt",
+        }))
+        client = self._make_client(server)
+        started = asyncio.Event()
+        release = asyncio.Event()
+        ready = False
+        populated = {**_empty_bundle(), "tables": "- FactSales"}
+
+        async def _ensure(_server, _source_key):
+            nonlocal ready
+            started.set()
+            await release.wait()
+            ready = True
+
+        async def _bundle(_server, _source_key):
+            return populated if ready else None
+
+        client._ensure_catalog = _ensure
+        client._bundle_from_cache = _bundle
+        cancelled = asyncio.create_task(client.load_all("AdventureWorks"))
+        await started.wait()
+        survivor = asyncio.create_task(client.load_all("AdventureWorks"))
+        await asyncio.sleep(0)
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        release.set()
+        assert await survivor == populated
+        assert client._catalog_inflight == {}
+
+    @pytest.mark.asyncio
+    async def test_cancelled_only_waiter_does_not_leak_inflight_entry(self):
+        server = _make_server(health=_health_with_tools({
+            NEED_LIST_SOURCES: "list_connections",
+            NEED_LIST_TABLES: "get_catalog_prompt",
+        }))
+        client = self._make_client(server)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _ensure(_server, _source_key):
+            started.set()
+            await release.wait()
+
+        client._ensure_catalog = _ensure
+        waiter = asyncio.create_task(client.load_all("AdventureWorks"))
+        await started.wait()
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert client._catalog_inflight, "shielded provider task should finish independently"
+        release.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert client._catalog_inflight == {}
+
+    @pytest.mark.asyncio
+    async def test_shared_catalog_failure_is_evicted_for_retry(self):
+        server = _make_server(health=_health_with_tools({
+            NEED_LIST_SOURCES: "list_connections",
+            NEED_LIST_TABLES: "get_catalog_prompt",
+        }))
+        client = self._make_client(server)
+        calls = 0
+
+        async def _ensure(_server, _source_key):
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0)
+            raise RuntimeError("provider failed")
+
+        client._ensure_catalog = _ensure
+        results = await asyncio.gather(
+            client.load_all("AdventureWorks"),
+            client.load_all("AdventureWorks"),
+        )
+        assert results == [_empty_bundle(), _empty_bundle()]
+        assert calls == 1
+        assert client._catalog_inflight == {}
+
+    @pytest.mark.asyncio
+    async def test_shutdown_cancels_shared_catalog_fetch_and_rejects_new_work(self):
+        server = _make_server(health=_health_with_tools({
+            NEED_LIST_SOURCES: "list_connections",
+            NEED_LIST_TABLES: "get_catalog_prompt",
+        }))
+        client = self._make_client(server)
+        started = asyncio.Event()
+
+        async def _ensure(_server, _source_key):
+            started.set()
+            await asyncio.Event().wait()
+
+        client._ensure_catalog = _ensure
+        waiter = asyncio.create_task(client.load_all("AdventureWorks"))
+        await started.wait()
+        await client.aclose()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert client._catalog_inflight == {}
+        with pytest.raises(RuntimeError, match="closing"):
+            await client.load_all("AdventureWorks")
+
+    @pytest.mark.asyncio
+    async def test_pooled_http_client_is_reused_and_closed(self):
+        server = _make_server()
+        client = self._make_client(server)
+        fake = MagicMock()
+        fake.is_closed = False
+        fake.aclose = AsyncMock()
+        with patch("src.metadata.mcp_catalog_client.httpx.AsyncClient", return_value=fake) as ctor:
+            assert client._client() is fake
+            assert client._client() is fake
+            ctor.assert_called_once()
+            await client.aclose()
+        fake.aclose.assert_awaited_once()
+        assert client._http_client is None
 
 
 class TestMcpColumnValueSearch:

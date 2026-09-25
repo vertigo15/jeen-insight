@@ -123,7 +123,7 @@ test('a chart edit survives local presentation changes and Reset restores the ba
   expect(editCalls[0].body.all_data).toBeUndefined();
 
   await expect(refine.locator('.chart-refine-applied')).toBeVisible();
-  await expect(refine.locator('.chart-refine-applied bdi')).toHaveText('show line chart with labels');
+  await expect(refine.locator('.chart-refine-applied bdi')).toHaveText('Changed to a line chart with labels.');
   await expect.poll(() => page.evaluate(() => (
     window.__chartTestManager.currentEchartsOptions?.series?.[0]?.type
   ))).toBe('line');

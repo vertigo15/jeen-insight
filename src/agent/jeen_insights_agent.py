@@ -214,6 +214,7 @@ class JeenInsightsAgent:
         if not session_id:
             session_id = uuid4()
 
+        request_started = time.monotonic()
         try:
             user = await self.user_resolver.resolve_user(user_context or {})
 
@@ -274,6 +275,20 @@ class JeenInsightsAgent:
             filter_preferences: List[Dict[str, Any]] = (
                 results[3] if not isinstance(results[3], Exception) else []
             )
+            pre_graph_ms = int((time.monotonic() - request_started) * 1000)
+            mcp_timing = catalog_meta.get("mcp_timing") if isinstance(catalog_meta, dict) else None
+            if isinstance(mcp_timing, dict):
+                pre_graph_detail = (
+                    f"question-specific catalog {int(mcp_timing.get('filtered_tool_ms') or 0)}ms"
+                    f" · reusable catalog {int(mcp_timing.get('full_restore_ms') or 0)}ms"
+                    f" · connection lookup {int(mcp_timing.get('connection_ms') or 0)}ms"
+                    f" · pre-graph wall {pre_graph_ms}ms (parallel total)"
+                )
+            else:
+                pre_graph_detail = (
+                    f"catalog/history/audit pre-load in parallel"
+                    f" · catalog {int(catalog_meta.get('load_ms') or 0)}ms"
+                )
 
             # Surface non-fatal pre-graph errors for observability.
             #
@@ -310,7 +325,9 @@ class JeenInsightsAgent:
                 # ── Audit ───────────────────────────────────────────────
                 "query_id": query_id,
                 "user_id": str(user.id),
-                "start_time": time.monotonic(),
+                # Include user resolution, runtime settings and the parallel
+                # catalog/history/audit pre-load in total backend time.
+                "start_time": request_started,
                 "llm_call_count": 0,
                 "llm_latency_ms": 0,
                 "token_usage": {},
@@ -396,8 +413,18 @@ class JeenInsightsAgent:
                 ),
                 "max_result_rows": runtime.max_result_rows,
                 "statement_timeout_ms": runtime.db_statement_timeout_ms,
-                # Empty list — operator.add in AgentState accumulates across nodes
-                "trace": [],
+                # The LangGraph node timers begin after the pre-load above. Keep
+                # that cold-start cost visible so the trace reconciles with wall
+                # time instead of making a 10s MCP catalog fetch disappear.
+                "trace": [{
+                    "node": "pre_graph_setup",
+                    "elapsed_ms": pre_graph_ms,
+                    "icon": "⏱",
+                    "type": "db",
+                    "catalog_source": catalog_meta.get("source", "db"),
+                    "detail": pre_graph_detail,
+                    "mcp_timing": mcp_timing if isinstance(mcp_timing, dict) else None,
+                }],
                 # Empty dict — each LLM node adds its rendered prompt here
                 "node_prompts": {},
                 # ── ML skills ─────────────────────────────────────────────────
