@@ -277,6 +277,7 @@ def build_graph(
     memory_compute_max_rows: int = 2000,
     memory_max_bound_values: int = 100,
     snapshot_engine: Optional[SnapshotSqlEngine] = None,
+    usage_ledger: Any = None,
 ) -> Any:
     """Build and compile the LangGraph text-to-SQL agent.
 
@@ -317,6 +318,9 @@ def build_graph(
         Runs the memory computations (a SELECT in the metadata Postgres over the
         stored rows exposed as ``jsonb_to_recordset`` CTEs; no tables are created).
         Defaults to an engine on ``history_service.pool``; tests inject a double.
+    usage_ledger:
+        Optional ``UsageLedger``; ``save_to_memory`` records one durable usage
+        event per turn for the admin Analytics page.
 
     Returns
     -------
@@ -382,7 +386,8 @@ def build_graph(
     n("fused_eval_analytics",    make_fused_eval_analytics(llm, prompt_loader))
     n("feedback_classifier",     make_feedback_classifier(max_retries))
     n("response_formatter",      response_formatter)
-    n("save_to_memory",          make_save_to_memory(history_service, deployment_name, analysis_store))
+    n("save_to_memory",          make_save_to_memory(history_service, deployment_name, analysis_store,
+                                                     usage_ledger=usage_ledger))
     n("observability_log",       observability_log)
 
     # ── ML skills branch ──────────────────────────────────────────────────

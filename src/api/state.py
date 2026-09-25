@@ -53,6 +53,12 @@ powerbi_token_provider_factory: Optional[object] = None
 analysis_store: Optional[object] = None
 analysis_runner: Optional[object] = None
 
+# ── Usage ledger / admin analytics (migration 036) ─────────────────────────
+# Write side (always constructed; inactive when the schema is missing) and
+# read side (None until the schema probe finds insights_usage_events).
+usage_ledger: Optional[object] = None
+usage_analytics: Optional[object] = None
+
 # ── Connector / integration platform services ──────────────────────────────
 identity_service: Optional[object] = None
 registry_service: Optional[object] = None

@@ -433,5 +433,84 @@
         },
     };
 
-    window.__FIXTURES__ = { SESSION, Q, CHART, QUESTION_TO_SCENARIO, SCENARIOS };
+    // ── Admin analytics (Settings › Analytics; GET /api/admin/analytics/*) ────
+    // Shapes match the AnalyticsOverview / *Timeseries / *TopUsers / ... models.
+    // Values scale with the window so a range change is observable in the DOM.
+    const day = (offset) => {
+        const d = new Date(Date.UTC(2026, 8, 25));
+        d.setUTCDate(d.getUTCDate() - offset);
+        return d.toISOString().slice(0, 10);
+    };
+    const period = (days, mult) => ({
+        questions: 40 * mult, text_only_turns: 6 * mult, active_users: 5, active_connections: 2,
+        successes: 36 * mult, errors: 4 * mult, refused: 1, success_rate: 0.9, avg_graph_time_ms: 2300,
+        total_tokens: 125000 * mult, logins: 12 * mult, comments: 3 * mult, feedback_events: 9 * mult,
+        avg_rating: 4.2, thumbs_up: 6 * mult, thumbs_down: 2 * mult, thumbs_up_events: 7 * mult, thumbs_down_events: 2 * mult,
+    });
+    const FEEDBACK_ITEMS = [
+        { id: 42, occurred_at: '2026-09-25T09:00:00+00:00', user_id: '7', name: 'Dana Levi', email: 'dana@jeen.ai', source_key: 'sales_db',
+          thumb: 'thumbs_down', rating: 2, feedback_type: 'report_bug', message: '=SUM(A1) the total looks wrong', question: Q.sqlAggregate, query_id: 'q-42' },
+        { id: 41, occurred_at: '2026-09-24T15:30:00+00:00', user_id: '8', name: null, email: 'noa@jeen.ai', source_key: 'sales_db',
+          thumb: 'thumbs_up', rating: null, feedback_type: null, message: null, question: Q.forecast, query_id: 'q-41' },
+        { id: 40, occurred_at: '2026-09-23T11:00:00+00:00', user_id: 'sso-abc', name: null, email: null, source_key: 'hr_db',
+          thumb: null, rating: 5, feedback_type: 'general', message: 'Great chart', question: Q.sqlCount, query_id: 'q-40' },
+    ];
+    const ANALYTICS = {
+        overview: (days) => ({
+            days, start: day(days) + 'T00:00:00+00:00', end: day(0) + 'T00:00:00+00:00',
+            dau: 2, wau: 4, mau: 5, current: period(days, days / 30 >= 1 ? days / 30 : 1), previous: period(days, 0.5),
+        }),
+        timeseries: (days) => ({
+            days,
+            points: Array.from({ length: days }, (_, i) => ({
+                day: day(days - 1 - i), active_users: (i % 3), questions: (i % 5) * 2, errors: i % 2,
+                thumbs_up: i % 4 === 0 ? 1 : 0, thumbs_down: i % 7 === 0 ? 1 : 0, logins: i % 3,
+            })),
+        }),
+        'top-users': (days) => ({
+            days,
+            items: [
+                { user_id: '7', name: 'Dana Levi', email: 'dana@jeen.ai', role: 'editor', questions: 18, analyses: 2, success_rate: 0.94,
+                  last_active: '2026-09-25T09:00:00+00:00', thumbs_up: 4, thumbs_down: 1, avg_rating: 4.5 },
+                { user_id: 'sso-abc', name: null, email: null, role: null, questions: 9, analyses: 0, success_rate: 0.78,
+                  last_active: '2026-09-23T11:00:00+00:00', thumbs_up: 1, thumbs_down: 1, avg_rating: null },
+            ],
+        }),
+        'top-connections': (days) => ({
+            days,
+            items: [
+                { source_key: 'sales_db', questions: 30, distinct_users: 4, success_rate: 0.9, avg_graph_time_ms: 2100,
+                  last_used: '2026-09-25T09:00:00+00:00', thumbs_up: 5, thumbs_down: 2, thumbs_down_rate: 0.2857 },
+                { source_key: 'hr_db', questions: 10, distinct_users: 2, success_rate: 0.8, avg_graph_time_ms: 3400,
+                  last_used: '2026-09-23T11:00:00+00:00', thumbs_up: 1, thumbs_down: 0, thumbs_down_rate: 0 },
+            ],
+        }),
+        feedback: (days, params) => {
+            const thumb = params.get('thumb'), type = params.get('type'), connection = params.get('connection');
+            const before = Number(params.get('before')) || null;
+            const items = FEEDBACK_ITEMS.filter((f) =>
+                (!thumb || f.thumb === thumb) && (!type || f.feedback_type === type)
+                && (!connection || f.source_key === connection) && (!before || f.id < before));
+            return { days, items, next_before: null };
+        },
+        analysis: (days) => ({
+            days,
+            items: [
+                { skill: 'forecast', runs: 6, ok: 4, guard_failed: 1, errors: 1, avg_execution_ms: 900, distinct_users: 2, thumbs_up: 2, thumbs_down: 1 },
+                { skill: 'anomaly', runs: 3, ok: 3, guard_failed: 0, errors: 0, avg_execution_ms: 400, distinct_users: 1, thumbs_up: 1, thumbs_down: 0 },
+            ],
+        }),
+        errors: (days) => ({
+            days,
+            by_type: [
+                { error_type: 'timeout', source_key: 'hr_db', failures: 3 },
+                { error_type: 'validation', source_key: 'sales_db', failures: 1 },
+            ],
+            top_failing_questions: [
+                { question: Q.guard, failures: 2, distinct_users: 1, distinct_connections: 1, last_seen: '2026-09-24T15:30:00+00:00' },
+            ],
+        }),
+    };
+
+    window.__FIXTURES__ = { SESSION, Q, CHART, QUESTION_TO_SCENARIO, SCENARIOS, ANALYTICS };
 })();

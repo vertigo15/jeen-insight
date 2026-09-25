@@ -736,7 +736,7 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
 
 
 def make_save_to_memory(history_service: ConversationHistoryService, deployment_name: str,
-                        analysis_store: Any = None):
+                        analysis_store: Any = None, usage_ledger: Any = None):
     """Return an async ``save_to_memory`` node.
 
     ``analysis_store`` (optional) receives every completed forecast for the
@@ -744,7 +744,38 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
     through — a remembered-consent run never touches ``/api/analysis/run`` —
     and the one place the ORIGINAL params (``analysis_params``, filter values
     intact) sit next to the envelope and the turn id.
+
+    ``usage_ledger`` (optional) receives one ``query`` event per turn for the
+    admin Analytics page (durable across conversation retention).
     """
+
+    async def _record_usage(state: AgentState, query_id: Any, *, outcome: str,
+                            error_type: Optional[str], row_count: int,
+                            graph_time_ms: Optional[int]) -> None:
+        if usage_ledger is None or not hasattr(usage_ledger, "record_query"):
+            return
+        try:
+            result = state.get("query_result") or {}
+            await usage_ledger.record_query(
+                user_id=str(state.get("user_id") or ""),
+                source_key=state.get("source_key"),
+                query_id=query_id,
+                session_id=state.get("session_id"),
+                outcome=outcome,
+                error_type=error_type,
+                route=state.get("route"),
+                skill=state.get("analysis_skill"),
+                llm_model=deployment_name,
+                token_usage=state.get("token_usage") or {},
+                llm_latency_ms=state.get("llm_latency_ms") or 0,
+                execution_time_ms=state.get("execution_time_ms"),
+                graph_time_ms=graph_time_ms,
+                row_count=row_count,
+                question=state.get("question"),
+                detail={"connector_error_type": result.get("error_type")} if result.get("error_type") else None,
+            )
+        except Exception:  # noqa: BLE001 — analytics must never cost the answer
+            logger.debug("save_to_memory: usage event failed for query_id=%s", query_id, exc_info=True)
 
     async def _record_forecast(state: AgentState, query_id: Any) -> None:
         if analysis_store is None or not hasattr(analysis_store, "record_forecast"):
@@ -864,6 +895,23 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
         # After the turn row exists (the capture's FK points at it).
         if not exec_error and not formatter_error:
             await _record_forecast(state, query_id)
+
+        # Usage ledger: the same branch logic as above, made explicit.
+        rows_n = len(query_result.get("rows") or []) if isinstance(query_result, dict) else 0
+        if exec_error:
+            outcome, error_type = "error", (str(query_result.get("error_type") or "") or "execution")
+        elif state.get("analysis_guard_failure"):
+            outcome, error_type = "refused", None
+        elif sql and formatter_error and not rows_n:
+            outcome, error_type = "error", "validation"
+        elif text_only and formatter_error:
+            outcome, error_type = "error", "formatter"
+        else:
+            outcome, error_type = "success", None
+        await _record_usage(
+            state, query_id, outcome=outcome, error_type=error_type,
+            row_count=rows_n, graph_time_ms=graph_time_ms,
+        )
 
         return {}
 

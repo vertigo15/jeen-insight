@@ -65,6 +65,7 @@ class JeenInsightsAgent:
         analysis_runner_provider: Any = None,
         analysis_limiter: Any = None,
         analysis_audit: Any = None,
+        usage_ledger: Any = None,
     ):
         self.connection = connection
         self.source_key = connection.source_key
@@ -76,6 +77,7 @@ class JeenInsightsAgent:
         self.sql_runner = sql_runner
         self.llm = llm_service           # used by charts.py + insights.py routes
         self.analysis_store = analysis_store
+        self.usage_ledger = usage_ledger
 
         self.graph = build_graph(
             llm=llm_service,
@@ -107,6 +109,7 @@ class JeenInsightsAgent:
             analysis_max_entity_rows=int(settings.ANALYSIS_MAX_ENTITY_ROWS),
             memory_compute_max_rows=int(settings.MEMORY_COMPUTE_MAX_ROWS),
             memory_max_bound_values=int(settings.MEMORY_MAX_BOUND_VALUES),
+            usage_ledger=usage_ledger,
         )
         logger.info(
             "✅ LangGraph agent ready for source_key=%s", self.source_key
@@ -588,6 +591,7 @@ class AgentRegistry:
         analysis_runner_provider: Any = None,
         analysis_limiter: Any = None,
         analysis_audit: Any = None,
+        usage_ledger: Any = None,
     ):
         self.llm = llm_service
         self.router_llm = router_llm_service or llm_service
@@ -600,6 +604,8 @@ class AgentRegistry:
         self.analysis_runner_provider = analysis_runner_provider
         self.analysis_limiter = analysis_limiter
         self.analysis_audit = analysis_audit
+        # Durable usage ledger for the admin Analytics page (may be None).
+        self.usage_ledger = usage_ledger
         # Prefer an explicitly supplied PromptLoader; otherwise build one from disk.
         # The graph nodes call prompt_loader.arender() so they always need this.
         self.prompt_loader = prompt_loader or PromptLoader()
@@ -633,6 +639,7 @@ class AgentRegistry:
                 analysis_runner_provider=self.analysis_runner_provider,
                 analysis_limiter=self.analysis_limiter,
                 analysis_audit=self.analysis_audit,
+                usage_ledger=self.usage_ledger,
             )
             self._agents[source_key] = agent
             logger.info("✅ Built JeenInsightsAgent for source_key=%s", source_key)

@@ -189,6 +189,9 @@ async def _append_answer_feedback(history, **fields) -> dict:
 
     Keeping the two apart matters: a swallowed database error reported as
     "not found" hides outages and schema drift behind an ownership message.
+
+    Once stored, the event is mirrored into the usage ledger (admin Analytics,
+    migration 036) so it outlives conversation retention. Best-effort.
     """
     try:
         saved = await history.record_answer_feedback(**fields)
@@ -197,7 +200,31 @@ async def _append_answer_feedback(history, **fields) -> dict:
         raise HTTPException(status_code=500, detail="Could not save feedback")
     if not saved:
         raise HTTPException(status_code=404, detail="Query not found for this user")
+    await _mirror_feedback_to_ledger(saved, **fields)
     return saved
+
+
+async def _mirror_feedback_to_ledger(saved: dict, **fields) -> None:
+    from src.api import state
+
+    ledger = state.usage_ledger
+    if ledger is None or not hasattr(ledger, "record_feedback"):
+        return
+    try:
+        await ledger.record_feedback(
+            user_id=str(fields.get("user_id") or ""),
+            source_key=saved.get("source_key"),
+            query_id=fields.get("query_id"),
+            session_id=saved.get("session_id"),
+            feedback_id=saved.get("id"),
+            thumb=fields.get("thumb"),
+            rating=fields.get("rating"),
+            feedback_type=fields.get("feedback_type"),
+            message=fields.get("message"),
+            question=saved.get("question"),
+        )
+    except Exception:  # noqa: BLE001 — analytics never fails the request
+        logger.debug("usage ledger feedback mirror failed", exc_info=True)
 
 
 async def _log_result_feedback(

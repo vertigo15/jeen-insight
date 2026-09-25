@@ -1989,6 +1989,15 @@ def mcp_proxy(subpath: str):
     return _forward(f"/api/mcp/{subpath}")
 
 
+@app.route("/api/admin/analytics/<path:subpath>", methods=["GET"])
+def admin_analytics_proxy(subpath: str):
+    """Admin usage analytics (Settings > Analytics). Gated here AND by the API."""
+    guard = _admin_required()
+    if guard:
+        return guard
+    return _forward(f"/api/admin/analytics/{subpath}", timeout=20)
+
+
 # ----------------------------------------------------------------------
 # Connector / integration platform proxies
 # ----------------------------------------------------------------------
