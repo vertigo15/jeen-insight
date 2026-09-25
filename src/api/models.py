@@ -7,12 +7,23 @@ a lot of one-class files without buying much.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from src.api.chart_operations import ChartOperation, SetBindingOperation
+from src.api.chart_operations import (
+    ChartOperation,
+    SetBindingOperation,
+    SetChartTypeOperation,
+)
+
+# Operations the deterministic rebuild endpoint accepts: anything that changes
+# the chart *structure* and therefore needs the full cached result set.
+ChartRebuildOperation = Annotated[
+    Union[SetBindingOperation, SetChartTypeOperation],
+    Field(discriminator="op"),
+]
 
 
 # ----------------------------------------------------------------------
@@ -345,6 +356,8 @@ class ChartManifest(BaseModel):
         max_length=256,
     )
     locks: Dict[str, Any] = Field(default_factory=dict)
+    # Active reference lines / highlights so the model can remove or amend them.
+    annotations: Optional[Dict[str, Any]] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -569,7 +582,7 @@ class EditChartV2Response(BaseModel):
 
 
 class EditChartRebuildRequest(BaseModel):
-    """Deterministic SQL-chart rebuild for validated binding operations."""
+    """Deterministic SQL-chart rebuild for validated binding/type operations."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -577,7 +590,7 @@ class EditChartRebuildRequest(BaseModel):
     query_id: str = Field(min_length=1, max_length=64)
     chart_kind: Literal["sql"] = "sql"
     chart_spec: Dict[str, Any]
-    operations: List[SetBindingOperation] = Field(min_length=1, max_length=4)
+    operations: List[ChartRebuildOperation] = Field(min_length=1, max_length=4)
     column_names: Optional[List[str]] = Field(default=None, max_length=256)
     all_data: Optional[List[List[Any]]] = Field(default=None, max_length=10_000)
 

@@ -25,8 +25,27 @@ ALLOWED_OPS = {
     "set_chart_type",
     "set_stack",
     "set_binding",
+    "set_palette",
+    "scenario_set_point",
+    "scenario_scale",
+    "scenario_shift",
+    "scenario_clear",
+    "add_reference_line",
+    "remove_reference_line",
+    "highlight_points",
+    "clear_highlights",
 }
-ML_FORBIDDEN = {"set_sort", "set_chart_type", "set_stack", "set_binding"}
+ML_FORBIDDEN = {
+    "set_sort",
+    "set_chart_type",
+    "set_stack",
+    "set_binding",
+    "set_palette",
+    "scenario_set_point",
+    "scenario_scale",
+    "scenario_shift",
+    "scenario_clear",
+}
 
 
 def test_chart_edit_golden_set_is_large_unique_and_well_formed():

@@ -107,6 +107,15 @@ function normalizeMapView(value) {
     return clone(object(value));
 }
 
+/** Presentation annotations (reference lines, highlights) added by chart chat. */
+function normalizeAnnotations(value) {
+    const source = object(value);
+    return {
+        referenceLines: clone(array(source.referenceLines)),
+        highlights: clone(array(source.highlights)),
+    };
+}
+
 function normalizeCanonical(raw) {
     const baselineRaw = object(raw.baseline);
     const workingRaw = object(raw.working);
@@ -118,6 +127,7 @@ function normalizeCanonical(raw) {
         legendUserSet: Boolean(baselineRaw.legendUserSet),
         derivedSpecs: clone(array(baselineRaw.derivedSpecs)),
         styleOverrides: clone(object(baselineRaw.styleOverrides)),
+        annotations: normalizeAnnotations(baselineRaw.annotations),
         mapView: normalizeMapView(baselineRaw.mapView || viewRaw.mapView),
     };
     return {
@@ -127,6 +137,7 @@ function normalizeCanonical(raw) {
             spec: clone(workingRaw.spec ?? baseline.spec),
             derivedSpecs: clone(array(workingRaw.derivedSpecs ?? baseline.derivedSpecs)),
             styleOverrides: clone(object(workingRaw.styleOverrides, baseline.styleOverrides)),
+            annotations: normalizeAnnotations(workingRaw.annotations ?? baseline.annotations),
         },
         view: {
             toggles: normalizeToggles(viewRaw.toggles || baseline.toggles),
@@ -190,6 +201,9 @@ export class ChartSession {
             styleOverrides: clone(value.styleOverrides !== undefined
                 ? object(value.styleOverrides)
                 : this._working.styleOverrides),
+            annotations: value.annotations !== undefined
+                ? normalizeAnnotations(value.annotations)
+                : clone(this._working.annotations),
         };
         return this.working;
     }
@@ -216,6 +230,7 @@ export class ChartSession {
             spec: clone(this._baseline.spec),
             derivedSpecs: clone(this._baseline.derivedSpecs),
             styleOverrides: clone(this._baseline.styleOverrides),
+            annotations: clone(this._baseline.annotations),
         };
         this._view = {
             toggles: clone(this._baseline.toggles),

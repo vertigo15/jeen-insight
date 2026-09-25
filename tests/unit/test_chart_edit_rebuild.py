@@ -121,6 +121,67 @@ def test_rebuild_cold_cache_returns_409_then_accepts_fallback(
     assert fallback.json()["chart_config"]["series"][0]["data"] == [4.0, 7.0]
 
 
+def test_rebuild_switches_chart_type_from_cached_rows(
+    client, fake_state, monkeypatch
+):
+    _allow_owner(fake_state)
+    monkeypatch.setattr(charts.result_cache, "get", MagicMock(return_value=_dataset()))
+
+    pie = client.post(
+        "/api/edit-chart/rebuild",
+        json=_payload(operations=[{"op": "set_chart_type", "chart_type": "pie"}]),
+    )
+
+    assert pie.status_code == 200, pie.text
+    body = pie.json()
+    assert body["chart_spec"]["chart_type"] == "pie"
+    assert body["chart_spec"]["y"] == ["revenue"]
+    series = body["chart_config"]["series"][0]
+    assert series["type"] == "pie"
+    assert [item["name"] for item in series["data"]] == ["Jan", "Feb"]
+    assert [item["value"] for item in series["data"]] == [10.0, 20.0]
+
+    # Type + binding in one rebuild: the requested type wins and the new measure applies.
+    horizontal = client.post(
+        "/api/edit-chart/rebuild",
+        json=_payload(
+            operations=[
+                {"op": "set_chart_type", "chart_type": "horizontal_bar"},
+                {"op": "set_binding", "y": "profit"},
+            ]
+        ),
+    )
+
+    assert horizontal.status_code == 200, horizontal.text
+    assert horizontal.json()["chart_spec"]["chart_type"] == "horizontal_bar"
+    assert horizontal.json()["chart_spec"]["y"] == ["profit"]
+    assert horizontal.json()["chart_config"]["yAxis"]["data"] == ["Jan", "Feb"]
+
+    # A binding-only rebuild keeps the chart's current type.
+    binding_only = client.post(
+        "/api/edit-chart/rebuild",
+        json=_payload(
+            chart_spec={**_payload()["chart_spec"], "chart_type": "line"},
+            operations=[{"op": "set_binding", "y": "profit"}],
+        ),
+    )
+    assert binding_only.status_code == 200, binding_only.text
+    assert binding_only.json()["chart_spec"]["chart_type"] == "line"
+
+
+def test_rebuild_rejects_unknown_chart_type(client, fake_state, monkeypatch):
+    cache_get = MagicMock(return_value=_dataset())
+    monkeypatch.setattr(charts.result_cache, "get", cache_get)
+
+    response = client.post(
+        "/api/edit-chart/rebuild",
+        json=_payload(operations=[{"op": "set_chart_type", "chart_type": "osm_map"}]),
+    )
+
+    assert response.status_code == 422
+    cache_get.assert_not_called()
+
+
 def test_rebuild_rejects_non_binding_and_ml_operations(
     client, fake_state, monkeypatch
 ):

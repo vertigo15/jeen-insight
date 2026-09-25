@@ -126,9 +126,43 @@ class SetSortOperation(_StrictOperation):
     direction: Literal["asc", "desc", "none"]
 
 
+ChartTypeName = Literal[
+    "bar",
+    "line",
+    "area",
+    "pie",
+    "donut",
+    "scatter",
+    "horizontal_bar",
+    "stacked_bar",
+    "stacked_area",
+    "combo",
+    "heatmap",
+    "gauge",
+]
+
+# Types the browser can flip locally between compatible cartesian series. Any
+# other target type is rebuilt deterministically by the server from cached rows.
+LOCAL_CHART_TYPES = frozenset({"bar", "line", "area"})
+
+
 class SetChartTypeOperation(_StrictOperation):
     op: Literal["set_chart_type"]
-    chart_type: Literal["bar", "line", "area"]
+    chart_type: ChartTypeName
+
+
+class SetPaletteOperation(_StrictOperation):
+    """Ordered colour list for the whole chart (pie slices, multi-series)."""
+
+    op: Literal["set_palette"]
+    colors: list[str] = Field(min_length=1, max_length=12)
+
+    @field_validator("colors")
+    @classmethod
+    def _bounded_colors(cls, value: list[str]) -> list[str]:
+        if any(not isinstance(item, str) or not 1 <= len(item) <= 32 for item in value):
+            raise ValueError("palette colors must be short strings")
+        return value
 
 
 class SetStackOperation(_StrictOperation):
@@ -149,6 +183,147 @@ class SetBindingOperation(_StrictOperation):
         return self
 
 
+_Number = Union[int, float]
+_SAFE_LABEL_RE = re.compile(r"^[^<>\r\n\x00]{1,80}$")
+
+
+def _safe_label(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if not _SAFE_LABEL_RE.fullmatch(value):
+        raise ValueError("label contains unsafe characters or is too long")
+    return value
+
+
+class _ScenarioBase(_StrictOperation):
+    """What-if edits never touch the real series; they add a labelled copy."""
+
+    target: str = Field(min_length=1, max_length=280)
+    label: Optional[str] = Field(default=None, max_length=80)
+
+    @field_validator("label")
+    @classmethod
+    def _label_ok(cls, value: Optional[str]) -> Optional[str]:
+        return _safe_label(value)
+
+
+class ScenarioSetPointOperation(_ScenarioBase):
+    op: Literal["scenario_set_point"]
+    category: str = Field(min_length=1, max_length=160)
+    value: _Number
+
+
+class ScenarioScaleOperation(_ScenarioBase):
+    op: Literal["scenario_scale"]
+    percent: Optional[_Number] = None
+    factor: Optional[_Number] = None
+    from_category: Optional[str] = Field(default=None, min_length=1, max_length=160)
+
+    @model_validator(mode="after")
+    def _one_of(self) -> "ScenarioScaleOperation":
+        if (self.percent is None) == (self.factor is None):
+            raise ValueError("scenario_scale needs exactly one of percent or factor")
+        return self
+
+
+class ScenarioShiftOperation(_ScenarioBase):
+    op: Literal["scenario_shift"]
+    delta: _Number
+    from_category: Optional[str] = Field(default=None, min_length=1, max_length=160)
+
+
+class ScenarioClearOperation(_StrictOperation):
+    op: Literal["scenario_clear"]
+    label: Optional[str] = Field(default=None, max_length=80)
+
+    @field_validator("label")
+    @classmethod
+    def _label_ok(cls, value: Optional[str]) -> Optional[str]:
+        return _safe_label(value)
+
+
+class AddReferenceLineOperation(_StrictOperation):
+    op: Literal["add_reference_line"]
+    axis: Literal["y", "x"] = "y"
+    value: Optional[_Number] = None
+    stat: Optional[Literal["avg", "min", "max", "median"]] = None
+    target: Optional[str] = Field(default=None, min_length=1, max_length=280)
+    label: str = Field(min_length=1, max_length=80)
+
+    @field_validator("label")
+    @classmethod
+    def _label_ok(cls, value: str) -> str:
+        return _safe_label(value) or value
+
+    @model_validator(mode="after")
+    def _one_of(self) -> "AddReferenceLineOperation":
+        if (self.value is None) == (self.stat is None):
+            raise ValueError("add_reference_line needs exactly one of value or stat")
+        if self.axis == "x" and self.stat is not None:
+            raise ValueError("stat reference lines are only meaningful on the value axis")
+        return self
+
+
+class RemoveReferenceLineOperation(_StrictOperation):
+    op: Literal["remove_reference_line"]
+    label: Optional[str] = Field(default=None, max_length=80)
+
+    @field_validator("label")
+    @classmethod
+    def _label_ok(cls, value: Optional[str]) -> Optional[str]:
+        return _safe_label(value)
+
+
+class HighlightPredicate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    op: Literal["lt", "lte", "gt", "gte", "eq", "between"]
+    value: _Number
+    value2: Optional[_Number] = None
+
+    @model_validator(mode="after")
+    def _between_bounds(self) -> "HighlightPredicate":
+        if self.op == "between" and self.value2 is None:
+            raise ValueError("between needs value2")
+        if self.op != "between" and self.value2 is not None:
+            raise ValueError("value2 is only allowed for between")
+        return self
+
+
+class HighlightPointsOperation(_StrictOperation):
+    op: Literal["highlight_points"]
+    target: str = Field(min_length=1, max_length=280)
+    categories: Optional[list[str]] = Field(default=None, min_length=1, max_length=12)
+    predicate: Optional[HighlightPredicate] = None
+    color: Optional[str] = Field(default=None, min_length=1, max_length=32)
+    label: Optional[str] = Field(default=None, max_length=80)
+
+    @field_validator("label")
+    @classmethod
+    def _label_ok(cls, value: Optional[str]) -> Optional[str]:
+        return _safe_label(value)
+
+    @field_validator("categories")
+    @classmethod
+    def _categories_ok(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        if value is not None and any(not isinstance(item, str) or not 1 <= len(item) <= 160 for item in value):
+            raise ValueError("categories must be short strings")
+        return value
+
+    @model_validator(mode="after")
+    def _one_of(self) -> "HighlightPointsOperation":
+        if (self.categories is None) == (self.predicate is None):
+            raise ValueError("highlight_points needs exactly one of categories or predicate")
+        return self
+
+
+class ClearHighlightsOperation(_StrictOperation):
+    op: Literal["clear_highlights"]
+
+
+MAX_SCENARIOS = 2
+
+
 ChartOperation = Annotated[
     Union[
         SetColorOperation,
@@ -163,6 +338,15 @@ ChartOperation = Annotated[
         SetChartTypeOperation,
         SetStackOperation,
         SetBindingOperation,
+        SetPaletteOperation,
+        ScenarioSetPointOperation,
+        ScenarioScaleOperation,
+        ScenarioShiftOperation,
+        ScenarioClearOperation,
+        AddReferenceLineOperation,
+        RemoveReferenceLineOperation,
+        HighlightPointsOperation,
+        ClearHighlightsOperation,
     ],
     Field(discriminator="op"),
 ]
@@ -197,7 +381,26 @@ _PROTECTED_ROLES = {
     "upper_bound",
     "helper",
 }
-_ML_FORBIDDEN = {"set_chart_type", "set_sort", "set_stack", "set_binding"}
+_NO_AXIS_TYPES = {"pie", "donut", "gauge"}
+_NO_STACK_TYPES = {"pie", "donut", "gauge", "scatter", "heatmap"}
+# Palettes are ignored by the renderer for these (their colour comes from a
+# visualMap or the gauge arc), so the contract tells the model up front.
+_PALETTE_EXEMPT_TYPES = {"heatmap", "gauge", "map", "osm_map"}
+# ML result charts carry role-based colours and a fixed layout, so palette and
+# structural operations are ignored for them.
+_ML_FORBIDDEN = {
+    "set_chart_type",
+    "set_sort",
+    "set_stack",
+    "set_binding",
+    "set_palette",
+    # A what-if on a model output is a new analysis, not a chart edit.
+    "scenario_set_point",
+    "scenario_scale",
+    "scenario_shift",
+    "scenario_clear",
+}
+_SCENARIO_OPS = (ScenarioSetPointOperation, ScenarioScaleOperation, ScenarioShiftOperation)
 
 _STYLE_RULES: dict[str, tuple[str, Any]] = {
     "itemStyle.color": ("color", None),
@@ -334,6 +537,34 @@ def _validate_style(path: str, value: Any) -> None:
             )
 
 
+def _manifest_categories(manifest: dict[str, Any]) -> tuple[list[str], bool]:
+    """Category labels of the manifest's category axis and whether the list is complete.
+
+    The browser sends every label when the axis is small (``complete: true``)
+    and only a sample otherwise; scenario categories are validated only in the
+    former case so a long axis never causes a false rejection.
+    """
+
+    axes = manifest.get("axes") or manifest.get("axis") or {}
+    entries: list[dict[str, Any]] = []
+    if isinstance(axes, dict):
+        for key in ("x", "y"):
+            value = axes.get(key)
+            entries.extend(item for item in (value if isinstance(value, list) else [value]) if isinstance(item, dict))
+    elif isinstance(axes, list):
+        entries.extend(item for item in axes if isinstance(item, dict))
+    for entry in entries:
+        categories = entry.get("categories")
+        if not isinstance(categories, dict):
+            continue
+        values = categories.get("values")
+        if isinstance(values, list) and categories.get("complete", True):
+            return [str(value) for value in values], True
+        if isinstance(categories.get("sample"), list):
+            return [str(value) for value in categories["sample"]], False
+    return [], False
+
+
 def _column_sets(manifest: dict[str, Any]) -> tuple[set[str], set[str]]:
     all_columns: set[str] = set()
     numeric: set[str] = set()
@@ -390,6 +621,49 @@ def _validate_overlay(operation: AddOverlayOperation, columns: set[str]) -> None
         )
 
 
+def _validate_categories(
+    requested: list[str], categories: list[str], complete: bool
+) -> None:
+    if not complete:
+        return
+    known = {value.casefold() for value in categories}
+    missing = [value for value in requested if value.casefold() not in known]
+    if missing:
+        raise OperationContractError(
+            "unknown_category",
+            f"Category {missing[0]!r} is not on the chart axis.",
+        )
+
+
+def _validate_scenario(
+    operation: Any, categories: list[str], complete: bool
+) -> None:
+    if isinstance(operation, ScenarioSetPointOperation):
+        if _finite_number(operation.value) is None:
+            raise OperationContractError("invalid_scenario", "Scenario value must be a finite number.")
+        _validate_categories([operation.category], categories, complete)
+    elif isinstance(operation, ScenarioScaleOperation):
+        if operation.percent is not None:
+            percent = _finite_number(operation.percent)
+            if percent is None or not -100 <= percent <= 1000:
+                raise OperationContractError(
+                    "invalid_scenario", "Scenario percent must be between -100 and 1000."
+                )
+        if operation.factor is not None:
+            factor = _finite_number(operation.factor)
+            if factor is None or not 0 <= factor <= 20:
+                raise OperationContractError(
+                    "invalid_scenario", "Scenario factor must be between 0 and 20."
+                )
+        if operation.from_category:
+            _validate_categories([operation.from_category], categories, complete)
+    elif isinstance(operation, ScenarioShiftOperation):
+        if _finite_number(operation.delta) is None:
+            raise OperationContractError("invalid_scenario", "Scenario delta must be a finite number.")
+        if operation.from_category:
+            _validate_categories([operation.from_category], categories, complete)
+
+
 def validate_operation_envelope(
     envelope: ChartOperationEnvelope,
     *,
@@ -405,13 +679,39 @@ def validate_operation_envelope(
     manifest_dict = _manifest_dict(manifest)
     series = _manifest_series(manifest_dict)
     columns, numeric_columns = _column_sets(manifest_dict)
+    categories, categories_complete = _manifest_categories(manifest_dict)
     validated_operations = []
     skipped_ml_operations = []
+
+    # Sort/stack are judged against the type the chart will have after this
+    # answer, so "stacked bar" from a pie is fine while "stack the pie" is not.
+    spec = manifest_dict.get("chart_spec") or manifest_dict.get("chartSpec") or {}
+    effective_type = str(spec.get("chart_type") or "").casefold() if isinstance(spec, dict) else ""
+    for operation in envelope.operations:
+        if isinstance(operation, SetChartTypeOperation):
+            effective_type = operation.chart_type
+    scenario_count = sum(
+        1 for item in manifest_dict.get("overlays", [])
+        if isinstance(item, dict) and item.get("kind") == "scenario"
+    )
 
     for operation in envelope.operations:
         if chart_kind in {"ml_band", "ml_basic"} and operation.op in _ML_FORBIDDEN:
             skipped_ml_operations.append(operation.op)
             continue
+        if isinstance(operation, SetSortOperation) and effective_type in _NO_AXIS_TYPES:
+            raise OperationContractError(
+                "incompatible_sort", "Sorting does not apply to this chart type."
+            )
+        if isinstance(operation, SetStackOperation) and effective_type in _NO_STACK_TYPES:
+            raise OperationContractError(
+                "incompatible_stack", "Stacking does not apply to this chart type."
+            )
+        if isinstance(operation, SetPaletteOperation) and effective_type in _PALETTE_EXEMPT_TYPES:
+            raise OperationContractError(
+                "palette_not_applicable",
+                "Heatmaps, gauges, and maps take their colours from the value scale, not a palette.",
+            )
 
         target = getattr(operation, "target", None)
         if target is not None:
@@ -433,6 +733,9 @@ def validate_operation_envelope(
 
         if isinstance(operation, SetColorOperation):
             _validate_color(operation.color)
+        elif isinstance(operation, SetPaletteOperation):
+            for color in operation.colors:
+                _validate_color(color)
         elif isinstance(operation, SetStyleOperation):
             _validate_style(operation.path, operation.value)
             if any(_series_role(item).casefold() == "interval" for item in matches):
@@ -455,6 +758,48 @@ def validate_operation_envelope(
                     raise OperationContractError(
                         "unknown_overlay", "The requested overlay is not present in the manifest."
                     )
+        elif isinstance(operation, _SCENARIO_OPS):
+            scenario_count += 1
+            if scenario_count > MAX_SCENARIOS:
+                raise OperationContractError(
+                    "too_many_scenarios",
+                    f"At most {MAX_SCENARIOS} scenarios can be shown at once.",
+                )
+            _validate_scenario(operation, categories, categories_complete)
+        elif isinstance(operation, ScenarioClearOperation):
+            scenario_count = 0
+            if operation.label and not any(
+                isinstance(item, dict)
+                and item.get("kind") == "scenario"
+                and item.get("label") == operation.label
+                for item in manifest_dict.get("overlays", [])
+            ):
+                raise OperationContractError(
+                    "unknown_overlay", "The requested scenario is not present in the manifest."
+                )
+        elif isinstance(operation, AddReferenceLineOperation):
+            if operation.value is not None and _finite_number(operation.value) is None:
+                raise OperationContractError("invalid_scenario", "Reference line value must be a finite number.")
+        elif isinstance(operation, RemoveReferenceLineOperation):
+            annotations = manifest_dict.get("annotations") or {}
+            lines = annotations.get("referenceLines", []) if isinstance(annotations, dict) else []
+            if operation.label and not any(
+                isinstance(item, dict) and item.get("label") == operation.label for item in lines
+            ):
+                raise OperationContractError(
+                    "unknown_overlay", "The requested reference line is not present in the manifest."
+                )
+        elif isinstance(operation, HighlightPointsOperation):
+            if operation.color is not None:
+                _validate_color(operation.color)
+            if operation.categories is not None:
+                _validate_categories(operation.categories, categories, categories_complete)
+            if operation.predicate is not None:
+                for value in (operation.predicate.value, operation.predicate.value2):
+                    if value is not None and _finite_number(value) is None:
+                        raise OperationContractError(
+                            "invalid_scenario", "Highlight thresholds must be finite numbers."
+                        )
         elif isinstance(operation, SetBindingOperation):
             requested = [value for value in (operation.x, operation.y, operation.series) if value]
             unknown = [value for value in requested if value not in columns]
@@ -472,7 +817,7 @@ def validate_operation_envelope(
         if not validated_operations and not envelope.out_of_scope:
             raise OperationContractError(
                 "operation_not_allowed_for_chart_kind",
-                "ML result charts do not allow type, sort, stack, or binding changes.",
+                "ML result charts do not allow type, sort, stack, palette, or binding changes.",
             )
         envelope.operations = validated_operations
         locked_note = "Analysis-controlled layout changes were ignored."
@@ -497,6 +842,9 @@ Never return chart_config, ECharts option/config, data, rows, SQL, code, or copi
 
 Allowed operations (no extra keys):
 - {"op":"set_color","target":"...","color":"#RRGGBB"}
+- {"op":"set_palette","colors":["#RRGGBB",...]} (1-12 colors, in order; use for
+  named themes like "India colors", "pastel", "monochrome blues", or to color
+  pie slices / several series differently)
 - {"op":"set_style","target":"...","path":"<allowlisted path>","value":<scalar>}
 - {"op":"set_toggle","key":"dataLabels|legend|dataZoom","value":true,"target":"optional"}
 - {"op":"set_format","kind":"number|currency|percent","compact":true,"symbol":""}
@@ -505,15 +853,37 @@ Allowed operations (no extra keys):
 - {"op":"add_overlay","operator":"moving_avg|cumulative_sum|percent_change|linear_trend|normalize_0_1|log_scale","source_column":"...","params":{},"label":"..."}
 - {"op":"remove_overlay","operator":"optional","label":"optional"}
 - SQL charts only: {"op":"set_sort","direction":"asc|desc|none"},
-  {"op":"set_chart_type","chart_type":"bar|line|area"},
+  {"op":"set_chart_type","chart_type":"bar|line|area|pie|donut|scatter|horizontal_bar|stacked_bar|stacked_area|combo|heatmap|gauge"},
   {"op":"set_stack","stacked":true},
   {"op":"set_binding","x":"optional","y":"optional","series":"optional"}.
+  Chart type and binding changes are rebuilt by the app from the same cached
+  result rows (same columns, grouping, and aggregation), so they are in scope.
+  Only a different GROUP BY, filter, aggregation, or new column needs a new query.
+  "Donut" = pie with a hole; "horizontal bar" flips the axes; "stacked" keeps
+  the series and stacks them. Sorting/stacking do not apply to pie, donut, or
+  gauge; palettes do not apply to heatmap, gauge, or map charts.
+- What-if (SQL charts only). The app draws a dashed "Scenario" copy of the
+  series next to the real one; the real data is never changed. Categories must
+  be taken verbatim from the manifest axis categories.
+  {"op":"scenario_set_point","target":"...","category":"<axis label>","value":<number>,"label":"..."}
+  {"op":"scenario_scale","target":"...","percent":<-100..1000> | "factor":<0..20>,"from_category":"optional","label":"..."}
+  {"op":"scenario_shift","target":"...","delta":<number>,"from_category":"optional","label":"..."}
+  {"op":"scenario_clear","label":"optional"}
+- Annotations (any chart kind):
+  {"op":"add_reference_line","axis":"y","value":<number> | "stat":"avg|min|max|median","target":"optional","label":"..."}
+  {"op":"remove_reference_line","label":"optional"}
+  {"op":"highlight_points","target":"...","categories":["..."] | "predicate":{"op":"lt|lte|gt|gte|eq|between","value":<n>,"value2":<n>},"color":"optional #RRGGBB","label":"optional"}
+  {"op":"clear_highlights"}
+  Parse "30K" as 30000, "1.2M" as 1200000, "10%" growth as percent 10.
 
 Targets are exactly "all", "role:<manifest jeenRole>", "name:<manifest name>", or
 "id:<manifest id>". Never use an array index. Do not target locked helper/bound
 series. The visible role:interval band may only change safe fill color/opacity.
-For ml_band and ml_basic, never emit set_chart_type, set_sort,
-set_stack, or set_binding. Use only manifest columns and series.
+When the same answer also changes chart type or bindings, color with
+set_palette or target "all" (series names may change after the rebuild).
+For ml_band and ml_basic, never emit set_chart_type, set_sort, set_stack,
+set_palette, set_binding, or scenario_* (a what-if on a model result is a new
+analysis). Use only manifest columns, series, and axis categories.
 Safe style paths: itemStyle.color/borderColor/opacity/borderWidth,
 lineStyle.color/width/opacity/type, areaStyle.color/opacity, opacity,
 symbolSize, symbol, smooth, label.show/color/position/fontSize, and
@@ -546,4 +916,22 @@ Short examples:
 {"operations":[],"notes":"ML result chart structure is fixed.","out_of_scope":true,"reason_code":"ml_locked"}
 10. "make the line thicker":
 {"operations":[{"op":"set_style","target":"all","path":"lineStyle.width","value":3}],"notes":"Increased line width.","out_of_scope":false,"reason_code":null}
+11. "change to pie chart with India colors" (SQL):
+{"operations":[{"op":"set_chart_type","chart_type":"pie"},{"op":"set_palette","colors":["#ff9933","#138808","#000080","#ffffff"]}],"notes":"Pie chart in saffron, green, navy, and white.","out_of_scope":false,"reason_code":null}
+12. "horizontal bars, biggest first" (SQL):
+{"operations":[{"op":"set_chart_type","chart_type":"horizontal_bar"},{"op":"set_sort","direction":"desc"}],"notes":"Horizontal bars sorted descending.","out_of_scope":false,"reason_code":null}
+13. "use pastel colors":
+{"operations":[{"op":"set_palette","colors":["#a5d8ff","#b2f2bb","#ffd8a8","#ffc9c9","#d0bfff","#fff3bf"]}],"notes":"Applied a pastel palette.","out_of_scope":false,"reason_code":null}
+14. "what if Bikes sold 30K" (SQL, category "Bikes" in the manifest):
+{"operations":[{"op":"scenario_set_point","target":"all","category":"Bikes","value":30000,"label":"Bikes at 30K"}],"notes":"Added a scenario with Bikes at 30,000 next to the actual values.","out_of_scope":false,"reason_code":null}
+15. "show 10% growth from June":
+{"operations":[{"op":"scenario_scale","target":"all","percent":10,"from_category":"June","label":"+10% from June"}],"notes":"Scenario: +10% from June onward.","out_of_scope":false,"reason_code":null}
+16. "add a target line at 20K and highlight months below 10K":
+{"operations":[{"op":"add_reference_line","axis":"y","value":20000,"label":"Target 20K"},{"op":"highlight_points","target":"all","predicate":{"op":"lt","value":10000},"label":"Below 10K"}],"notes":"Target line and highlights added.","out_of_scope":false,"reason_code":null}
+17. "show the average line":
+{"operations":[{"op":"add_reference_line","axis":"y","stat":"avg","label":"Average"}],"notes":"Average line added.","out_of_scope":false,"reason_code":null}
+18. "what if total revenue were 1M":
+{"operations":[],"notes":"Say how to spread the total, e.g. 'scale every month so the total is 1M' or 'what if December were 1M'.","out_of_scope":true,"reason_code":"ambiguous"}
+19. "remove the scenario":
+{"operations":[{"op":"scenario_clear"}],"notes":"Scenario removed.","out_of_scope":false,"reason_code":null}
 """
