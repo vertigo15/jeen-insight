@@ -42,19 +42,73 @@ test('table toolbar has a top separator and Describe sits below the grid', async
   expect(positions.describeTop).toBeGreaterThanOrEqual(positions.gridBottom);
 });
 
-test('ML keeps analysis adjustment outside the chart and locks unsafe chart controls', async ({ page }) => {
+test('ML small chat edits only the ECharts config and collapses with the chart', async ({ page }) => {
   await ask(page, Q.forecast);
   await page.click('#v3-placeholder .v3-ml-card [data-run]');
 
   await expect(page.locator('#v3-meta-row .v3-skill-chip')).toHaveText('forecast');
-  await expect(page.locator('#v3-analysis-adjust')).toBeVisible();
-  await expect(page.locator('#v3-analysis-adjust')).toContainText('current result is kept');
-  await expect(page.locator('#v3-chart-edit')).toBeHidden();
+  await expect(page.locator('#v3-analysis-adjust')).toBeHidden();
+  await expect(page.locator('#v3-chart-edit')).toBeVisible();
+  await page.evaluate(async () => {
+    const host = document.createElement('div');
+    host.id = 'ml-chart-only-chat';
+    document.getElementById('v3-chart-edit').appendChild(host);
+    const { ChartChat } = await import('/src/static/chart-feature/components/ChartChat.js');
+    const config = {
+      xAxis: { type: 'category', data: ['Jan', 'Feb'] },
+      yAxis: { type: 'value' },
+      series: [{ id: 'actual', name: 'Actual', jeenRole: 'actual', type: 'line', data: [10, 12] }],
+    };
+    window.__CHART_FIXTURES__ = {
+      edit: [{
+        response: {
+          contract_version: 2,
+          operations: [{ op: 'set_color', target: 'role:actual', color: '#22c55e' }],
+          notes: 'Updated the actual line.',
+          out_of_scope: false,
+          reason_code: null,
+        },
+      }],
+    };
+    window.__mlChartOnly = { applies: 0 };
+    const chat = new ChartChat('ml-chart-only-chat', {
+      getChartManifest: () => ({
+        series: [{
+          id: 'actual', name: 'Actual', role: 'actual', type: 'line',
+          pointCount: 2, locked: false,
+        }],
+        axes: { x: [{ type: 'category', categories: { count: 2 } }], y: [{ type: 'value' }] },
+        toggles: { dataLabels: false, legend: true, dataZoom: false },
+        overlays: [],
+        chart_spec: { chart_type: 'band' },
+        columns: [],
+      }),
+      getChartKind: () => 'ml_band',
+      getConnection: () => 'sales_db',
+      getRevision: () => 1,
+      isRevisionCurrent: (revision) => revision === 1,
+      onApply: () => { window.__mlChartOnly.applies += 1; },
+      onReset: () => {},
+    });
+    chat.mount();
+    chat.enable();
+    chat.setAnalysisMode(false);
+    window.__calls = [];
+  });
+  await expect(page.locator('#ml-chart-only-chat .chart-refine-input')).toHaveAttribute('aria-label', 'Refine this chart');
+  await expect(page.locator('#ml-chart-only-chat .chart-refine-apply')).toContainText('Apply');
+
+  await page.locator('#ml-chart-only-chat .chart-refine-input').fill('show line chart in green with labels');
+  await page.locator('#ml-chart-only-chat .chart-refine-apply').click();
+  await expect.poll(() => page.evaluate(() => (
+    (window.__calls || []).some((call) => call.url.includes('/api/edit-chart'))
+  ))).toBe(true);
+  expect(await page.evaluate(() => window.__mlChartOnly)).toEqual({ applies: 1 });
 
   await page.locator('#v3-chart-toggle').click();
   await expect(page.locator('#v3-chart-types')).toBeHidden();
   await expect(page.locator('#v3-chart-frame')).toBeHidden();
-  await expect(page.locator('#v3-analysis-adjust')).toBeVisible();
+  await expect(page.locator('#v3-chart-edit')).toBeHidden();
 });
 
 test('narrow layouts keep chart type primary and put secondary controls behind an overflow', async ({ page }) => {
@@ -169,9 +223,10 @@ test('chart edits survive apply and Reset restores the original baseline', async
     const spec = { chart_type: 'bar', x: 'region', y: 'sales' };
     manager._adoptBaseline(structuredClone(baseline), spec);
 
-    const edited = structuredClone(baseline);
-    edited.series[0].label.show = true;
-    await manager.applyEditedConfig(edited, [], null, { chart_spec: spec });
+    await manager.applyEditedOperations(
+      [{ op: 'set_toggle', key: 'dataLabels', value: true }],
+      manager._chartEditToken(),
+    );
     const applied = manager.currentEchartsOptions.series[0].label.show;
     await manager.resetChartEdits();
     const reset = manager.currentEchartsOptions.series[0].label.show;

@@ -8,14 +8,21 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import ValidationError
 
 from src.agent.conversation_artifacts import measure_chart_payload
 from src.api.chart_builder import build_chart_option, profile_dataset
 from src.api.chart_edit_validation import validate_chart_edit
+from src.api.chart_operations import (
+    CHART_OPERATION_SAFETY_CONTRACT,
+    OPERATION_ENVELOPE_ADAPTER,
+    OperationContractError,
+    validate_operation_envelope,
+)
 from src.api.dependencies import get_history_service, get_principal, resolve_agent
 from src.security.internal_auth import Principal
 from src.api.llm_json import (
@@ -24,6 +31,7 @@ from src.api.llm_json import (
     normalise_derived_series,
 )
 from src.api.llm_params import (
+    EDIT_CHART_OPERATIONS_PARAMS,
     EDIT_CHART_PARAMS,
     ENHANCE_CHART_PARAMS,
     GENERATE_CHART_PARAMS,
@@ -42,8 +50,11 @@ from src.api.models import (
     ChatMessage,
     ChartEditError,
     DerivedSeriesSpec,
+    EditChartRebuildRequest,
+    EditChartRebuildResponse,
     EditChartRequest,
     EditChartResponse,
+    EditChartV2Response,
     EnhanceChartRequest,
     GenerateChartRequest,
     GenerateChartResponse,
@@ -1223,6 +1234,18 @@ ADDITIONAL SAFE EDIT CONTRACT:
   value. Never emit dataset, transform, graphic, map/geo, HTML, URLs, images,
   JavaScript formatters, NaN, or Infinity.
 """
+_LEGACY_EDIT_CONTRACT_APPENDIX = """
+
+LEGACY CONTRACT VERSION 1 (mandatory for this request):
+Return JSON with chart_config (the complete edited option), chart_type,
+optional spec_patch, optional jeenFormat, derived_series, notes, and
+out_of_scope. Preserve all existing data/category arrays exactly. Never emit
+functions, HTML, URLs, graphic, dataset, transform, geo, map, NaN, or Infinity.
+Use spec_patch rather than rewriting arrays for chart type, x/y/series binding,
+stack, or sort changes. Derived overlays must use only the allowlisted operator
+names and columns supplied below. Re-grouping or a new aggregation is out of
+scope. Return JSON only.
+"""
 
 
 def _is_osm_map_edit(request: EditChartRequest) -> bool:
@@ -1611,11 +1634,388 @@ async def _edit_osm_map_chart(
     )
 
 
-@router.post("/edit-chart", response_model=EditChartResponse)
+@router.post(
+    "/edit-chart/rebuild",
+    response_model=EditChartRebuildResponse,
+)
+async def rebuild_chart_bindings(
+    request: EditChartRebuildRequest,
+    response: Response,
+    principal: Principal = Depends(get_principal),
+) -> EditChartRebuildResponse:
+    """Rebuild a SQL chart from cached rows after validated binding changes."""
+
+    total_started = time.monotonic()
+    phases = {"cache": 0.0, "profile": 0.0, "build": 0.0, "validate": 0.0}
+    cache_status = "not_read"
+
+    def finish(status: str, error_code: Optional[str] = None) -> dict[str, str]:
+        total_ms = round((time.monotonic() - total_started) * 1000, 2)
+        timing = ", ".join(
+            [
+                f"cache;dur={phases['cache']}",
+                f"profile;dur={phases['profile']}",
+                f"build;dur={phases['build']}",
+                f"validate;dur={phases['validate']}",
+                f"total;dur={total_ms}",
+            ]
+        )
+        response.headers["Server-Timing"] = timing
+        logger.info(
+            "chart_edit_rebuild_timing query_id=%s cache=%s status=%s "
+            "cache_ms=%s profile_ms=%s build_ms=%s validate_ms=%s "
+            "total_ms=%s error_code=%s",
+            request.query_id,
+            cache_status,
+            status,
+            phases["cache"],
+            phases["profile"],
+            phases["build"],
+            phases["validate"],
+            total_ms,
+            error_code,
+            extra={
+                "event": "chart_edit_rebuild_timing",
+                "query_id": request.query_id,
+                "cache_status": cache_status,
+                "status": status,
+                "cache_ms": phases["cache"],
+                "profile_ms": phases["profile"],
+                "build_ms": phases["build"],
+                "validate_ms": phases["validate"],
+                "total_ms": total_ms,
+                "error_code": error_code,
+            },
+        )
+        return {"Server-Timing": timing}
+
+    # Ownership is deliberately checked before even looking in the process cache.
+    user_id = principal.user_id
+    await _verify_query_owner(
+        query_id=request.query_id,
+        user_id=user_id,
+        connection=request.connection,
+    )
+
+    base_type = str(request.chart_spec.get("chart_type") or "").strip().lower()
+    if base_type not in _STANDARD_EDIT_CHART_TYPES:
+        headers = finish("rejected", "unsupported_chart_kind")
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "unsupported_chart_kind",
+                "message": "Only SQL chart specifications can be rebound.",
+            },
+            headers=headers,
+        )
+
+    cache_started = time.monotonic()
+    dataset = result_cache.get(
+        user_id=user_id,
+        connection=request.connection,
+        query_id=request.query_id,
+    )
+    if dataset is not None:
+        cache_status = "hit"
+    elif request.column_names is not None and request.all_data is not None:
+        dataset = {
+            "columns": list(request.column_names),
+            "rows": request.all_data,
+        }
+        cache_status = "fallback"
+    else:
+        cache_status = "miss"
+    phases["cache"] = round((time.monotonic() - cache_started) * 1000, 2)
+
+    if dataset is None:
+        headers = finish("cache_miss", "cache_miss")
+        raise HTTPException(status_code=409, detail="cache_miss", headers=headers)
+
+    profile_started = time.monotonic()
+    profile = profile_dataset(dataset)
+    column_names, numeric_cols, date_cols = _columns_from_profile(profile)
+    phases["profile"] = round((time.monotonic() - profile_started) * 1000, 2)
+    if not column_names:
+        headers = finish("rejected", "missing_columns")
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "missing_columns",
+                "message": "Could not determine chartable columns for this result set.",
+            },
+            headers=headers,
+        )
+
+    validate_started = time.monotonic()
+    raw_patch: dict[str, Any] = {}
+    for operation in request.operations:
+        raw_patch.update(
+            operation.model_dump(
+                mode="json",
+                exclude={"op"},
+                exclude_unset=True,
+            )
+        )
+    patch, patch_error = _validate_standard_spec_patch(
+        raw_patch,
+        column_names=column_names,
+        numeric_cols=numeric_cols,
+    )
+    if patch_error:
+        phases["validate"] += round(
+            (time.monotonic() - validate_started) * 1000, 2
+        )
+        code, message, details = patch_error
+        headers = finish("rejected", code)
+        raise HTTPException(
+            status_code=422,
+            detail={"code": code, "message": message, "details": details},
+            headers=headers,
+        )
+
+    merged = {**request.chart_spec, **(patch or {})}
+    spec = _validate_chart_spec(
+        merged,
+        column_names=column_names,
+        numeric_cols=numeric_cols,
+        date_cols=date_cols,
+        forced_type=base_type,
+        osm_enabled=False,
+    )
+    phases["validate"] += round(
+        (time.monotonic() - validate_started) * 1000, 2
+    )
+
+    build_started = time.monotonic()
+    try:
+        chart_config = build_chart_option(spec, dataset)
+    except (TypeError, ValueError) as exc:
+        phases["build"] = round((time.monotonic() - build_started) * 1000, 2)
+        headers = finish("rejected", "chart_rebuild_failed")
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "chart_rebuild_failed",
+                "message": "The chart could not be rebuilt from these bindings.",
+                "details": {"reason": str(exc)},
+            },
+            headers=headers,
+        ) from exc
+    phases["build"] = round((time.monotonic() - build_started) * 1000, 2)
+
+    validate_started = time.monotonic()
+    validation = validate_chart_edit(chart_config, chart_config)
+    phases["validate"] += round(
+        (time.monotonic() - validate_started) * 1000, 2
+    )
+    if not validation.ok:
+        code = validation.code or "invalid_rebuild"
+        headers = finish("rejected", code)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": code,
+                "message": validation.message
+                or "The rebuilt chart was not safe to apply.",
+                "details": validation.details,
+            },
+            headers=headers,
+        )
+
+    finish("success")
+    return EditChartRebuildResponse(
+        chart_config=chart_config,
+        chart_spec=spec,
+    )
+
+
+def _v2_rejection(code: str, message: str) -> EditChartV2Response:
+    return EditChartV2Response(
+        operations=[],
+        notes=message,
+        out_of_scope=True,
+        reason_code=code,
+    )
+
+
+async def _edit_chart_v2(
+    request: EditChartRequest,
+    instruction: str,
+    http_response: Response,
+) -> EditChartV2Response:
+    """Run the isolated, data-free chart operation contract with one LLM call."""
+
+    from src.api import state as app_state
+
+    total_started = time.monotonic()
+    phases = {"context": 0, "prompt": 0, "model": 0, "validate": 0}
+    finish_reason: Optional[str] = None
+    usage: dict[str, Any] = {}
+
+    context_started = time.monotonic()
+    manifest = request.chart_manifest
+    manifest_blob = json.dumps(
+        manifest.model_dump(by_alias=True, mode="json", exclude_none=True)
+        if manifest is not None
+        else {},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    recent_blob = _format_recent_messages(request.recent_messages)
+    phases["context"] = round((time.monotonic() - context_started) * 1000, 2)
+
+    result: EditChartV2Response
+    prompt_started = time.monotonic()
+    template = _load_chart_editor_prompt()
+    model_override = None
+    if app_state.prompt_cache:
+        try:
+            template = await app_state.prompt_cache.get_content("chart_editor")
+            model_override = await app_state.prompt_cache.get_model_override("chart_editor")
+        except Exception:  # noqa: BLE001
+            logger.warning("Chart operation prompt cache unavailable; using file prompt")
+    if not isinstance(template, str) or not template.strip():
+        template = _load_chart_editor_prompt()
+    system_prompt = (
+        template.strip()
+        + "\n\n"
+        + CHART_OPERATION_SAFETY_CONTRACT.strip()
+        + "\n\nREQUEST CONTEXT (data-free)\n"
+        + f"chart_kind: {request.chart_kind}\n"
+        + f"chart_manifest: {manifest_blob}\n"
+        + f"recent_messages:\n{recent_blob}"
+    )
+    phases["prompt"] = round((time.monotonic() - prompt_started) * 1000, 2)
+
+    llm = app_state.llm_service
+    if llm is None:
+        result = _v2_rejection(
+            "edit_service_unavailable",
+            "The chart-edit service is unavailable right now.",
+        )
+    else:
+        model_started = time.monotonic()
+        try:
+            # This is the sole model call in the v2 path. It deliberately bypasses
+            # connection agents, query caches, connector runners, and analysis.
+            model_response = await llm.generate(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": instruction},
+                ],
+                temperature=EDIT_CHART_OPERATIONS_PARAMS.temperature,
+                max_tokens=EDIT_CHART_OPERATIONS_PARAMS.max_tokens,
+                model_override=model_override,
+                timeout=15,
+                max_fallbacks=1,
+            )
+            finish_reason = model_response.get("finish_reason")
+            raw_usage = model_response.get("usage")
+            usage = raw_usage if isinstance(raw_usage, dict) else {}
+        except Exception:  # noqa: BLE001
+            logger.exception("Chart operation LLM call failed")
+            model_response = None
+        phases["model"] = round((time.monotonic() - model_started) * 1000, 2)
+
+        if model_response is None:
+            result = _v2_rejection(
+                "edit_service_unavailable",
+                "The chart-edit service is unavailable right now.",
+            )
+        else:
+            validate_started = time.monotonic()
+            raw = model_response.get("content") or ""
+            truncated = str(finish_reason or "").lower() in {
+                "length",
+                "max_tokens",
+                "max_completion_tokens",
+            }
+            parsed = None if truncated else extract_json_object(raw, reject_non_finite=True)
+            if truncated:
+                result = _v2_rejection(
+                    "model_output_truncated",
+                    "The chart edit response was incomplete. Please try a shorter instruction.",
+                )
+            elif not isinstance(parsed, dict):
+                logger.warning(
+                    "Chart operation LLM returned unparseable JSON (%d chars)", len(raw)
+                )
+                result = _v2_rejection(
+                    "invalid_model_output",
+                    "I couldn't safely apply that chart edit. Please rephrase it.",
+                )
+            else:
+                try:
+                    envelope = OPERATION_ENVELOPE_ADAPTER.validate_python(parsed)
+                    envelope = validate_operation_envelope(
+                        envelope,
+                        chart_kind=request.chart_kind or "sql",
+                        manifest=manifest,
+                    )
+                    result = EditChartV2Response(**envelope.model_dump(mode="json"))
+                except OperationContractError as exc:
+                    result = _v2_rejection(exc.code, exc.message)
+                except ValidationError:
+                    logger.warning("Chart operation LLM response failed schema validation")
+                    result = _v2_rejection(
+                        "invalid_model_output",
+                        "I couldn't safely apply that chart edit. Please rephrase it.",
+                    )
+            phases["validate"] = round((time.monotonic() - validate_started) * 1000, 2)
+
+    total_ms = round((time.monotonic() - total_started) * 1000, 2)
+    http_response.headers["Server-Timing"] = ", ".join(
+        [
+            f"context;dur={phases['context']}",
+            f"prompt;dur={phases['prompt']}",
+            f"model;dur={phases['model']}",
+            f"validate;dur={phases['validate']}",
+            f"total;dur={total_ms}",
+        ]
+    )
+    logger.info(
+        "chart_edit_v2_timing chart_kind=%s context_ms=%s prompt_ms=%s "
+        "model_ms=%s validate_ms=%s total_ms=%s operations=%d "
+        "out_of_scope=%s reason_code=%s finish_reason=%s usage=%s",
+        request.chart_kind,
+        phases["context"],
+        phases["prompt"],
+        phases["model"],
+        phases["validate"],
+        total_ms,
+        len(result.operations),
+        result.out_of_scope,
+        result.reason_code,
+        finish_reason,
+        usage,
+        extra={
+            "event": "chart_edit_v2_timing",
+            "chart_kind": request.chart_kind,
+            "context_ms": phases["context"],
+            "prompt_ms": phases["prompt"],
+            "model_ms": phases["model"],
+            "validate_ms": phases["validate"],
+            "total_ms": total_ms,
+            "operation_count": len(result.operations),
+            "out_of_scope": result.out_of_scope,
+            "reason_code": result.reason_code,
+            "finish_reason": finish_reason,
+            "usage": usage,
+        },
+    )
+    return result
+
+
+@router.post(
+    "/edit-chart",
+    response_model=Union[EditChartV2Response, EditChartResponse],
+)
 async def edit_chart(
     request: EditChartRequest,
+    response: Response,
     principal: Principal = Depends(get_principal),
-):
+) -> EditChartV2Response | EditChartResponse:
     """Apply a natural-language edit to the current ECharts config.
 
     The endpoint never touches the SQL result set. It returns a new chart
@@ -1626,6 +2026,8 @@ async def edit_chart(
     instruction = (request.instruction or "").strip()
     if not instruction:
         raise HTTPException(status_code=400, detail="`instruction` is required")
+    if request.contract_version == 2:
+        return await _edit_chart_v2(request, instruction, response)
     if not request.current_config:
         raise HTTPException(status_code=400, detail="`current_config` is required")
 
@@ -1683,6 +2085,16 @@ async def _edit_chart_impl(
         # Admin-customized prompts remain valid even when they predate
         # spec_patch: no new format placeholders are required.
         system_prompt += _STANDARD_EDIT_CONTRACT_APPENDIX
+        system_prompt += _LEGACY_EDIT_CONTRACT_APPENDIX
+        system_prompt += (
+            "\n\nLEGACY REQUEST CONTEXT\n"
+            f"instruction: {instruction}\n"
+            f"column_names: {column_names_blob}\n"
+            f"column_types:\n{column_types_blob}\n"
+            f"sample_rows: {sample_blob}\n"
+            f"current_config: {config_blob}\n"
+            f"recent_messages:\n{recent_blob}\n"
+        )
     except (KeyError, IndexError, ValueError):
         logger.exception("Failed to format chart_editor prompt")
         raise HTTPException(status_code=500, detail="Chart editor prompt is malformed")

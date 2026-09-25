@@ -3,8 +3,8 @@
  *
  * Renders one slim row under the chart that lets the user request
  * visualization-only changes in natural language. Each message hits
- * /api/edit-chart, which returns a new ECharts config (and optionally a
- * list of derived-series specs computed locally from the existing data).
+ * /api/edit-chart exactly once with the compact v2 manifest and receives
+ * validated local chart operations.
  *
  * Layout (matches design handoff): a hairline-separated row with a sparkle
  * AI icon, a single-line rounded inline input, and a small purple "Apply →"
@@ -36,8 +36,6 @@ const t = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof
 const th = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.h === 'function' ? window.I18n.h(key, args) : String(key));
 
 const CHART_PLACEHOLDER = () => t('charts.chat.placeholder');
-// ML results: the same bar re-runs the *analysis* (a new child turn), not the chart.
-const ANALYSIS_PLACEHOLDER = () => t('charts.chat.analysisPlaceholder');
 
 const SPARKLE_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3zM19 16l.9 2.1L22 19l-2.1.9L19 22l-.9-2.1L16 19l2.1-.9L19 16z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>';
 const ARROW_SVG = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -46,13 +44,14 @@ export class ChartChat {
     /**
      * @param {string} containerId
      * @param {{
-     *   getCurrentConfig: () => object|null,
-     *   getCurrentResults: () => object|null,
+     *   getChartManifest: () => object|null,
+     *   getChartKind: () => 'sql'|'ml_band'|'ml_basic',
      *   getConnection: () => string,
-     *   getCurrentSpec?: () => object|null,
-     *   getCurrentDerivedSpecs?: () => Array,
      *   getQueryId?: () => string|null,
-     *   onApply: (config: object, derivedSeries: Array, notes?: string|null, edit?: object) => void|Promise<void>,
+     *   getRevision?: () => string|number,
+     *   isRevisionCurrent?: (revision: string|number) => boolean,
+     *   onApply: (operations: Array, revision: string|number) => void|Promise<void>,
+ *   onTiming?: (timing: object) => void,
      *   onReset: () => void|Promise<void>
      * }} hooks
      */
@@ -203,6 +202,7 @@ export class ChartChat {
 
     reset() {
         this.messages = [];
+        this.idCounter += 1;
         if (this.inFlight) {
             try { this.inFlight.abort(); } catch (_) { /* ignore */ }
             this.inFlight = null;
@@ -289,14 +289,16 @@ export class ChartChat {
         this._applyBtnEl.setAttribute('aria-disabled', canSubmit ? 'false' : 'true');
         this._applyBtnEl.classList.toggle('is-busy', active);
         if (this._resetBtnEl) {
-            this._resetBtnEl.disabled = !available || active;
-            this._resetBtnEl.setAttribute('aria-disabled', (!available || active) ? 'true' : 'false');
+            const resetBlocked = !available || this.externalBusy
+                || (this._localBusy && !this.inFlight);
+            this._resetBtnEl.disabled = resetBlocked;
+            this._resetBtnEl.setAttribute('aria-disabled', resetBlocked ? 'true' : 'false');
         }
         const label = this._applyBtnEl.querySelector('span');
         if (label) {
             label.textContent = active
-                ? (this._analysisMode ? t('charts.chat.rerunningButton') : t('charts.chat.applying'))
-                : (this._analysisMode ? t('charts.chat.rerunAnalysis') : t('charts.chat.apply'));
+                ? t('charts.chat.applying')
+                : t('charts.chat.apply');
         }
     }
 
@@ -321,20 +323,16 @@ export class ChartChat {
         this._syncControls();
     }
 
-    /**
-     * Switch between chart-edit mode and analysis re-run mode. In analysis mode
-     * Apply hands the instruction to `hooks.onAnalysisRerun`, which appends a
-     * new result turn (never mutates the current one).
-     */
-    setAnalysisMode(on) {
-        this._analysisMode = Boolean(on);
+    /** Kept as a compatibility no-op: compact chat is always chart-only. */
+    setAnalysisMode(_on) {
+        this._analysisMode = false;
         if (!this.mounted) return;
-        this._inputEl.placeholder = this._analysisMode ? ANALYSIS_PLACEHOLDER() : CHART_PLACEHOLDER();
-        this._inputEl.setAttribute('aria-label', this._analysisMode ? t('charts.chat.adjustAnalysis') : t('charts.chat.refine'));
-        this._applyBtnEl.title = this._analysisMode ? t('charts.chat.rerunTitle') : '';
+        this._inputEl.placeholder = CHART_PLACEHOLDER();
+        this._inputEl.setAttribute('aria-label', t('charts.chat.refine'));
+        this._applyBtnEl.title = '';
         const label = this._applyBtnEl.querySelector('span');
         if (label && !this._applyBtnEl.classList.contains('is-busy')) {
-            label.textContent = this._analysisMode ? t('charts.chat.rerunAnalysis') : t('charts.chat.apply');
+            label.textContent = t('charts.chat.apply');
         }
         this._syncControls();
     }
@@ -342,30 +340,11 @@ export class ChartChat {
     async _handleSend() {
         if (!this._canSubmit()) return;
         const instruction = (this._inputEl.value || '').trim();
-
-        if (this._analysisMode && typeof this.hooks.onAnalysisRerun === 'function') {
-            this._setStatus(t('charts.chat.rerunning'), 'progress');
-            this._setBusy(true);
-            try {
-                await this.hooks.onAnalysisRerun(instruction);
-                this._inputEl.value = '';
-                this._setStatus(t('charts.chat.rerunCompleted'), 'success');
-            } catch (error) {
-                if (error && error.name === 'AbortError') return;
-                this._setStatus(t('charts.chat.rerunFailed', { detail: String(error && error.message ? error.message : error) }), 'error');
-            } finally {
-                this._setBusy(false);
-                this.setAnalysisMode(this._analysisMode);
-                this._focusInput();
-            }
-            return;
-        }
-
-        const config = this.hooks.getCurrentConfig && this.hooks.getCurrentConfig();
-        const results = this.hooks.getCurrentResults && this.hooks.getCurrentResults();
+        const chartManifest = this.hooks.getChartManifest && this.hooks.getChartManifest();
         const connection = this.hooks.getConnection ? this.hooks.getConnection() : '';
+        const revision = this.hooks.getRevision ? this.hooks.getRevision() : 0;
 
-        if (!config) {
+        if (!chartManifest) {
             this._setStatus(t('charts.chat.needChart'), 'warn');
             this._focusInput();
             return;
@@ -376,9 +355,9 @@ export class ChartChat {
             return;
         }
 
+        const payload = this._buildPayload(connection, instruction, chartManifest);
         this._appendMessage('user', instruction);
         this._setStatus(t('charts.chat.working'), 'progress');
-        this._setBusy(true);
 
         // Cancel any in-flight request before starting a new one.
         if (this.inFlight) {
@@ -386,30 +365,23 @@ export class ChartChat {
         }
         this.inFlight = new AbortController();
         const myRequestId = ++this.idCounter;
+        const requestStarted = performance.now();
+        this._setBusy(true);
 
         try {
-            const payload = this._buildPayload(connection, instruction, config, results);
-            let resp = await fetch('/api/edit-chart', {
+            const resp = await fetch('/api/edit-chart', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
                 signal: this.inFlight.signal,
             });
-            if (resp.status === 409) {
-                // Semantic edits and map rebuilds require the full result set.
-                // Result caches are short-lived and replica-local, so retry
-                // once with rows after a cache miss.
-                resp = await fetch('/api/edit-chart', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ...payload, ...this._fallbackRows(results) }),
-                    signal: this.inFlight.signal,
-                });
-            }
+            const responseReceived = performance.now();
+            const serverTiming = resp.headers?.get?.('Server-Timing') || '';
 
             if (myRequestId !== this.idCounter) return; // superseded
 
             const data = await resp.json().catch(() => ({}));
+            const parsedAt = performance.now();
 
             if (!resp.ok) {
                 const detail = (data && (data.detail || data.error)) || `HTTP ${resp.status}`;
@@ -417,29 +389,53 @@ export class ChartChat {
                 return;
             }
 
-            const newConfig = data.chart_config && typeof data.chart_config === 'object'
-                ? data.chart_config
-                : null;
-            const derived = Array.isArray(data.derived_series) ? data.derived_series : [];
+            if (Number(data.contract_version) !== 2) {
+                this._setStatus(t('charts.chat.applyFailed', { detail: 'Unsupported chart edit response.' }), 'error');
+                return;
+            }
+            const operations = Array.isArray(data.operations) ? data.operations : [];
             const note = (data.notes && String(data.notes).trim()) || '';
+            const reasonCode = (data.reason_code && String(data.reason_code).trim()) || '';
             const outOfScope = !!data.out_of_scope;
 
-            if (outOfScope || !newConfig) {
-                const fallback = note || t('charts.chat.outOfScope');
+            if (outOfScope || operations.length === 0) {
+                const fallback = note || reasonCode || t('charts.chat.outOfScope');
                 this._setStatus(fallback, 'warn');
+                this._appendMessage('assistant', fallback);
+                return;
+            }
+            if (myRequestId !== this.idCounter
+                || (this.hooks.isRevisionCurrent && !this.hooks.isRevisionCurrent(revision))) {
                 return;
             }
 
-            // Apply via the parent (ChartManager owns the render loop + undo).
+            // Apply via the parent (ChartManager owns validation, render + undo).
+            const applyStarted = performance.now();
+            let applyTelemetry = {};
             if (this.hooks.onApply) {
                 try {
-                    await this.hooks.onApply(newConfig, derived, note || null, data);
+                    applyTelemetry = await this.hooks.onApply(operations, revision) || {};
                 } catch (e) {
+                    if (e && e.name === 'AbortError') return;
                     console.error('[ChartChat] onApply threw', e);
                     this._setStatus(t('charts.chat.renderFailed'), 'error');
                     return;
                 }
             }
+            const renderedAt = performance.now();
+            this.hooks.onTiming?.({
+                wall_ms: Math.round(renderedAt - requestStarted),
+                request_ms: Math.round(responseReceived - requestStarted),
+                parse_ms: Math.round(parsedAt - responseReceived),
+                apply_ms: Math.round(renderedAt - applyStarted),
+                server_timing: serverTiming,
+                rebuild_server_timing: applyTelemetry.server_timing || '',
+                request_count: 1 + Number(applyTelemetry.request_count || 0),
+                rows_uploaded: Number(applyTelemetry.rows_uploaded || 0),
+                retries: 0,
+                operation_count: operations.length,
+                stale_dropped: false,
+            });
 
             this._appendMessage('assistant', note || t('charts.chat.updated'));
             this._inputEl.value = '';
@@ -458,44 +454,27 @@ export class ChartChat {
         }
     }
 
-    _buildPayload(connection, instruction, config, results) {
-        const cols = (results && Array.isArray(results.columns)) ? results.columns : [];
-        const rows = (results && (results.data || results.rows)) || [];
-        const sample = rows.slice(0, 10).map(row => {
-            if (Array.isArray(row)) return row;
-            return cols.map(c => row[c]);
-        });
-        // Best-effort type guess so the LLM has something to ground on.
-        const typed = cols.map(name => ({ name, type: guessType(sample, cols.indexOf(name)) }));
-
-        return {
+    _buildPayload(connection, instruction, chartManifest) {
+        const payload = {
+            contract_version: 2,
             connection,
             instruction,
-            current_config: config,
-            chart_spec: this.hooks.getCurrentSpec ? this.hooks.getCurrentSpec() : null,
-            active_derived_series: this.hooks.getCurrentDerivedSpecs
-                ? this.hooks.getCurrentDerivedSpecs()
-                : [],
-            query_id: this.hooks.getQueryId ? this.hooks.getQueryId() : null,
-            columns: typed,
-            column_names: cols,
-            sample_data: sample,
+            chart_kind: this.hooks.getChartKind ? this.hooks.getChartKind() : 'sql',
+            chart_manifest: chartManifest,
             recent_messages: this.messages.slice(-6).map(m => ({ role: m.role, content: m.content })),
         };
-    }
-
-    _fallbackRows(results) {
-        const cols = (results && Array.isArray(results.columns)) ? results.columns : [];
-        const rows = (results && (results.data || results.rows)) || [];
-        return {
-            all_data: rows.map((row) => (
-                Array.isArray(row) ? row : cols.map((column) => row[column])
-            )),
-        };
+        const queryId = this.hooks.getQueryId ? this.hooks.getQueryId() : null;
+        if (queryId !== null && queryId !== undefined && queryId !== '') payload.query_id = queryId;
+        return payload;
     }
 
     async _handleReset() {
-        if (!this.mounted || !this.enabled || this._localBusy || this.externalBusy || this.inFlight) return;
+        if (!this.mounted || !this.enabled || this.externalBusy) return;
+        this.idCounter += 1;
+        if (this.inFlight) {
+            try { this.inFlight.abort(); } catch (_) { /* ignore */ }
+            this.inFlight = null;
+        }
         this._setStatus(t('charts.chat.resetting'), 'progress');
         this._setBusy(true);
         try {
@@ -512,19 +491,4 @@ export class ChartChat {
             this._focusInput();
         }
     }
-}
-
-function guessType(sampleRows, idx) {
-    if (idx < 0 || !Array.isArray(sampleRows) || sampleRows.length === 0) return 'string';
-    let numeric = 0;
-    let nonNull = 0;
-    for (const row of sampleRows) {
-        const cell = row[idx];
-        if (cell === null || cell === undefined || cell === '') continue;
-        nonNull++;
-        const cleaned = String(cell).replace(/[$€£¥,\s]/g, '');
-        if (Number.isFinite(Number(cleaned))) numeric++;
-    }
-    if (nonNull === 0) return 'string';
-    return numeric / nonNull >= 0.7 ? 'number' : 'string';
 }

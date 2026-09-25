@@ -40,6 +40,65 @@ function array(value) {
     return Array.isArray(value) ? value : [];
 }
 
+function stableStringify(value) {
+    if (value === null || typeof value !== 'object') return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+    return `{${Object.keys(value).sort().map((key) => (
+        `${JSON.stringify(key)}:${stableStringify(value[key])}`
+    )).join(',')}}`;
+}
+
+function shortHash(value) {
+    const text = String(value || '');
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+}
+
+/**
+ * Stable key for presentation overrides. Explicit semantic identifiers win;
+ * the fallback intentionally excludes data and array position.
+ */
+export function seriesIdentity(series, index = 0, siblings = []) {
+    const item = object(series);
+    if (item.id !== undefined && item.id !== null && String(item.id).trim()) {
+        return `id:${String(item.id).trim()}`;
+    }
+    if (item.jeenRole !== undefined && item.jeenRole !== null && String(item.jeenRole).trim()) {
+        return `role:${String(item.jeenRole).trim()}`;
+    }
+    if (item.name !== undefined && item.name !== null && String(item.name).trim()) {
+        return `name:${String(item.name).trim()}`;
+    }
+    const semantic = {
+        encode: item.encode || null,
+        dimensions: item.dimensions || null,
+        datasetIndex: item.datasetIndex ?? null,
+        xAxisIndex: item.xAxisIndex ?? null,
+        yAxisIndex: item.yAxisIndex ?? null,
+    };
+    const base = `fallback:${shortHash(stableStringify(semantic))}`;
+    const list = array(siblings);
+    if (!list.length) return base;
+    let ordinal = 0;
+    for (let i = 0; i < Math.min(index, list.length); i++) {
+        const sibling = object(list[i]);
+        if (sibling.id || sibling.jeenRole || sibling.name) continue;
+        const siblingSemantic = {
+            encode: sibling.encode || null,
+            dimensions: sibling.dimensions || null,
+            datasetIndex: sibling.datasetIndex ?? null,
+            xAxisIndex: sibling.xAxisIndex ?? null,
+            yAxisIndex: sibling.yAxisIndex ?? null,
+        };
+        if (stableStringify(siblingSemantic) === stableStringify(semantic)) ordinal += 1;
+    }
+    return ordinal ? `${base}:${ordinal}` : base;
+}
+
 function normalizeToggles(value) {
     return { ...DEFAULT_CHART_TOGGLES, ...object(value) };
 }
@@ -245,6 +304,17 @@ export function extractStyleOverrides(nextConfig, previousConfig = null) {
     const prevSeries = array(previousConfig?.series);
     const series = nextSeries.map((item, index) => pickChanged(item, prevSeries[index], SERIES_STYLE_KEYS));
     if (series.some((item) => Object.keys(item).length)) out.series = series;
+    const previousByIdentity = new Map(prevSeries.map((item, index) => [
+        seriesIdentity(item, index, prevSeries),
+        item,
+    ]));
+    const seriesByIdentity = {};
+    nextSeries.forEach((item, index) => {
+        const identity = seriesIdentity(item, index, nextSeries);
+        const patch = pickChanged(item, previousByIdentity.get(identity), SERIES_STYLE_KEYS);
+        if (Object.keys(patch).length) seriesByIdentity[identity] = patch;
+    });
+    if (Object.keys(seriesByIdentity).length) out.seriesByIdentity = seriesByIdentity;
     return out;
 }
 
@@ -283,13 +353,28 @@ function applyOverridePatch(target, patch) {
 
 export function applyStyleOverrides(config, overrides) {
     if (!config || typeof config !== 'object') return config;
-    const out = applyOverridePatch(config, overrides);
+    const hasIdentitySeries = Object.keys(object(overrides?.seriesByIdentity)).length > 0;
+    const rootOverrides = Object.fromEntries(
+        Object.entries(object(overrides)).filter(([key]) => (
+            !['xAxis', 'yAxis', 'series', 'seriesByIdentity'].includes(key)
+        )),
+    );
+    const out = applyOverridePatch(config, rootOverrides);
     for (const key of ['xAxis', 'yAxis', 'series']) {
+        // Identity overrides supersede the duplicated index form emitted by
+        // newer snapshots. A legacy snapshot with only `series` still applies.
+        if (key === 'series' && hasIdentitySeries) continue;
         if (!Array.isArray(overrides?.[key])) continue;
         const originalWasArray = Array.isArray(config[key]);
         const values = originalWasArray ? array(config[key]) : config[key] ? [config[key]] : [];
         const merged = values.map((value, index) => applyOverridePatch(value, overrides[key][index]));
         out[key] = originalWasArray ? merged : merged[0];
+    }
+    if (Array.isArray(config.series) && overrides?.seriesByIdentity) {
+        out.series = array(out.series).map((value, index) => {
+            const identity = seriesIdentity(config.series[index], index, config.series);
+            return applyOverridePatch(value, overrides.seriesByIdentity[identity]);
+        });
     }
     return out;
 }

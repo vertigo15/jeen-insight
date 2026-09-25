@@ -394,11 +394,18 @@ def _from_lc_response(ai_msg: Any) -> Dict[str, Any]:
     # Usage — LangChain normalises to input_tokens / output_tokens.
     usage = getattr(ai_msg, "usage_metadata", None)
     if usage:
-        result["usage"] = {
+        normalized_usage = {
             "prompt_tokens":     usage.get("input_tokens"),
             "completion_tokens": usage.get("output_tokens"),
             "total_tokens":      usage.get("total_tokens"),
         }
+        input_details = usage.get("input_token_details") or {}
+        output_details = usage.get("output_token_details") or {}
+        if isinstance(input_details, dict) and input_details.get("cache_read") is not None:
+            normalized_usage["cached_prompt_tokens"] = input_details.get("cache_read")
+        if isinstance(output_details, dict) and output_details.get("reasoning") is not None:
+            normalized_usage["reasoning_tokens"] = output_details.get("reasoning")
+        result["usage"] = normalized_usage
 
     # Tool calls — LangChain: {id, name, args:dict}  →  OpenAI: {id, type, function}
     lc_tools = getattr(ai_msg, "tool_calls", None)
@@ -633,6 +640,7 @@ class LangChainLlmService:
         tools: Optional[List[Dict]],
         promote: bool,
         timeout: Optional[float] = None,
+        max_fallbacks: Optional[int] = None,
     ) -> Any:
         """Invoke *base*; on failure retry on healthy fallback models.
 
@@ -662,7 +670,10 @@ class LangChainLlmService:
                     "llm_service: model %r failed (%s); trying healthy fallback(s)",
                     model_name or "(override)", primary_exc,
                 )
-            for cand in await self._healthy_candidates(exclude=model_name):
+            candidates = await self._healthy_candidates(exclude=model_name)
+            if max_fallbacks is not None:
+                candidates = candidates[:max(0, int(max_fallbacks))]
+            for cand in candidates:
                 try:
                     row = await _fetch_model_row(self._pool, cand)
                     if not row:
@@ -738,6 +749,7 @@ class LangChainLlmService:
         tools: Optional[List[Dict]] = None,
         model_override: Optional[ModelOverride] = None,
         timeout: Optional[float] = None,
+        max_fallbacks: Optional[int] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """Generate a non-streaming response.
@@ -750,6 +762,7 @@ class LangChainLlmService:
         ``timeout`` bounds the provider call (and every fallback attempt) with
         a hard deadline; when ``None`` the configured ``LLM_TIMEOUT_SECONDS``
         default applies, and ``0`` disables the deadline.
+        ``max_fallbacks`` optionally caps healthy fallback attempts.
         """
         effective_timeout = timeout if timeout is not None else _default_llm_timeout()
         if effective_timeout is not None and effective_timeout <= 0:
@@ -782,6 +795,7 @@ class LangChainLlmService:
             tools=tools,
             promote=promote,
             timeout=effective_timeout,
+            max_fallbacks=max_fallbacks,
         )
         return _from_lc_response(ai_msg)
 

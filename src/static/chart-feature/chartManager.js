@@ -15,8 +15,8 @@ import { ChartTypeSelector } from './components/ChartTypeSelector.js?v=79';
 import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=76';
 import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v=3';
 import { DEFAULT_PALETTE_ID, applyPalette, getPalette, isKnownPalette } from './utils/chartPalettes.js?v=1';
-import { ChartChat } from './components/ChartChat.js?v=107';
-import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js?v=1';
+import { ChartChat } from './components/ChartChat.js?v=110';
+import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js?v=2';
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
 import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=9';
 import { CHART_TYPE_VALUES } from './chartTypes.js?v=79';
@@ -25,8 +25,13 @@ import { applyQuickOptions } from './utils/chartQuickOptions.js?v=3';
 import {
     applyStyleOverrides,
     createChartSession,
-    extractStyleOverrides,
-} from './utils/chartSession.js?v=2';
+} from './utils/chartSession.js?v=3';
+import {
+    applyChartEditOperations,
+    applyLocalSort,
+    buildChartManifest,
+    guardMlPresentation,
+} from './utils/chartEditOperations.js?v=1';
 
 // Interface strings come from the locale catalog (static/i18n/i18n.js, loaded first).
 const t = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
@@ -84,6 +89,7 @@ export class ChartManager {
         // The current ECharts options object actually rendered.
         this.currentEchartsOptions = null;
         this.chartSession = null;
+        this._chartEditRevision = 0;
         // User-chosen colour palette (a preference, so it follows the user across
         // charts). 'jeen' means "no override": theme tokens / server palette.
         this.paletteId = this._readPalettePreference();
@@ -179,6 +185,7 @@ export class ChartManager {
 
     _setChartSession(snapshot, defaults = {}) {
         this.chartSession = createChartSession(snapshot, defaults);
+        this._chartEditRevision += 1;
         this._syncLegacySessionAliases();
         this._syncPanelFromSession();
     }
@@ -369,27 +376,26 @@ export class ChartManager {
         // container exists in the DOM, so omitting it from the page is fine.
         if (document.getElementById('chart-chat-container')) {
             this.chartChat = new ChartChat('chart-chat-container', {
-                getCurrentConfig: () => this._renderReady ? this._semanticConfig() : null,
-                getCurrentResults: () => this.state.currentData,
-                getConnection: () => (typeof getActiveConnection === 'function' ? getActiveConnection() : ''),
-                getCurrentSpec: () => this._renderReady ? this.chartSession?.working?.spec || null : null,
-                getCurrentDerivedSpecs: () => (
-                    this._renderReady ? this.chartSession?.working?.derivedSpecs || [] : []
+                getChartManifest: () => (
+                    this._renderReady && this.chartSession
+                        ? buildChartManifest(this.chartSession, {
+                            chartKind: this._chartEditKind(),
+                            columns: this.dataAnalysis?.columns || [],
+                        })
+                        : null
                 ),
+                getChartKind: () => this._chartEditKind(),
+                getConnection: () => (typeof getActiveConnection === 'function' ? getActiveConnection() : ''),
                 getQueryId: () => (
                     this.ctx?.queryId != null ? this.ctx.queryId : window.currentQueryId
                 ),
-                onApply: (newConfig, derivedSpecs, notes, edit) => (
-                    this.applyEditedConfig(newConfig, derivedSpecs, notes, edit)
+                getRevision: () => this._chartEditToken(),
+                isRevisionCurrent: (revision) => revision === this._chartEditToken(),
+                onApply: (operations, revision) => (
+                    this.applyEditedOperations(operations, revision)
                 ),
+                onTiming: (timing) => this._devTrace('edit', timing),
                 onReset: () => this.resetChartEdits(),
-                // ML results: the bar re-runs the analysis as a new turn; the
-                // workspace owns that flow (proposal → /api/analysis/rerun).
-                onAnalysisRerun: (instruction) => (
-                    window.WorkspaceController && typeof window.WorkspaceController.rerunAnalysis === 'function'
-                        ? window.WorkspaceController.rerunAnalysis(instruction)
-                        : Promise.reject(new Error(t('charts.errors.rerunUnavailable')))
-                ),
             });
             this.chartChat.mount();
             this.chartChat.disable();
@@ -398,6 +404,27 @@ export class ChartManager {
         this.setAnalysisRerunBusy(this.analysisRerunBusy);
 
         console.log('[ChartManager] Components initialized');
+    }
+
+    _chartEditKind() {
+        if (!this.analysisMode) return 'sql';
+        const roles = new Set(
+            (this.chartSession?.working?.config?.series || [])
+                .map((series) => series?.jeenRole)
+                .filter(Boolean),
+        );
+        return roles.has('interval')
+            || roles.has('interval_base')
+            || roles.has('interval_bound')
+            ? 'ml_band'
+            : 'ml_basic';
+    }
+
+    _chartEditToken() {
+        const queryId = this.ctx?.queryId != null
+            ? this.ctx.queryId
+            : (typeof window !== 'undefined' ? window.currentQueryId : '');
+        return `${String(queryId || '')}:${this._chartEditRevision}`;
     }
 
     async _loadChartCapabilities(owner) {
@@ -518,6 +545,7 @@ export class ChartManager {
         // user starts on a clean baseline.
         if (this.chartChat) this.chartChat.reset();
         this.chartSession = null;
+        this._chartEditRevision += 1;
         this.originalConfig = null;
         this.originalChartSpec = null;
 
@@ -774,6 +802,7 @@ export class ChartManager {
             this.state.currentData,
         ).config;
         displayConfig = this._withQuickToggles(displayConfig, view.toggles);
+        displayConfig = applyLocalSort(displayConfig, view.toggles?.sortDirection);
         displayConfig = this._withMapView(displayConfig, view.mapView);
 
         if (this._isOsmMapOption(displayConfig)) {
@@ -812,6 +841,7 @@ export class ChartManager {
         }
         displayConfig = this._withWorkspaceTheme(displayConfig);
         displayConfig = applyStyleOverrides(displayConfig, working.styleOverrides);
+        displayConfig = guardMlPresentation(displayConfig, this._chartEditKind());
         displayConfig = this._finalizeForRender(displayConfig);
         await ensureMapsForOption(displayConfig);
         this._assertOwner(owner);
@@ -1042,7 +1072,10 @@ export class ChartManager {
 
     setAnalysisMode(on) {
         this.analysisMode = Boolean(on);
-        this.chartChat?.setAnalysisMode(this.analysisMode);
+        // ML semantics still lock type/column/sort controls, but the compact
+        // chat is chart-only. It edits the existing ECharts option through
+        // /api/edit-chart and never re-runs SQL or the analysis pipeline.
+        this.chartChat?.setAnalysisMode(false);
         this.chartTypeSelector?.setDisabled(
             this.analysisMode,
             this.analysisMode ? t('charts.options.analysisTypeLocked') : ''
@@ -1066,7 +1099,8 @@ export class ChartManager {
 
     _syncChartChatEnabled() {
         if (!this.chartChat) return;
-        if (this.interactionEnabled && this._renderReady) this.chartChat.enable();
+        if (this.interactionEnabled && this._renderReady
+            && !this._isOsmMapOption(this.currentEchartsOptions)) this.chartChat.enable();
         else this.chartChat.disable();
     }
 
@@ -1129,65 +1163,49 @@ export class ChartManager {
     }
 
     /**
-     * Applies a chat-edited config to the chart.
-     *
-     * - Strips any previously-applied derived overlays so they don't stack.
-     * - Computes the requested derived overlays locally from currentData.
-     * - Re-renders via ChartContainer; falls back to the previous config on
-     *   failure so the user never ends up with a broken chart.
-     *
-     * @param {object} newConfig
-     * @param {Array} derivedSpecs
+     * Applies a v2 chart-editor operation list to a cloned canonical session.
+     * Validation is transactional: unsupported operations never publish state.
      */
-    async applyEditedConfig(newConfig, derivedSpecs, _notes = null, edit = null) {
-        if (!newConfig || typeof newConfig !== 'object' || !this.chartSession) return;
-        const previousSnapshot = this.chartSession.snapshot();
-        const previousWorking = this.chartSession.working;
-        const baselineConfig = this.chartSession.baseline.config;
-        const candidate = createChartSession(previousSnapshot);
-        const cleaned = stripDerivedSeries(newConfig);
-        const styleOverrides = extractStyleOverrides(cleaned, baselineConfig);
-        const nextSpec = edit?.chart_spec && typeof edit.chart_spec === 'object'
-            ? edit.chart_spec
-            : previousWorking.spec;
-        candidate.replaceWorking({
-            config: cleaned,
-            spec: nextSpec,
-            derivedSpecs: derivedSpecs || [],
-            styleOverrides,
-        });
-        if (this.chartOptionsPanel && !this._isOsmMapOption(cleaned)) {
-            this.chartOptionsPanel.syncTogglesFromConfig(cleaned);
-            candidate.replaceView({
-                ...candidate.view,
-                toggles: this.chartOptionsPanel.getToggles(),
-                legendUserSet: this.chartOptionsPanel.legendUserSet,
-            });
+    async applyEditedOperations(operations, expectedRevision) {
+        if (!this.chartSession) return;
+        if (expectedRevision !== this._chartEditToken()) {
+            const stale = new Error(t('charts.errors.staleOperation'));
+            stale.name = 'AbortError';
+            throw stale;
         }
+        const previousSnapshot = this.chartSession.snapshot();
+        const bindingOperations = operations.filter((operation) => operation?.op === 'set_binding');
+        const localOperations = operations.filter((operation) => operation?.op !== 'set_binding');
+        let sourceSession = this.chartSession;
+        let rebuildTelemetry = { request_count: 0, rows_uploaded: 0, server_timing: '' };
+        if (bindingOperations.length) {
+            const rebuilt = await this._rebuildBindingOperations(
+                bindingOperations,
+                expectedRevision,
+            );
+            sourceSession = rebuilt.session;
+            rebuildTelemetry = rebuilt.telemetry;
+        }
+        const candidate = localOperations.length
+            ? applyChartEditOperations(sourceSession, localOperations, {
+                chartKind: this._chartEditKind(),
+            })
+            : createChartSession(sourceSession.snapshot());
 
         // Publish the semantic candidate before rendering so a newer local
         // operation (for example a quick toggle) composes from this edit. Only
         // the current owner may roll it back on an actual render failure.
         this.chartSession = candidate;
+        this._chartEditRevision += 1;
         this._syncLegacySessionAliases();
         const owner = this._beginOperation({ invalidate: true });
         try {
             await this._renderWorking(owner, candidate);
             this._assertOwner(owner);
-            if (this._isOsmMapOption(cleaned) && Array.isArray(edit?.view_commands)) {
-                this.osmMapRenderer?.applyViewCommands(edit.view_commands);
-                this._assertOwner(owner);
-                candidate.replaceView({
-                    ...candidate.view,
-                    mapView: {
-                        ...candidate.view.mapView,
-                        osm: this.osmMapRenderer?.getViewState?.() || {},
-                    },
-                });
-            }
             this.chartSession = candidate;
             this._syncLegacySessionAliases();
             this._syncPanelFromSession();
+            return rebuildTelemetry;
         } catch (error) {
             if (!this._owns(owner) || error?.name === 'AbortError') return;
             if (this._owns(owner) && error?.name !== 'AbortError') {
@@ -1197,6 +1215,7 @@ export class ChartManager {
                     await this._renderWorking(owner, rollback);
                     this._assertOwner(owner);
                     this.chartSession = rollback;
+                    this._chartEditRevision += 1;
                     this._syncLegacySessionAliases();
                     this._syncPanelFromSession();
                 } catch (_) {
@@ -1209,6 +1228,105 @@ export class ChartManager {
         }
     }
 
+    async _rebuildBindingOperations(operations, expectedRevision) {
+        if (this._chartEditKind() !== 'sql') {
+            throw new Error(t('charts.chat.outOfScope'));
+        }
+        const connection = typeof getActiveConnection === 'function'
+            ? getActiveConnection()
+            : '';
+        const queryId = this.ctx?.queryId != null ? this.ctx.queryId : window.currentQueryId;
+        const chartSpec = this.chartSession?.working?.spec;
+        if (!connection || !queryId || !chartSpec) {
+            throw new Error(t('charts.chat.outOfScope'));
+        }
+        const baseBody = {
+            connection,
+            query_id: String(queryId),
+            chart_kind: 'sql',
+            chart_spec: chartSpec,
+            operations,
+        };
+        let requestCount = 1;
+        let rowsUploaded = 0;
+        let response = await fetch('/api/edit-chart/rebuild', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(baseBody),
+        });
+        if (response.status === 409) {
+            if (expectedRevision !== this._chartEditToken()) {
+                const stale = new Error(t('charts.errors.staleOperation'));
+                stale.name = 'AbortError';
+                throw stale;
+            }
+            const fallback = this._bindingFallbackData(operations, chartSpec);
+            requestCount += 1;
+            rowsUploaded = fallback.all_data.length;
+            response = await fetch('/api/edit-chart/rebuild', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...baseBody, ...fallback }),
+            });
+        }
+        const serverTiming = response.headers?.get?.('Server-Timing') || '';
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.chart_config || !data.chart_spec) {
+            const detail = data?.detail || data?.error || `HTTP ${response.status}`;
+            throw new Error(String(detail));
+        }
+        if (expectedRevision !== this._chartEditToken()) {
+            const stale = new Error(t('charts.errors.staleOperation'));
+            stale.name = 'AbortError';
+            throw stale;
+        }
+        const rebuilt = createChartSession(this.chartSession.snapshot());
+        rebuilt.replaceWorking({
+            ...rebuilt.working,
+            config: data.chart_config,
+            spec: data.chart_spec,
+        });
+        return {
+            session: rebuilt,
+            telemetry: {
+                request_count: requestCount,
+                rows_uploaded: rowsUploaded,
+                server_timing: serverTiming,
+            },
+        };
+    }
+
+    _bindingFallbackData(operations, chartSpec) {
+        const data = this.state.currentData || {};
+        const columns = (data.columns || []).map((column) => (
+            typeof column === 'string' ? column : column?.name
+        ));
+        const needed = new Set();
+        const add = (value) => {
+            if (typeof value === 'string' && value) needed.add(value);
+            else if (Array.isArray(value)) value.forEach(add);
+        };
+        add(chartSpec?.x);
+        add(chartSpec?.y);
+        add(chartSpec?.series);
+        operations.forEach((operation) => {
+            add(operation?.x);
+            add(operation?.y);
+            add(operation?.series);
+        });
+        const indexes = columns
+            .map((column, index) => ({ column, index }))
+            .filter(({ column }) => needed.has(column));
+        if (!indexes.length) throw new Error(t('charts.chat.outOfScope'));
+        const rows = data.rows || data.data || [];
+        return {
+            column_names: indexes.map(({ column }) => column),
+            all_data: rows.map((row) => indexes.map(({ column, index }) => (
+                Array.isArray(row) ? row[index] : row?.[column]
+            ))),
+        };
+    }
+
     /**
      * Reverts the chart to the original LLM-generated config.
      * The chat transcript is cleared by ChartChat itself.
@@ -1219,6 +1337,7 @@ export class ChartManager {
         const candidate = createChartSession(previousSnapshot);
         candidate.reset();
         this.chartSession = candidate;
+        this._chartEditRevision += 1;
         this._syncLegacySessionAliases();
         this._syncPanelFromSession();
         const owner = this._beginOperation({ invalidate: true });
@@ -1236,6 +1355,7 @@ export class ChartManager {
                     await this._renderWorking(owner, rollback);
                     this._assertOwner(owner);
                     this.chartSession = rollback;
+                    this._chartEditRevision += 1;
                     this._syncLegacySessionAliases();
                     this._syncPanelFromSession();
                 } catch (_) {
@@ -1797,6 +1917,7 @@ export class ChartManager {
         }
         candidate.replaceView({ ...candidate.view, mapView: { ...mapView, echarts: echartsView, controls } });
         this.chartSession = candidate;
+        this._chartEditRevision += 1;
         this._syncLegacySessionAliases();
         const owner = this._beginOperation({ invalidate: true });
         try {
@@ -1812,6 +1933,7 @@ export class ChartManager {
                     await this._renderWorking(owner, rollback);
                     this._assertOwner(owner);
                     this.chartSession = rollback;
+                    this._chartEditRevision += 1;
                     this._syncLegacySessionAliases();
                 } catch (_) {
                     this._invalidateRenderedChart();
@@ -2028,6 +2150,7 @@ export class ChartManager {
             legendUserSet: this.chartOptionsPanel?.legendUserSet ?? candidate.view.legendUserSet,
         });
         this.chartSession = candidate;
+        this._chartEditRevision += 1;
         this._syncLegacySessionAliases();
         const owner = this._beginOperation({ invalidate: true });
         try {
@@ -2042,6 +2165,7 @@ export class ChartManager {
                     await this._renderWorking(owner, rollback);
                     this._assertOwner(owner);
                     this.chartSession = rollback;
+                    this._chartEditRevision += 1;
                     this._syncLegacySessionAliases();
                     this._syncPanelFromSession();
                 } catch (_) {

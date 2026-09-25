@@ -25,6 +25,9 @@ QUERY_PARAMS = LlmParams(temperature=0.3, max_tokens=2048)
 # Chart edits via natural language (chart chat). Low creativity, JSON-only.
 EDIT_CHART_PARAMS = LlmParams(temperature=0.2, max_tokens=4096)
 
+# Compact v2 chart operations never contain chart data or full ECharts config.
+EDIT_CHART_OPERATIONS_PARAMS = LlmParams(temperature=0.1, max_tokens=800)
+
 # Initial chart generation: a touch more creative for layout/colour choices.
 GENERATE_CHART_PARAMS = LlmParams(temperature=0.5, max_tokens=4096)
 

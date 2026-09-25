@@ -7,10 +7,12 @@ a lot of one-class files without buying much.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from src.api.chart_operations import ChartOperation, SetBindingOperation
 
 
 # ----------------------------------------------------------------------
@@ -247,13 +249,179 @@ class ChatMessage(BaseModel):
     content: str = Field(max_length=2_000)
 
 
+class ChartManifestSeries(BaseModel):
+    """Data-free description of one browser-held ECharts series."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    identity: Optional[str] = Field(default=None, max_length=256)
+    id: Optional[str] = Field(default=None, max_length=256)
+    name: Optional[str] = Field(default=None, max_length=256)
+    type: str = Field(max_length=32)
+    jeen_role: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("jeenRole", "jeen_role", "role"),
+        serialization_alias="jeenRole",
+        max_length=64,
+    )
+    stack: Optional[Union[str, bool]] = None
+    x_axis_index: Optional[int] = Field(
+        default=None,
+        validation_alias=AliasChoices("xAxisIndex", "x_axis_index"),
+        serialization_alias="xAxisIndex",
+        ge=0,
+        le=8,
+    )
+    y_axis_index: Optional[int] = Field(
+        default=None,
+        validation_alias=AliasChoices("yAxisIndex", "axisIndex", "y_axis_index"),
+        serialization_alias="yAxisIndex",
+        ge=0,
+        le=8,
+    )
+    point_count: int = Field(
+        default=0,
+        validation_alias=AliasChoices("pointCount", "point_count"),
+        serialization_alias="pointCount",
+        ge=0,
+        le=1_000_000,
+    )
+    hidden: bool = False
+    data_summary: Dict[str, Any] = Field(default_factory=dict)
+    style: Dict[str, Any] = Field(default_factory=dict)
+    locked: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_series_data(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            forbidden = {"data", "dataset", "rows", "source", "values"}
+            overlap = forbidden.intersection(value)
+            if overlap:
+                raise ValueError(
+                    "Chart manifest series must not contain data fields: "
+                    + ", ".join(sorted(overlap))
+                )
+        return value
+
+    @model_validator(mode="after")
+    def _derive_point_count(self) -> "ChartManifestSeries":
+        count = self.data_summary.get("count")
+        if self.point_count == 0 and isinstance(count, int) and not isinstance(count, bool):
+            self.point_count = min(max(count, 0), 1_000_000)
+        return self
+
+
+class ChartManifest(BaseModel):
+    """Compact v2 chart context. It deliberately has no rows or data arrays."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    series: List[ChartManifestSeries] = Field(default_factory=list, max_length=100)
+    axes: Union[List[Dict[str, Any]], Dict[str, Any]] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices(
+            "axes", "axis", "axis_summaries", "axisSummaries"
+        ),
+        serialization_alias="axes",
+    )
+    toggles: Dict[str, bool] = Field(default_factory=dict)
+    format: Optional[Dict[str, Any]] = None
+    overlays: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("overlays", "derived"),
+        serialization_alias="overlays",
+        max_length=20,
+    )
+    chart_spec: Optional[Dict[str, Any]] = Field(
+        default=None,
+        validation_alias=AliasChoices("chart_spec", "chartSpec", "spec"),
+        serialization_alias="chart_spec",
+    )
+    columns: List[ColumnInfo] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("columns", "sql_columns", "sqlColumns"),
+        serialization_alias="columns",
+        max_length=256,
+    )
+    locks: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_top_level_data(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            forbidden = {
+                "all_data",
+                "chart_config",
+                "current_config",
+                "data",
+                "dataset",
+                "rows",
+                "sample_data",
+                "source",
+                "values",
+            }
+            overlap = forbidden.intersection(value)
+            if overlap:
+                raise ValueError(
+                    "Chart manifest must not contain config or data fields: "
+                    + ", ".join(sorted(overlap))
+                )
+        return value
+
+    @model_validator(mode="after")
+    def _bounded_manifest(self) -> "ChartManifest":
+        import json
+
+        def reject_data_arrays(value: Any) -> None:
+            if isinstance(value, dict):
+                forbidden = {
+                    "all_data",
+                    "chart_config",
+                    "current_config",
+                    "data",
+                    "dataset",
+                    "rows",
+                    "sample_data",
+                    "source",
+                }
+                overlap = forbidden.intersection(value)
+                if overlap:
+                    raise ValueError(
+                        "Chart manifest must not contain config or data fields: "
+                        + ", ".join(sorted(overlap))
+                    )
+                for nested in value.values():
+                    reject_data_arrays(nested)
+            elif isinstance(value, list):
+                for nested in value:
+                    reject_data_arrays(nested)
+
+        try:
+            manifest = self.model_dump(by_alias=True, mode="json", exclude_none=True)
+            reject_data_arrays(manifest)
+            encoded = json.dumps(
+                manifest,
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Chart manifest must contain finite JSON values.") from exc
+        if len(encoded) > 96_000:
+            raise ValueError("Chart manifest is too large.")
+        return self
+
+
 class EditChartRequest(BaseModel):
     connection: str = Field(max_length=255)
     instruction: str = Field(max_length=500)
-    current_config: Dict[str, Any]
-    columns: List[ColumnInfo] = Field(max_length=256)
-    column_names: List[str] = Field(max_length=256)
-    sample_data: List[List[Any]] = Field(max_length=20)
+    contract_version: Literal[1, 2] = 1
+    chart_kind: Optional[Literal["sql", "ml_band", "ml_basic"]] = None
+    chart_manifest: Optional[ChartManifest] = None
+    current_config: Optional[Dict[str, Any]] = None
+    columns: Optional[List[ColumnInfo]] = Field(default=None, max_length=256)
+    column_names: Optional[List[str]] = Field(default=None, max_length=256)
+    sample_data: Optional[List[List[Any]]] = Field(default=None, max_length=20)
     recent_messages: Optional[List[ChatMessage]] = Field(default=None, max_length=30)
     # OSM edits use the compact spec and rebuild deterministically from the
     # cached full dataset instead of letting the model alter point payloads.
@@ -269,7 +437,11 @@ class EditChartRequest(BaseModel):
 
     @field_validator("current_config")
     @classmethod
-    def _bounded_current_config(cls, value: Dict[str, Any]) -> Dict[str, Any]:
+    def _bounded_current_config(
+        cls, value: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        if value is None:
+            return value
         from src.api.chart_edit_validation import assert_bounded_chart_config
 
         assert_bounded_chart_config(value)
@@ -288,7 +460,9 @@ class EditChartRequest(BaseModel):
 
     @field_validator("column_names")
     @classmethod
-    def _bounded_column_names(cls, value: List[str]) -> List[str]:
+    def _bounded_column_names(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        if value is None:
+            return value
         if any(len(str(name)) > 256 for name in value):
             raise ValueError("Chart column names must be at most 256 characters.")
         return value
@@ -312,6 +486,29 @@ class EditChartRequest(BaseModel):
         if size > max_bytes:
             raise ValueError("Chart row payload is too large.")
         return value
+
+    @model_validator(mode="after")
+    def _contract_fields(self) -> "EditChartRequest":
+        if self.contract_version == 2:
+            if self.chart_kind is None or self.chart_manifest is None:
+                raise ValueError("contract_version=2 requires chart_kind and chart_manifest.")
+            if any(
+                value is not None
+                for value in (self.current_config, self.sample_data, self.all_data)
+            ):
+                raise ValueError(
+                    "contract_version=2 must not include current_config, sample_data, or rows."
+                )
+        elif (
+            self.current_config is None
+            or self.columns is None
+            or self.column_names is None
+            or self.sample_data is None
+        ):
+            raise ValueError(
+                "Legacy chart edits require current_config, columns, column_names, and sample_data."
+            )
+        return self
 
 
 class DerivedSeriesSpec(BaseModel):
@@ -357,6 +554,83 @@ class EditChartResponse(BaseModel):
     error: Optional[ChartEditError] = None
     prompt: Optional[str] = None
     system_message: Optional[str] = None
+
+
+class EditChartV2Response(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_version: Literal[2] = 2
+    operations: List[ChartOperation] = Field(default_factory=list, max_length=12)
+    notes: Optional[str] = Field(default=None, max_length=300)
+    out_of_scope: bool = False
+    reason_code: Optional[str] = Field(
+        default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$"
+    )
+
+
+class EditChartRebuildRequest(BaseModel):
+    """Deterministic SQL-chart rebuild for validated binding operations."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    connection: str = Field(min_length=1, max_length=255)
+    query_id: str = Field(min_length=1, max_length=64)
+    chart_kind: Literal["sql"] = "sql"
+    chart_spec: Dict[str, Any]
+    operations: List[SetBindingOperation] = Field(min_length=1, max_length=4)
+    column_names: Optional[List[str]] = Field(default=None, max_length=256)
+    all_data: Optional[List[List[Any]]] = Field(default=None, max_length=10_000)
+
+    @field_validator("chart_spec")
+    @classmethod
+    def _bounded_rebuild_spec(cls, value: Dict[str, Any]) -> Dict[str, Any]:
+        from src.api.chart_edit_validation import assert_bounded_chart_config
+
+        assert_bounded_chart_config(value)
+        return value
+
+    @field_validator("column_names")
+    @classmethod
+    def _bounded_rebuild_columns(
+        cls, value: Optional[List[str]]
+    ) -> Optional[List[str]]:
+        if value is not None and any(
+            not isinstance(name, str) or not name or len(name) > 256 for name in value
+        ):
+            raise ValueError("Fallback column names must be non-empty strings.")
+        return value
+
+    @field_validator("all_data")
+    @classmethod
+    def _bounded_rebuild_rows(
+        cls, value: Optional[List[List[Any]]]
+    ) -> Optional[List[List[Any]]]:
+        if value is None:
+            return value
+        import json
+
+        try:
+            size = len(
+                json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Fallback chart rows must contain finite JSON values.") from exc
+        if size > 5_000_000:
+            raise ValueError("Fallback chart rows are too large.")
+        return value
+
+    @model_validator(mode="after")
+    def _complete_fallback(self) -> "EditChartRebuildRequest":
+        if (self.column_names is None) != (self.all_data is None):
+            raise ValueError("column_names and all_data must be supplied together.")
+        return self
+
+
+class EditChartRebuildResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chart_config: Dict[str, Any]
+    chart_spec: Dict[str, Any]
 
 
 # ----------------------------------------------------------------------

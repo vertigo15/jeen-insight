@@ -49,7 +49,8 @@
      * {
      *   capabilities: { ... },
      *   generate: [{ response: { ... }, status?: 200, delayMs?: 0 }],
-     *   edit: [{ response: { ... }, status?: 200, delayMs?: 0 }]
+     *   edit: [{ response: { ... }, status?: 200, delayMs?: 0 }],
+     *   rebuild: [{ response: { ... }, status?: 200, delayMs?: 0 }]
      * }
      */
     async function scriptedChartResponse(kind, body) {
@@ -227,6 +228,9 @@
         }
         if (url.indexOf('/api/generate-chart') >= 0 && window.__CHART_FIXTURES__) {
             return scriptedChartResponse('generate', body);
+        }
+        if (url.indexOf('/api/edit-chart/rebuild') >= 0 && window.__CHART_FIXTURES__) {
+            return scriptedChartResponse('rebuild', body);
         }
         if (url.indexOf('/api/edit-chart') >= 0 && window.__CHART_FIXTURES__) {
             return scriptedChartResponse('edit', body);
