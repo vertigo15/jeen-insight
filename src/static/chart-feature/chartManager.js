@@ -15,8 +15,8 @@ import { ChartTypeSelector } from './components/ChartTypeSelector.js?v=79';
 import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=76';
 import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v=3';
 import { DEFAULT_PALETTE_ID, applyPalette, getPalette, isKnownPalette } from './utils/chartPalettes.js?v=1';
-import { ChartChat } from './components/ChartChat.js?v=110';
-import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js?v=2';
+import { ChartChat } from './components/ChartChat.js?v=111';
+import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js?v=3';
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
 import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=9';
 import { CHART_TYPE_VALUES } from './chartTypes.js?v=79';
@@ -25,13 +25,15 @@ import { applyQuickOptions } from './utils/chartQuickOptions.js?v=3';
 import {
     applyStyleOverrides,
     createChartSession,
-} from './utils/chartSession.js?v=3';
+} from './utils/chartSession.js?v=4';
 import {
     applyChartEditOperations,
     applyLocalSort,
     buildChartManifest,
     guardMlPresentation,
-} from './utils/chartEditOperations.js?v=1';
+    partitionRebuildOperations,
+} from './utils/chartEditOperations.js?v=2';
+import { applyAnnotations, isScenarioSeries, isScenarioSpec } from './utils/chartScenarios.js?v=1';
 
 // Interface strings come from the locale catalog (static/i18n/i18n.js, loaded first).
 const t = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
@@ -140,6 +142,19 @@ export class ChartManager {
         if (typeof window !== 'undefined' && typeof window._devPostQueryUpdate === 'function') {
             window._devPostQueryUpdate('chart', { status, ...payload });
         }
+    }
+
+    /**
+     * A chart is on screen. The workspace listens to stamp "time to chart" on
+     * the turn's timeline (table -> insights -> chart); the query id lets it
+     * attribute a late render to the right turn.
+     */
+    _announceRendered(kind) {
+        if (typeof document === 'undefined') return;
+        const queryId = (this.ctx && this.ctx.queryId)
+            || (typeof window !== 'undefined' ? window.currentQueryId : null)
+            || null;
+        document.dispatchEvent(new CustomEvent('jeen:chart-rendered', { detail: { queryId, kind } }));
     }
 
     _beginOperation({ invalidate = true } = {}) {
@@ -391,8 +406,8 @@ export class ChartManager {
                 ),
                 getRevision: () => this._chartEditToken(),
                 isRevisionCurrent: (revision) => revision === this._chartEditToken(),
-                onApply: (operations, revision) => (
-                    this.applyEditedOperations(operations, revision)
+                onApply: (operations, revision, options) => (
+                    this.applyEditedOperations(operations, revision, options)
                 ),
                 onTiming: (timing) => this._devTrace('edit', timing),
                 onReset: () => this.resetChartEdits(),
@@ -829,6 +844,7 @@ export class ChartManager {
             this._syncChartChatEnabled();
             this._enableChartActions(false);
             console.log('[ChartManager] OpenStreetMap chart rendered successfully');
+            this._announceRendered('osm_map');
             return displayConfig;
         }
 
@@ -841,6 +857,8 @@ export class ChartManager {
         }
         displayConfig = this._withWorkspaceTheme(displayConfig);
         displayConfig = applyStyleOverrides(displayConfig, working.styleOverrides);
+        displayConfig = applyAnnotations(displayConfig, working.annotations);
+        displayConfig = this._withScenarioCue(displayConfig);
         displayConfig = guardMlPresentation(displayConfig, this._chartEditKind());
         displayConfig = this._finalizeForRender(displayConfig);
         await ensureMapsForOption(displayConfig);
@@ -866,6 +884,7 @@ export class ChartManager {
         this._syncChartChatEnabled();
         this._enableChartActions(this.interactionEnabled);
         console.log('[ChartManager] Chart rendered successfully');
+        this._announceRendered(chartConfig.type);
         return displayConfig;
     }
 
@@ -929,6 +948,29 @@ export class ChartManager {
         } finally {
             this._finishOperation(owner);
         }
+    }
+
+    /**
+     * Honesty cue for what-if scenarios: a small in-canvas "Scenario" tag (so
+     * Save PNG / Copy carry it) plus the badge under the chart. Applied to the
+     * display config only.
+     */
+    _withScenarioCue(displayConfig) {
+        const hasScenario = Array.isArray(displayConfig?.series)
+            && displayConfig.series.some(isScenarioSeries);
+        this.chartChat?.setScenarioBadge?.(hasScenario);
+        if (!hasScenario) return displayConfig;
+        const out = { ...displayConfig };
+        const titles = Array.isArray(out.title) ? out.title.slice() : out.title ? [out.title] : [];
+        titles.push({
+            id: 'jeen-scenario-cue',
+            text: t('charts.chat.scenarioSubtitle'),
+            right: 8,
+            top: 4,
+            textStyle: { fontSize: 11, fontWeight: 500, color: '#d4574a' },
+        });
+        out.title = titles;
+        return out;
     }
 
     /**
@@ -1166,7 +1208,7 @@ export class ChartManager {
      * Applies a v2 chart-editor operation list to a cloned canonical session.
      * Validation is transactional: unsupported operations never publish state.
      */
-    async applyEditedOperations(operations, expectedRevision) {
+    async applyEditedOperations(operations, expectedRevision, { onProgress } = {}) {
         if (!this.chartSession) return;
         if (expectedRevision !== this._chartEditToken()) {
             const stale = new Error(t('charts.errors.staleOperation'));
@@ -1174,13 +1216,19 @@ export class ChartManager {
             throw stale;
         }
         const previousSnapshot = this.chartSession.snapshot();
-        const bindingOperations = operations.filter((operation) => operation?.op === 'set_binding');
-        const localOperations = operations.filter((operation) => operation?.op !== 'set_binding');
+        // Bindings and chart types the browser cannot flip in place (pie,
+        // scatter, horizontal bar, ...) are rebuilt server-side from the cached
+        // rows first; styling then lands on the rebuilt chart.
+        const { rebuild: rebuildOperations, local: localOperations } = partitionRebuildOperations(
+            operations,
+            this.chartSession.working?.config,
+        );
         let sourceSession = this.chartSession;
         let rebuildTelemetry = { request_count: 0, rows_uploaded: 0, server_timing: '' };
-        if (bindingOperations.length) {
+        if (rebuildOperations.length) {
+            if (typeof onProgress === 'function') onProgress('rebuild');
             const rebuilt = await this._rebuildBindingOperations(
-                bindingOperations,
+                rebuildOperations,
                 expectedRevision,
             );
             sourceSession = rebuilt.session;
@@ -1272,8 +1320,19 @@ export class ChartManager {
         const serverTiming = response.headers?.get?.('Server-Timing') || '';
         const data = await response.json().catch(() => ({}));
         if (!response.ok || !data.chart_config || !data.chart_spec) {
+            // The rebuild endpoint answers 422 with {code, message}; keep both so
+            // the chat can show a catalogued reason instead of a generic failure.
             const detail = data?.detail || data?.error || `HTTP ${response.status}`;
-            throw new Error(String(detail));
+            const error = new Error(
+                typeof detail === 'string' ? detail : String(detail?.message || detail?.code || `HTTP ${response.status}`),
+            );
+            if (detail && typeof detail === 'object') {
+                if (detail.code) error.code = String(detail.code);
+                if (detail.message) error.detailMessage = String(detail.message);
+            } else if (response.status === 409) {
+                error.code = 'cache_miss';
+            }
+            throw error;
         }
         if (expectedRevision !== this._chartEditToken()) {
             const stale = new Error(t('charts.errors.staleOperation'));
@@ -1281,10 +1340,17 @@ export class ChartManager {
             throw stale;
         }
         const rebuilt = createChartSession(this.chartSession.snapshot());
+        // Overlays (moving average, trend, ...) are line series aligned to a
+        // category axis; they have nowhere to draw on a pie, gauge, or heatmap.
+        // Scenarios re-derive from the rebuilt series, so they survive.
+        const keepOverlays = this._hasCategoryAxis(data.chart_config);
         rebuilt.replaceWorking({
             ...rebuilt.working,
             config: data.chart_config,
             spec: data.chart_spec,
+            derivedSpecs: keepOverlays
+                ? rebuilt.working.derivedSpecs
+                : (rebuilt.working.derivedSpecs || []).filter(isScenarioSpec),
         });
         return {
             session: rebuilt,
@@ -1294,6 +1360,13 @@ export class ChartManager {
                 server_timing: serverTiming,
             },
         };
+    }
+
+    _hasCategoryAxis(config) {
+        return ['xAxis', 'yAxis'].some((key) => {
+            const axes = Array.isArray(config?.[key]) ? config[key] : config?.[key] ? [config[key]] : [];
+            return axes.some((axis) => axis?.type === 'category');
+        });
     }
 
     _bindingFallbackData(operations, chartSpec) {
@@ -1307,7 +1380,9 @@ export class ChartManager {
             else if (Array.isArray(value)) value.forEach(add);
         };
         add(chartSpec?.x);
+        add(chartSpec?.x_parts);
         add(chartSpec?.y);
+        add(chartSpec?.secondary_y);
         add(chartSpec?.series);
         operations.forEach((operation) => {
             add(operation?.x);

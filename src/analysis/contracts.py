@@ -12,7 +12,16 @@ reject. The per-user "don't ask again" consent is scoped to it, so a contract
 change re-prompts once, and pending proposals ask to be re-asked.
 
 History: 1 → 2 gave ``ForecastParams`` a ``window`` (the look-back, until then
-a private planner hint the cards could neither show nor change).
+a private planner hint the cards could neither show nor change). 2 → 3 gave
+it ``holidays``: an optional public-holiday calendar (country code) fitted as
+a known-future regressor.
+
+Rollout of a bump: pending proposals answer 409 (they expire in 15 min
+anyway); "don't ask again" consent is keyed to the version, so every skill
+re-prompts once; the API and the analytics sandbox are separate Deployments
+and the sandbox refuses a mismatched version, so ship compatible images
+together (API first is fine: it fails closed on the sandbox's 409 until the
+sandbox follows).
 """
 
 from __future__ import annotations
@@ -22,7 +31,7 @@ from typing import Any, Dict, List, Literal, Optional, Type, Union, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-CONTRACT_VERSION = "2"
+CONTRACT_VERSION = "3"
 
 Grain = Literal["day", "week", "month"]
 Agg = Literal["sum", "count", "avg", "min", "max"]
@@ -47,6 +56,17 @@ ADDITIVE_AGGS = frozenset({"sum", "count"})
 
 # Default look-back window per grain when the user gives none (periods).
 DEFAULT_WINDOW_PERIODS: Dict[str, int] = {"day": 90, "week": 26, "month": 24}
+# Forecasting needs more: a seasonal term is only testable after two full
+# cycles plus one point (105 weekly / 25 monthly), and cross-validation then
+# needs room to hold the horizon out on top of that. At the generic defaults a
+# yearly season could never be confirmed and CV had at most one window.
+FORECAST_WINDOW_PERIODS: Dict[str, int] = {"day": 120, "week": 130, "month": 36}
+SKILL_WINDOW_PERIODS: Dict[str, Dict[str, int]] = {"forecast": FORECAST_WINDOW_PERIODS}
+
+
+def default_window_for(skill: str, grain: str) -> int:
+    """The look-back a skill starts from when the user names none."""
+    return SKILL_WINDOW_PERIODS.get(skill, DEFAULT_WINDOW_PERIODS).get(grain, DEFAULT_WINDOW_PERIODS.get(grain, 26))
 
 
 class FilterSpec(BaseModel):
@@ -150,18 +170,27 @@ class ForecastParams(BaseModel):
     prediction-interval level (0.80 → an 80% band). ``method`` ``auto`` runs
     the shortlist and keeps the baseline unless a model beats it; any other
     value is an explicit choice and is returned even when it does not.
+
+    ``holidays`` names a public-holiday calendar (ISO 3166 country code, e.g.
+    ``IL``). Its future is known, so it is the one regressor that can be
+    fitted honestly: a holiday indicator (daily grain) or a holidays-per-period
+    count (weekly / monthly) joins the ARIMA candidates. Business drivers such
+    as price or spend are deliberately not accepted — their future values are
+    unknown at forecast time.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     series: SeriesRequest
-    # Look-back in periods of ``series.grain``; the guard fills the default
-    # (day 90 / week 26 / month 24) from the span probe and records it here so
-    # the cards can show and change it. The series range is what the engine reads.
+    # Look-back in periods of ``series.grain``; the guard fills the forecast
+    # default (day 120 / week 130 / month 36) from the span probe and records
+    # it here so the cards can show and change it. The series range is what
+    # the engine reads.
     window: Optional[int] = Field(default=None, ge=12, le=1500)
     horizon: int = Field(default=8, ge=1, le=104)
     interval: float = Field(default=0.80, ge=0.50, le=0.99)
     method: Literal["auto", "auto_arima", "auto_ets", "theta", "drift", "seasonal_naive"] = "auto"
+    holidays: Optional[str] = Field(default=None, pattern=r"^[A-Z]{2}$")
 
 
 class ChangepointParams(BaseModel):
@@ -911,7 +940,7 @@ def merge_params_patch(skill: str, base: Dict[str, Any], patch: Dict[str, Any]) 
 
 # The card shows an optional field's "no value" as a word the user can pick
 # again; the patch must turn it back into None rather than a column called "none".
-_UNSET_SENTINELS = {"group_by": ("none", ""), "k": ("auto", "")}
+_UNSET_SENTINELS = {"group_by": ("none", ""), "k": ("auto", ""), "holidays": ("none", "")}
 # List-valued chips; a setup card persisted before the multiselect existed
 # still sends these as one comma-separated string.
 _LIST_FIELDS = frozenset({"features", "dimensions"})

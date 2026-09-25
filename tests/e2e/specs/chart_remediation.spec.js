@@ -30,7 +30,9 @@ test('small chat applies one compact operation response without any query path',
 
   await page.evaluate(() => { window.__calls = []; });
   const refine = page.locator('#v3-chart-edit .chart-refine');
-  await refine.locator('.chart-refine-input').fill('show line chart in green with labels');
+  // Naming a column keeps this off the code-only fast path: the test is about
+  // the model answer being applied.
+  await refine.locator('.chart-refine-input').fill('show sales as a line chart in green with labels');
   await refine.locator('.chart-refine-apply').click();
 
   await expect.poll(() => page.evaluate(() => ({
@@ -112,7 +114,7 @@ test('a chart edit survives local presentation changes and Reset restores the ba
   await expect(input).toBeEnabled();
   await expect(apply).toHaveAttribute('aria-disabled', 'true');
 
-  await input.fill('show line chart with labels');
+  await input.fill('show sales as a line chart with labels');
   await expect(apply).toHaveAttribute('aria-disabled', 'false');
   await apply.click();
   const editCalls = await page.evaluate(() => (

@@ -12,6 +12,8 @@
  * @module chartOperators
  */
 
+import { buildScenarioSeries, isScenarioSeries, isScenarioSpec } from './chartScenarios.js?v=1';
+
 const ALLOWED_OPERATORS = new Set([
     'moving_avg',
     'cumulative_sum',
@@ -309,6 +311,17 @@ export function applyDerivedSeries(config, specs, results) {
     let needsAuxAxis = false;
     let applied = 0;
     for (const spec of specs) {
+        if (isScenarioSpec(spec)) {
+            // What-if copies are computed from the chart's own series so they
+            // stay aligned with whatever the real series currently shows.
+            for (const scenario of buildScenarioSeries(spec, next)) {
+                const dup = next.series.some((s) => isScenarioSeries(s) && s.name === scenario.name);
+                if (dup) continue;
+                next.series.push(scenario);
+                applied += 1;
+            }
+            continue;
+        }
         const series = buildDerivedSeries(spec, results, next);
         if (!series) continue;
         if (series.yAxisIndex === 1) needsAuxAxis = true;

@@ -67,7 +67,7 @@ def test_params_defaults_match_spec():
 def test_forecast_window_is_a_real_bounded_patchable_parameter():
     # Contract 2: the forecast look-back is a field like the other series skills',
     # not a private planner hint — so the cards can show it and patches can change it.
-    assert CONTRACT_VERSION == "2"
+    assert CONTRACT_VERSION == "3"
     assert parse_params("forecast", {"series": _series(), "window": 36}).window == 36
     for bad in (11, 1501, "lots"):
         with pytest.raises(ValidationError):

@@ -304,6 +304,52 @@ async def test_remembered_consent_runs_straight_through(prompt_loader):
 
 
 @pytest.mark.asyncio
+async def test_remembered_forecast_is_captured_for_tracking_and_carries_adjustments(prompt_loader, caplog):
+    """The remembered-consent forecast never touches /api/analysis/run, so the
+    capture must happen in the graph (save_to_memory) with the ORIGINAL params;
+    the answer carries the advisor's validated one-click patches; the
+    structured analysis_result line is what the accuracy work is measured by."""
+    import logging
+
+    store = InMemoryAnalysisStore()
+    await store.set_skill_pref(user_id="user-a", source_key="aw", skill="forecast", remember=True)
+    runner = _FakeRunner(_weekly_rows())
+    plan = {**_PLAN, "skill": "forecast", "horizon": 8, "window_periods": 130}
+    graph, history = _build(_make_llm(plan=plan), runner, store, prompt_loader)
+
+    with caplog.at_level(logging.INFO, logger="src.agent.langgraph_agent.nodes.analysis"):
+        final = await graph.ainvoke(_state("Forecast profit for the next 8 weeks"))
+    fr = final["formatted_response"]
+    assert fr["status"] == "completed", fr.get("error")
+    analysis = fr["analysis"]
+    assert analysis["skill"] == "forecast"
+
+    # Captured: one run keyed by the turn id, one point per forecast period.
+    query_id = str(final["query_id"])
+    run = await store.get_forecast_run(query_id, user_id="user-a", source_key="aw")
+    assert run is not None, "forecast was not captured from the graph"
+    assert run["horizon"] == 8 and len(run["points"]) == 8 and run["grain"] == "week"
+    assert run["method"] == analysis["method_used"]
+    assert run["params"]["series"]["measure_column"] == "Profit"  # the original, unredacted params
+    assert run["mase_scale"] == analysis["facts"]["mase_scale"]
+
+    # Advice travels with the answer (and therefore with the persisted artifact).
+    assert isinstance(analysis.get("adjustments"), list)
+    for item in analysis["adjustments"]:
+        assert {"code", "args", "params_patch", "recommended"} <= set(item)
+        assert item["params_patch"]
+    persisted = history.upsert_turn_artifact.await_args.kwargs
+    assert "adjustments" in (persisted.get("analysis") or {}), list(persisted.keys())
+
+    # Measurement line.
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("analysis_result "))
+    event = json.loads(line[len("analysis_result "):])
+    assert event["skill"] == "forecast" and event["method"] == analysis["method_used"]
+    assert event["cv_windows"] == analysis["facts"]["cv_windows"] and "baseline_won" in event
+    assert event["interval_method"] == analysis["facts"]["interval_method"]
+
+
+@pytest.mark.asyncio
 async def test_short_span_is_refused_before_any_series_sql(prompt_loader):
     store = InMemoryAnalysisStore()
     runner = _FakeRunner(_weekly_rows(8), span_weeks=8)
@@ -971,11 +1017,13 @@ async def test_forecast_period_bound_to_a_date_column_becomes_the_horizon(prompt
     assert params["horizon"] == expected_horizon
     assert params["series"]["filters"] == []  # the period is not a filter on the history
     assert final.get("analysis_dropped_filters") == []  # ...nor reported as one that was dropped
-    # The look-back the guard filled (24 months by default) is a real parameter
-    # the card shows and can change — not an empty chip.
-    assert params["window"] == 24
+    # The look-back the guard filled (forecast's own monthly default: 36, so a
+    # yearly season is testable) is a real parameter the card shows and can
+    # change — not an empty chip.
+    assert params["window"] == 36
     window_chip = next(c for c in proposal["chips"] if c["key"] == "window")
-    assert window_chip["value"] == 24
+    assert window_chip["value"] == 36
+    assert window_chip["defaults_by_grain"] == {"day": 120, "week": 130, "month": 36}
     assert next(c for c in proposal["chips"] if c["key"] == "method")["label"] == "Model"
     nodes = _nodes(final)
     assert "filter_grounder" in nodes and "analysis_planner" in nodes and "analysis_guard" in nodes

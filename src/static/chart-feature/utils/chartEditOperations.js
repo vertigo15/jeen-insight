@@ -10,7 +10,20 @@ import {
     createChartSession,
     mergeStyleOverrides,
     seriesIdentity,
-} from './chartSession.js?v=3';
+} from './chartSession.js?v=4';
+import {
+    MAX_HIGHLIGHT_CATEGORIES,
+    MAX_SCENARIOS,
+    isScenarioSpec,
+    normalizeAnnotations,
+    resolveTargetSeries,
+    scenarioSpecFromOperation,
+    seriesCategories,
+} from './chartScenarios.js?v=1';
+
+const MAX_REFERENCE_LINES = 4;
+const REFERENCE_STATS = new Set(['avg', 'min', 'max', 'median']);
+const PREDICATE_OPS = new Set(['lt', 'lte', 'gt', 'gte', 'eq', 'between']);
 
 const VISIBLE_ML_ROLES = new Set(['actual', 'expected', 'forecast', 'flagged']);
 const ML_HELPER_ROLES = new Set([
@@ -33,6 +46,17 @@ const INTERVAL_STYLE_PATHS = new Set([
     'areaStyle.color', 'areaStyle.opacity', 'itemStyle.color', 'itemStyle.opacity',
 ]);
 const FORMAT_KINDS = new Set(['number', 'currency', 'percent']);
+// Cartesian types the browser flips in place; every other type is rebuilt by
+// the server from the cached rows (see ChartManager.applyEditedOperations).
+const LOCAL_CHART_TYPES = new Set(['bar', 'line', 'area']);
+const REBUILD_CHART_TYPES = new Set([
+    'bar', 'line', 'area', 'pie', 'donut', 'scatter', 'horizontal_bar',
+    'stacked_bar', 'stacked_area', 'combo', 'heatmap', 'gauge',
+]);
+// Series that draw one colour each; a palette pins colours[i] on them so the
+// choice survives the theme pass. Pie-like series take slices from option.color.
+const SINGLE_COLOUR_SERIES = new Set(['bar', 'line', 'scatter', 'effectScatter']);
+const MAX_PALETTE_COLORS = 12;
 const FORBIDDEN_KEYS = new Set([
     'data', 'rows', 'all_data', 'sample_data', 'current_config',
     'dataset', 'source', 'values',
@@ -124,6 +148,16 @@ function summarizeData(data) {
     return summary;
 }
 
+const MAX_MANIFEST_CATEGORIES = 200;
+
+/** Axis category as displayed: ECharts allows `{ value, textStyle }` entries. */
+export function categoryLabel(value) {
+    if (value && typeof value === 'object' && !Array.isArray(value) && 'value' in value) {
+        return String(value.value ?? '');
+    }
+    return value === null || value === undefined ? '' : String(value);
+}
+
 function summarizeAxis(axis) {
     if (!axis || typeof axis !== 'object') return null;
     const out = {};
@@ -131,14 +165,17 @@ function summarizeAxis(axis) {
         if (axis[key] !== undefined) out[key] = compactValue(axis[key]);
     }
     if (Array.isArray(axis.data)) {
-        out.categories = {
-            count: axis.data.length,
-            sample: axis.data.slice(0, 6).map((value) => String(
-                value && typeof value === 'object' && 'value' in value ? value.value : value
-            ).slice(0, 80)),
-        };
-        if (axis.data.length > 6) {
-            out.categories.last = String(axis.data[axis.data.length - 1]).slice(0, 80);
+        const labels = axis.data.map((value) => categoryLabel(value).slice(0, 80));
+        out.categories = { count: labels.length };
+        // The model can only reference categories it has seen ("what if Bikes
+        // were 30K"), so send the complete list when it is small enough.
+        if (labels.length <= MAX_MANIFEST_CATEGORIES) {
+            out.categories.values = labels;
+            out.categories.complete = true;
+        } else {
+            out.categories.sample = labels.slice(0, 6);
+            out.categories.last = labels[labels.length - 1];
+            out.categories.complete = false;
         }
     }
     if (axis.jeenFormat) out.format = compactValue(axis.jeenFormat);
@@ -220,6 +257,7 @@ export function buildChartManifest(session, {
         ),
         format: compactValue(config.jeenFormat || null),
         overlays: compactValue(working.derivedSpecs || []),
+        annotations: compactValue(working.annotations || null),
         chart_spec: compactValue(working.spec || null),
         columns: chartKind === 'sql' ? normalizeColumns(columns) : [],
         locks: {
@@ -439,6 +477,67 @@ function normalizeOverlay(operation) {
     return out;
 }
 
+function safeAnnotationLabel(value, fallback = '') {
+    const text = String(value ?? '').trim();
+    if (!text) return fallback;
+    if (text.length > 80 || /[<>\r\n\0]/.test(text)) throw new ChartEditOperationError('invalid_series_name');
+    return text;
+}
+
+function normalizeReferenceLine(operation, config) {
+    const axis = operation.axis === 'x' ? 'x' : 'y';
+    const hasValue = operation.value !== undefined && operation.value !== null;
+    const stat = operation.stat ? String(operation.stat).toLowerCase() : '';
+    if (hasValue === Boolean(stat)) throw new ChartEditOperationError('invalid_scenario');
+    if (stat && !REFERENCE_STATS.has(stat)) throw new ChartEditOperationError('invalid_scenario');
+    const value = hasValue ? finiteNumber(operation.value) : null;
+    if (hasValue && value === null) throw new ChartEditOperationError('invalid_scenario');
+    if (operation.target && !resolveTargetSeries(config, operation.target).length) {
+        throw new ChartEditOperationError('target_not_found');
+    }
+    const line = { axis, label: safeAnnotationLabel(operation.label, stat || String(value)) };
+    if (hasValue) line.value = value;
+    else line.stat = stat;
+    if (operation.target) line.target = typeof operation.target === 'string' ? operation.target : clone(operation.target);
+    return line;
+}
+
+function normalizeHighlight(operation, config) {
+    const matches = resolveTargetSeries(config, operation.target);
+    if (!matches.length) throw new ChartEditOperationError('target_not_found');
+    const hasCategories = Array.isArray(operation.categories);
+    const predicate = operation.predicate && typeof operation.predicate === 'object' ? operation.predicate : null;
+    if (hasCategories === Boolean(predicate)) throw new ChartEditOperationError('invalid_scenario');
+    const highlight = { target: typeof operation.target === 'string' ? operation.target.trim() || 'all' : 'all' };
+    if (hasCategories) {
+        if (!operation.categories.length || operation.categories.length > MAX_HIGHLIGHT_CATEGORIES) {
+            throw new ChartEditOperationError('too_many_highlights');
+        }
+        const known = seriesCategories(matches[0].series, config);
+        const resolved = operation.categories.map((wanted) => known.find((label) => (
+            String(label).trim().toLowerCase() === String(wanted).trim().toLowerCase()
+        )));
+        if (resolved.some((label) => label === undefined)) throw new ChartEditOperationError('unknown_category');
+        highlight.categories = resolved;
+    } else {
+        const op = String(predicate.op || '').toLowerCase();
+        const value = finiteNumber(predicate.value);
+        const value2 = predicate.value2 === undefined || predicate.value2 === null ? null : finiteNumber(predicate.value2);
+        if (!PREDICATE_OPS.has(op) || value === null || (op === 'between') !== (value2 !== null)) {
+            throw new ChartEditOperationError('invalid_scenario');
+        }
+        highlight.predicate = { op, value, ...(value2 !== null ? { value2 } : {}) };
+    }
+    if (operation.color) {
+        const color = String(operation.color).trim();
+        if (!validColor(color)) throw new ChartEditOperationError('invalid_color');
+        highlight.color = color;
+    }
+    const label = safeAnnotationLabel(operation.label);
+    if (label) highlight.label = label;
+    return highlight;
+}
+
 function updateConfigSeries(config, matches, update) {
     const indexes = new Set(matches.map(({ index }) => index));
     return {
@@ -513,6 +612,54 @@ export class ChartEditOperationError extends Error {
     }
 }
 
+function requestedChartType(operation) {
+    return String(valueAt(operation, 'chart_type', 'value') || '').toLowerCase();
+}
+
+/**
+ * True when a set_chart_type operation can be flipped in the browser: the
+ * target is bar/line/area and every visible series is already cartesian
+ * bar/line. Anything else (pie, scatter, horizontal bar, or a pie → bar flip)
+ * needs the server rebuild from the full result set.
+ */
+export function chartTypeAppliesLocally(operation, config) {
+    const type = requestedChartType(operation);
+    if (!LOCAL_CHART_TYPES.has(type)) return false;
+    const visible = array(config?.series).filter((series) => !series?.__derived);
+    return visible.length > 0
+        && visible.every((series) => ['bar', 'line'].includes(series?.type));
+}
+
+/** Server-rebuildable chart type names accepted from the editor. */
+export function isRebuildChartType(type) {
+    return REBUILD_CHART_TYPES.has(String(type || '').toLowerCase());
+}
+
+/**
+ * Split an operation list into the part that needs the deterministic server
+ * rebuild (bindings, incompatible chart types) and the part that applies
+ * locally. Order inside each group is preserved; rebuild runs first so local
+ * styling lands on the rebuilt chart.
+ */
+export function partitionRebuildOperations(operations, config) {
+    const rebuild = [];
+    const local = [];
+    for (const operation of array(operations)) {
+        const op = operationName(operation);
+        if (op === 'set_binding') {
+            rebuild.push(operation);
+        } else if (op === 'set_chart_type' && !chartTypeAppliesLocally(operation, config)) {
+            if (!isRebuildChartType(requestedChartType(operation))) {
+                throw new ChartEditOperationError('incompatible_chart_type');
+            }
+            rebuild.push(operation);
+        } else {
+            local.push(operation);
+        }
+    }
+    return { rebuild, local };
+}
+
 /**
  * Apply the complete response transactionally. Any invalid/unsupported
  * operation rejects the whole list and leaves the source session untouched.
@@ -533,6 +680,7 @@ export function applyChartEditOperations(session, operations, {
     let overrides = upgradeLegacyOverrides(clone(working.styleOverrides || {}), config);
     let overlays = clone(working.derivedSpecs || []);
     let spec = clone(working.spec);
+    let annotations = normalizeAnnotations(working.annotations);
     const protectedBefore = protectedSeriesState(config);
 
     for (const raw of operations) {
@@ -550,6 +698,40 @@ export function applyChartEditOperations(session, operations, {
                     return { areaStyle: { color }, itemStyle: { color } };
                 }
                 const patch = { itemStyle: { color } };
+                if (series.type === 'line') patch.lineStyle = { color };
+                if (series.areaStyle) patch.areaStyle = { color };
+                return patch;
+            });
+        } else if (op === 'set_palette') {
+            ensureSql(chartKind);
+            const colors = array(operation.colors).map((color) => String(color || '').trim());
+            if (!colors.length || colors.length > MAX_PALETTE_COLORS || !colors.every(validColor)) {
+                throw new ChartEditOperationError('invalid_color');
+            }
+            const visible = array(config.series)
+                .map((series, index) => ({ series, index }))
+                .filter(({ series }) => !series?.__derived && !ML_HELPER_ROLES.has(series?.jeenRole));
+            if (!visible.length) throw new ChartEditOperationError('target_not_found');
+            const singles = visible.filter(({ series }) => SINGLE_COLOUR_SERIES.has(series?.type));
+            // One bar/scatter series with many categories: colour per data point,
+            // otherwise the palette would be invisible. Lines stay one colour.
+            const colorByData = singles.length === 1
+                && visible.length === 1
+                && ['bar', 'scatter'].includes(singles[0].series?.type);
+            overrides = mergeStyleOverrides(overrides, { color: colors.slice() });
+            overrides = mergeIdentityPatches(overrides, config, visible, (series) => {
+                const position = singles.findIndex(({ series: item }) => item === series);
+                if (position < 0 || colorByData) {
+                    // null is the deletion marker: drop any pinned colour so the
+                    // slices / points follow option.color.
+                    return {
+                        itemStyle: { color: null },
+                        lineStyle: { color: null },
+                        ...(colorByData ? { colorBy: 'data' } : {}),
+                    };
+                }
+                const color = colors[position % colors.length];
+                const patch = { itemStyle: { color }, colorBy: null };
                 if (series.type === 'line') patch.lineStyle = { color };
                 if (series.areaStyle) patch.areaStyle = { color };
                 return patch;
@@ -657,12 +839,11 @@ export function applyChartEditOperations(session, operations, {
                 : null;
         } else if (op === 'set_chart_type') {
             ensureSql(chartKind);
-            const type = String(valueAt(operation, 'chart_type', 'value') || '').toLowerCase();
-            if (!['bar', 'line', 'area'].includes(type)) throw new ChartEditOperationError('incompatible_chart_type');
-            const visible = array(config.series).filter((series) => !series?.__derived);
-            if (!visible.length || visible.some((series) => !['bar', 'line'].includes(series?.type))) {
+            const type = requestedChartType(operation);
+            if (!chartTypeAppliesLocally(operation, config)) {
                 throw new ChartEditOperationError('incompatible_chart_type');
             }
+            const visible = array(config.series).filter((series) => !series?.__derived);
             const matches = visible.map((series) => ({
                 series,
                 index: config.series.indexOf(series),
@@ -699,6 +880,41 @@ export function applyChartEditOperations(session, operations, {
             // frontend deliberately has no SQL/connector fallback, so reject
             // instead of guessing or accepting LLM-provided values.
             throw new ChartEditOperationError('binding_unsupported');
+        } else if (op === 'scenario_set_point' || op === 'scenario_scale' || op === 'scenario_shift') {
+            ensureSql(chartKind);
+            // Scenarios are derived copies; the real series stays untouched.
+            const scenario = scenarioSpecFromOperation(operation, config);
+            const active = overlays.filter(isScenarioSpec);
+            if (active.some((item) => item.label === scenario.label)) {
+                overlays = overlays.map((item) => (
+                    isScenarioSpec(item) && item.label === scenario.label ? scenario : item
+                ));
+            } else {
+                if (active.length >= MAX_SCENARIOS) throw new ChartEditOperationError('too_many_scenarios');
+                overlays.push(scenario);
+            }
+        } else if (op === 'scenario_clear') {
+            ensureSql(chartKind);
+            const label = operation.label ? String(operation.label).trim() : '';
+            const before = overlays.length;
+            overlays = overlays.filter((item) => !isScenarioSpec(item) || (label && item.label !== label));
+            if (overlays.length === before) throw new ChartEditOperationError('overlay_not_found');
+        } else if (op === 'add_reference_line') {
+            const line = normalizeReferenceLine(operation, config);
+            const lines = annotations.referenceLines.filter((item) => item.label !== line.label);
+            if (lines.length >= MAX_REFERENCE_LINES) throw new ChartEditOperationError('too_many_reference_lines');
+            annotations = { ...annotations, referenceLines: [...lines, line] };
+        } else if (op === 'remove_reference_line') {
+            const label = operation.label ? String(operation.label).trim() : '';
+            const before = annotations.referenceLines.length;
+            const lines = annotations.referenceLines.filter((item) => label && item.label !== label);
+            if (lines.length === before) throw new ChartEditOperationError('overlay_not_found');
+            annotations = { ...annotations, referenceLines: lines };
+        } else if (op === 'highlight_points') {
+            const highlight = normalizeHighlight(operation, config);
+            annotations = { ...annotations, highlights: [...annotations.highlights, highlight] };
+        } else if (op === 'clear_highlights') {
+            annotations = { ...annotations, highlights: [] };
         } else {
             throw new ChartEditOperationError('unsupported_operation');
         }
@@ -710,6 +926,7 @@ export function applyChartEditOperations(session, operations, {
         spec,
         derivedSpecs: overlays,
         styleOverrides: overrides,
+        annotations,
     });
     candidate.replaceView(view);
     return candidate;

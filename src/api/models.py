@@ -7,12 +7,23 @@ a lot of one-class files without buying much.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from src.api.chart_operations import ChartOperation, SetBindingOperation
+from src.api.chart_operations import (
+    ChartOperation,
+    SetBindingOperation,
+    SetChartTypeOperation,
+)
+
+# Operations the deterministic rebuild endpoint accepts: anything that changes
+# the chart *structure* and therefore needs the full cached result set.
+ChartRebuildOperation = Annotated[
+    Union[SetBindingOperation, SetChartTypeOperation],
+    Field(discriminator="op"),
+]
 
 
 # ----------------------------------------------------------------------
@@ -170,6 +181,13 @@ class SkillPrefPatch(BaseModel):
     connection: str
     skill: str
     remember: bool = True
+
+
+class AnalysisAccuracyRequest(BaseModel):
+    """Compare a captured forecast turn with the actuals that have since arrived."""
+
+    connection: str
+    query_id: UUID
 
 
 class AnalysisChartRequest(BaseModel):
@@ -345,6 +363,8 @@ class ChartManifest(BaseModel):
         max_length=256,
     )
     locks: Dict[str, Any] = Field(default_factory=dict)
+    # Active reference lines / highlights so the model can remove or amend them.
+    annotations: Optional[Dict[str, Any]] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -569,7 +589,7 @@ class EditChartV2Response(BaseModel):
 
 
 class EditChartRebuildRequest(BaseModel):
-    """Deterministic SQL-chart rebuild for validated binding operations."""
+    """Deterministic SQL-chart rebuild for validated binding/type operations."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -577,7 +597,7 @@ class EditChartRebuildRequest(BaseModel):
     query_id: str = Field(min_length=1, max_length=64)
     chart_kind: Literal["sql"] = "sql"
     chart_spec: Dict[str, Any]
-    operations: List[SetBindingOperation] = Field(min_length=1, max_length=4)
+    operations: List[ChartRebuildOperation] = Field(min_length=1, max_length=4)
     column_names: Optional[List[str]] = Field(default=None, max_length=256)
     all_data: Optional[List[List[Any]]] = Field(default=None, max_length=10_000)
 
@@ -693,12 +713,70 @@ class EmptyResultHintRequest(BaseModel):
 # ----------------------------------------------------------------------
 # History / feedback
 # ----------------------------------------------------------------------
+# The values ``chk_insights_user_feedback`` accepts on the turn row.
+# ``catalog_gap`` is the "Report catalog gap" action on a failed turn
+# (migration 033 widened the constraint to admit it); ``edited`` marks a
+# rerun question. Answer-quality signals (thumbs, rating, message) go to
+# ``insights_answer_feedback`` via ``AnswerFeedbackRequest`` (migration 035);
+# thumbs are still accepted here for older UI builds.
+FeedbackValue = Literal["thumbs_up", "thumbs_down", "edited", "catalog_gap"]
+
+
 class FeedbackRequest(BaseModel):
     query_id: UUID
     user_id: Optional[str] = None
-    feedback: str
+    feedback: FeedbackValue
     corrected_sql: Optional[str] = None
-    notes: Optional[str] = None
+    notes: Optional[str] = Field(default=None, max_length=4000)
+    # Optional: lets the route enrich the structured ``result_feedback`` log
+    # event with the turn's ML method/validation (owner + connection bound).
+    connection: Optional[str] = None
+
+
+AnswerThumb = Literal["thumbs_up", "thumbs_down", "cleared"]
+AnswerFeedbackType = Literal["general", "report_bug", "ui_bug", "other"]
+
+
+class AnswerFeedbackRequest(BaseModel):
+    """One answer-feedback event (``insights_answer_feedback``, append-only).
+
+    A thumbs click sends just ``thumb``; the Give feedback dialog sends
+    ``rating`` / ``feedback_type`` / ``message``. At least one of thumb,
+    rating or message must be present — mirrors the table's CHECK.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    query_id: UUID
+    thumb: Optional[AnswerThumb] = None
+    rating: Optional[int] = Field(default=None, ge=1, le=5)
+    feedback_type: Optional[AnswerFeedbackType] = None
+    message: Optional[str] = Field(default=None, max_length=4000)
+    # Accepted for compatibility but not trusted: the stored source_key is
+    # always the turn's own (the server copies it from the turn row).
+    connection: Optional[str] = Field(default=None, max_length=255)
+
+    @field_validator("message")
+    @classmethod
+    def _strip_message(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @model_validator(mode="after")
+    def _require_content(self) -> "AnswerFeedbackRequest":
+        if self.thumb is None and self.rating is None and not self.message:
+            raise ValueError("feedback needs a thumb, a rating or a message")
+        return self
+
+
+class AnswerFeedbackResponse(BaseModel):
+    status: Literal["success"] = "success"
+    feedback_id: str
+    # The turn's current thumb after this event (None when cleared / unset),
+    # so the UI can settle its pressed state from the server's view.
+    thumb: Optional[Literal["thumbs_up", "thumbs_down"]] = None
 
 
 class PinQuestionRequest(BaseModel):
@@ -795,6 +873,10 @@ class ConversationTurn(BaseModel):
     analysis: Optional[Dict[str, Any]] = None
     low_confidence: bool = False
     is_favorite: bool = False
+    # Current thumb from insights_answer_feedback (newest thumb event that is
+    # not 'cleared'): thumbs_up | thumbs_down | None. Lets the answer card
+    # render its pressed state after a reload.
+    user_feedback: Optional[str] = None
 
 
 class ConversationDetail(BaseModel):

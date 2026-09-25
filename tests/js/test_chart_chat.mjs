@@ -202,8 +202,11 @@ assert.equal(lastTiming.operation_count, 1);
 assert.ok(lastTiming.wall_ms >= lastTiming.apply_ms);
 
 // Applied copy is a separate compact row, with localized copy outside BDI.
-assert.equal(container.children[0], chat._rowEl);
-assert.equal(container.children[1], chat._appliedEl);
+// The scenario badge is mounted first and hidden until a what-if is drawn.
+assert.equal(container.children[0], chat._scenarioBadgeEl);
+assert.equal(chat._scenarioBadgeEl.hidden, true);
+assert.equal(container.children[1], chat._rowEl);
+assert.equal(container.children[2], chat._appliedEl);
 assert.equal(chat._rowEl.children.includes(chat._appliedEl), false);
 assert.equal(chat._appliedLabelEl.textContent, 'Applied:');
 assert.equal(chat._appliedInstructionEl.tagName, 'BDI');
@@ -227,7 +230,7 @@ assert.equal(chat._statusEl.textContent, 'Chart reset to its original state.');
 // A rejected async render never announces success and restores input focus.
 const renderError = new Error('renderer unavailable');
 chat.hooks.onApply = async () => { throw renderError; };
-chat._inputEl.value = 'use a line';
+chat._inputEl.value = 'use a thicker line';
 chat._inputEl.dispatch('input');
 const originalConsoleError = console.error;
 console.error = () => {};
@@ -236,6 +239,67 @@ console.error = originalConsoleError;
 assert.equal(chat._statusEl.textContent, 'The chart change could not be applied safely. The current chart was kept.');
 assert.equal(chat._statusEl.dataset.kind, 'error');
 assert.equal(document.activeElement, chat._inputEl);
+
+// Validator/rebuild codes map to catalogued copy instead of the generic text.
+const codedError = new Error('cache_miss');
+codedError.code = 'cache_miss';
+chat.hooks.onApply = async () => { throw codedError; };
+chat._inputEl.value = 'use a thicker line';
+chat._inputEl.dispatch('input');
+console.error = () => {};
+await chat._handleSend();
+console.error = originalConsoleError;
+assert.equal(chat._statusEl.textContent, messages.charts.chat.reasons.cache_miss);
+
+// Fast path: a common intent is applied with no model call at all.
+const fetchCallsBefore = fetchCalls;
+let localOperations = null;
+chat.hooks.onApply = async (operations) => { localOperations = operations; return {}; };
+chat._inputEl.value = 'pie chart with pastel colors';
+chat._inputEl.dispatch('input');
+await chat._handleSend();
+assert.equal(fetchCalls, fetchCallsBefore, 'matched intents never hit /api/edit-chart');
+assert.deepEqual(localOperations.map((operation) => operation.op), ['set_chart_type', 'set_palette']);
+assert.equal(lastTiming.matched_locally, true);
+assert.equal(lastTiming.request_count, 0);
+assert.equal(chat._statusEl.textContent, 'Chart updated. This edit is session-only and is not saved.');
+assert.equal(chat._appliedInstructionEl.textContent, 'pie chart with pastel colors');
+chat.setScenarioBadge(true);
+assert.equal(chat._scenarioBadgeEl.hidden, false);
+assert.equal(chat._scenarioBadgeEl.textContent, messages.charts.chat.scenarioBadge);
+chat.setScenarioBadge(false);
+assert.equal(chat._scenarioBadgeEl.hidden, true);
+
+// An out-of-scope answer shows the catalogued reason, not the model's note.
+globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+        return {
+            contract_version: 2,
+            operations: [],
+            notes: 'Grouping requires a new query.',
+            out_of_scope: true,
+            reason_code: 'needs_new_query',
+        };
+    },
+});
+chat._inputEl.value = 'group by quarter instead';
+chat._inputEl.dispatch('input');
+await chat._handleSend();
+assert.equal(chat._statusEl.textContent, messages.charts.chat.reasons.needs_new_query);
+assert.equal(chat._statusEl.dataset.kind, 'warn');
+globalThis.fetch = async (_url, options = {}) => {
+    fetchCalls += 1;
+    lastPayload = options.body ? JSON.parse(options.body) : null;
+    return {
+        ok: true,
+        status: 200,
+        async json() {
+            return { contract_version: 2, operations: [{ op: 'set_color', target: 'all', color: '#22c55e' }], notes: 'ok' };
+        },
+    };
+};
 
 chat.hooks.getChartManifest = () => null;
 chat._inputEl.value = 'needs a chart';
@@ -263,7 +327,7 @@ assert.equal(mlApplied, 1);
 assert.equal(lastPayload.chart_kind, 'ml_basic');
 assert.equal(lastPayload.instruction, 'weekly instead of daily');
 assert.equal(analysisDocument.activeElement, analysisChat._inputEl);
-assert.equal(fetchCalls, 3);
+assert.equal(fetchCalls, 4);
 
 // A response for an older chart/session revision is silently dropped.
 const staleResponse = deferred();
@@ -278,7 +342,7 @@ const { chat: staleChat } = mountChat({
     isRevisionCurrent: (captured) => captured === revision,
     onApply: async () => { staleApplied += 1; },
 });
-staleChat._inputEl.value = 'make it green';
+staleChat._inputEl.value = 'make the revenue series a bit greener';
 const staleSend = staleChat._handleSend();
 revision = 11;
 staleResponse.resolve({
@@ -313,7 +377,7 @@ const { chat: cancelChat } = mountChat({
     isRevisionCurrent: () => true,
     onReset: async () => {},
 });
-cancelChat._inputEl.value = 'make it blue';
+cancelChat._inputEl.value = 'make the bars a bit bluer';
 const cancelledSend = cancelChat._handleSend();
 await Promise.resolve();
 await cancelChat._handleReset();
@@ -343,7 +407,7 @@ const { chat: renderRaceChat } = mountChat({
     onApply: () => pendingApply.promise,
     onReset: async () => {},
 });
-renderRaceChat._inputEl.value = 'make it blue';
+renderRaceChat._inputEl.value = 'make the bars a bit bluer';
 const renderRaceSend = renderRaceChat._handleSend();
 await Promise.resolve();
 await Promise.resolve();

@@ -188,9 +188,14 @@
         },
         provenance: { missing_policy: '0 of 26 periods zero-filled', span_start: '2026-03-02', span_end: '2026-08-31', query_ts: '2026-09-14T00:00:00Z' },
         guard_results: [{ name: 'series_length', passed: true, detail: '26 of 12 weeks needed' }],
-        facts: { n_points: 26, horizon: 8 },
+        facts: { n_points: 26, horizon: 8, interval: 0.9, interval_method: 'conformal_scaled', mase_scale: 4200 },
         caveats: [],
         low_confidence: false,
+        // "Adjustments to try": what src/analysis/advisor.py attaches in response_formatter.
+        adjustments: [
+            { code: 'wider_window_for_season', args: { window: 105, unit: 'week' }, params_patch: { window: 105 }, recommended: true },
+            { code: 'try_theta', args: { baseline: 'SeasonalNaive' }, params_patch: { method: 'theta' }, recommended: false },
+        ],
     };
 
     const correlationAnalysis = {

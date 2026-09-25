@@ -95,7 +95,7 @@ def test_sandbox_audience_has_its_own_signing_key(fast_app, monkeypatch):
 def test_forecast_window_is_accepted_by_the_engine_entry_point():
     """Contract 2 gave ForecastParams a window; the extra-forbid model the sandbox
     validates with must take it (the version check protects an older image)."""
-    assert CONTRACT_VERSION == "2"
+    assert CONTRACT_VERSION == "3"
     idx, y = seasonal_series(n=30, grain="week", amplitude=0)
     out = execute_skill("forecast", {"series": series_request(), "window": 36, "horizon": 4}, to_payload(idx, y))
     assert out.status == "ok", out.error
