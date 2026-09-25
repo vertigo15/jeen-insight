@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
+from src.agent.progress import emit_partial
 from src.agent.token_usage import merge_usage
 from src.connectors import SqlRunner
 
@@ -85,7 +86,14 @@ def make_execute_query(sql_runner: SqlRunner):
 
 
 def trivial_result_check(state: AgentState) -> Dict[str, Any]:
-    """Pure-Python node: set ``is_trivial=True`` to skip fused_eval_analytics."""
+    """Pure-Python node: set ``is_trivial=True`` to skip fused_eval_analytics.
+
+    This is also the earliest point where the rows are accepted on every path
+    (SQL after the empty/filter checks, memory compute), so it hands them to
+    the request's ``partial_callback`` before the narration LLM call. ML
+    results are excluded: their chart and persistence depend on the artifact
+    that ``save_to_memory`` writes later.
+    """
     result = state.get("query_result") or {}
     rows = result.get("rows") or []
     cols = result.get("columns") or []
@@ -96,7 +104,22 @@ def trivial_result_check(state: AgentState) -> Dict[str, Any]:
         len(cols),
         trivial,
     )
-    return {"is_trivial": trivial}
+    out: Dict[str, Any] = {"is_trivial": trivial}
+    if rows and not state.get("analysis_result") and callable(state.get("partial_callback")):
+        revision = int(state.get("partial_revision") or 0)
+        emit_partial(
+            state,
+            {
+                "query_id": state.get("query_id"),
+                "session_id": state.get("session_id"),
+                "sql": state.get("generated_sql"),
+                "results": result,
+                "revision": revision,
+                "provisional": True,
+            },
+        )
+        out["partial_revision"] = revision + 1
+    return out
 
 
 # ── empty_result_check ─────────────────────────────────────────────────────────

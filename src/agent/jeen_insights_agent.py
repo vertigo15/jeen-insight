@@ -24,7 +24,7 @@ from src.agent.langgraph_agent.nodes.catalog import _load_catalog_bundle
 from src.agent.langgraph_agent.nodes.output import _enrich_trace, slim_trace
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
-from src.agent.progress import ProgressCallback
+from src.agent.progress import PartialCallback, ProgressCallback
 from src.agent.user_resolver import SimpleUserResolver
 from src.config import settings
 from src.connections import Connection, ConnectionService
@@ -125,6 +125,7 @@ class JeenInsightsAgent:
         progress_callback: Optional[ProgressCallback] = None,
         analysis_enabled: Optional[bool] = None,
         filter_choices: Optional[List[Dict[str, Any]]] = None,
+        partial_callback: Optional[PartialCallback] = None,
     ) -> Dict[str, Any]:
         """Run the LangGraph text-to-SQL pipeline.
 
@@ -135,7 +136,8 @@ class JeenInsightsAgent:
         the SQL path even when it reads like an ML request. ``filter_choices``
         carries the user's answers to earlier column/value clarifications
         (``{literal, table, column, any}``) so the grounder honours them
-        instead of asking again.
+        instead of asking again. ``partial_callback`` receives the accepted
+        rows before the narration LLM call (streaming route only).
         """
         extra: Dict[str, Any] = {}
         if analysis_enabled is not None:
@@ -151,6 +153,7 @@ class JeenInsightsAgent:
             eval_analytics=eval_analytics,
             llm_timeout=llm_timeout,
             progress_callback=progress_callback,
+            partial_callback=partial_callback,
             analysis=extra or None,
         )
 
@@ -210,6 +213,7 @@ class JeenInsightsAgent:
         progress_callback: Optional[ProgressCallback],
         parent_query_id: Optional[UUID] = None,
         analysis: Optional[Dict[str, Any]] = None,
+        partial_callback: Optional[PartialCallback] = None,
     ) -> Dict[str, Any]:
         if not session_id:
             session_id = uuid4()
@@ -316,6 +320,8 @@ class JeenInsightsAgent:
                 "limit": limit,
                 "temperature": temperature,
                 "progress_callback": progress_callback,
+                "partial_callback": partial_callback,
+                "partial_revision": 0,
                 # ── Connection ──────────────────────────────────────────
                 "connection_display_name": self.display_name,
                 "database_type": self.database_type,

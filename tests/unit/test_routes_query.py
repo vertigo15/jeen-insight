@@ -193,6 +193,98 @@ def test_query_stream_emits_real_nodes_then_same_result(client, fake_state, monk
     assert '"followups":["What changed?"]' in body
 
 
+def test_query_stream_emits_partial_rows_before_result(client, fake_state, monkeypatch):
+    """The graph hands the accepted rows to the stream before the narration
+    LLM call; the route caches them (so /api/generate-chart can start) and
+    forwards a `partial` event between the node events and the `result`."""
+    fake_state.agent_registry.get_agent = AsyncMock()
+    monkeypatch.setattr("src.api.routes.query._maybe_snapshot", AsyncMock())
+    monkeypatch.setattr("src.api.routes.query._maybe_propose_tool", AsyncMock(return_value=None))
+    cache_put = MagicMock()
+    monkeypatch.setattr("src.api.routes.query.result_cache.put", cache_put)
+    query_id = "22222222-2222-2222-2222-222222222222"
+    dataset = {"columns": ["x"], "rows": [[1], [2]]}
+    result = {
+        "question": "show all customers",
+        "query_id": query_id,
+        "session_id": "33333333-3333-3333-3333-333333333333",
+        "sql": "select 1",
+        "results": dataset,
+        "answer": "Two rows.",
+        "error": None,
+        "metrics": {"execution_time_ms": 8},
+        "trace": [],
+        "findings": ["Two rows came back."],
+    }
+    order = []
+
+    async def process_question(**kwargs):
+        progress = kwargs["progress_callback"]
+        partial = kwargs["partial_callback"]
+        progress({"node": "trivial_result_check", "status": "node_started", "icon": "·", "type": "logic"})
+        partial({
+            "query_id": query_id,
+            "session_id": result["session_id"],
+            "sql": "select 1",
+            "results": dataset,
+            "revision": 0,
+            "provisional": True,
+        })
+        order.append(("cache_calls_at_partial", cache_put.call_count))
+        progress({"node": "trivial_result_check", "status": "node_finished", "icon": "·", "type": "logic", "elapsed_ms": 1})
+        return result
+
+    fake_agent = MagicMock()
+    fake_agent.process_question = AsyncMock(side_effect=process_question)
+    fake_state.agent_registry.get_agent.return_value = fake_agent
+
+    streamed = client.post(
+        "/api/query/stream",
+        json={"question": "show all customers", "connection": "sales_db"},
+    )
+
+    assert streamed.status_code == 200
+    body = streamed.text
+    started = body.index('"status":"node_started"')
+    partial_at = body.index("event: partial")
+    finished = body.index('"status":"node_finished"')
+    assert started < partial_at < finished < body.index("event: result")
+    assert '"provisional":true' in body
+    assert '"revision":0' in body
+    # Rows were cached synchronously inside the callback, before the event left.
+    assert order == [("cache_calls_at_partial", 1)]
+    first = cache_put.call_args_list[0].kwargs
+    assert first["user_id"] == "user-a"
+    assert first["connection"] == "sales_db"
+    assert first["query_id"] == query_id
+    assert first["dataset"] is dataset
+    # The final put reuses the same key, so it simply overwrites.
+    assert cache_put.call_count == 2
+    assert cache_put.call_args_list[1].kwargs["query_id"] == query_id
+    # The narrative still arrives with the result.
+    assert '"findings":["Two rows came back."]' in body
+
+
+def test_query_json_route_passes_no_partial_callback(client, fake_state):
+    fake_state.agent_registry.get_agent = AsyncMock()
+    fake_agent = MagicMock()
+    fake_agent.process_question = AsyncMock(
+        return_value={
+            "question": "q", "sql": "select 1", "results": {"columns": ["x"], "rows": [[1]]},
+            "error": None, "trace": [],
+        }
+    )
+    fake_state.agent_registry.get_agent.return_value = fake_agent
+
+    resp = client.post(
+        "/api/query",
+        json={"question": "show all customers", "connection": "sales_db"},
+    )
+
+    assert resp.status_code == 200
+    assert fake_agent.process_question.await_args.kwargs["partial_callback"] is None
+
+
 def test_query_stream_requires_authenticated_user(anon_client, fake_state):
     response = anon_client.post(
         "/api/query/stream",

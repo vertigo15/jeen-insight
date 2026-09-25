@@ -3911,7 +3911,7 @@ async function initializeChartFeature(results, options = {}) {
     const epoch = ++chartManagerEpoch;
     // Dynamically import ChartManager if not already loaded
     if (!ChartManager) {
-        const module = await import('./chart-feature/chartManager.js?v=121');
+        const module = await import('./chart-feature/chartManager.js?v=122');
         if (epoch !== chartManagerEpoch) return;
         ChartManager = module.ChartManager;
     }
@@ -4861,6 +4861,31 @@ window.askQuestion = askQuestion;
 window.JeenLegacyBridge = {
     applyResult(data) {
         displayResults({ ...(data || {}), _inlineAnalytics: true });
+    },
+    /**
+     * Progressive answer, second half: the rows were applied from the
+     * `partial` event (table + chart already built), and the final `result`
+     * now brings the narrative, prompt, trace and metrics. Refresh the
+     * developer panels and identifiers without touching the table or the
+     * chart, which would otherwise be re-requested from the LLM.
+     */
+    applyResultNarrative(data) {
+        if (!data) return;
+        _lastResultData = { ...data, _inlineAnalytics: true };
+        currentQuestion = data.question;
+        currentQueryId = data.query_id || null;
+        currentSessionId = data.session_id || null;
+        window._resultHandle = data.result_handle || window._resultHandle || null;
+        window.currentQueryId = currentQueryId;
+        window.currentQuestion = currentQuestion;
+        showAskMetrics(data.metrics);
+        if (data.prompt) {
+            currentPrompt = data.prompt;
+            displayStructuredPrompt(data.prompt);
+        }
+        if (data.trace) renderTrace(data.trace, data.metrics);
+        _updateDevRunHeader(data);
+        _updateSqlStats(data);
     },
     /**
      * Render a turn whose rows (and optionally chart baseline) are already

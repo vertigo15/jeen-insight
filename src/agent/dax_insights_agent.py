@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from uuid import UUID, uuid4
 
 from src.agent.conversation_history import ConversationHistoryService
@@ -157,13 +157,15 @@ class DaxInsightsAgent:
         progress_callback: Optional[ProgressCallback] = None,
         analysis_enabled: Optional[bool] = None,
         filter_choices: Optional[List[Dict[str, Any]]] = None,
+        partial_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         """Run the text-to-DAX pipeline for one question.
 
-        ``analysis_enabled`` and ``filter_choices`` are accepted so the shared
-        ``/api/query`` route can call every agent with the same keyword set;
-        the DAX graph has no ML skills branch and asks its own entity
-        questions, so both values are ignored.
+        ``analysis_enabled``, ``filter_choices`` and ``partial_callback`` are
+        accepted so the shared ``/api/query`` route can call every agent with
+        the same keyword set; the DAX graph has no ML skills branch, asks its
+        own entity questions and does not stream provisional rows, so all
+        three are ignored.
         """
         if not session_id:
             session_id = uuid4()

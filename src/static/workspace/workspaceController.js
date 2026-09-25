@@ -161,10 +161,23 @@
         return (prefs.autoInsights || 'on') === 'on' && (prefs.aiAnalytics || 'on') === 'on';
     }
 
+    /**
+     * A turn whose answer pane can be shown: finished, or still streaming with
+     * its provisional rows already here, or failed after those rows arrived
+     * (the table stays; the thread shows the error).
+     */
+    function turnShowsResult(turn) {
+        if (!turn) return false;
+        if (turn.status === 'success' || turn.status === 'streaming') return true;
+        return turn.status === 'error'
+            && turn.provisionalRevision != null
+            && normalizeRows(turn.result && turn.result.results).length > 0;
+    }
+
     function selectionForTurn(selectedResultId, turn) {
         return {
             selectedTurnId: turn?.id || null,
-            selectedResultId: turn?.status === 'success' ? turn.id : selectedResultId,
+            selectedResultId: turnShowsResult(turn) ? turn.id : selectedResultId,
         };
     }
 
@@ -448,6 +461,7 @@
                 target?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             });
             document.addEventListener('jeen:osm-map-ready', () => this.renderTable());
+            document.addEventListener('jeen:chart-rendered', (event) => this._onChartRendered(event.detail || {}));
             document.addEventListener('jeen:conversation-tabs', (event) => this.setTabsVisible(!!event.detail?.visible));
             // Send visibility depends on the signed-in user, which auth.js loads after the shell.
             document.addEventListener('jeen:current-user', () => this._setActionsEnabled(Boolean(this._actionsEnabled)));
@@ -1000,6 +1014,9 @@
                 traceOpen: false,
                 result: null,
                 error: null,
+                // Wall-clock milestones since the question was sent: when the
+                // table, the summary/insights and the chart became visible.
+                timeline: {},
             };
             if (!replaceTurn) this.turns.push(turn);
             this.selectedTurnId = turn.id;
@@ -1035,12 +1052,13 @@
                 await this._stream(payload, (event, data) => {
                     if (stale()) return;
                     if (event === 'node') this._onNode(turn, data);
+                    if (event === 'partial') this._onPartial(turn, data);
                     if (event === 'result') this._onResult(turn, data);
                     if (event === 'enrichment') this._onEnrichment(turn, data);
                     if (event === 'error') throw new Error(errorText({ payload: data, code: data.code || 'QUERY_FAILED' }, data.detail || data.error || t('errors.queryFailed')));
                 }, abort.signal);
                 if (stale()) return;
-                if (turn.status === 'running') throw new Error(t('errors.streamEnded'));
+                if (turn.status === 'running' || turn.status === 'streaming') throw new Error(t('errors.streamEnded'));
             } catch (error) {
                 if (stale() || abort.signal.aborted) return;
                 // A failed fetch (offline, proxy down) surfaces as a TypeError with
@@ -1197,10 +1215,78 @@
             this._scrollThread();
         },
 
+        /**
+         * Provisional rows from the graph (`partial` SSE event): the SQL ran and
+         * its result was accepted, but the summary / insights / follow-ups are
+         * still being written. Paint the table (and start the chart) now; the
+         * `result` event later merges the narrative into the same turn.
+         *
+         * Every partial is a new dataset: a semantic retry re-executes SQL
+         * whose text may be identical, so the revision is bumped each time and
+         * any chart in flight for the previous rows is dropped.
+         */
+        _onPartial(turn, data) {
+            if (!data || !data.results || turn.status === 'success' || turn.status === 'error') return;
+            if (turn.provisionalRevision != null) {
+                this._captureSelectedChart();
+                turn.rev = (turn.rev || 0) + 1;
+                turn.chartState = null;
+                turn.chartCollapsed = undefined;
+                this.lastAppliedResultId = null;
+            }
+            this._tableRepaintHold = null;
+            turn.result = {
+                question: turn.question,
+                query_id: data.query_id || null,
+                session_id: data.session_id || null,
+                sql: data.sql || null,
+                results: data.results,
+                answer: null,
+                error: null,
+                metrics: {},
+                findings: [],
+                suggestions: [],
+                followups: [],
+                trace: [],
+            };
+            turn.provisionalRevision = Number.isFinite(Number(data.revision)) ? Number(data.revision) : 0;
+            // New rows: the table milestone is now; a chart for the previous
+            // revision (if any) no longer counts.
+            turn.timeline = { ...(turn.timeline || {}), tableMs: this._sinceStart(turn) };
+            delete turn.timeline.chartMs;
+            delete turn.timeline.chartSettled;
+            turn.status = 'streaming';
+            turn.turnId = data.query_id || turn.turnId || null;
+            turn.conversationId = data.session_id || turn.conversationId || null;
+            turn.resultKind = 'table';
+            turn.phaseState.execution = 'done';
+            this.selectedTurnId = turn.id;
+            this.selectedResultId = turn.id;
+            this.filter = '';
+            if (data.session_id && typeof window._jeenSetSessionId === 'function') window._jeenSetSessionId(data.session_id);
+            this.render();
+            this._scrollThread();
+        },
+
         _onResult(turn, data) {
             if (data.error && !data.results) {
                 this._onError(turn, new Error(data.error), data);
                 return;
+            }
+            // The rows already arrived as a partial for this exact dataset: keep
+            // that object (the table and chart were built from it) and only
+            // merge the narrative on top, so the chart is not re-requested and
+            // the grid is not repainted.
+            const provisional = turn.provisionalRevision != null && turn.result && turn.result.results;
+            const sameDataset = Boolean(provisional)
+                && (data.sql || null) === (turn.result.sql || null)
+                && normalizeRows(data.results).length === normalizeRows(turn.result.results).length;
+            if (provisional && !sameDataset) {
+                this._captureSelectedChart();
+                turn.rev = (turn.rev || 0) + 1;
+                turn.chartState = null;
+                turn.chartCollapsed = undefined;
+                this.lastAppliedResultId = null;
             }
             const used = new Set();
             (data.trace || []).forEach((raw) => {
@@ -1220,17 +1306,39 @@
             turn.status = 'success';
             // Onboarding signal: a question was answered successfully.
             document.dispatchEvent(new CustomEvent('jeen:onboarding:ask_first_question'));
-            turn.result = data;
+            if (sameDataset) {
+                const results = turn.result.results;
+                Object.assign(turn.result, data, { results });
+                this._tableRepaintHold = this._tableKey(turn);
+                // The legacy panels (prompt, trace, dev header) were fed the
+                // provisional payload; give them the narrative without a full
+                // applyResult, which would rebuild the chart.
+                if (this.lastAppliedResultId === turn.id) window.JeenLegacyBridge?.applyResultNarrative?.(turn.result);
+            } else {
+                turn.result = data;
+            }
+            turn.provisionalRevision = null;
             turn.turnId = data.query_id || turn.turnId || null;
             turn.conversationId = data.session_id || turn.conversationId || null;
             turn.isFavorite = false;
+            turn.feedback = null;
+            turn.feedbackSent = false;
             // ML skills: a confirm / clarify / guard stop is a result (a card),
             // not a table and not an error.
             turn.resultKind = data.proposal ? 'proposal' : turn.resultKind;
             turn.durationMs = Math.round(performance.now() - turn.startedAt);
+            turn.timeline = turn.timeline || {};
+            if (!sameDataset) {
+                // No partial preceded this result (or it was superseded): the
+                // table and the narrative land together.
+                delete turn.timeline.chartMs;
+                delete turn.timeline.chartSettled;
+                if (normalizeRows(data.results).length) turn.timeline.tableMs = turn.durationMs;
+            }
+            if (data.answer || (data.findings || []).length) turn.timeline.insightsMs = turn.durationMs;
             turn.phaseState.format = 'done';
             turn.phaseState.save = 'done';
-            this._captureSelectedChart();
+            if (!sameDataset) this._captureSelectedChart();
             this.selectedTurnId = turn.id;
             this.selectedResultId = turn.id;
             this.filter = '';
@@ -1274,7 +1382,15 @@
         _onError(turn, error, data) {
             turn.status = 'error';
             turn.error = error && error.message ? error.message : String(error);
-            turn.result = data || turn.result;
+            // Rows that already streamed in stay in the answer pane
+            // (turnShowsResult); a failure payload without rows must not
+            // replace them.
+            const keepProvisional = turn.provisionalRevision != null && !(data && data.results);
+            if (keepProvisional) {
+                if (data && data.error && turn.result) turn.result.error = data.error;
+            } else {
+                turn.result = data || turn.result;
+            }
             turn.durationMs = Math.round(performance.now() - turn.startedAt);
             this.selectedTurnId = turn.id;
             Object.keys(turn.phaseState).forEach((key) => {
@@ -1282,6 +1398,28 @@
             });
             this.render();
             this._scrollThread();
+        },
+
+        _sinceStart(turn) {
+            return Math.max(0, Math.round(performance.now() - (turn.startedAt || performance.now())));
+        },
+
+        /**
+         * The chart for a turn is on screen (ChartManager `jeen:chart-rendered`).
+         * Stamp the first render of the current rows; later re-renders (type
+         * switches, edits) are not "time to chart". Restored turns are skipped:
+         * their clock started at hydration, not at the question.
+         */
+        _onChartRendered(detail) {
+            const queryId = detail && detail.queryId != null ? String(detail.queryId) : null;
+            const turn = (queryId && this.turns.find((item) => item.result && String(item.result.query_id) === queryId))
+                || this.turns.find((item) => item.id === this.selectedResultId);
+            if (!turn || turn.restored || !turn.timeline || turn.timeline.chartSettled) return;
+            if (turn.status !== 'streaming' && turn.status !== 'success') return;
+            turn.timeline.chartMs = this._sinceStart(turn);
+            turn.timeline.chartSettled = true;
+            console.info('[Workspace] timeline', turn.question, turn.timeline);
+            this.renderConversation();
         },
 
         _onEnrichment(turn, data) {
@@ -1299,6 +1437,10 @@
             const switchingResult = this.selectedResultId !== turn.id;
             this._captureSelectedChart();
             if (switchingResult) {
+                // Leaving a turn closes its "time to chart" window: a chart
+                // re-applied when the user comes back is not the first render.
+                const leaving = this.turns.find((item) => item.id === this.selectedResultId);
+                if (leaving && leaving.timeline) leaving.timeline.chartSettled = true;
                 // The previous manager may remain mounted while the destination
                 // turn hydrates (or may be a text-only turn). Invalidate its
                 // chat/export/save surface immediately after capturing it.
@@ -1307,7 +1449,7 @@
             const selection = selectionForTurn(this.selectedResultId, turn);
             this.selectedTurnId = selection.selectedTurnId;
             this.selectedResultId = selection.selectedResultId;
-            if (turn.status === 'success') {
+            if (turnShowsResult(turn)) {
                 this.filter = '';
                 document.getElementById('v3-result-filter').value = '';
             }
@@ -1425,7 +1567,9 @@
         _renderFavoriteAction(turn) {
             const button = document.getElementById('v3-favorite-action');
             if (!button) return;
-            const coordinates = this._favoriteCoordinates(turn);
+            // A streaming turn has no persisted success row yet (save_to_memory
+            // runs after the narrative), so it cannot be favorited until then.
+            const coordinates = turn && turn.status === 'streaming' ? null : this._favoriteCoordinates(turn);
             button.hidden = !coordinates;
             if (!coordinates) return;
             const active = Boolean(turn.isFavorite);
@@ -2213,7 +2357,7 @@
          */
         _editAvailable(turn) {
             if (this.readOnly || this.sending || turn.rerunning) return false;
-            if (turn.status === 'running') return false;
+            if (turn.status === 'running' || turn.status === 'streaming') return false;
             if (turn.result && turn.result.proposal) return false;
             if (turn.restored && !(turn.result && turn.result.sql)) return false;
             return true;
@@ -2355,6 +2499,8 @@
             turn.trace = [];
             turn.traceOpen = false;
             turn.result = null;
+            turn.provisionalRevision = null;
+            turn.timeline = {};
             turn.error = null;
             turn.restored = false;
             turn.snapshotAt = null;
@@ -2390,16 +2536,25 @@
 
         _turnHtml(turn) {
             const selected = turn.id === this.selectedTurnId;
-            if (turn.status === 'running') {
-                return `<article class="v3-turn is-running${selected ? ' is-selected' : ''}" data-turn="${turn.id}">
+            if (turn.status === 'running' || turn.status === 'streaming') {
+                const streaming = turn.status === 'streaming';
+                const rowCount = streaming ? normalizeRows(turn.result && turn.result.results).length : 0;
+                return `<article class="v3-turn is-running${streaming ? ' is-streaming' : ''}${selected ? ' is-selected' : ''}" data-turn="${turn.id}"${streaming ? ` data-show-label="${h('conversation.turn.showAnswerBadge')}" tabindex="0" aria-current="${selected ? 'true' : 'false'}"` : ''}>
                   ${this._turnHeadHtml(turn)}
                   <div class="v3-turn-body">
                     ${this._agentLabelHtml()}
+                    ${streaming ? `<div class="v3-data-ready" role="status" dir="auto"><span class="v3-dot is-ok"></span><span>${h('conversation.turn.dataReady', { rows: rowCount })}</span>${this._timelineHtml(turn)}</div>` : ''}
                     <div class="v3-running-list">${PHASES.map((phase) => {
                     const status = turn.phaseState[phase.id];
                     const label = status === 'done' ? h('conversation.turn.statusOk') : status === 'running' ? h('conversation.turn.statusRunning') : status === 'error' ? h('conversation.turn.statusFailed') : '';
                     return `<div class="v3-running-row is-${status}"><span class="v3-dot is-${status === 'done' ? 'ok' : status}"></span><span>${esc(phase.label)}</span><span class="v3-running-status">${label}</span></div>`;
                 }).join('')}</div>
+                    ${streaming ? `<div class="v3-skeleton-group" aria-label="${h('conversation.turn.summaryPending')}" aria-busy="true">
+                      <div class="v3-skeleton v3-skeleton-summary"></div>
+                      <div class="v3-skeleton v3-skeleton-line"></div>
+                      <div class="v3-skeleton v3-skeleton-line is-short"></div>
+                      <div class="v3-skeleton-chips"><span class="v3-skeleton v3-skeleton-chip"></span><span class="v3-skeleton v3-skeleton-chip"></span></div>
+                    </div>` : ''}
                   </div>
                 </article>`;
             }
@@ -2480,7 +2635,7 @@
             }).join('');
             const trace = turn.trace.filter((item) => item.status !== 'node_started');
             const routePath = (result.routing || {}).path || (analysis ? 'ml' : 'sql');
-            const strip = turn.restored ? this._restoredStripHtml(turn) : `<div class="v3-run-strip">${dots}${this._routePillHtml(result)}${mlPill}<span class="v3-run-meta">${h('conversation.turn.runMeta', { duration: formatMs(turn.durationMs), count: trace.length })}</span>
+            const strip = turn.restored ? this._restoredStripHtml(turn) : `<div class="v3-run-strip">${dots}${this._routePillHtml(result)}${mlPill}<span class="v3-run-meta">${h('conversation.turn.runMeta', { duration: formatMs(turn.durationMs), count: trace.length })}</span>${this._timelineHtml(turn)}
                 <button class="v3-text-btn" data-trace-toggle="${turn.id}">${turn.traceOpen ? h('conversation.turn.hideRun') : h('conversation.turn.runDetails')}</button>
               </div>`;
             return `<article class="v3-turn${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}${this.editingTurnId === turn.id ? ' is-editing' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showAnswerBadge')}" data-route-path="${esc(routePath)}" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="${h('conversation.turn.showAnswer', { question: iso(turn.question) })}" aria-current="${selected ? 'true' : 'false'}">
@@ -2503,6 +2658,23 @@
                 ${(followups.length && showAnalytics) ? `<div class="v3-followups">${followups.map((question) => `<button class="v3-chip" dir="${directionOf(question)}" data-followup="${esc(textOf(question))}">${esc(textOf(question))}</button>`).join('')}</div>` : ''}
               </div>
             </article>`;
+        },
+
+        /**
+         * "table 3.0s · insights 5.2s · chart 10.1s": how long after the
+         * question each part of the answer became visible. Only the stages
+         * that happened are listed; nothing for restored turns.
+         */
+        _timelineHtml(turn) {
+            const timeline = turn.timeline || {};
+            const parts = [
+                ['tableMs', 'conversation.turn.timelineTable'],
+                ['insightsMs', 'conversation.turn.timelineInsights'],
+                ['chartMs', 'conversation.turn.timelineChart'],
+            ].filter(([key]) => Number.isFinite(timeline[key]))
+                .map(([key, label]) => `<span class="v3-timeline-part" data-timeline="${key.replace('Ms', '')}">${h(label, { time: formatMs(timeline[key]) })}</span>`);
+            if (!parts.length) return '';
+            return `<span class="v3-timeline" dir="ltr" title="${h('conversation.turn.timelineTitle')}">${parts.join('<span class="v3-timeline-sep" aria-hidden="true">·</span>')}</span>`;
         },
 
         _traceHtml(turn, trace) {
@@ -3267,7 +3439,7 @@
         },
 
         renderWorkspace() {
-            const turn = this.turns.find((item) => item.id === this.selectedResultId && item.status === 'success');
+            const turn = this.turns.find((item) => item.id === this.selectedResultId && turnShowsResult(item));
             this._renderFavoriteAction(turn);
             const placeholder = document.getElementById('v3-placeholder');
             const chartBlock = document.getElementById('v3-chart-block');
@@ -3347,10 +3519,20 @@
             }
             const mlStrip = isAnalysis && window.JeenAnalysisUI ? window.JeenAnalysisUI.stripSegments(data) : '';
             const metaRow = document.getElementById('v3-meta-row');
+            const streaming = turn.status === 'streaming';
+            const failedAfterRows = turn.status === 'error';
+            const statusHtml = streaming
+                ? `<span class="v3-status is-streaming">${h('results.status.analysing')}</span>`
+                : failedAfterRows
+                    ? `<span class="v3-status is-error">${h('results.status.failedAfterRows')}</span>`
+                    : `<span class="v3-status">${cap.capped ? h('results.status.completedCapped') : h('results.status.completed')}</span>`;
+            const metaHtml = streaming
+                ? `<span class="v3-result-meta">${h('results.status.rowsReady', { rows: rows.length })}</span>`
+                : `<span class="v3-result-meta">${h('results.status.meta', { rows: rows.length, exec: formatMs(metrics.execution_time_ms), llm: formatMs(metrics.llm_latency_ms) })}</span>`;
             metaRow.innerHTML = `
-              <span class="v3-status">${cap.capped ? h('results.status.completedCapped') : h('results.status.completed')}</span>
+              ${statusHtml}
               ${mlStrip}
-              <span class="v3-result-meta">${h('results.status.meta', { rows: rows.length, exec: formatMs(metrics.execution_time_ms), llm: formatMs(metrics.llm_latency_ms) })}</span>
+              ${metaHtml}
               ${restoredNote}
               ${stale ? `<span class="v3-stale-note">${h('results.status.staleNote')}</span>` : ''}`;
             this._bindDefinitionToggle(metaRow, turn);
@@ -3432,7 +3614,10 @@
                     });
                 }
             }
-            this._setActionsEnabled(true);
+            // Export / share / save act on the finished turn (the artifact row
+            // is written when the graph completes), so they stay off while the
+            // narrative is still streaming.
+            this._setActionsEnabled(!streaming);
             const captionColumns = isAnalysis && window.JeenAnalysisUI
                 ? window.JeenAnalysisUI.chartCaption(data)
                 : (results.columns && results.columns.length > 1
@@ -3461,13 +3646,36 @@
                 ? turn.chartCollapsed
                 : !isAnalysis;
             this._renderChartCollapse();
-            this.renderTable();
+            // The final `result` after a `partial` carries the same rows the grid
+            // already shows: leave the DOM (and its scroll position) alone for
+            // every re-render of that same table. Any change to the key (turn,
+            // revision, filter, sort) or a direct renderTable() call repaints.
+            const tableKey = this._tableKey(turn);
+            if (this._tableRepaintHold === tableKey && this._paintedTableKey === tableKey) {
+                // held
+            } else {
+                this._tableRepaintHold = null;
+                this.renderTable();
+            }
             this.renderDock();
+        },
+
+        /** Identity of what the grid currently paints: turn, revision, filter and sort. */
+        _tableKey(turn) {
+            const presentation = window.JeenLegacyBridge?.getTablePresentation?.() || {};
+            return [
+                turn.id,
+                turn.rev || 0,
+                this.filter || '',
+                presentation.sortColumn == null ? '' : presentation.sortColumn,
+                presentation.sortDirection || '',
+            ].join('|');
         },
 
         renderTable() {
             const turn = this.turns.find((item) => item.id === this.selectedResultId);
             if (!turn || !turn.result?.results) return;
+            this._paintedTableKey = this._tableKey(turn);
             const results = turn.result.results;
             const columns = results.columns || [];
             const allRows = normalizeRows(results);
@@ -3767,10 +3975,16 @@
         },
 
         _scrollThread() {
-            requestAnimationFrame(() => {
+            // The thread was just re-rendered synchronously, so scroll now; the
+            // frame callback catches layout that settles afterwards (fonts,
+            // images). Relying on the frame alone left the thread at the top
+            // when frames were delayed and a later render intervened.
+            const scroll = () => {
                 const thread = document.getElementById('v3-thread');
                 if (thread) thread.scrollTop = thread.scrollHeight;
-            });
+            };
+            scroll();
+            requestAnimationFrame(scroll);
         },
 
         _scrollTurnIntoView(turnId) {
@@ -3792,6 +4006,7 @@
         safeTraceNote,
         filterResultRows,
         selectionForTurn,
+        turnShowsResult,
     };
     window.WorkspaceController = WorkspaceController;
     if (typeof document !== 'undefined' && document.body) {

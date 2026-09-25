@@ -152,16 +152,39 @@
         };
     }
 
+    // Mirrors trivial_result_check: a SQL answer with rows streams its dataset
+    // as a `partial` before the narrative arrives; ML and text answers do not.
+    function partialFor(result) {
+        const rows = result.results && (result.results.rows || result.results.data);
+        if (!result.sql || !rows || !rows.length || result.proposal || (result.analysis && result.analysis.skill)) return null;
+        return {
+            query_id: result.query_id, session_id: result.session_id, sql: result.sql,
+            results: result.results, revision: 0, provisional: true,
+        };
+    }
+
+    // Progressive-render specs set window.__holdFinalResult = true so the
+    // stream pauses after the `partial` event until window.__releaseFinalResult()
+    // is called; everything else streams straight through.
+    let releaseFinal = null;
+    window.__releaseFinalResult = () => { if (releaseFinal) { releaseFinal(); releaseFinal = null; } };
+
     function sseStream(result) {
         const blocks = [];
         // A couple of node events so the run strip shows progress, then the result.
         (result.trace || []).forEach((t) => {
             blocks.push('event: node\ndata: ' + JSON.stringify({ node: t.node, status: 'node_started' }) + '\n\n');
         });
+        const partial = partialFor(result);
+        if (partial) blocks.push('event: partial\ndata: ' + JSON.stringify(partial) + '\n\n');
+        const resultIndex = blocks.length;
         blocks.push('event: result\ndata: ' + JSON.stringify(result) + '\n\n');
         let i = 0;
         const stream = new ReadableStream({
-            pull(controller) {
+            async pull(controller) {
+                if (i === resultIndex && partial && window.__holdFinalResult) {
+                    await new Promise((resolve) => { releaseFinal = resolve; });
+                }
                 if (i < blocks.length) {
                     controller.enqueue(enc.encode(blocks[i++]));
                 } else {
