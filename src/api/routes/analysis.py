@@ -13,6 +13,7 @@ mutates the parent.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any, Dict, Optional
@@ -25,6 +26,7 @@ from src.api import state as api_state
 from src.api.concurrency import ConcurrencyLimitExceeded, query_limiter
 from src.api.dependencies import get_history_service, get_principal, resolve_agent
 from src.api.models import (
+    AnalysisAccuracyRequest,
     AnalysisChartRequest,
     AnalysisRerunRequest,
     AnalysisRunRequest,
@@ -528,6 +530,143 @@ def _apply_row_filter(dataset: Dict[str, Any], row_filter: Optional[Dict[str, An
         if str(cell) == str(value):
             kept.append(row)
     return {**dataset, "rows": kept, "row_count": len(kept)}
+
+
+@router.post("/forecast/accuracy")
+async def forecast_accuracy(request: AnalysisAccuracyRequest, principal: Principal = Depends(get_principal)):
+    """Realized accuracy of a past forecast: the stored points against the
+    actuals that have arrived since.
+
+    Ownership comes from the turn (``get_turn_analysis`` is owner + connection
+    bound); the forecast data comes from the capture table, never from the
+    envelope. The actual query is rebuilt from the run's ORIGINAL params with a
+    fresh half-open range over the forecast periods, by the same deterministic
+    builder that produced the training query, and runs through the same
+    read-only ``SqlRunner``. Only fully elapsed periods are scored; the latest
+    evaluation is kept on the run (late-arriving rows can change it).
+    """
+    _require_enabled()
+    store = _store()
+    user_id = principal.user_id
+    history = get_history_service()
+
+    turn = await history.get_turn_analysis(turn_id=request.query_id, user_id=user_id, source_key=request.connection)
+    if turn is None:
+        raise HTTPException(status_code=404, detail="No analysis found on that turn for this user and connection")
+    if str(((turn.get("analysis") or {}).get("skill")) or "") != "forecast":
+        raise HTTPException(status_code=409, detail="That turn is not a forecast")
+    run = await store.get_forecast_run(request.query_id, user_id=user_id, source_key=request.connection)
+    if run is None:
+        raise HTTPException(status_code=404, detail=(
+            "This forecast was not captured for tracking (it may predate the tracking schema); "
+            "re-run it to start tracking."
+        ))
+    if run.get("multi_series"):
+        raise HTTPException(status_code=409, detail="Realized accuracy is available for single-series forecasts only.")
+    points = [p for p in (run.get("points") or []) if not p.get("series_id")]
+    if not points:
+        raise HTTPException(status_code=409, detail="The captured forecast has no points to score")
+
+    from datetime import date as _date, timedelta as _td  # noqa: PLC0415
+
+    from src.agent.analysis_planner import catalog_candidates, column_types_map  # noqa: PLC0415
+    from src.analysis.accuracy import parse_day, period_end, realized_accuracy, split_elapsed  # noqa: PLC0415
+    from src.analysis.contracts import SeriesRequest  # noqa: PLC0415
+    from src.analysis.sql_builder import build_series_sql, build_span_probe_sql  # noqa: PLC0415
+
+    agent = await resolve_agent(request.connection)
+    series_params = dict((run.get("params") or {}).get("series") or {})
+    if not series_params:
+        raise HTTPException(status_code=409, detail="The captured forecast carries no series parameters")
+    grain = str(run.get("grain") or series_params.get("grain") or "week")
+    try:
+        bundle = await agent.metadata_loader.load_all(request.connection)
+    except Exception:  # noqa: BLE001
+        bundle = {}
+    column_types = column_types_map(catalog_candidates((bundle or {}).get("columns", "")))
+    common = dict(
+        connection_schema=getattr(agent.connection, "db_schema", None),
+        connection_catalog=getattr(agent.connection, "connection_catalog", None),
+        column_types=column_types,
+    )
+    timeout_ms = int(getattr(settings, "DB_STATEMENT_TIMEOUT_MS", 30000) or 30000)
+
+    # Newest source date under the same filters: decides which periods count.
+    probe_req = SeriesRequest(**{**series_params, "start": None, "end": None})
+    data_end: Optional[_date] = None
+    try:
+        probe = await agent.sql_runner.run_sql(
+            build_span_probe_sql(probe_req, agent.database_type, **common), limit=1, max_rows=1,
+            statement_timeout_ms=timeout_ms,
+        )
+        row = (probe.get("rows") or [None])[0] if not probe.get("error") else None
+        row = dict(row) if row is not None and not isinstance(row, dict) and hasattr(row, "keys") else row
+        data_end = parse_day(row.get("max_ts")) if isinstance(row, dict) else None
+    except Exception:  # noqa: BLE001
+        logger.warning("forecast_accuracy: span probe failed", exc_info=True)
+    if data_end is None:
+        data_end = _date.today() - _td(days=1)  # yesterday: today is never complete
+
+    split = split_elapsed(points, grain, data_end)
+    elapsed, pending = split["elapsed"], split["pending"]
+    actuals: Dict[str, float] = {}
+    sql = None
+    if elapsed:
+        first = parse_day(elapsed[0]["ts"])
+        last_end = period_end(parse_day(elapsed[-1]["ts"]), grain)
+        req = SeriesRequest(**{**series_params, "start": first.isoformat(), "end": (last_end + _td(days=1)).isoformat()})
+        sql = build_series_sql(req, agent.database_type, **common)
+        result = await agent.sql_runner.run_sql(
+            sql, limit=len(elapsed) + 2, max_rows=len(elapsed) + 2, statement_timeout_ms=timeout_ms,
+        )
+        if result.get("error"):
+            logger.warning("forecast_accuracy: actuals query failed: %s", result["error"])
+            raise HTTPException(status_code=502, detail="The actuals query failed on the source; try again later.")
+        columns = [str(c) for c in (result.get("columns") or [])]
+        for r in result.get("rows") or []:
+            rec = dict(r) if not isinstance(r, dict) and hasattr(r, "keys") else r
+            if isinstance(rec, (list, tuple)) and columns:
+                rec = dict(zip(columns, rec))
+            if not isinstance(rec, dict):
+                continue
+            ts = parse_day(rec.get("ts"))
+            if ts is None or rec.get("value") is None:
+                continue
+            try:
+                actuals[ts.isoformat()] = actuals.get(ts.isoformat(), 0.0) + float(rec["value"])
+            except (TypeError, ValueError):
+                continue
+
+    realized = realized_accuracy(
+        elapsed, actuals, metric=run.get("metric"), mase_scale=run.get("mase_scale"),
+        interval_level=float(run.get("interval_level") or 0.8),
+    )
+    claimed_validation = ((turn.get("analysis") or {}).get("validation") or {})
+    evaluation = {
+        "evaluated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "data_end": data_end.isoformat(),
+        "grain": grain,
+        "horizon": run.get("horizon"),
+        "elapsed_periods": len(elapsed),
+        "pending_periods": len(pending),
+        "realized": {k: v for k, v in realized.items() if k != "points"},
+        "claimed": {
+            "metric": claimed_validation.get("metric"), "value": claimed_validation.get("value"),
+            "band": claimed_validation.get("band"), "coverage": claimed_validation.get("coverage"),
+            "coverage_n": claimed_validation.get("coverage_n"), "interval_level": run.get("interval_level"),
+            "method": run.get("method"), "interval_method": run.get("interval_method"),
+        },
+        "points": realized["points"],
+        "pending": [{"ts": p["ts"], "forecast": p["forecast"], "lower": p.get("lower"), "upper": p.get("upper")} for p in pending],
+        "engine_hash": run.get("engine_hash"),
+    }
+    await store.save_forecast_evaluation(request.query_id, user_id=user_id, evaluation=evaluation)
+    logger.info("forecast_accuracy %s", json.dumps({
+        "event": "forecast_accuracy", "query_id": str(request.query_id), "method": run.get("method"),
+        "elapsed": len(elapsed), "pending": len(pending), **{f"realized_{k}": v for k, v in evaluation["realized"].items() if k in ("metric", "value", "band", "coverage")},
+        "claimed_value": claimed_validation.get("value"), "claimed_coverage": claimed_validation.get("coverage"),
+    }, default=str))
+    return {"query_id": str(request.query_id), **evaluation, "sql": sql}
 
 
 @router.get("/suggestions")
