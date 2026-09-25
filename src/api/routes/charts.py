@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -281,7 +282,7 @@ async def _persist_chart_baseline(
             )
             return
 
-        await history.upsert_turn_chart(
+        stored = await history.upsert_turn_chart(
             turn_id=turn_id,
             user_id=user_id,
             chart_spec=chart_spec,
@@ -289,8 +290,70 @@ async def _persist_chart_baseline(
             chart_bytes=size,
             request_started_at=request_started_at,
         )
+        if stored is False:
+            # The streaming route hands the rows to the browser before the
+            # graph's save_to_memory writes the turn artifact, so an early
+            # chart can land before there is a 'stored' snapshot to attach
+            # to. Retry off the request path for a bounded window.
+            _CHART_PERSIST_RETRIES.add(
+                asyncio.create_task(
+                    _retry_chart_baseline(
+                        history,
+                        turn_id=turn_id,
+                        user_id=user_id,
+                        chart_spec=chart_spec,
+                        chart_config=chart_config,
+                        chart_bytes=size,
+                        request_started_at=request_started_at,
+                    )
+                )
+            )
     except Exception:  # noqa: BLE001
         logger.debug("chart baseline persistence failed", exc_info=True)
+
+
+# Backoff schedule (seconds) for a chart that arrived before its turn artifact.
+_CHART_PERSIST_RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0)
+# Strong references so the detached retry tasks are not garbage-collected.
+_CHART_PERSIST_RETRIES: set = set()
+
+
+async def _retry_chart_baseline(
+    history: Any,
+    *,
+    turn_id: Any,
+    user_id: str,
+    chart_spec: Optional[dict],
+    chart_config: Optional[dict],
+    chart_bytes: int,
+    request_started_at: Optional[datetime],
+) -> None:
+    task = asyncio.current_task()
+    try:
+        for delay in _CHART_PERSIST_RETRY_DELAYS:
+            await asyncio.sleep(delay)
+            try:
+                stored = await history.upsert_turn_chart(
+                    turn_id=turn_id,
+                    user_id=user_id,
+                    chart_spec=chart_spec,
+                    chart_config=chart_config,
+                    chart_bytes=chart_bytes,
+                    request_started_at=request_started_at,
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("chart baseline retry failed", exc_info=True)
+                return
+            if stored is not False:
+                return
+        logger.info(
+            "conversation_chart_unattached turn_id=%s",
+            turn_id,
+            extra={"event": "conversation_chart_unattached"},
+        )
+    finally:
+        if task is not None:
+            _CHART_PERSIST_RETRIES.discard(task)
 
 
 # ----------------------------------------------------------------------

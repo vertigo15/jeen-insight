@@ -41,6 +41,12 @@ class AgentState(TypedDict, total=False):
     # Request-scoped, synchronous telemetry callback used by the SSE query
     # route. It is never persisted or included in the formatted response.
     progress_callback: Any
+    # Same contract as progress_callback: receives the accepted rows as soon
+    # as trivial_result_check sees them, so the UI can render the table while
+    # fused_eval_analytics is still running. Counter of partials emitted so a
+    # semantic retry that re-executes SQL yields a distinguishable revision.
+    partial_callback: Any
+    partial_revision: int
 
     # ── Connection info ───────────────────────────────────────────────────
     connection_display_name: str

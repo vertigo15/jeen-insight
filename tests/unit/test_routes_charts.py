@@ -245,3 +245,73 @@ def test_invalid_model_config_returns_unchanged_chart_with_error(client, fake_st
     assert body["out_of_scope"] is True
     assert body["error"]["code"] == "unsafe_surface"
     assert body["chart_config"] == current
+
+
+# ── chart baseline persistence vs. the streaming race ─────────────────────────
+
+def _history_stub(upsert_results):
+    history = type("History", (), {})()
+    history.persistence_enabled = True
+    history.upsert_turn_chart = AsyncMock(side_effect=list(upsert_results))
+    history.clear_turn_chart = AsyncMock(return_value=True)
+    return history
+
+
+def test_persist_chart_baseline_retries_until_the_turn_artifact_exists(monkeypatch):
+    """With progressive answers the browser asks for the chart before the
+    graph's save_to_memory has written the turn artifact, so the first UPDATE
+    matches no row. The chart must still be attached once the row appears."""
+    import asyncio
+
+    history = _history_stub([False, False, True])
+    monkeypatch.setattr(charts, "get_history_service", lambda: history)
+    monkeypatch.setattr(charts, "_CHART_PERSIST_RETRY_DELAYS", (0.0, 0.0, 0.0, 0.0))
+
+    async def run():
+        await charts._persist_chart_baseline(
+            query_id=str(uuid4()), user_id="u", chart_spec={"chart_type": "bar"},
+            chart_config={"series": []},
+        )
+        # The retry runs detached from the request; let it finish.
+        for _ in range(20):
+            if not charts._CHART_PERSIST_RETRIES:
+                break
+            await asyncio.sleep(0)
+        await asyncio.gather(*charts._CHART_PERSIST_RETRIES)
+
+    asyncio.run(run())
+    assert history.upsert_turn_chart.await_count == 3
+    assert not charts._CHART_PERSIST_RETRIES
+
+
+def test_persist_chart_baseline_gives_up_after_the_backoff_window(monkeypatch):
+    import asyncio
+
+    history = _history_stub([False] * 10)
+    monkeypatch.setattr(charts, "get_history_service", lambda: history)
+    monkeypatch.setattr(charts, "_CHART_PERSIST_RETRY_DELAYS", (0.0, 0.0))
+
+    async def run():
+        await charts._persist_chart_baseline(
+            query_id=str(uuid4()), user_id="u", chart_spec={"chart_type": "bar"},
+            chart_config={"series": []},
+        )
+        await asyncio.gather(*charts._CHART_PERSIST_RETRIES)
+
+    asyncio.run(run())
+    # 1 immediate attempt + one per backoff step, then stop.
+    assert history.upsert_turn_chart.await_count == 3
+
+
+def test_persist_chart_baseline_does_not_retry_when_stored_first_time(monkeypatch):
+    import asyncio
+
+    history = _history_stub([True])
+    monkeypatch.setattr(charts, "get_history_service", lambda: history)
+
+    asyncio.run(charts._persist_chart_baseline(
+        query_id=str(uuid4()), user_id="u", chart_spec={"chart_type": "bar"},
+        chart_config={"series": []},
+    ))
+    assert history.upsert_turn_chart.await_count == 1
+    assert not charts._CHART_PERSIST_RETRIES

@@ -10,6 +10,7 @@ from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic_core import to_jsonable_python
 
 from src.api.dependencies import (
     get_catalog_provider,
@@ -86,6 +87,7 @@ async def _execute_query(
     user_context: dict[str, Any],
     progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
     result_callback: Optional[Callable[[QueryResponse], None]] = None,
+    partial_callback: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> QueryResponse:
     """Run one query with the same guards and post-processing for JSON/SSE."""
 
@@ -110,6 +112,7 @@ async def _execute_query(
             progress_callback=progress_callback,
             analysis_enabled=request.analysis,
             filter_choices=request.filter_choices,
+            partial_callback=partial_callback,
         )
         # Cache the result so charts / describe / insights can reuse the full
         # rows (keyed by user+connection+query_id) instead of the browser
@@ -175,6 +178,26 @@ async def query_database_stream(
             {"event": "result", "data": result.model_dump(mode="json")}
         )
 
+    def on_partial(event: dict[str, Any]) -> None:
+        # The browser starts /api/generate-chart as soon as it sees the rows,
+        # so they must be in the cache BEFORE the event leaves. The final put
+        # in _execute_query overwrites this entry with the same key.
+        try:
+            result_cache.put(
+                user_id=user_id,
+                connection=body.connection,
+                query_id=event.get("query_id"),
+                dataset=event.get("results"),
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("result_cache put (partial) failed", exc_info=True)
+        # Same JSON shapes (ISO datetimes, floats) as QueryResponse.model_dump
+        # (mode="json") gives the final result, so the grid does not change
+        # its values when the two are merged.
+        events.put_nowait(
+            {"event": "partial", "data": to_jsonable_python(event, fallback=str)}
+        )
+
     async def event_stream():
         result_sent = False
         task = asyncio.create_task(
@@ -186,6 +209,7 @@ async def query_database_stream(
                 user_context=user_context,
                 progress_callback=on_progress,
                 result_callback=on_result_ready,
+                partial_callback=on_partial,
             )
         )
         try:

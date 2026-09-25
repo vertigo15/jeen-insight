@@ -258,6 +258,12 @@
       "statusOk": "בוצע",
       "statusRunning": "פועל…",
       "statusFailed": "נכשל",
+      "dataReady": "הנתונים מוכנים — {rows, plural, one {שורה אחת} two {# שורות} other {# שורות}} בחלונית התשובה",
+      "summaryPending": "הסיכום והתובנות נכתבים כעת",
+      "timelineTitle": "הזמן מהשאלה עד שכל חלק הופיע",
+      "timelineTable": "טבלה {time}",
+      "timelineInsights": "תובנות {time}",
+      "timelineChart": "גרף {time}",
       "restoredFromHistory": "שוחזר מההיסטוריה",
       "failedAt": "השאילתה נכשלה · נכשל בשלב {node} · {duration}",
       "error": "שגיאה",
@@ -425,6 +431,9 @@
     "status": {
       "completed": "הושלם",
       "completedCapped": "הושלם · מוגבל",
+      "analysing": "בניתוח",
+      "failedAfterRows": "הניתוח נכשל",
+      "rowsReady": "{rows, plural, one {שורה אחת} two {# שורות} other {# שורות}} · הסיכום והתובנות נכתבים…",
       "meta": "{rows, plural, one {שורה אחת} two {# שורות} other {# שורות}} · הרצה {exec} · מודל {llm}",
       "staleNote": "התשובה המוצלחת האחרונה — השאלה החדשה נכשלה",
       "snapshotFrom": "תמונת מצב מ-{when}"

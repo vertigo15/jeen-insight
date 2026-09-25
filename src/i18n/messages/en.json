@@ -258,6 +258,12 @@
       "statusOk": "ok",
       "statusRunning": "running…",
       "statusFailed": "failed",
+      "dataReady": "Data ready — {rows, plural, one {# row} other {# rows}} in the answer pane",
+      "summaryPending": "Summary and insights are being written",
+      "timelineTitle": "Time from the question until each part appeared",
+      "timelineTable": "table {time}",
+      "timelineInsights": "insights {time}",
+      "timelineChart": "chart {time}",
       "restoredFromHistory": "restored from history",
       "failedAt": "query failed · failed at {node} · {duration}",
       "error": "error",
@@ -425,6 +431,9 @@
     "status": {
       "completed": "Completed",
       "completedCapped": "Completed · capped",
+      "analysing": "Analysing",
+      "failedAfterRows": "Analysis failed",
+      "rowsReady": "{rows, plural, one {# row} other {# rows}} · writing summary and insights…",
       "meta": "{rows, plural, one {# row} other {# rows}} · {exec} exec · {llm} llm",
       "staleNote": "Last successful answer — the newest question failed",
       "snapshotFrom": "Snapshot from {when}"
