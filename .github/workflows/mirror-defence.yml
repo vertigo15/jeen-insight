@@ -21,6 +21,13 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # A PAT/App token with `workflow` scope is required to mirror
+          # branches that add or change files under .github/workflows/**.
+          # The default GITHUB_TOKEN is refused for those pushes. Falls back
+          # to GITHUB_TOKEN when the secret is absent (non-workflow branches
+          # still mirror fine).
+          token: ${{ secrets.MIRROR_TOKEN || github.token }}
+          persist-credentials: true
 
       - name: Synchronize source branches and tags
         run: |
