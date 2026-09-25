@@ -694,11 +694,105 @@
         return `<div class="v3-stat"><div class="v3-stat-label">${esc(label)}</div><div class="v3-stat-value">${esc(value)}</div></div>`;
     }
 
-    function modelDetailsHtml(result) {
+    /**
+     * "Adjustments to try": the server's validated one-click re-run patches
+     * (analysis.adjustments), rendered as chips. Each carries an index the dock
+     * resolves back to its params_patch; the label is built here from the
+     * server's code + args so it reads in the user's language.
+     */
+    function adjustmentLabel(item) {
+        const a = item.args || {};
+        switch (item.code) {
+            case 'coarser_grain':
+            case 'coarser_grain_for_season':
+                return t(`analysis.adjust.${item.code}`, { grain: grainAdj(a.grain) || a.grain || '' });
+            case 'wider_window_for_season':
+            case 'wider_window_for_band':
+                return t(`analysis.adjust.${item.code}`, { window: a.window, unit: grainUnit(a.unit) || `${a.unit || ''}s`, coverage: a.coverage, level: a.level });
+            case 'try_theta':
+                return t('analysis.adjust.try_theta', { baseline: a.baseline || '' });
+            case 'guard_exit':
+                return a.label || t('analysis.adjust.guard_exit', { guard: a.guard || '' });
+            default:
+                return a.label || item.code;
+        }
+    }
+
+    function adjustmentsHtml(analysis) {
+        const items = Array.isArray(analysis && analysis.adjustments) ? analysis.adjustments : [];
+        if (!items.length) return '';
+        const chips = items.map((item, index) => `<button type="button" class="v3-chip v3-ml-adjust${item.recommended ? ' is-recommended' : ''}" data-ml-adjust="${index}" title="${esc(patchText(item.params_patch))}">${esc(adjustmentLabel(item))}${item.recommended ? ` <small>${h('analysis.adjust.recommended')}</small>` : ''}</button>`).join('');
+        return `<div class="v3-ml-section v3-ml-adjustments">
+          <div class="v3-ml-section-title">${h('analysis.adjust.title')}</div>
+          <div class="v3-ml-section-copy">${h('analysis.adjust.copy')}</div>
+          <div class="v3-ml-adjust-list">${chips}</div>
+        </div>`;
+    }
+
+    function patchText(patch) {
+        const flat = [];
+        Object.entries(patch || {}).forEach(([k, v]) => {
+            if (v && typeof v === 'object' && !Array.isArray(v)) Object.entries(v).forEach(([nk, nv]) => flat.push(`${nk}=${nv}`));
+            else flat.push(`${k}=${v}`);
+        });
+        return flat.join(' · ');
+    }
+
+    /**
+     * Forecast tracking: "check against actuals" and, once fetched, the
+     * realized error / coverage beside what the model claimed, per period.
+     * ``tracking`` is the page-local state: {loading, error, evaluation}.
+     */
+    function accuracyHtml(analysis, tracking) {
+        if (!analysis || analysis.skill !== 'forecast') return '';
+        const params = analysis.params || {};
+        if ((params.series || {}).group_by || (analysis.facts || {}).series) return '';
+        const state = tracking || {};
+        const ev = state.evaluation;
+        const fmtMetric = (metric, value) => (value == null ? '—' : metric === 'WAPE' ? fmtPct(value) : Number(value).toFixed(3));
+        const button = `<button type="button" class="v3-text-btn" data-ml-accuracy${state.loading ? ' disabled' : ''}>${state.loading ? h('analysis.accuracy.checking') : (ev ? h('analysis.accuracy.recheck') : h('analysis.accuracy.check'))}</button>`;
+        let body = '';
+        if (state.error) {
+            body = `<div class="v3-ml-accuracy-note is-error">${esc(state.error)}</div>`;
+        } else if (ev) {
+            const r = ev.realized || {};
+            const c = ev.claimed || {};
+            const scored = Number.isFinite(Number(ev.scored_periods)) ? Number(ev.scored_periods) : Number(r.n || 0);
+            const unscored = Array.isArray(ev.unscored_periods) ? ev.unscored_periods : [];
+            if (!ev.elapsed_periods) {
+                body = `<div class="v3-ml-accuracy-note">${h('analysis.accuracy.nothingElapsed', { pending: ev.pending_periods, dataEnd: ev.data_end })}</div>`;
+            } else if (!scored) {
+                body = `<div class="v3-ml-accuracy-note">${h('analysis.accuracy.nothingScored', { elapsed: ev.elapsed_periods, dataEnd: ev.data_end })}</div>`;
+            } else {
+                const stats = [
+                    kv(t('analysis.accuracy.realizedError', { metric: r.metric || '' }), `${fmtMetric(r.metric, r.value)}${r.band && r.band !== 'n/a' ? ` · ${r.band}` : ''}`),
+                    kv(t('analysis.accuracy.claimedError', { metric: c.metric || '' }), `${fmtMetric(c.metric, c.value)}${c.band && c.band !== 'n/a' ? ` · ${c.band}` : ''}`),
+                    kv(t('analysis.accuracy.realizedCoverage'), r.coverage == null ? '—' : t('analysis.details.coverageOf', { value: fmtPct(r.coverage, 0), total: r.coverage_n || 0 })),
+                    kv(t('analysis.accuracy.target'), fmtPct(ev.realized && ev.realized.interval_level != null ? ev.realized.interval_level : (c.interval_level || 0), 0)),
+                ].join('');
+                const rows = (ev.points || []).map((p) => `<tr class="${p.inside === false ? 'is-outside' : ''}">
+                    <td class="v3-mono">${esc(p.ts)}</td><td class="v3-mono">${esc(fmtNum(p.actual))}</td><td class="v3-mono">${esc(fmtNum(p.forecast))}</td>
+                    <td class="v3-mono">${p.lower == null || p.upper == null ? '—' : `${esc(fmtNum(p.lower))} – ${esc(fmtNum(p.upper))}`}</td>
+                    <td>${p.inside == null ? '—' : p.inside ? h('analysis.accuracy.inside') : h('analysis.accuracy.outside')}</td></tr>`).join('');
+                body = `<div class="v3-stats">${stats}</div>
+                  <div class="v3-ml-accuracy-note">${h('analysis.accuracy.scored', { elapsed: scored, pending: ev.pending_periods, dataEnd: ev.data_end })}${unscored.length ? ` · ${h('analysis.accuracy.unscored', { count: unscored.length })}` : ''}</div>
+                  <table class="v3-ml-table"><thead><tr><th>${h('analysis.accuracy.period')}</th><th>${h('analysis.accuracy.actual')}</th><th>${h('analysis.accuracy.forecast')}</th><th>${h('analysis.accuracy.band')}</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+            }
+        } else {
+            body = `<div class="v3-ml-section-copy">${h('analysis.accuracy.copy')}</div>`;
+        }
+        return `<div class="v3-ml-section v3-ml-accuracy">
+          <div class="v3-ml-section-title">${h('analysis.accuracy.title')} ${button}</div>
+          ${body}
+        </div>`;
+    }
+
+    function modelDetailsHtml(result, extras) {
         const analysis = result && result.analysis;
         if (!analysis || !analysis.skill) {
             return `<div class="v3-dock-empty">${h('analysis.details.empty')}</div>`;
         }
+        const tracking = extras && extras.tracking;
         const v = analysis.validation || {};
         const d = analysis.details || {};
         const p = analysis.provenance || {};
@@ -726,12 +820,15 @@
             .filter(([k, val]) => val != null && val !== '' && !(Array.isArray(val) && !val.length) && !['schema_name', 'catalog', 'timezone'].includes(k))
             .map(([k, val]) => `<tr><td>${esc(k)}</td><td class="v3-mono">${esc(Array.isArray(val) ? listText(val) : val)}</td></tr>`).join('');
         const guards = guardList(analysis.guard_results, false);
-        const notes = (d.notes || []).concat(analysis.caveats || []);
+        // Engines copy their notes into the caveats; show each sentence once.
+        const notes = [...new Set([...(d.notes || []), ...(analysis.caveats || [])].map((n) => String(n)))];
         const diff = analysis.param_diff && Object.keys(analysis.param_diff).length
             ? `<div class="v3-ml-section"><div class="v3-ml-section-title">${h('analysis.details.changedFrom')}</div><div class="v3-ml-diff">${Object.entries(analysis.param_diff).map(([k, c]) => `<span class="v3-ml-diff-chip" dir="ltr">${esc(k)}: <s>${esc(c.from == null ? '—' : c.from)}</s> → ${esc(c.to == null ? '—' : c.to)}</span>`).join('')}</div></div>`
             : '';
         return `<div class="v3-stats">${stats}</div>
           ${result.low_confidence || analysis.low_confidence ? `<div class="v3-ml-lowconf-note">${h('analysis.details.lowConfidenceNote')}</div>` : ''}
+          ${adjustmentsHtml(analysis)}
+          ${accuracyHtml(analysis, tracking)}
           ${diff}
           <div class="v3-ml-grid">
             <div class="v3-ml-section"><div class="v3-ml-section-title">${h('analysis.details.candidates')}${v.basis ? ` · ${esc(v.basis)}` : ''}</div>
@@ -777,6 +874,9 @@
         bindSetupForm,
         collectPatch,
         modelDetailsHtml,
+        adjustmentLabel,
+        adjustmentsHtml,
+        accuracyHtml,
         chartCaption,
         metricText,
         fmtNum,

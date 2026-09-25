@@ -1,0 +1,171 @@
+# Forecast backtest set — synthetic series with a known future.
+#
+# Each case generates ``n + horizon`` periods from a seeded generator, feeds
+# the first ``n`` through the production forecast path (execute_skill: series
+# preparation → guards → statsforecast engine) and scores the returned horizon
+# against the withheld truth: realized WAPE / MASE and realized interval
+# coverage. Every number here is deterministic, so a change to the engine
+# (default windows, CV depth, calibrated bands, ensembling) is judged by the
+# same series before and after.
+#
+# generator:   seasonal | trend | noise | intermittent | level_shift
+# grain:       day | week | month
+# n:           history periods handed to the engine (the window)
+# horizon:     periods withheld and forecast
+# interval:    nominal prediction-interval level (0.80 → 80% band)
+# level / amplitude / trend / noise / zero_share / shift_at / shift_by:
+#              generator knobs (see evals/forecast_backtest.py)
+
+cases:
+  # ── Weekly, one year of history: yearly season cannot be confirmed (needs 105) ──
+  - id: weekly_seasonal_26w
+    generator: seasonal
+    grain: week
+    n: 26
+    horizon: 8
+    interval: 0.80
+    level: 1000
+    amplitude: 250
+    period: 52
+    trend: 4
+    noise: 60
+    seed: 11
+
+  - id: weekly_seasonal_110w
+    generator: seasonal
+    grain: week
+    n: 110
+    horizon: 8
+    interval: 0.80
+    level: 1000
+    amplitude: 250
+    period: 52
+    trend: 3
+    noise: 60
+    seed: 12
+
+  # ── Monthly, default window (24) vs three years (36) ──
+  - id: monthly_seasonal_24m
+    generator: seasonal
+    grain: month
+    n: 24
+    horizon: 6
+    interval: 0.80
+    level: 50000
+    amplitude: 12000
+    period: 12
+    trend: 400
+    noise: 2500
+    seed: 21
+
+  - id: monthly_seasonal_36m
+    generator: seasonal
+    grain: month
+    n: 36
+    horizon: 6
+    interval: 0.80
+    level: 50000
+    amplitude: 12000
+    period: 12
+    trend: 400
+    noise: 2500
+    seed: 22
+
+  - id: monthly_trend_36m
+    generator: trend
+    grain: month
+    n: 36
+    horizon: 6
+    interval: 0.80
+    level: 20000
+    trend: 350
+    noise: 1500
+    seed: 23
+
+  # ── Daily: weekly season, three months and one year ──
+  - id: daily_weekly_season_90d
+    generator: seasonal
+    grain: day
+    n: 90
+    horizon: 14
+    interval: 0.80
+    level: 800
+    amplitude: 300
+    period: 7
+    trend: 0.5
+    noise: 70
+    seed: 31
+
+  - id: daily_weekly_season_365d
+    generator: seasonal
+    grain: day
+    n: 365
+    horizon: 14
+    interval: 0.80
+    level: 800
+    amplitude: 300
+    period: 7
+    trend: 0.3
+    noise: 70
+    seed: 32
+
+  # ── Pure noise around a level: the baseline should win ──
+  - id: weekly_noise_52w
+    generator: noise
+    grain: week
+    n: 52
+    horizon: 8
+    interval: 0.80
+    level: 5000
+    noise: 400
+    seed: 41
+
+  # ── Intermittent demand (many zero periods) ──
+  - id: weekly_intermittent_60w
+    generator: intermittent
+    grain: week
+    n: 60
+    horizon: 8
+    interval: 0.80
+    level: 40
+    zero_share: 0.6
+    noise: 8
+    seed: 51
+
+  - id: daily_intermittent_120d
+    generator: intermittent
+    grain: day
+    n: 120
+    horizon: 14
+    interval: 0.80
+    level: 12
+    zero_share: 0.55
+    noise: 3
+    seed: 52
+
+  # ── A level shift late in the history ──
+  - id: monthly_level_shift_36m
+    generator: level_shift
+    grain: month
+    n: 36
+    horizon: 6
+    interval: 0.80
+    level: 30000
+    shift_at: 28
+    shift_by: 9000
+    noise: 1500
+    seed: 61
+
+  # ── 95% band: coverage should be close to nominal ──
+  - id: weekly_seasonal_110w_95
+    generator: seasonal
+    grain: week
+    n: 110
+    horizon: 8
+    interval: 0.95
+    level: 1000
+    amplitude: 250
+    period: 52
+    trend: 3
+    noise: 60
+    seed: 71

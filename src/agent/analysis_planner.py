@@ -946,7 +946,12 @@ def apply_clarification(plan: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str
     return out
 
 
-def default_window_periods(grain: str) -> int:
+def default_window_periods(grain: str, skill: Optional[str] = None) -> int:
+    """Default look-back for ``grain``; forecasting starts from a longer one."""
+    if skill:
+        from src.analysis.contracts import default_window_for  # noqa: PLC0415
+
+        return default_window_for(skill, grain)
     return DEFAULT_WINDOW_PERIODS.get(grain, 26)
 
 

@@ -298,6 +298,32 @@ def test_rerun_unusable_instruction_points_to_adjust_analysis(client, ml_state, 
     assert "chips" not in r.json()["detail"].lower()
 
 
+@pytest.mark.asyncio
+async def test_patch_from_instruction_keeps_explicit_clears_but_ignores_planner_silence(ml_state, monkeypatch):
+    """"Remove the split" must clear group_by; a re-plan that simply never
+    emits holidays / a hand-set window must not clear those."""
+    from types import SimpleNamespace
+
+    from src.agent import analysis_planner
+    from src.api.routes import analysis as routes
+
+    base = {**_FORECAST_PARAMS, "holidays": "IL", "window": 130,
+            "series": {**_FORECAST_PARAMS["series"], "group_by": "Region"}}
+    replanned = {k: v for k, v in _FORECAST_PARAMS.items() if k != "window"}  # the planner never emits window/holidays
+    replanned.update({"horizon": 12, "series": {**_FORECAST_PARAMS["series"], "group_by": None}})
+    # The planner's outcome: same skill, split removed, longer horizon, silent on holidays/window.
+    monkeypatch.setattr(analysis_planner, "plan_analysis",
+                        AsyncMock(return_value=SimpleNamespace(kind="params", skill="forecast", params=replanned)))
+    monkeypatch.setattr(routes.api_state, "agent_registry", SimpleNamespace(router_llm=object(), prompt_loader=object()), raising=False)
+    patch = await routes._patch_from_instruction(ml_state.agent, "forecast", base, "remove the split, 12 weeks ahead", "Forecast profit")
+    # The explicit clear travels (merge_params_patch routes group_by into series).
+    assert "group_by" in patch and patch["group_by"] is None
+    assert patch.get("horizon") == 12
+    assert "holidays" not in patch and "window" not in patch            # silence is not "clear it"
+    merged = routes.merge_params_patch("forecast", base, patch).model_dump(mode="json")
+    assert merged["series"]["group_by"] is None and merged["holidays"] == "IL" and merged["window"] == 130
+
+
 def test_rerun_with_patch_creates_a_child_turn_with_a_diff(client, ml_state):
     parent_id, session = uuid4(), uuid4()
     ml_state.history_service.get_turn_analysis = AsyncMock(return_value={
@@ -475,3 +501,122 @@ async def test_skills_listing_and_prefs(client, ml_state):
     pid = await _proposal(ml_state.store, kind="guard", skill="anomaly_detection")
     assert client.post("/api/analysis/run", json={"connection": "sales_db", "proposal_id": pid, "remember": True}).status_code == 200
     assert not await ml_state.store.has_skill_pref(user_id="user-a", source_key="sales_db", skill="anomaly_detection")
+
+
+# ── /forecast/accuracy: realized accuracy of a captured forecast ──────────────
+
+_TRACKED_PARAMS = {
+    "series": {"table": "FactInternetSales", "schema_name": "dbo", "catalog": None, "date_column": "OrderDate",
+               "measure_column": "Profit", "agg": "sum", "grain": "week", "start": "2025-01-06", "end": "2026-06-01",
+               "filters": [{"table": "FactInternetSales", "column": "Region", "op": "equals", "value": "EMEA"}],
+               "timezone": "UTC", "week_start": "monday"},
+    "window": 74, "horizon": 3, "interval": 0.8, "method": "auto",
+}
+
+
+def _forecast_envelope():
+    rows = [{"ts": "2026-05-25", "actual": 900.0, "forecast": None, "lower": None, "upper": None, "observed": True, "is_forecast": False}]
+    for ts, fc in (("2026-06-01", 1000.0), ("2026-06-08", 1100.0), ("2026-06-15", 1200.0)):
+        rows.append({"ts": ts, "actual": None, "forecast": fc, "lower": fc - 100, "upper": fc + 100, "observed": False, "is_forecast": True})
+    return {
+        "schema_version": "3", "skill": "forecast", "params": _TRACKED_PARAMS, "method_used": "AutoETS",
+        "rows": rows, "columns": ["ts", "actual", "forecast", "lower", "upper", "observed", "is_forecast"],
+        "validation": {"metric": "WAPE", "value": 0.05, "band": "good", "coverage": 0.8, "coverage_n": 6},
+        "engine": {"name": "statsforecast", "version": "2", "module_hash": "abc123def456"},
+        "facts": {"skill": "forecast", "grain": "week", "horizon": 3, "interval": 0.8, "measure": "SUM(Profit)",
+                  "interval_method": "conformal_scaled", "mase_scale": 50.0, "last_actual": {"ts": "2026-05-25"}},
+    }
+
+
+@pytest.fixture
+def tracked_forecast(ml_state):
+    """A captured forecast turn owned by user-a on sales_db, plus a source that
+    has data through Sunday 2026-06-14 (the weeks of Jun 1 and Jun 8 are
+    complete; the week of Jun 15 is pending)."""
+    query_id = uuid4()
+    ml_state.history_service.get_turn_analysis = AsyncMock(return_value={
+        "turn_id": str(query_id), "session_id": uuid4(), "question": "forecast profit",
+        "analysis": {"skill": "forecast", "params": _TRACKED_PARAMS, "validation": _forecast_envelope()["validation"]},
+        "low_confidence": False,
+    })
+    ml_state.agent.database_type = "postgres"
+    calls = []
+
+    async def run_sql(sql, **kw):
+        calls.append(sql)
+        # Real drivers return datetimes for DATE_TRUNC / MAX(date), not ISO strings.
+        if "MIN(" in sql.upper() or "min_ts" in sql:
+            return {"columns": ["min_ts", "max_ts", "n"],
+                    "rows": [{"min_ts": datetime(2025, 1, 6), "max_ts": datetime(2026, 6, 14, 9, 30), "n": 500}]}
+        return {"columns": ["ts", "value"],
+                "rows": [{"ts": datetime(2026, 6, 1), "value": 950.0}, {"ts": datetime(2026, 6, 8), "value": 1300.0}]}
+
+    ml_state.agent.sql_runner.run_sql = AsyncMock(side_effect=run_sql)
+    ml_state.query_id = query_id
+    ml_state.sql_calls = calls
+    return ml_state
+
+
+@pytest.mark.asyncio
+async def test_accuracy_requires_an_owned_forecast_turn_that_was_captured(client, tracked_forecast):
+    st = tracked_forecast
+    # Not captured (schema predates the run): 404 with a re-run hint.
+    r = client.post("/api/analysis/forecast/accuracy", json={"connection": "sales_db", "query_id": str(st.query_id)})
+    assert r.status_code == 404 and "not captured" in r.json()["detail"]
+    # Not a forecast turn: 409.
+    st.history_service.get_turn_analysis = AsyncMock(return_value={"analysis": {"skill": "anomaly_detection"}})
+    r = client.post("/api/analysis/forecast/accuracy", json={"connection": "sales_db", "query_id": str(st.query_id)})
+    assert r.status_code == 409
+    # Unknown turn / other owner: 404.
+    st.history_service.get_turn_analysis = AsyncMock(return_value=None)
+    r = client.post("/api/analysis/forecast/accuracy", json={"connection": "sales_db", "query_id": str(uuid4())})
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_accuracy_scores_only_elapsed_periods_with_a_fresh_range_and_original_filters(client, tracked_forecast):
+    st = tracked_forecast
+    assert await st.store.record_forecast(query_id=st.query_id, user_id="user-a", source_key="sales_db", session_id=None,
+                                          params=_TRACKED_PARAMS, envelope=_forecast_envelope())
+    r = client.post("/api/analysis/forecast/accuracy", json={"connection": "sales_db", "query_id": str(st.query_id)})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Source data ends Sunday 2026-06-14: the weeks of Jun 1 and Jun 8 are complete, Jun 15 is pending.
+    assert body["data_end"] == "2026-06-14"
+    assert body["elapsed_periods"] == 2 and body["pending_periods"] == 1
+    assert [p["ts"] for p in body["pending"]] == ["2026-06-15"]
+    realized = body["realized"]
+    assert realized["metric"] == "WAPE"
+    assert realized["value"] == round((50 + 200) / (950 + 1300), 4)
+    assert realized["coverage"] == 0.5 and realized["coverage_n"] == 2   # 950 inside 900–1100; 1300 outside 1000–1200
+    assert body["claimed"] == {"metric": "WAPE", "value": 0.05, "band": "good", "coverage": 0.8, "coverage_n": 6,
+                               "interval_level": 0.8, "method": "AutoETS", "interval_method": "conformal_scaled"}
+    assert body["engine_hash"] == "abc123def456"
+    # The actuals query is rebuilt: a half-open range over the elapsed weeks only,
+    # carrying the ORIGINAL filter value (the envelope's copy would be redacted).
+    actual_sql = [s for s in st.sql_calls if "min_ts" not in s and "MIN(" not in s.upper()]
+    assert len(actual_sql) == 1 and body["sql"] == actual_sql[0]
+    assert "2026-06-01" in actual_sql[0] and "2026-06-15" in actual_sql[0] and "EMEA" in actual_sql[0]
+    assert "2026-05-25" not in actual_sql[0]
+    # The latest evaluation is kept on the run.
+    run = await st.store.get_forecast_run(st.query_id, user_id="user-a", source_key="sales_db")
+    assert run["evaluation"]["elapsed_periods"] == 2 and run["evaluated_at"]
+
+
+@pytest.mark.asyncio
+async def test_accuracy_with_nothing_elapsed_runs_no_actuals_query(client, tracked_forecast):
+    st = tracked_forecast
+    await st.store.record_forecast(query_id=st.query_id, user_id="user-a", source_key="sales_db", session_id=None,
+                                   params=_TRACKED_PARAMS, envelope=_forecast_envelope())
+
+    async def run_sql(sql, **kw):
+        st.sql_calls.append(sql)
+        return {"columns": ["min_ts", "max_ts", "n"], "rows": [{"min_ts": "2025-01-06", "max_ts": "2026-06-03", "n": 500}]}
+
+    st.agent.sql_runner.run_sql = AsyncMock(side_effect=run_sql)
+    r = client.post("/api/analysis/forecast/accuracy", json={"connection": "sales_db", "query_id": str(st.query_id)})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["elapsed_periods"] == 0 and body["pending_periods"] == 3
+    assert body["realized"]["value"] is None and body["sql"] is None
+    assert len(st.sql_calls) == 1  # the span probe only

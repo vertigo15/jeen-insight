@@ -197,10 +197,11 @@ def _run_one_series(spec: SkillSpec, typed: Any, rows, columns, *, override_guar
     if sf.n == 0:
         return None, [GuardResult(name="series_length", passed=False, detail="0 of 12 periods", overridable=False)]
     horizon = getattr(typed, "horizon", None)
+    window = getattr(typed, "window", None)
     guards = list(guard_prefix)
     if sf.partial_tail is not None:
         guards.append(_partial_tail_guard(sf))
-    guards += run_post_sql_guards(sf, guard_names=list(spec.guards), horizon=horizon)
+    guards += run_post_sql_guards(sf, guard_names=list(spec.guards), horizon=horizon, window=window, skill=spec.name)
     refused = failed(guards)
     if refused and not override_guards:
         return None, guards

@@ -67,8 +67,19 @@ logger = logging.getLogger(__name__)
 ENGINE_NAME = "statsforecast"
 # Above this seasonal period ETS/ARIMA are fitted through an MSTL decomposition.
 DIRECT_SEASONAL_MAX = 24
-MAX_CV_WINDOWS = 3
+# Rolling-origin folds. Origins may overlap (step < h) so a history that can
+# only hold the horizon out once or twice still yields several folds — the
+# interval calibration needs the residuals and the selection needs the votes.
+MAX_CV_WINDOWS = 5
 UID = "series"
+# Top-2 mean ensemble in ``auto``: implemented and measured, not enabled.
+# On evals/forecast_backtest_set the ensemble was selected on one seasonal
+# weekly series and did worse than the single winner (realized WAPE 0.076 →
+# 0.082, 80% band coverage 0.75 → 0.50, because a mean has no native band
+# shape and falls back to a constant conformal half-width). Flip to re-test
+# after the backtest set grows; the selection rule stays "beat both the best
+# single model and the baseline on the same folds".
+ENABLE_TOP2_ENSEMBLE = False
 
 
 def _statsforecast_version() -> str:
@@ -80,31 +91,36 @@ def _statsforecast_version() -> str:
         return "unknown"
 
 
-def _build_candidates(method: str, m: Optional[int]) -> Tuple[List[Any], str]:
+def _build_candidates(method: str, m: Optional[int], *, seasonal_terms: bool = True) -> Tuple[List[Any], str]:
     """Return (models, baseline_alias). Aliases are what statsforecast names the columns.
 
     The baseline is always first; for an explicit ``method`` the requested
     model is the (single) other entry, so ``models[-1]`` is what the user asked for.
+
+    ``seasonal_terms=False`` keeps the seasonal baseline but fits ETS/ARIMA/
+    Theta without a seasonal component: the shape used when the history can
+    hold a confirmed season but not two full cycles *and* a held-out horizon.
     """
     from statsforecast.models import AutoARIMA, AutoETS, AutoTheta, MSTL, Naive, RandomWalkWithDrift, SeasonalNaive
 
     season = int(m) if m else 1
     baseline = SeasonalNaive(season_length=season, alias="SeasonalNaive") if m else Naive(alias="Naive")
     baseline_alias = "SeasonalNaive" if m else "Naive"
+    fit_season = season if seasonal_terms else 1
 
     def ets():
-        if m and m > DIRECT_SEASONAL_MAX:
+        if seasonal_terms and m and m > DIRECT_SEASONAL_MAX:
             return MSTL(season_length=[season], trend_forecaster=AutoETS(model="ZZN", season_length=1),
                         alias="MSTL+AutoETS")
-        return AutoETS(season_length=season, alias="AutoETS")
+        return AutoETS(season_length=fit_season, alias="AutoETS")
 
     def arima():
-        if m and m > DIRECT_SEASONAL_MAX:
+        if seasonal_terms and m and m > DIRECT_SEASONAL_MAX:
             return MSTL(season_length=[season], trend_forecaster=AutoARIMA(season_length=1), alias="MSTL+AutoARIMA")
-        return AutoARIMA(season_length=season, alias="AutoARIMA")
+        return AutoARIMA(season_length=fit_season, alias="AutoARIMA")
 
     def theta():
-        return AutoTheta(season_length=season if season <= DIRECT_SEASONAL_MAX else 1, alias="AutoTheta")
+        return AutoTheta(season_length=fit_season if fit_season <= DIRECT_SEASONAL_MAX else 1, alias="AutoTheta")
 
     def drift():
         # Last value plus the average historical step: the standard trend
@@ -128,17 +144,112 @@ def _build_candidates(method: str, m: Optional[int]) -> Tuple[List[Any], str]:
     return models, baseline_alias
 
 
+def baseline_alias_for(m: Optional[int]) -> str:
+    return "SeasonalNaive" if m else "Naive"
+
+
+# Share of zero periods above which the history is intermittent demand: the
+# smoothing/ARIMA shortlist averages the zeros away, so the Croston family is
+# added to ``auto``. Mirrors ``guards.ZERO_SHARE_MAX`` (kept here so the engine
+# does not import the guards module).
+INTERMITTENT_ZERO_SHARE = 0.50
+INTERMITTENT_ALIASES = ("CrostonSBA", "CrostonClassic", "ADIDA", "IMAPA")
+
+
+def _intermittent_candidates() -> List[Any]:
+    """Point-only intermittent-demand models. They refuse a ``level`` argument
+    (no native interval), so they are fitted in their own StatsForecast and
+    their band comes from the residual calibration."""
+    from statsforecast.models import ADIDA, IMAPA, CrostonClassic, CrostonSBA
+
+    return [CrostonSBA(alias="CrostonSBA"), CrostonClassic(alias="CrostonClassic"),
+            ADIDA(alias="ADIDA"), IMAPA(alias="IMAPA")]
+
+
+def _merge_point_columns(cv: pd.DataFrame, other: pd.DataFrame, aliases: List[str]) -> pd.DataFrame:
+    """Add ``other``'s point columns to ``cv`` on (ds, cutoff)."""
+    keep = [c for c in ("unique_id", "ds", "cutoff") if c in other.columns] + [a for a in aliases if a in other.columns]
+    return cv.merge(other[keep], on=[c for c in ("unique_id", "ds", "cutoff") if c in cv.columns], how="left")
+
+
 def _sf_frame(sf: SeriesFrame) -> pd.DataFrame:
     y = sf.y_filled()
     return pd.DataFrame({"unique_id": UID, "ds": sf.frame.index, "y": y.to_numpy(dtype=float)})
 
 
-def _cv_windows(n: int, h: int, m: Optional[int]) -> int:
-    min_train = max(2 * (m or 1), 12)
-    spare = n - min_train
+# ── Holiday calendar regressor ────────────────────────────────────────────────
+
+HOLIDAY_COLUMN = "holiday"
+
+
+def holiday_regressor(country: Optional[str], index: pd.DatetimeIndex, grain: str, freq: str) -> Tuple[Optional[np.ndarray], Optional[str]]:
+    """Known-future regressor from a public-holiday calendar.
+
+    Daily grain: 1 on a holiday, else 0. Weekly / monthly: the number of
+    holidays inside the period. Returns ``(values, note)``; values are None
+    when the calendar is unavailable (library missing, unknown country) — the
+    note says so and the forecast runs without it.
+    """
+    if not country:
+        return None, None
+    try:
+        import holidays as _holidays  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return None, f"Holiday calendar {country} requested but the holidays library is not installed; fitted without it."
+    if len(index) == 0:
+        return None, None
+    years = list(range(int(index.min().year), int(index.max().year) + 2))
+    try:
+        cal = _holidays.country_holidays(country.upper(), years=years)
+    except Exception:  # noqa: BLE001
+        return None, f"Holiday calendar {country} is not a known country code; fitted without it."
+    days = set(cal.keys())
+    if grain == "day":
+        values = np.asarray([1.0 if ts.date() in days else 0.0 for ts in index], dtype=float)
+    else:
+        one = pd.tseries.frequencies.to_offset(freq)
+        values = np.zeros(len(index), dtype=float)
+        for i, ts in enumerate(index):
+            start = pd.Timestamp(ts)
+            end = (start + one) - pd.Timedelta(days=1)
+            values[i] = float(sum(1 for d in days if start.date() <= d <= end.date()))
+    if not np.any(values):
+        return values, f"Holiday calendar {country}: no holidays fall inside this history or horizon."
+    return values, None
+
+
+def _min_train(m: Optional[int], *, seasonal_terms: bool = True) -> int:
+    """Shortest training prefix a fold may start from.
+
+    With seasonal terms the decomposing models need two full cycles; without
+    them the seasonal-naive baseline still needs one, and everything else a
+    dozen points.
+    """
+    if seasonal_terms:
+        return max(2 * (m or 1), 12)
+    return max(int(m or 1), 12)
+
+
+def _cv_plan(n: int, h: int, m: Optional[int], *, seasonal_terms: bool = True) -> Tuple[int, int]:
+    """``(windows, step_size)`` for the rolling-origin CV.
+
+    Non-overlapping folds (step = h) when the history affords ``MAX_CV_WINDOWS``
+    of them; otherwise the origins overlap (step = h/2, at least 1) so a short
+    history still yields several folds. Zero windows when the horizon cannot
+    be held out even once.
+    """
+    spare = n - _min_train(m, seasonal_terms=seasonal_terms)
     if spare < h:
-        return 0
-    return int(max(1, min(MAX_CV_WINDOWS, spare // h)))
+        return 0, h
+    if spare // h >= MAX_CV_WINDOWS:
+        return MAX_CV_WINDOWS, h
+    step = max(1, h // 2)
+    windows = 1 + (spare - h) // step
+    return int(max(1, min(MAX_CV_WINDOWS, windows))), step
+
+
+def _cv_windows(n: int, h: int, m: Optional[int]) -> int:
+    return _cv_plan(n, h, m)[0]
 
 
 def _level(interval: float) -> int:
@@ -165,6 +276,113 @@ def _cv_score(cv, alias: str, df, y: np.ndarray, *, season: int, use_wape: bool)
     return float(np.mean(fold_scores)) if fold_scores else None
 
 
+# ── Interval calibration ──────────────────────────────────────────────────────
+
+# A conformal quantile at level q needs at least q/(1-q) residuals before the
+# finite-sample rank ceil((n+1)q) is even defined inside the sample (4 at 80%,
+# 19 at 95%); below that the native band is kept.
+def _min_residuals(level: int) -> int:
+    # Integer arithmetic: 80 / 20 = 4 exactly (float 0.8 / 0.2 lands on 4.000…1 and ceils to 5).
+    return int(math.ceil(level / max(1, 100 - level)))
+
+
+def _conformal_quantile(scores: np.ndarray, level: int) -> Optional[float]:
+    """Finite-sample conformal quantile: the ceil((n+1)·q)-th smallest score."""
+    s = np.sort(scores[np.isfinite(scores)])
+    n = s.size
+    if n == 0:
+        return None
+    q = level / 100.0
+    rank = int(math.ceil((n + 1) * q))
+    if rank > n:
+        return None  # not enough residuals for this level
+    return float(s[rank - 1])
+
+
+def _calibrate_band(cv: Optional[pd.DataFrame], alias: str, level: int, point: np.ndarray,
+                    lower: np.ndarray, upper: np.ndarray, *, floor_zero: bool) -> Dict[str, Any]:
+    """Calibrate the selected model's band on its own cross-validation residuals.
+
+    Two flavours, both distribution-free:
+
+    * **scaled** — when the model has a native band: each held-out residual is
+      divided by that fold's native half-width at the same step, the conformal
+      quantile of those ratios is one factor, and the final band is the refit
+      model's own half-width times that factor. The horizon shape stays the
+      model's; only its scale is corrected.
+    * **absolute** — when the model has no native band (point-only methods):
+      the conformal quantile of the absolute residuals becomes a constant
+      half-width.
+
+    Coverage is reported *honestly*: the factor is fitted on every fold but the
+    last and tested on the last, so the figure is out-of-sample. The band that
+    ships uses every fold. Falls back to the native band (or none) when there
+    are fewer than two folds or too few residuals for the level.
+    """
+    out: Dict[str, Any] = {
+        "lower": lower, "upper": upper, "method": "native", "factor": None,
+        "coverage": None, "coverage_n": 0, "n_residuals": 0, "note": None,
+    }
+    if cv is None or alias not in cv.columns or "cutoff" not in cv.columns:
+        return out
+    yhat = cv[alias].to_numpy(dtype=float)
+    if floor_zero:
+        yhat = np.maximum(yhat, 0.0)
+    resid = np.abs(cv["y"].to_numpy(dtype=float) - yhat)
+    lo_col, hi_col = f"{alias}-lo-{level}", f"{alias}-hi-{level}"
+    native = lo_col in cv.columns and hi_col in cv.columns
+    final_half = (upper - lower) / 2.0 if native else None
+    if native:
+        half = (cv[hi_col].to_numpy(dtype=float) - cv[lo_col].to_numpy(dtype=float)) / 2.0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            scores = np.where(half > 0, resid / half, np.nan)
+    else:
+        scores = resid
+    cutoffs = cv["cutoff"].to_numpy()
+    distinct = sorted(set(cutoffs))
+    usable = np.isfinite(scores)
+    out["n_residuals"] = int(usable.sum())
+    needed = _min_residuals(level)
+    if len(distinct) < 2 or out["n_residuals"] < needed:
+        out["note"] = (f"{out['n_residuals']} held-out residuals over {len(distinct)} fold(s); "
+                       f"at least {needed} over 2 folds are needed to calibrate a {level}% band")
+        return out
+
+    # Honest coverage: fit on the earlier folds, test on the latest one (two
+    # when there are at least four, so the figure rests on 2·h points).
+    held_out = distinct[-2:] if len(distinct) >= 4 else distinct[-1:]
+    is_test = np.isin(cutoffs, np.asarray(held_out))
+    test_mask = usable & is_test
+    # Overlapping origins (step < h) make earlier folds forecast some of the
+    # same periods the held-out folds do; those rows would leak the answer
+    # into the factor, so calibration stops at the first held-out target date.
+    ds = cv["ds"].to_numpy()
+    first_test_ds = ds[test_mask].min() if test_mask.any() else None
+    train_mask = usable & ~is_test
+    if first_test_ds is not None:
+        train_mask &= ds < first_test_ds
+    q_cal = _conformal_quantile(scores[train_mask], level) if train_mask.any() else None
+    if q_cal is not None and test_mask.any():
+        inside = scores[test_mask] <= q_cal
+        out["coverage"], out["coverage_n"] = float(inside.mean()), int(test_mask.sum())
+
+    q_all = _conformal_quantile(scores[usable], level)
+    if q_all is None:
+        out["note"] = f"{out['n_residuals']} residuals cannot support a {level}% conformal quantile"
+        return out
+    out["factor"] = q_all
+    if native:
+        half_final = np.where(np.isfinite(final_half), final_half * q_all, np.nan)
+        out["lower"] = point - half_final
+        out["upper"] = point + half_final
+        out["method"] = "conformal_scaled"
+    else:
+        out["lower"] = point - q_all
+        out["upper"] = point + q_all
+        out["method"] = "conformal_absolute"
+    return out
+
+
 def run(params: ForecastParams, sf: SeriesFrame, ctx: Optional[RunContext] = None,
         guard_results: Optional[List[GuardResult]] = None) -> ResultEnvelope:
     from statsforecast import StatsForecast
@@ -181,21 +399,109 @@ def run(params: ForecastParams, sf: SeriesFrame, ctx: Optional[RunContext] = Non
     y = df["y"].to_numpy(dtype=float)
     use_wape = wape_applicable(y)
     metric_name = "WAPE" if use_wape else "MASE"
-    models, baseline_alias = _build_candidates(params.method, m)
+
+    # ── Holiday calendar (the one regressor whose future is known) ───────
+    # The training frame carries the column (statsforecast CV takes future
+    # values from the frame itself); the refit gets the horizon's values as
+    # ``X_df``. ARIMA uses it; the other candidates ignore the column.
+    holiday_country = getattr(params, "holidays", None)
+    x_future: Optional[pd.DataFrame] = None
+    holidays_offered = False   # the column was in the CV frame
+    holiday_refit_failed = False
+    holiday_values: Optional[np.ndarray] = None
+    if holiday_country:
+        horizon_index = pd.date_range(start=sf.frame.index[-1], periods=h + 1, freq=sf.freq)[1:]
+        full_index = sf.frame.index.append(horizon_index)
+        holiday_values, note = holiday_regressor(holiday_country, pd.DatetimeIndex(full_index), sf.grain, sf.freq)
+        if note:
+            notes.append(note)
+        # Attached below, once the CV plan is known: a regressor that is
+        # constant over the shortest training prefix cannot be estimated.
+    # A confirmed season whose two cycles leave no room to hold the horizon
+    # out: validate the shortlist without seasonal terms (the seasonal-naive
+    # baseline stays) rather than return an unvalidated baseline.
+    seasonal_terms = True
+    windows, step = _cv_plan(n, h, m, seasonal_terms=True)
+    if not windows and m:
+        reduced_windows, reduced_step = _cv_plan(n, h, m, seasonal_terms=False)
+        if reduced_windows:
+            seasonal_terms = False
+            windows, step = reduced_windows, reduced_step
+            notes.append(
+                f"{n} {sf.period_label(plural=True)} cannot hold out {h} after two full {m}-period cycles, "
+                f"so ETS/ARIMA were validated without a seasonal term ({baseline_alias_for(m)} keeps the season)."
+            )
+    models, baseline_alias = _build_candidates(params.method, m, seasonal_terms=seasonal_terms)
     aliases = [getattr(mod, "alias", type(mod).__name__) for mod in models]
+
+    # Holiday regressor: only the ARIMA candidates read it, and only a column
+    # that varies within every CV training prefix can be estimated (a history
+    # whose holidays all fall late, or in the horizon, would give a constant
+    # column and an unfittable coefficient — or an aborted CV).
+    has_arima = any("ARIMA" in a for a in aliases)
+    if holiday_values is not None and holiday_country:
+        shortest_train = n - (h + step * max(0, windows - 1)) if windows else n
+        train_part = holiday_values[:max(1, shortest_train)]
+        if not has_arima:
+            notes.append(f"Holiday calendar {holiday_country} was not fitted: the {params.method} shortlist has no ARIMA candidate to use it.")
+        elif not np.any(train_part) or np.all(train_part == train_part[0]):
+            notes.append(
+                f"Holiday calendar {holiday_country} was not fitted: no holiday varies within the "
+                f"{shortest_train} {sf.period_label(plural=True)} every validation fold trains on."
+            )
+        else:
+            df[HOLIDAY_COLUMN] = holiday_values[:n]
+            x_future = pd.DataFrame({"unique_id": UID, "ds": horizon_index, HOLIDAY_COLUMN: holiday_values[n:]})
+            holidays_offered = True
+            notes.append(f"Holiday calendar {holiday_country} was offered to the ARIMA candidates as a regressor.")
+
+    # Intermittent demand: many zero periods. The Croston family joins the
+    # ``auto`` shortlist and competes on the same folds and the same metric —
+    # which needs folds; with none it could not be validated and is left out.
+    intermittent_models: List[Any] = []
+    zero_share = float(sf.zero_share) if hasattr(sf, "zero_share") else 0.0
+    if zero_share > INTERMITTENT_ZERO_SHARE:
+        if params.method != "auto":
+            notes.append(
+                f"{zero_share:.0%} of {sf.period_label(plural=True)} are zero (intermittent demand); "
+                f"{params.method} was requested, so the intermittent-demand models were not added."
+            )
+        elif not windows:
+            notes.append(
+                f"{zero_share:.0%} of {sf.period_label(plural=True)} are zero (intermittent demand); "
+                "the intermittent-demand models could not be validated on this short history."
+            )
+        else:
+            intermittent_models = _intermittent_candidates()
+            notes.append(
+                f"{zero_share:.0%} of {sf.period_label(plural=True)} are zero (intermittent demand); "
+                f"{', '.join(INTERMITTENT_ALIASES)} were added to the shortlist."
+            )
+    intermittent_aliases = [getattr(mod, "alias", type(mod).__name__) for mod in intermittent_models]
 
     # ── Rolling-origin cross-validation at the requested horizon ────────
     candidates: List[CandidateScore] = []
     cv_errors: Dict[str, Optional[float]] = {}
     cov_by_model: Dict[str, Tuple[Optional[float], int]] = {}
-    windows = _cv_windows(n, h, m)
+    cv = None
     basis = "no cross-validation possible (history too short for the horizon)"
     if windows:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 sfc = StatsForecast(models=models, freq=sf.freq, n_jobs=1)
-                cv = sfc.cross_validation(h=h, df=df, n_windows=windows, step_size=h, level=[level])
+                cv = sfc.cross_validation(h=h, df=df, n_windows=windows, step_size=step, level=[level])
+                if intermittent_models:
+                    try:
+                        sfi = StatsForecast(models=intermittent_models, freq=sf.freq, n_jobs=1)
+                        cv_i = sfi.cross_validation(h=h, df=df, n_windows=windows, step_size=step)
+                        cv = _merge_point_columns(cv, cv_i, intermittent_aliases)
+                        aliases = aliases + intermittent_aliases
+                        models = models + intermittent_models
+                    except Exception as exc:  # noqa: BLE001 — the ordinary shortlist still stands
+                        logger.warning("forecast: intermittent candidates failed in CV: %s", exc)
+                        notes.append(f"The intermittent-demand models could not be validated ({type(exc).__name__}) and were dropped.")
+                        intermittent_models, intermittent_aliases = [], []
             for alias in aliases:
                 if alias not in cv.columns:
                     cv_errors[alias] = None
@@ -204,11 +510,13 @@ def run(params: ForecastParams, sf: SeriesFrame, ctx: Optional[RunContext] = Non
                 lo, hi = f"{alias}-lo-{level}", f"{alias}-hi-{level}"
                 if lo in cv.columns and hi in cv.columns:
                     cov_by_model[alias] = coverage(cv["y"], cv[lo], cv[hi])
-            basis = f"rolling-origin CV, {windows} window{'s' if windows != 1 else ''} of h={h} {sf.period_label(plural=True)}"
+            overlap = f", origins {step} apart" if step != h else ""
+            basis = f"rolling-origin CV, {windows} window{'s' if windows != 1 else ''} of h={h} {sf.period_label(plural=True)}{overlap}"
         except Exception as exc:  # noqa: BLE001
             logger.warning("forecast: cross-validation failed: %s", exc)
             notes.append(f"Cross-validation failed ({type(exc).__name__}); falling back to the baseline.")
             cv_errors = {alias: None for alias in aliases}
+            cv = None
     else:
         notes.append(
             f"{n} {sf.period_label(plural=True)} of history cannot hold out {h}; no cross-validation was run."
@@ -223,6 +531,7 @@ def run(params: ForecastParams, sf: SeriesFrame, ctx: Optional[RunContext] = Non
     baseline_err = cv_errors.get(baseline_alias)
     selected = baseline_alias
     best_err = baseline_err
+    ensemble_members: List[str] = []
     requested = aliases[-1] if params.method not in ("auto", "seasonal_naive") else None
     scored = [(a, e) for a, e in cv_errors.items() if e is not None and a != baseline_alias]
     scored.sort(key=lambda t: t[1])
@@ -240,6 +549,25 @@ def run(params: ForecastParams, sf: SeriesFrame, ctx: Optional[RunContext] = Non
             )
     elif scored:
         top_alias, top_err = scored[0]
+        # The mean of the two best candidates is scored on the same folds and
+        # chosen only when it beats both the best single model and the
+        # baseline — never because two models happen to be close.
+        if ENABLE_TOP2_ENSEMBLE and params.method == "auto" and len(scored) >= 2 and cv is not None:
+            a1, a2 = scored[0][0], scored[1][0]
+            if a1 in cv.columns and a2 in cv.columns:
+                ens_alias = f"Mean({a1} & {a2})"  # members may themselves contain '+'
+                cv[ens_alias] = (cv[a1].to_numpy(dtype=float) + cv[a2].to_numpy(dtype=float)) / 2.0
+                ens_err = _cv_score(cv, ens_alias, df, y, season=m or 1, use_wape=use_wape)
+                if (ens_err is not None and ens_err < top_err
+                        and (baseline_err is None or ens_err < baseline_err)):
+                    ensemble_members = [a1, a2]
+                    cv_errors[ens_alias] = ens_err
+                    aliases.append(ens_alias)
+                    top_alias, top_err = ens_alias, ens_err
+                    notes.append(
+                        f"The mean of {a1} and {a2} scored {metric_name} {_fmt_err(ens_err)} in cross-validation, "
+                        f"below either alone ({_fmt_err(scored[0][1])}); it is the forecast shown."
+                    )
         if baseline_err is None or top_err < baseline_err:
             selected, best_err = top_alias, top_err
         else:
@@ -260,16 +588,72 @@ def run(params: ForecastParams, sf: SeriesFrame, ctx: Optional[RunContext] = Non
         ))
 
     # ── Refit the winner on the full history and forecast ────────────────
-    winner_model = models[aliases.index(selected)]
+    single_aliases = [getattr(mod, "alias", type(mod).__name__) for mod in models]
+    selected_is_ensemble = bool(ensemble_members) and selected not in single_aliases
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        sff = StatsForecast(models=[winner_model], freq=sf.freq, n_jobs=1)
-        fc = sff.forecast(h=h, df=df, level=[level])
+        def _refit(refit_models: List[Any], *, with_level: bool):
+            nonlocal holiday_refit_failed
+            sff = StatsForecast(models=refit_models, freq=sf.freq, n_jobs=1)
+            kwargs: Dict[str, Any] = {"h": h, "df": df}
+            if with_level:
+                kwargs["level"] = [level]
+            if x_future is not None:
+                try:
+                    return sff.forecast(**kwargs, X_df=x_future)
+                except Exception as exc:  # noqa: BLE001 — the regressor is optional; the forecast is not
+                    logger.warning("forecast: refit with holiday regressor failed (%s); refitting without it", exc)
+                    notes.append(f"The holiday regressor could not be used in the final fit ({type(exc).__name__}); fitted without it.")
+                    holiday_refit_failed = True
+                    plain = df.drop(columns=[HOLIDAY_COLUMN], errors="ignore")
+                    return sff.forecast(**{**kwargs, "df": plain})
+            return sff.forecast(**kwargs)
+
+        if selected_is_ensemble:
+            # Refit both members; the shown forecast is their mean. The
+            # ensemble has no native band — the calibration below supplies one.
+            fc = _refit([models[aliases.index(a)] for a in ensemble_members], with_level=False)
+            fc[selected] = sum(fc[a].to_numpy(dtype=float) for a in ensemble_members) / float(len(ensemble_members))
+        else:
+            point_only = selected in intermittent_aliases
+            # Point-only models raise on ``level``; their band is calibrated below.
+            fc = _refit([models[aliases.index(selected)]], with_level=not point_only)
+    # "Used" means the forecast on screen came from a fit that read the
+    # column: the shown model is an ARIMA (the only reader) and the exogenous
+    # refit succeeded. Offered-but-ignored (ETS won) is reported separately.
+    shown_models = ensemble_members if selected_is_ensemble else [selected]
+    holidays_used = bool(holidays_offered and not holiday_refit_failed and any("ARIMA" in a for a in shown_models))
+    if holidays_offered and not holidays_used and not holiday_refit_failed:
+        notes.append(f"The shown model ({selected}) does not read regressors, so the holiday calendar did not shape this forecast.")
     point = fc[selected].to_numpy(dtype=float)
     lo_col, hi_col = f"{selected}-lo-{level}", f"{selected}-hi-{level}"
     lower = fc[lo_col].to_numpy(dtype=float) if lo_col in fc.columns else np.full(h, np.nan)
     upper = fc[hi_col].to_numpy(dtype=float) if hi_col in fc.columns else np.full(h, np.nan)
     fc_index = pd.DatetimeIndex(fc["ds"])
+
+    # ── Calibrate the band on the winner's own held-out residuals ─────────
+    # The native (Gaussian) band is a model assumption; the residuals are what
+    # actually happened at this horizon. Coverage below is out-of-sample.
+    calib = _calibrate_band(cv, selected, level, point, lower, upper, floor_zero=use_wape)
+    interval_method = calib["method"]
+    if interval_method != "native":
+        lower, upper = calib["lower"], calib["upper"]
+        cov, cov_n = calib["coverage"], int(calib["coverage_n"] or 0)
+        notes.append(
+            f"The {level}% band was calibrated on {calib['n_residuals']} held-out residuals "
+            f"(factor {calib['factor']:.2f} on the model's own width)."
+            if interval_method == "conformal_scaled" else
+            f"The {level}% band is a conformal half-width from {calib['n_residuals']} held-out residuals "
+            "(the model has no native interval)."
+        )
+    else:
+        cov, cov_n = cov_by_model.get(selected, (None, 0))
+        if calib["note"] and windows:
+            has_native_band = bool(np.isfinite(lower).any() and np.isfinite(upper).any())
+            notes.append(
+                f"Band not calibrated: {calib['note']}; "
+                + ("the model's native interval is shown." if has_native_band else "this model has no native interval, so none is shown.")
+            )
 
     # A measure that never went below zero (sales, counts) cannot be forecast
     # below zero either; the Gaussian interval does not know that. Floor the
@@ -310,7 +694,6 @@ def run(params: ForecastParams, sf: SeriesFrame, ctx: Optional[RunContext] = Non
     horizon_total = float(np.nansum(point))
     trailing_total = float(np.nansum(y[-h:])) if n >= h else float(np.nansum(y))
     end_value = float(point[-1])
-    cov, cov_n = cov_by_model.get(selected, (None, 0))
     facts: Dict[str, Any] = {
         "skill": "forecast",
         "measure": sf.request.measure_label,
@@ -334,9 +717,34 @@ def run(params: ForecastParams, sf: SeriesFrame, ctx: Optional[RunContext] = Non
         "candidates": [c.model_dump() for c in candidates],
         "cv_metric": metric_name,
         "cv_windows": windows,
+        "cv_step": step if windows else None,
+        # True only when a candidate that can carry a seasonal term was configured with one.
+        "seasonal_terms_fitted": seasonal_terms and bool(m) and any(
+            ("ETS" in a or "ARIMA" in a) or ("Theta" in a and int(m) <= DIRECT_SEASONAL_MAX) for a in aliases
+        ),
         "coverage": num(cov),
         "coverage_n": cov_n,
+        "interval_method": interval_method,
+        "conformal_factor": num(calib["factor"]),
+        "calibration_residuals": int(calib["n_residuals"]),
+        # Frozen MASE denominator so a later realized-accuracy check can score
+        # this forecast on the scale it was validated against.
+        "mase_scale": num(naive_scale(y, m or 1)),
         "floored_at_zero": floored,
+        "holidays": holiday_country,
+        "holidays_offered": holidays_offered,
+        "holidays_used": holidays_used,
+        # How the method was chosen, as data (the notes say it in prose): the
+        # advisor and the log line read this, never the sentence.
+        "selection": {
+            "mode": "requested" if requested is not None else "auto",
+            "baseline_won": selected == baseline_alias,
+            "validated": windows > 0 and any(e is not None for e in cv_errors.values()),
+            "best_candidate": scored[0][0] if scored else None,
+            "best_candidate_error": num(scored[0][1]) if scored else None,
+            "baseline_error": num(baseline_err),
+            "ensemble_members": list(ensemble_members) if selected_is_ensemble else [],
+        },
     }
     tail = sf.partial_tail
     if tail is not None:
@@ -394,7 +802,9 @@ def run(params: ForecastParams, sf: SeriesFrame, ctx: Optional[RunContext] = Non
         candidates=candidates,
         params_used={
             "horizon": h, "interval": params.interval, "method": params.method,
-            "cv_windows": windows, "seasonal_strength": {str(k): v for k, v in sf.seasonal_strength.items()},
+            "cv_windows": windows, "cv_step": step if windows else None, "seasonal_terms": seasonal_terms and bool(m),
+            "holidays": holiday_country if holidays_used else None,
+            "seasonal_strength": {str(k): v for k, v in sf.seasonal_strength.items()},
         },
         notes=notes,
     )

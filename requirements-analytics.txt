@@ -23,3 +23,6 @@ scikit-learn==1.9.1
 # Optional gradient-boosting engine for driver_analysis (method=auto/xgboost);
 # HistGradientBoosting remains the default and the fallback.
 xgboost==2.1.4
+# Public-holiday calendars: the forecast skill's known-future regressor
+# (ForecastParams.holidays, contract v3). Pure Python, no network.
+holidays==0.105

@@ -124,7 +124,7 @@ Pick a connection from the dropdown in the top bar and ask a question.
 | GET    | `/api/schema/{table}?connection=<source_key>`     | Column-level schema.                                   |
 | POST   | `/api/generate-insights`                          | Body must include `connection` + `dataset` + `question`.|
 | POST   | `/api/generate-chart` / `/api/enhance-chart`      | Same: `connection` is required.                        |
-| POST   | `/api/feedback`                                   | Records `thumbs_up` / `thumbs_down` / `edited`.        |
+| POST   | `/api/feedback`                                   | Records `thumbs_up` / `thumbs_down` / `edited` / `catalog_gap` (+ optional `notes`). |
 | GET    | `/api/conversation/{session_id}`                  | Legacy raw dump of one conversation (superseded below).|
 | GET    | `/api/conversations/last?connection=`             | Hydration payload for the user's newest conversation on a connection; spawns the retention prune. |
 | GET    | `/api/conversations?connection=` or `?all=true`   | Cursor-paged list of the user's conversations (`all` includes removed connections). |

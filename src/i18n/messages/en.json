@@ -258,6 +258,12 @@
       "statusOk": "ok",
       "statusRunning": "running…",
       "statusFailed": "failed",
+      "dataReady": "Data ready — {rows, plural, one {# row} other {# rows}} in the answer pane",
+      "summaryPending": "Summary and insights are being written",
+      "timelineTitle": "Time from the question until each part appeared",
+      "timelineTable": "table {time}",
+      "timelineInsights": "insights {time}",
+      "timelineChart": "chart {time}",
       "restoredFromHistory": "restored from history",
       "failedAt": "query failed · failed at {node} · {duration}",
       "error": "error",
@@ -290,6 +296,29 @@
       "editing": "Editing",
       "edited": "edited",
       "saveRerun": "Save & rerun"
+    },
+    "feedback": {
+      "groupLabel": "Answer feedback",
+      "helpful": "Helpful",
+      "notHelpful": "Not helpful",
+      "open": "Give feedback",
+      "title": "Give Feedback",
+      "subtitle": "Your feedback helps improve Jeen for everyone",
+      "rate": "Rate this answer",
+      "starLabel": "{n} of 5 stars",
+      "typeLabel": "Feedback Type",
+      "type": {
+        "general": "General feedback",
+        "report_bug": "Report Bug",
+        "ui_bug": "UI Bug",
+        "other": "Other"
+      },
+      "yourFeedback": "Your feedback",
+      "placeholder": "What worked, what didn't?",
+      "send": "Send",
+      "sending": "Sending…",
+      "sent": "Thanks for your feedback",
+      "failed": "Could not save your feedback"
     },
     "trace": {
       "modelStep": "model step completed",
@@ -425,6 +454,9 @@
     "status": {
       "completed": "Completed",
       "completedCapped": "Completed · capped",
+      "analysing": "Analysing",
+      "failedAfterRows": "Analysis failed",
+      "rowsReady": "{rows, plural, one {# row} other {# rows}} · writing summary and insights…",
       "meta": "{rows, plural, one {# row} other {# rows}} · {exec} exec · {llm} llm",
       "staleNote": "Last successful answer — the newest question failed",
       "snapshotFrom": "Snapshot from {when}"
@@ -1244,6 +1276,40 @@
       "askAgain": "Ask again",
       "askingAgain": "Asking…",
       "selectConnection": "Select a connection to ask again."
+    },
+    "adjust": {
+      "title": "Adjustments to try",
+      "copy": "Derived from this result's own numbers. Each one re-runs the analysis as a new answer; none is a guarantee of a better fit.",
+      "recommended": "recommended",
+      "coarser_grain": "Roll up to a {grain} grain (validation was poor)",
+      "coarser_grain_for_season": "Use a {grain} grain with enough history so a yearly season can be tested",
+      "wider_window_for_season": "Look back {window} {unit} so a full seasonal cycle can be tested",
+      "wider_window_for_band": "Look back {window} {unit}: the band covered {coverage}% of held-out points against a {level}% target",
+      "try_theta": "Try Theta (the one model outside the auto shortlist; {baseline} won this run)",
+      "guard_exit": "Apply the {guard} guard's suggested fix"
+    },
+    "accuracy": {
+      "title": "Realized accuracy",
+      "copy": "Once the forecast periods have passed, compare this forecast with what actually happened. Only fully elapsed periods are scored.",
+      "check": "Check against actuals",
+      "recheck": "Re-check",
+      "checking": "Checking…",
+      "nothingElapsed": "No forecast period has fully elapsed yet ({pending} pending; source data ends {dataEnd}).",
+      "nothingScored": "{elapsed, plural, one {# period has elapsed} other {# periods have elapsed}} but none had source rows to score against (source data ends {dataEnd}).",
+      "unscored": "{count, plural, one {# elapsed period had no rows and was not scored} other {# elapsed periods had no rows and were not scored}}",
+      "scored": "{elapsed, plural, one {# elapsed period scored} other {# elapsed periods scored}}, {pending} still pending · source data ends {dataEnd}",
+      "realizedError": "Realized {metric}",
+      "claimedError": "Validated {metric} (at forecast time)",
+      "realizedCoverage": "Realized coverage",
+      "target": "Band target",
+      "period": "Period",
+      "actual": "Actual",
+      "forecast": "Forecast",
+      "band": "Band",
+      "inside": "inside",
+      "outside": "outside",
+      "realizedSeries": "Realized",
+      "failed": "Could not check the forecast against actuals"
     },
     "details": {
       "empty": "Model details appear here for anomaly detection and forecast answers.",

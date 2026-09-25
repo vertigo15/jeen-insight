@@ -808,6 +808,86 @@ class TestTrivialResultCheck:
     def test_none_result_is_trivial(self):
         assert trivial_result_check({"query_result": None})["is_trivial"] is True
 
+    # ── provisional rows (`partial` SSE event) ────────────────────────────
+
+    def test_emits_partial_with_rows_and_revision(self):
+        seen = []
+        query_result = {"rows": [{"y": 2021, "sales": 100}, {"y": 2022, "sales": 200}], "columns": ["y", "sales"]}
+        state = {
+            "query_result": query_result,
+            "generated_sql": "SELECT y, sales FROM t",
+            "query_id": "q-1",
+            "session_id": "s-1",
+            "partial_callback": seen.append,
+            "partial_revision": 2,
+        }
+        out = trivial_result_check(state)
+        assert out["is_trivial"] is False
+        assert out["partial_revision"] == 3
+        assert seen == [{
+            "query_id": "q-1",
+            "session_id": "s-1",
+            "sql": "SELECT y, sales FROM t",
+            "results": query_result,
+            "revision": 2,
+            "provisional": True,
+        }]
+        # The very dict response_formatter later exposes as `results`.
+        assert seen[0]["results"] is query_result
+
+    def test_partial_revision_starts_at_zero_when_unset(self):
+        seen = []
+        state = {
+            "query_result": {"rows": [{"n": 1}], "columns": ["n"]},
+            "generated_sql": "SELECT 1",
+            "partial_callback": seen.append,
+        }
+        out = trivial_result_check(state)
+        assert seen[0]["revision"] == 0
+        assert out["partial_revision"] == 1
+
+    def test_no_partial_without_callback(self):
+        out = trivial_result_check({
+            "query_result": {"rows": [{"n": 1}], "columns": ["n"]},
+            "generated_sql": "SELECT 1",
+        })
+        assert "partial_revision" not in out
+
+    def test_no_partial_for_empty_rows(self):
+        seen = []
+        out = trivial_result_check({
+            "query_result": {"rows": [], "columns": ["n"]},
+            "generated_sql": "SELECT 1",
+            "partial_callback": seen.append,
+        })
+        assert seen == []
+        assert "partial_revision" not in out
+
+    def test_no_partial_for_ml_results(self):
+        # ML charts and their persistence depend on the artifact save_to_memory
+        # writes later, so the envelope path keeps today's single result.
+        seen = []
+        out = trivial_result_check({
+            "query_result": {"rows": [{"ts": "2026-01-01", "value": 1}], "columns": ["ts", "value"]},
+            "generated_sql": "SELECT ts, value FROM t",
+            "analysis_result": {"skill": "forecast"},
+            "partial_callback": seen.append,
+        })
+        assert seen == []
+        assert "partial_revision" not in out
+
+    def test_partial_callback_failure_never_breaks_the_node(self):
+        def boom(_payload):
+            raise RuntimeError("client went away")
+
+        out = trivial_result_check({
+            "query_result": {"rows": [{"n": 1}], "columns": ["n"]},
+            "generated_sql": "SELECT 1",
+            "partial_callback": boom,
+        })
+        assert out["is_trivial"] is True
+        assert out["partial_revision"] == 1
+
 
 # ── feedback_classifier ───────────────────────────────────────────────────────
 

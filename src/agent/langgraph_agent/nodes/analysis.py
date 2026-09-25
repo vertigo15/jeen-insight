@@ -43,6 +43,7 @@ from src.analysis.contracts import (
     DEFAULT_WINDOW_PERIODS,
     METHOD_LABELS,
     SENTINEL_LABELS,
+    SKILL_WINDOW_PERIODS,
     AnalysisProposal,
     CohortRequest,
     EntityRequest,
@@ -58,6 +59,7 @@ from src.analysis.contracts import (
     parse_params,
 )
 from src.analysis.guards import max_horizon, series_length
+from src.analysis.metrics_view import result_metrics
 from src.analysis.series import SeriesFrame, floor_to_grain, pandas_freq
 from src.analysis.sql_builder import (
     UnsupportedFilter,
@@ -196,6 +198,13 @@ def _estimated_frame(req: SeriesRequest, n: int) -> SeriesFrame:
 # chips by first occurrence, so each family emits its data fields first.
 _G_DATA, _G_MODEL, _G_OUTPUT, _G_COMPARE, _G_COHORT, _G_TEST = "Data", "Model", "Output", "Comparison", "Cohort", "Test"
 _GRAIN_LABELS = {"day": "Day", "week": "Week", "month": "Month"}
+# Public-holiday calendars offered on the forecast setup card (ISO 3166 codes
+# the ``holidays`` library knows). Any other valid code still validates.
+HOLIDAY_CALENDARS = ["IL", "US", "GB", "DE", "FR", "NL", "ES", "IT", "CA", "AU", "IN"]
+HOLIDAY_LABELS = {
+    "IL": "Israel", "US": "United States", "GB": "United Kingdom", "DE": "Germany", "FR": "France",
+    "NL": "Netherlands", "ES": "Spain", "IT": "Italy", "CA": "Canada", "AU": "Australia", "IN": "India",
+}
 _METHOD_HELP = {
     "forecast": "Auto cross-validates the shortlist and keeps the baseline unless a model beats it.",
     "anomaly_detection": ("Auto picks a seasonal or trend band for you; Seasonal forces the MSTL "
@@ -337,8 +346,9 @@ def _chips(skill: str, params: Dict[str, Any], cands) -> List[ParamChip]:
     chips += [
         _chip(skill, "grain", "Grain", grain, group=_G_MODEL, options=["day", "week", "month"],
               option_labels=_GRAIN_LABELS, help="The size of one period."),
-        _chip(skill, "window", "Look-back window", params.get("window") or default_window_periods(grain),
-              group=_G_MODEL, kind="number", step=1, unit_from="grain", defaults_by_grain=dict(DEFAULT_WINDOW_PERIODS),
+        _chip(skill, "window", "Look-back window", params.get("window") or default_window_periods(grain, skill),
+              group=_G_MODEL, kind="number", step=1, unit_from="grain",
+              defaults_by_grain=dict(SKILL_WINDOW_PERIODS.get(skill, DEFAULT_WINDOW_PERIODS)),
               help="How much history the model learns from."),
     ]
     if skill == "anomaly_detection":
@@ -355,6 +365,9 @@ def _chips(skill: str, params: Dict[str, Any], cands) -> List[ParamChip]:
         chips.append(_chip(skill, "interval", "Interval", params.get("interval", 0.8), group=_G_OUTPUT,
                            options=[0.5, 0.8, 0.9, 0.95], option_labels=_pct_labels([0.5, 0.8, 0.9, 0.95]),
                            help="Width of the prediction band: 80% means the true value should fall inside it 4 times in 5."))
+        chips.append(_chip(skill, "holidays", "Holidays", params.get("holidays") or "none", group=_G_MODEL,
+                           options=["none", *HOLIDAY_CALENDARS], option_labels={"none": SENTINEL_LABELS["none"], **HOLIDAY_LABELS},
+                           help="A public-holiday calendar fitted as a regressor (its future is known). Matters most at a daily grain."))
     elif skill == "changepoint":
         chips.append(_chip(skill, "max_changepoints", "Max breaks", params.get("max_changepoints", 5), group=_G_OUTPUT,
                            options=[1, 3, 5, 10], help="Upper bound on the number of level shifts reported."))
@@ -691,7 +704,10 @@ def make_analysis_guard(
 
         # ── Fill the analysis window from the probe ───────────────────────
         end_ts = pd.Timestamp(series.end) if series.end else _shift_periods(last, grain, 1)
-        window = int(params.get("window") or default_window_periods(grain))
+        # A split forecast fetches one series per value: the longer forecast
+        # default (130 weeks × up to 12 series) would exceed the row cap, so a
+        # split falls back to the generic default.
+        window = int(params.get("window") or default_window_periods(grain, None if series.group_by else skill))
         if series.start:
             start_ts = pd.Timestamp(series.start)
         else:
@@ -705,7 +721,12 @@ def make_analysis_guard(
         est = _estimated_frame(req, n_est)
 
         # ── Pre-SQL history guards (estimated from the span) ──────────────
-        results.append(series_length(est))
+        results.append(series_length(
+            est,
+            horizon=int(params["horizon"]) if skill == "forecast" and params.get("horizon") is not None else None,
+            window=int(params["window"]) if params.get("window") is not None else None,
+            skill=skill,
+        ))
         if skill == "forecast":
             results.append(max_horizon(est, int(params.get("horizon", 8))))
         failed = [g for g in results if not g.passed]
@@ -1121,6 +1142,14 @@ def make_analysis_run(
 
         if outcome.status == "guard_failed":
             failed = [g for g in outcome.guard_results if not g.passed]
+            audit_event["refused_by"] = [
+                {"guard": g.name, "observed": g.observed, "required": g.required} for g in failed
+            ]
+            logger.info("analysis_refused %s", json.dumps(
+                {"event": "analysis_refused", "skill": skill, "grain": (params.get("series") or {}).get("grain"),
+                 "refused_by": audit_event["refused_by"], "query_id": audit_event["query_id"]},
+                default=str,
+            ))
             proposal = AnalysisProposal(
                 proposal_id="", kind="guard", skill=skill, title=spec.title,
                 message=_guard_sentence(failed[0], "") if failed else "The data did not pass its guards.",
@@ -1156,11 +1185,24 @@ def make_analysis_run(
 
         env = outcome.envelope
         env.guard_results = [GuardResult.model_validate(g) for g in pre_results] + env.guard_results
+        # The sandbox saw redacted filter values ("<str>"); the persisted
+        # envelope is what a re-run (Edit setup, an adjustment chip, a guard
+        # exit) starts from, and it must carry the values that actually ran or
+        # the re-run filters on the placeholder. The literals already persist
+        # in generated_sql, so nothing new is exposed.
+        env.params = {**env.params, **{k: v for k, v in params.items() if k in env.params}}
+        metrics = result_metrics(env)
         audit_event.update({"engine": env.engine.model_dump(), "method_used": env.method_used,
-                            "low_confidence": env.low_confidence})
+                            "low_confidence": env.low_confidence, "result": metrics})
         if audit:
             await audit(audit_event)
         logger.info("analysis_run: %s ok — %s (%dms, %d rows)", skill, env.method_used, elapsed, len(env.rows))
+        # One structured line per completed run: what the accuracy work is
+        # measured against (baseline-win rate, CV depth, coverage, bands).
+        logger.info("analysis_result %s", json.dumps(
+            {"event": "analysis_result", "query_id": audit_event["query_id"], "elapsed_ms": elapsed, **metrics},
+            default=str,
+        ))
         return {
             "analysis_result": env.model_dump(mode="json"),
             "analysis_definition": _definition(state, skill, params, env.egress.rows_sent_to_model),

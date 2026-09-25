@@ -132,7 +132,14 @@ def test_forecast_beats_seasonal_naive_on_seasonal_history():
     assert winner.value is not None and baseline.value is not None and winner.value < baseline.value
     assert env.method_used == winner.name and env.method_used != "SeasonalNaive"
     assert env.validation.metric == "WAPE" and "rolling-origin CV" in env.validation.basis
-    assert env.validation.coverage_n == 24  # 3 windows × h=8
+    # 130 weeks − 104 (two cycles) = 26 spare: 5 overlapping folds of h=8, origins 4 apart.
+    assert env.facts["cv_windows"] == 5 and env.facts["cv_step"] == 4
+    # The band is calibrated on the winner's 40 held-out residuals; coverage
+    # is reported out-of-sample on the last two folds (2 × h = 16 points).
+    assert env.facts["interval_method"] == "conformal_scaled"
+    assert env.facts["calibration_residuals"] == 40
+    assert env.validation.coverage_n == 16
+    assert any("calibrated on 40 held-out residuals" in n for n in env.details.notes)
     forecast_rows = [r for r in env.rows if r["is_forecast"]]
     assert len(forecast_rows) == 8 and all(r["lower"] <= r["forecast"] <= r["upper"] for r in forecast_rows)
     assert env.chart_spec.forecast_start == forecast_rows[0]["ts"]
@@ -214,6 +221,104 @@ def test_forecast_non_additive_with_gap_keeps_running_when_within_limit():
     payload = to_payload(idx, y, drop=(10,))
     env = _run("forecast", {"series": series_request(grain="month", agg="avg"), "horizon": 6}, payload)
     assert env.provenance.periods_filled == 1 and "left empty" in env.provenance.missing_policy
+
+
+def test_forecast_confirmed_season_without_room_validates_without_seasonal_terms():
+    # 110 weeks confirm the 52-week season but two cycles (104) leave only 6
+    # points: no fold can hold out h=8. Instead of an unvalidated baseline, the
+    # shortlist is validated without seasonal terms (SeasonalNaive keeps it).
+    idx, y = seasonal_series(n=110, grain="week")
+    env = _run("forecast", {"series": series_request(), "window": 110, "horizon": 8}, to_payload(idx, y))
+    assert env.details.seasonal_periods == [52]
+    assert env.facts["cv_windows"] > 0
+    assert env.facts["seasonal_terms_fitted"] is False
+    assert any("validated without a seasonal term" in n for n in env.details.notes)
+    names = {c.name for c in env.details.candidates}
+    assert "SeasonalNaive" in names and "AutoETS" in names and "MSTL+AutoETS" not in names
+    assert env.facts["selection"]["validated"] is True
+
+
+def test_forecast_band_is_calibrated_and_falls_back_to_native_when_thin():
+    # Enough folds: the band is rescaled on the winner's own residuals.
+    idx, y = seasonal_series(n=48, grain="month")
+    env = _run("forecast", {"series": series_request(grain="month"), "window": 48, "horizon": 6}, to_payload(idx, y))
+    assert env.facts["interval_method"] == "conformal_scaled"
+    assert env.facts["conformal_factor"] > 0 and env.facts["calibration_residuals"] >= 12
+    assert env.validation.coverage is not None and env.validation.coverage_n in (6, 12)
+    fc = [r for r in env.rows if r["is_forecast"]]
+    assert all(r["lower"] <= r["forecast"] <= r["upper"] for r in fc)
+    # A 95% band needs 19 residuals; a single fold of 4 cannot supply them: native band, and it says so.
+    idx, y = seasonal_series(n=16, grain="week", amplitude=0)
+    thin = _run("forecast", {"series": series_request(), "window": 16, "horizon": 4, "interval": 0.95}, to_payload(idx, y))
+    assert thin.facts["interval_method"] == "native"
+    assert any("Band not calibrated" in n for n in thin.details.notes)
+
+
+def test_forecast_intermittent_history_adds_the_croston_family_instead_of_refusing():
+    rng = np.random.default_rng(51)
+    idx, _ = white_noise(n=60, grain="week")
+    y = np.where(rng.uniform(size=60) < 0.6, 0.0, rng.uniform(20, 60, 60))
+    out = execute_skill("forecast", {"series": series_request(), "window": 60, "horizon": 8}, to_payload(idx, y))
+    assert out.status == "ok", out.error  # the guard no longer refuses a forecast
+    env = out.envelope
+    guard = next(g for g in env.guard_results if g.name == "intermittent")
+    assert guard.passed and not guard.overridable and "handles intermittent demand itself" in guard.detail
+    names = {c.name for c in env.details.candidates}
+    assert {"CrostonSBA", "CrostonClassic", "ADIDA", "IMAPA"} <= names
+    assert any("intermittent demand" in n for n in env.details.notes)
+    fc = [r for r in env.rows if r["is_forecast"]]
+    assert len(fc) == 8 and all(r["forecast"] >= 0 for r in fc)
+    if env.method_used in ("CrostonSBA", "CrostonClassic", "ADIDA", "IMAPA"):
+        # Point-only winner: the band is the absolute conformal half-width.
+        assert env.facts["interval_method"] in ("conformal_absolute", "native")
+    # An explicit method keeps the ordinary shortlist and says why the zeros were not handled.
+    explicit = execute_skill("forecast", {"series": series_request(), "window": 60, "horizon": 8, "method": "auto_ets"}, to_payload(idx, y))
+    assert explicit.status == "ok"
+    assert {c.name for c in explicit.envelope.details.candidates} == {"Naive", "AutoETS"}
+    assert any("auto_ets was requested, so the intermittent-demand models were not added" in n for n in explicit.envelope.details.notes)
+    # Other series skills still refuse intermittent histories.
+    anomaly = execute_skill("anomaly_detection", {"series": series_request(), "window": 60}, to_payload(idx, y))
+    assert anomaly.status == "guard_failed" and [g.name for g in anomaly.guard_results if not g.passed] == ["intermittent"]
+
+
+def test_forecast_top2_ensemble_is_off_by_default():
+    from src.analysis.engines import forecast as engine
+
+    assert engine.ENABLE_TOP2_ENSEMBLE is False
+    idx, y = seasonal_series(n=130, grain="week")
+    env = _run("forecast", {"series": series_request(), "window": 130, "horizon": 8}, to_payload(idx, y))
+    assert not env.method_used.startswith("Mean(")
+    assert env.facts["selection"]["ensemble_members"] == []
+
+
+def test_forecast_holiday_calendar_is_a_known_future_regressor():
+    pytest.importorskip("holidays")
+    idx, y = seasonal_series(n=240, grain="day", level=800, slope=0.2, amplitude=150, noise=30, seed=3)
+    payload = to_payload(idx, np.maximum(y, 0))
+    with_cal = _run("forecast", {"series": series_request(grain="day"), "window": 240, "horizon": 14, "holidays": "IL"}, payload)
+    assert with_cal.facts["holidays"] == "IL" and with_cal.facts["holidays_offered"] is True
+    assert any("offered to the ARIMA candidates" in n for n in with_cal.details.notes)
+    # "Used" is a claim about the forecast on screen: true only when an ARIMA won.
+    assert with_cal.facts["holidays_used"] is ("ARIMA" in with_cal.method_used)
+    assert with_cal.details.params_used["holidays"] == ("IL" if with_cal.facts["holidays_used"] else None)
+    if not with_cal.facts["holidays_used"]:
+        assert any("does not read regressors" in n for n in with_cal.details.notes)
+    assert len([r for r in with_cal.rows if r["is_forecast"]]) == 14
+    # Weekly with a confirmed 52-season: the MSTL+AutoARIMA path takes the column too.
+    widx, wy = seasonal_series(n=140, grain="week")
+    weekly = _run("forecast", {"series": series_request(), "window": 140, "horizon": 8, "holidays": "IL"}, to_payload(widx, wy))
+    assert weekly.facts["holidays_offered"] is True and len([r for r in weekly.rows if r["is_forecast"]]) == 8
+    # An explicit non-ARIMA method: offered to nobody, and it says so.
+    ets_only = _run("forecast", {"series": series_request(grain="day"), "window": 240, "horizon": 14, "holidays": "IL", "method": "auto_ets"}, payload)
+    assert ets_only.facts["holidays_offered"] is False and ets_only.facts["holidays_used"] is False
+    assert any("no ARIMA candidate" in n for n in ets_only.details.notes)
+    # Unknown country: the forecast still runs, without it, and says why.
+    unknown = _run("forecast", {"series": series_request(grain="day"), "window": 240, "horizon": 14, "holidays": "ZZ"}, payload)
+    assert unknown.facts["holidays_used"] is False
+    assert any("not a known country code" in n for n in unknown.details.notes)
+    # Contract: a lowercase or long code is rejected before the engine.
+    bad = execute_skill("forecast", {"series": series_request(grain="day"), "horizon": 14, "holidays": "israel"}, payload)
+    assert bad.status == "error" and "invalid analysis request" in bad.error
 
 
 # ── execute_skill error paths ─────────────────────────────────────────────────

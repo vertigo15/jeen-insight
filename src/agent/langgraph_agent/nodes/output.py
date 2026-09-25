@@ -386,6 +386,15 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
         # can be changed and re-run as a child turn.
         if state.get("analysis_definition"):
             view["definition"] = state["analysis_definition"]
+        # "Adjustments to try": validated one-click re-run patches derived from
+        # the result's own numbers. Attached here (not in a route) so they are
+        # persisted with the turn artifact and restore with it.
+        try:
+            from src.analysis.advisor import suggest_adjustments  # noqa: PLC0415
+
+            view["adjustments"] = suggest_adjustments(analysis)
+        except Exception:  # noqa: BLE001 — advice must never cost the answer
+            view["adjustments"] = []
         if state.get("analysis_dropped_filters"):
             view.setdefault("caveats", []).append(
                 "Filters not applied (other tables): " + ", ".join(state["analysis_dropped_filters"])
@@ -726,8 +735,35 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
 # ── save_to_memory ────────────────────────────────────────────────────────────
 
 
-def make_save_to_memory(history_service: ConversationHistoryService, deployment_name: str):
-    """Return an async ``save_to_memory`` node."""
+def make_save_to_memory(history_service: ConversationHistoryService, deployment_name: str,
+                        analysis_store: Any = None):
+    """Return an async ``save_to_memory`` node.
+
+    ``analysis_store`` (optional) receives every completed forecast for the
+    forecast-vs-actual tracking. This is the one place every forecast passes
+    through — a remembered-consent run never touches ``/api/analysis/run`` —
+    and the one place the ORIGINAL params (``analysis_params``, filter values
+    intact) sit next to the envelope and the turn id.
+    """
+
+    async def _record_forecast(state: AgentState, query_id: Any) -> None:
+        if analysis_store is None or not hasattr(analysis_store, "record_forecast"):
+            return
+        # The capture stores forecast values and unredacted filter literals:
+        # it honours the same kill switch as the rest of the turn's persistence.
+        if getattr(history_service, "persistence_enabled", True) is not True:
+            return
+        envelope = state.get("analysis_result")
+        if not isinstance(envelope, dict) or envelope.get("skill") != "forecast":
+            return
+        try:
+            await analysis_store.record_forecast(
+                query_id=query_id, user_id=str(state.get("user_id") or ""),
+                source_key=str(state.get("source_key") or ""), session_id=state.get("session_id"),
+                params=dict(state.get("analysis_params") or {}), envelope=envelope,
+            )
+        except Exception:  # noqa: BLE001 — tracking must never cost the answer
+            logger.exception("save_to_memory: forecast capture failed for query_id=%s", query_id)
 
     async def save_to_memory(state: AgentState) -> Dict[str, Any]:
         query_id = state.get("query_id")
@@ -829,6 +865,9 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
             exec_error=exec_error,
             query_result=query_result,
         )
+        # After the turn row exists (the capture's FK points at it).
+        if not exec_error and not formatter_error:
+            await _record_forecast(state, query_id)
 
         return {}
 

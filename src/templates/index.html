@@ -18,7 +18,7 @@
     <!-- Jeen fonts: Urbanist + Noto Sans Hebrew, self-hosted (no internet egress needed) -->
     <link rel="stylesheet" href="{{ url_for('static', filename='fonts/fonts.css') }}?v=1">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=107">
-    <link rel="stylesheet" href="{{ url_for('static', filename='workspace/workspace.css') }}?v=22">
+    <link rel="stylesheet" href="{{ url_for('static', filename='workspace/workspace.css') }}?v=24">
     <link rel="stylesheet" href="{{ url_for('static', filename='workspace/onboarding.css') }}?v=7">
     <!-- CodeMirror 6 via ESM — exposes window.CodeMirrorService -->
     <script type="module">
@@ -435,13 +435,13 @@
 <script src="{{ url_for('static', filename='auth.js') }}?v=54"></script>
 <script src="{{ url_for('static', filename='insights/insightsManager.js') }}?v=56"></script>
 <script src="{{ url_for('static', filename='profiling/profilingManager.js') }}?v=68"></script>
-<script src="{{ url_for('static', filename='script.js') }}?v=114"></script>
+<script src="{{ url_for('static', filename='script.js') }}?v=115"></script>
 <script src="{{ url_for('static', filename='chat/chatController.js') }}?v=26"></script>
 <!-- ML skills answer-pane helpers (pure rendering); loads BEFORE the workspace controller. -->
 <script src="{{ url_for('static', filename='analysis/analysisPanel.js') }}?v=3"></script>
 <!-- Escape-first Markdown renderer for trusted text answers; MUST load before the controller. -->
 <script src="{{ url_for('static', filename='workspace/markdownLite.js') }}?v=1"></script>
-<script src="{{ url_for('static', filename='workspace/workspaceController.js') }}?v=22"></script>
+<script src="{{ url_for('static', filename='workspace/workspaceController.js') }}?v=24"></script>
 <!-- FTUE overlay: loads AFTER workspaceController.js so window.ChatController exists. -->
 <script src="{{ url_for('static', filename='workspace/onboarding.js') }}?v=10"></script>
 <!-- Settings page (full-screen) -->

@@ -144,6 +144,19 @@ export class ChartManager {
         }
     }
 
+    /**
+     * A chart is on screen. The workspace listens to stamp "time to chart" on
+     * the turn's timeline (table -> insights -> chart); the query id lets it
+     * attribute a late render to the right turn.
+     */
+    _announceRendered(kind) {
+        if (typeof document === 'undefined') return;
+        const queryId = (this.ctx && this.ctx.queryId)
+            || (typeof window !== 'undefined' ? window.currentQueryId : null)
+            || null;
+        document.dispatchEvent(new CustomEvent('jeen:chart-rendered', { detail: { queryId, kind } }));
+    }
+
     _beginOperation({ invalidate = true } = {}) {
         if (this._chartAbort) {
             try { this._chartAbort.abort(); } catch (_) { /* already settled */ }
@@ -831,6 +844,7 @@ export class ChartManager {
             this._syncChartChatEnabled();
             this._enableChartActions(false);
             console.log('[ChartManager] OpenStreetMap chart rendered successfully');
+            this._announceRendered('osm_map');
             return displayConfig;
         }
 
@@ -870,6 +884,7 @@ export class ChartManager {
         this._syncChartChatEnabled();
         this._enableChartActions(this.interactionEnabled);
         console.log('[ChartManager] Chart rendered successfully');
+        this._announceRendered(chartConfig.type);
         return displayConfig;
     }
 

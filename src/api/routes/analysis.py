@@ -13,6 +13,7 @@ mutates the parent.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any, Dict, Optional
@@ -25,6 +26,7 @@ from src.api import state as api_state
 from src.api.concurrency import ConcurrencyLimitExceeded, query_limiter
 from src.api.dependencies import get_history_service, get_principal, resolve_agent
 from src.api.models import (
+    AnalysisAccuracyRequest,
     AnalysisChartRequest,
     AnalysisRerunRequest,
     AnalysisRunRequest,
@@ -364,6 +366,11 @@ async def rerun_analysis(request: AnalysisRerunRequest, principal: Principal = D
     return QueryResponse(**result)
 
 
+# Parameters the planner's plan never carries: a None for them in the re-plan
+# diff is silence, not "clear it".
+_PLANNER_SILENT_FIELDS = frozenset({"holidays", "window"})
+
+
 async def _patch_from_instruction(agent: Any, skill: str, base_params: Dict[str, Any], instruction: str, question: str) -> Dict[str, Any]:
     """Ask the planner to re-plan with the instruction and diff the result into a patch."""
     from src.agent.analysis_planner import diff_params, plan_analysis  # noqa: PLC0415
@@ -410,6 +417,12 @@ async def _patch_from_instruction(agent: Any, skill: str, base_params: Dict[str,
     entity_fields = {"entity_key", "features", "target", "row_cap"}
     for key, change in diff.items():
         if key in ("filters", "schema_name", "catalog", "start", "end", "table"):
+            continue
+        # The planner never emits some fields (holidays, a hand-set window):
+        # their "change" is only its silence, not an instruction to clear them.
+        # Fields it does emit (group_by, …) may legitimately be set to None
+        # ("remove the split"), so those pass through.
+        if change.get("to") is None and key in _PLANNER_SILENT_FIELDS:
             continue
         if key in series_fields:
             patch.setdefault("series", {})[key] = change["to"]
@@ -528,6 +541,182 @@ def _apply_row_filter(dataset: Dict[str, Any], row_filter: Optional[Dict[str, An
         if str(cell) == str(value):
             kept.append(row)
     return {**dataset, "rows": kept, "row_count": len(kept)}
+
+
+@router.post("/forecast/accuracy")
+async def forecast_accuracy(request: AnalysisAccuracyRequest, principal: Principal = Depends(get_principal)):
+    """Realized accuracy of a past forecast: the stored points against the
+    actuals that have arrived since.
+
+    Ownership comes from the turn (``get_turn_analysis`` is owner + connection
+    bound); the forecast data comes from the capture table, never from the
+    envelope. The actual query is rebuilt from the run's ORIGINAL params with a
+    fresh half-open range over the forecast periods, by the same deterministic
+    builder that produced the training query, and runs through the same
+    read-only ``SqlRunner``. Only fully elapsed periods are scored; the latest
+    evaluation is kept on the run (late-arriving rows can change it).
+    """
+    _require_enabled()
+    store = _store()
+    user_id = principal.user_id
+    history = get_history_service()
+
+    turn = await history.get_turn_analysis(turn_id=request.query_id, user_id=user_id, source_key=request.connection)
+    if turn is None:
+        raise HTTPException(status_code=404, detail="No analysis found on that turn for this user and connection")
+    if str(((turn.get("analysis") or {}).get("skill")) or "") != "forecast":
+        raise HTTPException(status_code=409, detail="That turn is not a forecast")
+    # Two source queries per click: take the same per-user slot as a run.
+    try:
+        await query_limiter.acquire(user_id)
+    except ConcurrencyLimitExceeded:
+        raise HTTPException(status_code=429, detail="Too many concurrent queries. Please wait for the current one to finish.")
+    try:
+        return await _forecast_accuracy(request, store, user_id, turn)
+    finally:
+        await query_limiter.release(user_id)
+
+
+async def _forecast_accuracy(request: AnalysisAccuracyRequest, store: Any, user_id: str, turn: Dict[str, Any]) -> Dict[str, Any]:
+    run = await store.get_forecast_run(request.query_id, user_id=user_id, source_key=request.connection)
+    if run is None:
+        raise HTTPException(status_code=404, detail=(
+            "This forecast was not captured for tracking (it may predate the tracking schema); "
+            "re-run it to start tracking."
+        ))
+    if run.get("multi_series"):
+        raise HTTPException(status_code=409, detail="Realized accuracy is available for single-series forecasts only.")
+    points = [p for p in (run.get("points") or []) if not p.get("series_id")]
+    if not points:
+        raise HTTPException(status_code=409, detail="The captured forecast has no points to score")
+
+    from datetime import date as _date, timedelta as _td  # noqa: PLC0415
+
+    from pydantic import ValidationError as _ValidationError  # noqa: PLC0415
+
+    from src.agent.analysis_planner import catalog_candidates, column_types_map  # noqa: PLC0415
+    from src.analysis.accuracy import collect_actuals, parse_day, period_end, realized_accuracy, split_elapsed  # noqa: PLC0415
+    from src.analysis.contracts import SeriesRequest  # noqa: PLC0415
+    from src.analysis.sql_builder import build_series_sql, build_span_probe_sql  # noqa: PLC0415
+
+    agent = await resolve_agent(request.connection)
+    series_params = dict((run.get("params") or {}).get("series") or {})
+    if not series_params:
+        raise HTTPException(status_code=409, detail="The captured forecast carries no series parameters")
+    grain = str(run.get("grain") or series_params.get("grain") or "week")
+    try:
+        bundle = await agent.metadata_loader.load_all(request.connection)
+    except Exception:  # noqa: BLE001
+        bundle = {}
+    column_types = column_types_map(catalog_candidates((bundle or {}).get("columns", "")))
+    common = dict(
+        connection_schema=getattr(agent.connection, "db_schema", None),
+        connection_catalog=getattr(agent.connection, "connection_catalog", None),
+        column_types=column_types,
+    )
+    timeout_ms = int(getattr(settings, "DB_STATEMENT_TIMEOUT_MS", 30000) or 30000)
+
+    def _series_request(**over: Any) -> "SeriesRequest":
+        try:
+            return SeriesRequest(**{**series_params, **over})
+        except _ValidationError as exc:
+            raise HTTPException(status_code=409, detail=f"The captured parameters no longer validate: {exc.errors()[0].get('msg')}")
+
+    def _build(fn, req):
+        try:
+            return fn(req, agent.database_type, **common)
+        except Exception as exc:  # noqa: BLE001 — UnsupportedFilter / ValueError from the builder
+            raise HTTPException(status_code=409, detail=f"Cannot rebuild the aggregation for this forecast: {exc}")
+
+    def _first_row(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        rows = payload.get("rows") or []
+        if not rows:
+            return None
+        row = rows[0]
+        if isinstance(row, dict):
+            return row
+        if hasattr(row, "keys"):
+            return dict(row)
+        cols = [str(c) for c in (payload.get("columns") or [])]
+        return dict(zip(cols, row)) if isinstance(row, (list, tuple)) and cols else None
+
+    # Newest source date under the same filters decides which periods count.
+    # Without it nothing can be scored honestly (a late-loading period would
+    # read as a zero actual), so a failed probe is an error, not a guess.
+    probe_sql = _build(build_span_probe_sql, _series_request(start=None, end=None))
+    try:
+        probe = await agent.sql_runner.run_sql(probe_sql, limit=1, max_rows=1, statement_timeout_ms=timeout_ms)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("forecast_accuracy: span probe raised: %s", exc)
+        probe = {"error": str(exc)}
+    if probe.get("error"):
+        logger.warning("forecast_accuracy: span probe failed: %s", probe["error"])
+        raise HTTPException(status_code=502, detail="Could not read the source's newest date; try again later.")
+    probe_row = _first_row(probe)
+    data_end: Optional[_date] = parse_day(probe_row.get("max_ts")) if probe_row else None
+    if data_end is None:
+        raise HTTPException(status_code=409, detail="The source has no rows for this forecast's filters any more.")
+    # Today is never complete, and future-dated rows must not make every period look elapsed.
+    data_end = min(data_end, _date.today() - _td(days=1))
+
+    split = split_elapsed(points, grain, data_end)
+    elapsed, pending = split["elapsed"], split["pending"]
+    additive = str(series_params.get("agg") or "sum").lower() in ("sum", "count")
+    actuals: Dict[str, float] = {}
+    sql = None
+    if elapsed:
+        first = parse_day(elapsed[0]["ts"])
+        last_end = period_end(parse_day(elapsed[-1]["ts"]), grain)
+        sql = _build(build_series_sql, _series_request(start=first.isoformat(), end=(last_end + _td(days=1)).isoformat()))
+        # One row per elapsed period is expected; the headroom tells a
+        # duplicate-row source from a truncated read.
+        cap = len(elapsed) * 4 + 8
+        try:
+            result = await agent.sql_runner.run_sql(sql, limit=cap, max_rows=cap, statement_timeout_ms=timeout_ms)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("forecast_accuracy: actuals query raised: %s", exc)
+            result = {"error": str(exc)}
+        if result.get("error"):
+            logger.warning("forecast_accuracy: actuals query failed: %s", result["error"])
+            raise HTTPException(status_code=502, detail="The actuals query failed on the source; try again later.")
+        if result.get("truncated") or len(result.get("rows") or []) >= cap:
+            raise HTTPException(status_code=409, detail="The actuals query returned more rows than expected for these periods.")
+        actuals = collect_actuals(result.get("rows") or [], [str(c) for c in (result.get("columns") or [])],
+                                  additive=additive, agg=str(series_params.get("agg") or "sum"))
+
+    realized = realized_accuracy(
+        elapsed, actuals, metric=run.get("metric"), mase_scale=run.get("mase_scale"),
+        interval_level=float(run.get("interval_level") or 0.8), additive=additive,
+    )
+    claimed_validation = ((turn.get("analysis") or {}).get("validation") or {})
+    evaluation = {
+        "evaluated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "data_end": data_end.isoformat(),
+        "grain": grain,
+        "horizon": run.get("horizon"),
+        "elapsed_periods": len(elapsed),
+        # Elapsed periods with no actual row are left unscored for AVG/MIN/MAX.
+        "scored_periods": int(realized["n"]),
+        "unscored_periods": list(realized.get("unscored_periods") or []),
+        "pending_periods": len(pending),
+        "realized": {k: v for k, v in realized.items() if k != "points"},
+        "claimed": {
+            "metric": claimed_validation.get("metric"), "value": claimed_validation.get("value"),
+            "band": claimed_validation.get("band"), "coverage": claimed_validation.get("coverage"),
+            "coverage_n": claimed_validation.get("coverage_n"), "interval_level": run.get("interval_level"),
+            "method": run.get("method"), "interval_method": run.get("interval_method"),
+        },
+        "points": realized["points"],
+        "pending": [{"ts": p["ts"], "forecast": p["forecast"], "lower": p.get("lower"), "upper": p.get("upper")} for p in pending],
+        "engine_hash": run.get("engine_hash"),
+    }
+    await store.save_forecast_evaluation(request.query_id, user_id=user_id, evaluation=evaluation)
+    logger.info("forecast_accuracy %s", json.dumps({
+        "event": "forecast_accuracy", "query_id": str(request.query_id), "method": run.get("method"),
+        "elapsed": len(elapsed), "pending": len(pending), **{f"realized_{k}": v for k, v in evaluation["realized"].items() if k in ("metric", "value", "band", "coverage")},
+        "claimed_value": claimed_validation.get("value"), "claimed_coverage": claimed_validation.get("coverage"),
+    }, default=str))
+    return {"query_id": str(request.query_id), **evaluation, "sql": sql}
 
 
 @router.get("/suggestions")

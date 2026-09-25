@@ -1572,6 +1572,16 @@ def analysis_chart():
     return _proxy_post("/api/analysis/chart", data, timeout=60)
 
 
+@app.route("/api/analysis/forecast/accuracy", methods=["POST"])
+def analysis_forecast_accuracy():
+    # Two source queries (span probe + actuals, up to 30 s each) plus a
+    # metadata load: give it more than the default 60 s.
+    data = request.get_json() or {}
+    if not data.get("connection"):
+        return jsonify({"error": "No connection selected"}), 400
+    return _proxy_post("/api/analysis/forecast/accuracy", data, timeout=120)
+
+
 @app.route("/api/analysis/skills", methods=["GET"])
 def analysis_skills():
     return _proxy_get("/api/analysis/skills", params={"connection": request.args.get("connection", "")})
@@ -1682,6 +1692,14 @@ def edit_chart():
     if not (data.get("instruction") or "").strip():
         return jsonify({"error": "`instruction` is required"}), 400
     return _proxy_post("/api/edit-chart", data, timeout=120)
+
+
+@app.route("/api/edit-chart/rebuild", methods=["POST"])
+def edit_chart_rebuild():
+    data = request.get_json() or {}
+    if not data.get("connection"):
+        return jsonify({"error": "No connection selected"}), 400
+    return _proxy_post("/api/edit-chart/rebuild", data, timeout=120)
 
 
 # ----------------------------------------------------------------------
@@ -2089,6 +2107,21 @@ def submit_feedback():
     data = request.get_json() or {}
     data["user_id"] = _session_user_id()
     return _proxy_post("/api/feedback", data)
+
+
+@app.route("/api/answer-feedback", methods=["POST"])
+def submit_answer_feedback():
+    # Identity comes from the internal token; the request model forbids extra
+    # fields, so nothing is added to the body here.
+    return _proxy_post("/api/answer-feedback", request.get_json() or {})
+
+
+@app.route("/api/empty-result-hint", methods=["POST"])
+def empty_result_hint():
+    data = request.get_json() or {}
+    if not data.get("connection"):
+        return jsonify({"error": "No connection selected"}), 400
+    return _proxy_post("/api/empty-result-hint", data, timeout=30)
 
 
 @app.route("/api/conversation/<session_id>", methods=["GET"])

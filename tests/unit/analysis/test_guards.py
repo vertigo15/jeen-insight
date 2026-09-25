@@ -91,6 +91,25 @@ def test_intermittent_boundary():
     assert intermittent(_sf(20, values=[0.0] * 10 + [5.0] * 10)).passed
 
 
+def test_grain_exits_restate_horizon_and_window_within_the_skills_bounds():
+    # A grain change keeps the calendar span: 26 weeks → 6 months for a skill
+    # whose window floor is 12 → clamped to 12; seasonality's floor is 24.
+    bad = _sf(20, drop=(1, 2, 3, 4, 5))
+    g = gap_ratio(bad, horizon=8, window=26, skill="forecast")
+    assert g.exits[0].params_patch == {"series": {"grain": "month"}, "horizon": 2, "window": 12}
+    g_season = gap_ratio(bad, window=26, skill="seasonality")
+    assert g_season.exits[0].params_patch == {"series": {"grain": "month"}, "window": 24}
+    # Through the runner entry point the skill travels with the guard names.
+    results = run_post_sql_guards(bad, guard_names=["gap_ratio"], window=26, skill="seasonality")
+    assert results[0].exits[0].params_patch["window"] == 24
+    # The intermittent guard is informational for forecast, refusing for the rest.
+    zeros = _sf(20, values=[0.0] * 11 + [5.0] * 9)
+    fc = run_post_sql_guards(zeros, guard_names=["intermittent"], skill="forecast")[0]
+    assert fc.passed and not fc.overridable and "handles intermittent demand itself" in fc.detail
+    an = run_post_sql_guards(zeros, guard_names=["intermittent"], skill="anomaly_detection")[0]
+    assert not an.passed and an.exits[0].kind == "patch"
+
+
 def test_run_post_sql_guards_follows_the_skill_declaration():
     sf = _sf(8)
     results = run_post_sql_guards(sf, guard_names=["series_length", "gap_ratio", "min_history", "max_horizon", "intermittent"], horizon=8)

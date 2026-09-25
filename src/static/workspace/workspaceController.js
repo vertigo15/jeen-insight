@@ -161,10 +161,23 @@
         return (prefs.autoInsights || 'on') === 'on' && (prefs.aiAnalytics || 'on') === 'on';
     }
 
+    /**
+     * A turn whose answer pane can be shown: finished, or still streaming with
+     * its provisional rows already here, or failed after those rows arrived
+     * (the table stays; the thread shows the error).
+     */
+    function turnShowsResult(turn) {
+        if (!turn) return false;
+        if (turn.status === 'success' || turn.status === 'streaming') return true;
+        return turn.status === 'error'
+            && turn.provisionalRevision != null
+            && normalizeRows(turn.result && turn.result.results).length > 0;
+    }
+
     function selectionForTurn(selectedResultId, turn) {
         return {
             selectedTurnId: turn?.id || null,
-            selectedResultId: turn?.status === 'success' ? turn.id : selectedResultId,
+            selectedResultId: turnShowsResult(turn) ? turn.id : selectedResultId,
         };
     }
 
@@ -386,6 +399,13 @@
         star: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></svg>',
         code: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 5l-4 14"/></svg>',
         pencil: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+        thumbUp: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v9H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3Z"/><path d="M7 11l4-7a2.2 2.2 0 0 1 2.2 2.2V9h5.3a2 2 0 0 1 2 2.3l-1.1 6.9a2 2 0 0 1-2 1.8H7"/></svg>',
+        thumbDown: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M17 13V4h3a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-3Z"/><path d="M17 13l-4 7a2.2 2.2 0 0 1-2.2-2.2V15H5.5a2 2 0 0 1-2-2.3l1.1-6.9A2 2 0 0 1 6.6 4H17"/></svg>',
+        // Jeen UI "feedback" glyph (speech bubble with two lines) and the
+        // "chat + heart" mark used in the Give feedback dialog header.
+        feedback: '<svg width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M6.07 7.29h5.85M6.07 9.89h3.58"/><path d="M2.5 8.59c0-.5.01-.99.03-1.46.05-1.55.08-2.32.7-2.95.63-.63 1.42-.67 3.01-.74A76 76 0 0 1 9 3.39c.96 0 1.89.02 2.76.06 1.59.07 2.38.1 3 .73.63.64.66 1.41.71 2.95.02.47.03.96.03 1.46s-.01.99-.03 1.46c-.05 1.55-.08 2.32-.71 2.95-.62.63-1.41.66-3 .73-.48.02-.97.04-1.48.05-.48.01-.72.01-.93.09-.21.08-.39.24-.75.54l-1.42 1.22a.47.47 0 0 1-.78-.36V13.74l-.16-.01c-1.59-.07-2.38-.1-3.01-.73-.62-.63-.65-1.41-.7-2.95A38 38 0 0 1 2.5 8.59Z"/></svg>',
+        chatHeart: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11.34 10.47h.01M7.88 10.47h.01"/><path d="M20 9.6c0 .29.001.58.001.87 0 .67-.012 1.32-.034 1.95-.073 2.06-.109 3.09-.946 3.93-.836.84-1.894.89-4.01.98-.636.03-1.294.05-1.971.06-.642.01-.963.02-1.246.13-.282.11-.52.31-.994.72l-1.889 1.62a.63.63 0 0 1-1.045-.48v-2.04l-.211-.008c-2.115-.09-3.173-.14-4.01-.98-.836-.84-.873-1.87-.945-3.93A52 52 0 0 1 2.667 10.47c0-.67.012-1.32.034-1.95.072-2.06.109-3.09.945-3.93.837-.84 1.895-.89 4.01-.98.897-.04 1.839-.06 2.812-.07"/><path class="v3-fb-heart" d="M16.53 8.73s-3.47-2.14-3.47-4.21c0-1.02.73-1.85 1.74-1.85.52 0 1.04.18 1.73.89.7-.71 1.22-.89 1.74-.89 1 0 1.73.83 1.73 1.85 0 2.07-3.47 4.21-3.47 4.21Z" fill="currentColor" stroke="none"/></svg>',
+        starFill: '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12.006 17.865l4.737 3.029a.76.76 0 0 0 1.084-.836l-1.288-5.652 4.216-3.781a.75.75 0 0 0-.415-1.33l-5.532-.468-2.132-5.365a.75.75 0 0 0-1.34 0L9.205 8.837l-5.533.468a.75.75 0 0 0-.415 1.335l4.216 3.781-1.288 5.648a.76.76 0 0 0 1.084.836l4.737-3.03Z"/></svg>',
     };
 
     const WorkspaceController = {
@@ -408,6 +428,8 @@
         // working draft of its question. Only one turn edits at a time.
         editingTurnId: null,
         editDraft: '',
+        // The open "Give feedback" dialog (turnId, rating, type, message…) or null.
+        feedbackDialog: null,
         lastAppliedResultId: null,
         // Conversation persistence: the restored conversation header, the
         // hydration state and the generation guard that lets a connection
@@ -448,6 +470,7 @@
                 target?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             });
             document.addEventListener('jeen:osm-map-ready', () => this.renderTable());
+            document.addEventListener('jeen:chart-rendered', (event) => this._onChartRendered(event.detail || {}));
             document.addEventListener('jeen:conversation-tabs', (event) => this.setTabsVisible(!!event.detail?.visible));
             // Send visibility depends on the signed-in user, which auth.js loads after the shell.
             document.addEventListener('jeen:current-user', () => this._setActionsEnabled(Boolean(this._actionsEnabled)));
@@ -1000,6 +1023,9 @@
                 traceOpen: false,
                 result: null,
                 error: null,
+                // Wall-clock milestones since the question was sent: when the
+                // table, the summary/insights and the chart became visible.
+                timeline: {},
             };
             if (!replaceTurn) this.turns.push(turn);
             this.selectedTurnId = turn.id;
@@ -1035,12 +1061,13 @@
                 await this._stream(payload, (event, data) => {
                     if (stale()) return;
                     if (event === 'node') this._onNode(turn, data);
+                    if (event === 'partial') this._onPartial(turn, data);
                     if (event === 'result') this._onResult(turn, data);
                     if (event === 'enrichment') this._onEnrichment(turn, data);
                     if (event === 'error') throw new Error(errorText({ payload: data, code: data.code || 'QUERY_FAILED' }, data.detail || data.error || t('errors.queryFailed')));
                 }, abort.signal);
                 if (stale()) return;
-                if (turn.status === 'running') throw new Error(t('errors.streamEnded'));
+                if (turn.status === 'running' || turn.status === 'streaming') throw new Error(t('errors.streamEnded'));
             } catch (error) {
                 if (stale() || abort.signal.aborted) return;
                 // A failed fetch (offline, proxy down) surfaces as a TypeError with
@@ -1197,10 +1224,78 @@
             this._scrollThread();
         },
 
+        /**
+         * Provisional rows from the graph (`partial` SSE event): the SQL ran and
+         * its result was accepted, but the summary / insights / follow-ups are
+         * still being written. Paint the table (and start the chart) now; the
+         * `result` event later merges the narrative into the same turn.
+         *
+         * Every partial is a new dataset: a semantic retry re-executes SQL
+         * whose text may be identical, so the revision is bumped each time and
+         * any chart in flight for the previous rows is dropped.
+         */
+        _onPartial(turn, data) {
+            if (!data || !data.results || turn.status === 'success' || turn.status === 'error') return;
+            if (turn.provisionalRevision != null) {
+                this._captureSelectedChart();
+                turn.rev = (turn.rev || 0) + 1;
+                turn.chartState = null;
+                turn.chartCollapsed = undefined;
+                this.lastAppliedResultId = null;
+            }
+            this._tableRepaintHold = null;
+            turn.result = {
+                question: turn.question,
+                query_id: data.query_id || null,
+                session_id: data.session_id || null,
+                sql: data.sql || null,
+                results: data.results,
+                answer: null,
+                error: null,
+                metrics: {},
+                findings: [],
+                suggestions: [],
+                followups: [],
+                trace: [],
+            };
+            turn.provisionalRevision = Number.isFinite(Number(data.revision)) ? Number(data.revision) : 0;
+            // New rows: the table milestone is now; a chart for the previous
+            // revision (if any) no longer counts.
+            turn.timeline = { ...(turn.timeline || {}), tableMs: this._sinceStart(turn) };
+            delete turn.timeline.chartMs;
+            delete turn.timeline.chartSettled;
+            turn.status = 'streaming';
+            turn.turnId = data.query_id || turn.turnId || null;
+            turn.conversationId = data.session_id || turn.conversationId || null;
+            turn.resultKind = 'table';
+            turn.phaseState.execution = 'done';
+            this.selectedTurnId = turn.id;
+            this.selectedResultId = turn.id;
+            this.filter = '';
+            if (data.session_id && typeof window._jeenSetSessionId === 'function') window._jeenSetSessionId(data.session_id);
+            this.render();
+            this._scrollThread();
+        },
+
         _onResult(turn, data) {
             if (data.error && !data.results) {
                 this._onError(turn, new Error(data.error), data);
                 return;
+            }
+            // The rows already arrived as a partial for this exact dataset: keep
+            // that object (the table and chart were built from it) and only
+            // merge the narrative on top, so the chart is not re-requested and
+            // the grid is not repainted.
+            const provisional = turn.provisionalRevision != null && turn.result && turn.result.results;
+            const sameDataset = Boolean(provisional)
+                && (data.sql || null) === (turn.result.sql || null)
+                && normalizeRows(data.results).length === normalizeRows(turn.result.results).length;
+            if (provisional && !sameDataset) {
+                this._captureSelectedChart();
+                turn.rev = (turn.rev || 0) + 1;
+                turn.chartState = null;
+                turn.chartCollapsed = undefined;
+                this.lastAppliedResultId = null;
             }
             const used = new Set();
             (data.trace || []).forEach((raw) => {
@@ -1220,17 +1315,39 @@
             turn.status = 'success';
             // Onboarding signal: a question was answered successfully.
             document.dispatchEvent(new CustomEvent('jeen:onboarding:ask_first_question'));
-            turn.result = data;
+            if (sameDataset) {
+                const results = turn.result.results;
+                Object.assign(turn.result, data, { results });
+                this._tableRepaintHold = this._tableKey(turn);
+                // The legacy panels (prompt, trace, dev header) were fed the
+                // provisional payload; give them the narrative without a full
+                // applyResult, which would rebuild the chart.
+                if (this.lastAppliedResultId === turn.id) window.JeenLegacyBridge?.applyResultNarrative?.(turn.result);
+            } else {
+                turn.result = data;
+            }
+            turn.provisionalRevision = null;
             turn.turnId = data.query_id || turn.turnId || null;
             turn.conversationId = data.session_id || turn.conversationId || null;
             turn.isFavorite = false;
+            turn.feedback = null;
+            turn.feedbackSent = false;
             // ML skills: a confirm / clarify / guard stop is a result (a card),
             // not a table and not an error.
             turn.resultKind = data.proposal ? 'proposal' : turn.resultKind;
             turn.durationMs = Math.round(performance.now() - turn.startedAt);
+            turn.timeline = turn.timeline || {};
+            if (!sameDataset) {
+                // No partial preceded this result (or it was superseded): the
+                // table and the narrative land together.
+                delete turn.timeline.chartMs;
+                delete turn.timeline.chartSettled;
+                if (normalizeRows(data.results).length) turn.timeline.tableMs = turn.durationMs;
+            }
+            if (data.answer || (data.findings || []).length) turn.timeline.insightsMs = turn.durationMs;
             turn.phaseState.format = 'done';
             turn.phaseState.save = 'done';
-            this._captureSelectedChart();
+            if (!sameDataset) this._captureSelectedChart();
             this.selectedTurnId = turn.id;
             this.selectedResultId = turn.id;
             this.filter = '';
@@ -1274,7 +1391,15 @@
         _onError(turn, error, data) {
             turn.status = 'error';
             turn.error = error && error.message ? error.message : String(error);
-            turn.result = data || turn.result;
+            // Rows that already streamed in stay in the answer pane
+            // (turnShowsResult); a failure payload without rows must not
+            // replace them.
+            const keepProvisional = turn.provisionalRevision != null && !(data && data.results);
+            if (keepProvisional) {
+                if (data && data.error && turn.result) turn.result.error = data.error;
+            } else {
+                turn.result = data || turn.result;
+            }
             turn.durationMs = Math.round(performance.now() - turn.startedAt);
             this.selectedTurnId = turn.id;
             Object.keys(turn.phaseState).forEach((key) => {
@@ -1282,6 +1407,34 @@
             });
             this.render();
             this._scrollThread();
+        },
+
+        _sinceStart(turn) {
+            return Math.max(0, Math.round(performance.now() - (turn.startedAt || performance.now())));
+        },
+
+        /**
+         * The chart for a turn is on screen (ChartManager `jeen:chart-rendered`).
+         * Stamp the first render of the current rows; later re-renders (type
+         * switches, edits) are not "time to chart". Restored turns are skipped:
+         * their clock started at hydration, not at the question.
+         */
+        _onChartRendered(detail) {
+            const queryId = detail && detail.queryId != null ? String(detail.queryId) : null;
+            const turn = (queryId && this.turns.find((item) => item.result && String(item.result.query_id) === queryId))
+                || this.turns.find((item) => item.id === this.selectedResultId);
+            // A re-render (type switch, edit, re-selection) drops session-only
+            // overlays: put the realized actuals back while the dock shows them.
+            if (turn && turn.id === this.selectedResultId && turn.tracking?.evaluation?.points?.length
+                && window.JeenLegacyBridge?.overlayRealizedActuals) {
+                window.JeenLegacyBridge.overlayRealizedActuals(turn.tracking.evaluation.points, t('analysis.accuracy.realizedSeries'));
+            }
+            if (!turn || turn.restored || !turn.timeline || turn.timeline.chartSettled) return;
+            if (turn.status !== 'streaming' && turn.status !== 'success') return;
+            turn.timeline.chartMs = this._sinceStart(turn);
+            turn.timeline.chartSettled = true;
+            console.info('[Workspace] timeline', turn.question, turn.timeline);
+            this.renderConversation();
         },
 
         _onEnrichment(turn, data) {
@@ -1299,6 +1452,10 @@
             const switchingResult = this.selectedResultId !== turn.id;
             this._captureSelectedChart();
             if (switchingResult) {
+                // Leaving a turn closes its "time to chart" window: a chart
+                // re-applied when the user comes back is not the first render.
+                const leaving = this.turns.find((item) => item.id === this.selectedResultId);
+                if (leaving && leaving.timeline) leaving.timeline.chartSettled = true;
                 // The previous manager may remain mounted while the destination
                 // turn hydrates (or may be a text-only turn). Invalidate its
                 // chat/export/save surface immediately after capturing it.
@@ -1307,7 +1464,7 @@
             const selection = selectionForTurn(this.selectedResultId, turn);
             this.selectedTurnId = selection.selectedTurnId;
             this.selectedResultId = selection.selectedResultId;
-            if (turn.status === 'success') {
+            if (turnShowsResult(turn)) {
                 this.filter = '';
                 document.getElementById('v3-result-filter').value = '';
             }
@@ -1382,6 +1539,7 @@
         reset() {
             this._generation += 1;
             this._abortInFlight();
+            this.closeFeedbackDialog();
             this.turns = [];
             this.editingTurnId = null;
             this.editDraft = '';
@@ -1425,7 +1583,9 @@
         _renderFavoriteAction(turn) {
             const button = document.getElementById('v3-favorite-action');
             if (!button) return;
-            const coordinates = this._favoriteCoordinates(turn);
+            // A streaming turn has no persisted success row yet (save_to_memory
+            // runs after the narrative), so it cannot be favorited until then.
+            const coordinates = turn && turn.status === 'streaming' ? null : this._favoriteCoordinates(turn);
             button.hidden = !coordinates;
             if (!coordinates) return;
             const active = Boolean(turn.isFavorite);
@@ -1530,6 +1690,7 @@
             this._abortInFlight();
             const abort = new AbortController();
             this._hydrateAbort = abort;
+            this.closeFeedbackDialog();
             this.turns = [];
             this.editingTurnId = null;
             this.editDraft = '';
@@ -2142,13 +2303,30 @@
             thread.querySelectorAll('[data-report-gap]').forEach((button) => button.addEventListener('click', async (event) => {
                 event.stopPropagation();
                 const turn = this.turns.find((item) => item.id === button.dataset.reportGap);
-                if (!turn) return;
+                if (!turn || button.disabled) return;
+                button.disabled = true;
                 try {
-                    await fetch('/api/feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query_id: turn.result?.query_id, feedback: 'catalog_gap', comment: turn.error }) });
+                    // The error text travels as ``notes`` (the field the API stores);
+                    // _postJson throws on a non-2xx so a rejected report is never
+                    // shown as "Reported".
+                    await this._postFeedback(turn, 'catalog_gap', turn.error);
                     button.textContent = t('conversation.turn.reported');
                 } catch (_) {
+                    button.disabled = false;
                     button.textContent = t('conversation.turn.retryReport');
                 }
+            }));
+            thread.querySelectorAll('[data-feedback]').forEach((button) => button.addEventListener('click', async (event) => {
+                event.stopPropagation();
+                const [turnId, value] = String(button.dataset.feedback).split(':');
+                const turn = this.turns.find((item) => item.id === turnId);
+                if (!turn || turn.feedbackSaving) return;
+                await this.sendThumb(turn, value);
+            }));
+            thread.querySelectorAll('[data-feedback-open]').forEach((button) => button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                const turn = this.turns.find((item) => item.id === button.dataset.feedbackOpen);
+                if (turn) this.openFeedbackDialog(turn);
             }));
             thread.querySelectorAll('[data-edit]').forEach((button) => button.addEventListener('click', (event) => {
                 event.stopPropagation();
@@ -2213,7 +2391,7 @@
          */
         _editAvailable(turn) {
             if (this.readOnly || this.sending || turn.rerunning) return false;
-            if (turn.status === 'running') return false;
+            if (turn.status === 'running' || turn.status === 'streaming') return false;
             if (turn.result && turn.result.proposal) return false;
             if (turn.restored && !(turn.result && turn.result.sql)) return false;
             return true;
@@ -2355,6 +2533,8 @@
             turn.trace = [];
             turn.traceOpen = false;
             turn.result = null;
+            turn.provisionalRevision = null;
+            turn.timeline = {};
             turn.error = null;
             turn.restored = false;
             turn.snapshotAt = null;
@@ -2368,6 +2548,8 @@
             turn.chartUnavailable = false;
             turn.chartCollapsed = undefined;
             turn.isFavorite = false;
+            turn.feedback = null;
+            turn.feedbackSent = false;
         },
 
         /** Focus the edit textarea (after a render), size it, and restore the caret. */
@@ -2390,16 +2572,25 @@
 
         _turnHtml(turn) {
             const selected = turn.id === this.selectedTurnId;
-            if (turn.status === 'running') {
-                return `<article class="v3-turn is-running${selected ? ' is-selected' : ''}" data-turn="${turn.id}">
+            if (turn.status === 'running' || turn.status === 'streaming') {
+                const streaming = turn.status === 'streaming';
+                const rowCount = streaming ? normalizeRows(turn.result && turn.result.results).length : 0;
+                return `<article class="v3-turn is-running${streaming ? ' is-streaming' : ''}${selected ? ' is-selected' : ''}" data-turn="${turn.id}"${streaming ? ` data-show-label="${h('conversation.turn.showAnswerBadge')}" tabindex="0" aria-current="${selected ? 'true' : 'false'}"` : ''}>
                   ${this._turnHeadHtml(turn)}
                   <div class="v3-turn-body">
                     ${this._agentLabelHtml()}
+                    ${streaming ? `<div class="v3-data-ready" role="status" dir="auto"><span class="v3-dot is-ok"></span><span>${h('conversation.turn.dataReady', { rows: rowCount })}</span>${this._timelineHtml(turn)}</div>` : ''}
                     <div class="v3-running-list">${PHASES.map((phase) => {
                     const status = turn.phaseState[phase.id];
                     const label = status === 'done' ? h('conversation.turn.statusOk') : status === 'running' ? h('conversation.turn.statusRunning') : status === 'error' ? h('conversation.turn.statusFailed') : '';
                     return `<div class="v3-running-row is-${status}"><span class="v3-dot is-${status === 'done' ? 'ok' : status}"></span><span>${esc(phase.label)}</span><span class="v3-running-status">${label}</span></div>`;
                 }).join('')}</div>
+                    ${streaming ? `<div class="v3-skeleton-group" aria-label="${h('conversation.turn.summaryPending')}" aria-busy="true">
+                      <div class="v3-skeleton v3-skeleton-summary"></div>
+                      <div class="v3-skeleton v3-skeleton-line"></div>
+                      <div class="v3-skeleton v3-skeleton-line is-short"></div>
+                      <div class="v3-skeleton-chips"><span class="v3-skeleton v3-skeleton-chip"></span><span class="v3-skeleton v3-skeleton-chip"></span></div>
+                    </div>` : ''}
                   </div>
                 </article>`;
             }
@@ -2480,7 +2671,7 @@
             }).join('');
             const trace = turn.trace.filter((item) => item.status !== 'node_started');
             const routePath = (result.routing || {}).path || (analysis ? 'ml' : 'sql');
-            const strip = turn.restored ? this._restoredStripHtml(turn) : `<div class="v3-run-strip">${dots}${this._routePillHtml(result)}${mlPill}<span class="v3-run-meta">${h('conversation.turn.runMeta', { duration: formatMs(turn.durationMs), count: trace.length })}</span>
+            const strip = turn.restored ? this._restoredStripHtml(turn) : `<div class="v3-run-strip">${dots}${this._routePillHtml(result)}${mlPill}<span class="v3-run-meta">${h('conversation.turn.runMeta', { duration: formatMs(turn.durationMs), count: trace.length })}</span>${this._timelineHtml(turn)}
                 <button class="v3-text-btn" data-trace-toggle="${turn.id}">${turn.traceOpen ? h('conversation.turn.hideRun') : h('conversation.turn.runDetails')}</button>
               </div>`;
             return `<article class="v3-turn${selected ? ' is-selected' : ''}${turn.restored ? ' is-restored' : ''}${this.editingTurnId === turn.id ? ' is-editing' : ''}" data-turn="${turn.id}" data-show-label="${h('conversation.turn.showAnswerBadge')}" data-route-path="${esc(routePath)}" data-route-source="${esc((result.routing || {}).source || '')}" tabindex="0" aria-label="${h('conversation.turn.showAnswer', { question: iso(turn.question) })}" aria-current="${selected ? 'true' : 'false'}">
@@ -2501,8 +2692,26 @@
                   </div>`).join('')}</div>
                 </section>` : ''}
                 ${(followups.length && showAnalytics) ? `<div class="v3-followups">${followups.map((question) => `<button class="v3-chip" dir="${directionOf(question)}" data-followup="${esc(textOf(question))}">${esc(textOf(question))}</button>`).join('')}</div>` : ''}
+                ${isEmpty ? '' : this._feedbackHtml(turn)}
               </div>
             </article>`;
+        },
+
+        /**
+         * "table 3.0s · insights 5.2s · chart 10.1s": how long after the
+         * question each part of the answer became visible. Only the stages
+         * that happened are listed; nothing for restored turns.
+         */
+        _timelineHtml(turn) {
+            const timeline = turn.timeline || {};
+            const parts = [
+                ['tableMs', 'conversation.turn.timelineTable'],
+                ['insightsMs', 'conversation.turn.timelineInsights'],
+                ['chartMs', 'conversation.turn.timelineChart'],
+            ].filter(([key]) => Number.isFinite(timeline[key]))
+                .map(([key, label]) => `<span class="v3-timeline-part" data-timeline="${key.replace('Ms', '')}">${h(label, { time: formatMs(timeline[key]) })}</span>`);
+            if (!parts.length) return '';
+            return `<span class="v3-timeline" dir="ltr" title="${h('conversation.turn.timelineTitle')}">${parts.join('<span class="v3-timeline-sep" aria-hidden="true">·</span>')}</span>`;
         },
 
         _traceHtml(turn, trace) {
@@ -2878,6 +3087,339 @@
             return payload;
         },
 
+        /**
+         * POST one turn-row feedback value (``catalog_gap`` on a failed turn).
+         * Throws on a non-2xx (via _postJson). Answer-quality feedback
+         * (thumbs / dialog) goes through _postAnswerFeedback instead.
+         */
+        async _postFeedback(turn, value, notes = null) {
+            const queryId = turn.result?.query_id || turn.turnId;
+            if (!queryId) throw new Error('feedback: turn has no query id');
+            const body = { query_id: String(queryId), feedback: value };
+            const trimmed = notes == null ? '' : String(notes).trim();
+            if (trimmed) body.notes = trimmed.slice(0, 4000);
+            const connection = this._analysisConnection();
+            if (connection) body.connection = connection;
+            return this._postJson('/api/feedback', body);
+        },
+
+        /** Append one answer-feedback event (insights_answer_feedback). */
+        async _postAnswerFeedback(turn, fields) {
+            const queryId = turn.result?.query_id || turn.turnId;
+            if (!queryId) throw new Error('feedback: turn has no query id');
+            const body = { query_id: String(queryId) };
+            if (fields.thumb) body.thumb = fields.thumb;
+            if (Number.isInteger(fields.rating) && fields.rating >= 1) body.rating = fields.rating;
+            if (fields.feedback_type) body.feedback_type = fields.feedback_type;
+            const message = fields.message == null ? '' : String(fields.message).trim();
+            if (message) body.message = message.slice(0, 4000);
+            const connection = this._analysisConnection();
+            if (connection) body.connection = connection;
+            return this._postJson('/api/answer-feedback', body);
+        },
+
+        /** Answers that can take feedback: a SQL result or an ML analysis, not a greeting/capability text. */
+        _feedbackEligible(turn) {
+            if (!turn || turn.status !== 'success' || !turn.result || turn.result.proposal) return false;
+            if (!(turn.result.query_id || turn.turnId)) return false;
+            return Boolean(turn.result.sql || (turn.result.analysis && turn.result.analysis.skill));
+        },
+
+        /**
+         * Quick signal: thumbs up / down on the answer card. Optimistic — the
+         * thumb paints pressed at once and reverts if the save fails. Clicking
+         * the pressed thumb again withdraws it (a ``cleared`` event).
+         */
+        async sendThumb(turn, value) {
+            if (!turn || !['thumbs_up', 'thumbs_down'].includes(value)) return false;
+            const prior = turn.feedback || null;
+            const next = prior === value ? null : value;
+            turn.feedback = next;
+            turn.feedbackSaving = true;
+            this.renderConversation();
+            try {
+                const saved = await this._postAnswerFeedback(turn, { thumb: next || 'cleared' });
+                // Settle on the server's view of the current thumb.
+                if (saved && Object.prototype.hasOwnProperty.call(saved, 'thumb')) turn.feedback = saved.thumb || null;
+                return true;
+            } catch (error) {
+                console.warn('[Workspace] thumb feedback failed', error);
+                turn.feedback = prior;
+                if (typeof window.showToast === 'function') window.showToast(t('conversation.feedback.failed'), 'error');
+                return false;
+            } finally {
+                turn.feedbackSaving = false;
+                this.renderConversation();
+            }
+        },
+
+        /**
+         * Forecast tracking: compare a shown forecast with the actuals that have
+         * arrived since. Result lives on the turn for this page session and is
+         * drawn over the live chart; nothing saved is rewritten.
+         */
+        async checkForecastAccuracy(turn) {
+            if (!turn || !turn.result?.analysis || turn.result.analysis.skill !== 'forecast') return;
+            if (turn.tracking?.loading) return;
+            const connection = this._analysisConnection();
+            const queryId = turn.result.query_id || turn.turnId;
+            if (!connection || !queryId) return;
+            turn.tracking = { ...(turn.tracking || {}), loading: true, error: null };
+            this.renderDock();
+            try {
+                const data = await this._postJson('/api/analysis/forecast/accuracy', { connection, query_id: String(queryId) }, { timeoutMs: 125_000 });
+                turn.tracking = { loading: false, error: null, evaluation: data };
+                if (this.selectedResultId === turn.id && window.JeenLegacyBridge?.overlayRealizedActuals) {
+                    window.JeenLegacyBridge.overlayRealizedActuals(data.points || [], t('analysis.accuracy.realizedSeries'));
+                }
+            } catch (error) {
+                turn.tracking = { loading: false, error: error.message || t('analysis.accuracy.failed'), evaluation: turn.tracking?.evaluation || null };
+            } finally {
+                this.renderDock();
+            }
+        },
+
+        _feedbackHtml(turn) {
+            if (!this._feedbackEligible(turn)) return '';
+            const value = turn.feedback || null;
+            const saving = Boolean(turn.feedbackSaving);
+            const thumb = (kind, icon, labelKey) => `<button type="button" class="v3-feedback-btn${value === kind ? ' is-active' : ''}" data-feedback="${turn.id}:${kind}" aria-pressed="${value === kind ? 'true' : 'false'}" aria-label="${h(labelKey)}" title="${h(labelKey)}"${saving ? ' disabled' : ''}>${icon}</button>`;
+            return `<div class="v3-feedback" data-feedback-row="${turn.id}" role="group" aria-label="${h('conversation.feedback.groupLabel')}">
+              ${thumb('thumbs_up', ICON.thumbUp, 'conversation.feedback.helpful')}
+              ${thumb('thumbs_down', ICON.thumbDown, 'conversation.feedback.notHelpful')}
+              <button type="button" class="v3-feedback-btn v3-feedback-btn--open${turn.feedbackSent ? ' is-sent' : ''}" data-feedback-open="${turn.id}" aria-label="${h('conversation.feedback.open')}" title="${h('conversation.feedback.open')}" aria-haspopup="dialog">${ICON.feedback}</button>
+            </div>`;
+        },
+
+        // ------------------------------------------------------------------
+        // Give feedback dialog (Jeen UI composition: Modal + rating + Chip +
+        // textarea + Cancel / Send). One instance, mounted on <body>.
+        // ------------------------------------------------------------------
+        FEEDBACK_TYPES: ['general', 'report_bug', 'ui_bug', 'other'],
+
+        openFeedbackDialog(turn) {
+            if (!this._feedbackEligible(turn)) return;
+            this.feedbackDialog = {
+                turnId: turn.id,
+                rating: 0,
+                hover: 0,
+                type: null,
+                message: '',
+                saving: false,
+                error: null,
+                returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+            };
+            this._renderFeedbackDialog();
+            requestAnimationFrame(() => {
+                document.querySelector('#v3-feedback-dialog [data-fb-star="1"]')?.focus();
+            });
+        },
+
+        closeFeedbackDialog() {
+            const state = this.feedbackDialog;
+            if (!state) return;
+            this.feedbackDialog = null;
+            document.getElementById('v3-feedback-dialog')?.remove();
+            document.body.classList.remove('v3-feedback-dialog-open');
+            if (this._feedbackKeydown) {
+                document.removeEventListener('keydown', this._feedbackKeydown, true);
+                this._feedbackKeydown = null;
+            }
+            const back = state.returnFocus;
+            if (back && document.contains(back)) { try { back.focus(); } catch (_) { /* gone */ } }
+        },
+
+        _feedbackDialogCanSend(state) {
+            return Boolean(state) && !state.saving
+                && (state.rating > 0 || String(state.message || '').trim().length > 0);
+        },
+
+        _renderFeedbackDialog() {
+            const state = this.feedbackDialog;
+            if (!state) return;
+            let host = document.getElementById('v3-feedback-dialog');
+            if (!host) {
+                host = document.createElement('div');
+                host.id = 'v3-feedback-dialog';
+                host.className = 'v3-fb-overlay is-entering';
+                document.body.appendChild(host);
+                document.body.classList.add('v3-feedback-dialog-open');
+                this._bindFeedbackDialogOnce(host);
+                setTimeout(() => host.classList.remove('is-entering'), 250);
+            }
+            const shown = state.hover || state.rating;
+            const stars = [1, 2, 3, 4, 5].map((n) => `<button type="button" class="v3-fb-star${n <= shown ? ' is-on' : ''}" data-fb-star="${n}" role="radio" aria-checked="${state.rating === n ? 'true' : 'false'}" aria-label="${h('conversation.feedback.starLabel', { n })}" tabindex="${(state.rating === n || (!state.rating && n === 1)) ? '0' : '-1'}">${ICON.starFill}</button>`).join('');
+            const chips = this.FEEDBACK_TYPES.map((type) => `<button type="button" class="v3-fb-chip${state.type === type ? ' is-selected' : ''}" data-fb-type="${type}" aria-pressed="${state.type === type ? 'true' : 'false'}">${h(`conversation.feedback.type.${type}`)}</button>`).join('');
+            const canSend = this._feedbackDialogCanSend(state);
+            host.innerHTML = `<div class="v3-fb-modal" role="dialog" aria-modal="true" aria-labelledby="v3-fb-title" aria-describedby="v3-fb-subtitle" dir="${isRtl() ? 'rtl' : 'ltr'}">
+              <div class="v3-fb-head">
+                <span class="v3-fb-mark" aria-hidden="true">${ICON.chatHeart}</span>
+                <h2 class="v3-fb-title" id="v3-fb-title">${h('conversation.feedback.title')}</h2>
+                <p class="v3-fb-subtitle" id="v3-fb-subtitle">${h('conversation.feedback.subtitle')}</p>
+              </div>
+              <div class="v3-fb-rating">
+                <div class="v3-fb-rating-label" id="v3-fb-rate-label">${h('conversation.feedback.rate')}</div>
+                <div class="v3-fb-stars" role="radiogroup" aria-labelledby="v3-fb-rate-label" data-fb-stars>${stars}</div>
+              </div>
+              <div class="v3-fb-section">
+                <div class="v3-fb-label" id="v3-fb-type-label">${h('conversation.feedback.typeLabel')}</div>
+                <div class="v3-fb-chips" role="group" aria-labelledby="v3-fb-type-label">${chips}</div>
+              </div>
+              <div class="v3-fb-section">
+                <label class="v3-fb-label" for="v3-fb-message">${h('conversation.feedback.yourFeedback')}</label>
+                <textarea id="v3-fb-message" class="v3-fb-textarea" rows="1" maxlength="4000" placeholder="${h('conversation.feedback.placeholder')}" dir="auto" data-fb-message>${esc(state.message || '')}</textarea>
+              </div>
+              ${state.error ? `<div class="v3-fb-error" role="alert">${esc(state.error)}</div>` : ''}
+              <div class="v3-fb-footer">
+                <button type="button" class="v3-fb-cancel" data-fb-cancel>${h('common.cancel')}</button>
+                <button type="button" class="v3-fb-send" data-fb-send${canSend ? '' : ' disabled'}>${state.saving ? h('conversation.feedback.sending') : h('conversation.feedback.send')}</button>
+              </div>
+            </div>`;
+            this._autosizeFeedbackMessage(host.querySelector('[data-fb-message]'));
+        },
+
+        _autosizeFeedbackMessage(textarea) {
+            if (!textarea) return;
+            textarea.style.height = 'auto';
+            textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, 44), 180)}px`;
+        },
+
+        /**
+         * Event delegation on the overlay, bound once per mount. Re-renders of
+         * the dialog replace innerHTML, so nothing here holds element refs;
+         * typing only patches state and the Send button (never re-renders
+         * the textarea mid-typing).
+         */
+        _bindFeedbackDialogOnce(host) {
+            host.addEventListener('click', (event) => {
+                const state = this.feedbackDialog;
+                if (!state) return;
+                const target = event.target instanceof Element ? event.target : null;
+                if (!target) return;
+                if (target === host) { this.closeFeedbackDialog(); return; }
+                const star = target.closest('[data-fb-star]');
+                if (star) {
+                    const n = Number(star.dataset.fbStar);
+                    state.rating = state.rating === n ? 0 : n;
+                    state.hover = 0;
+                    this._renderFeedbackDialog();
+                    host.querySelector(`[data-fb-star="${state.rating || 1}"]`)?.focus();
+                    return;
+                }
+                const chip = target.closest('[data-fb-type]');
+                if (chip) {
+                    const type = chip.dataset.fbType;
+                    state.type = state.type === type ? null : type;
+                    this._renderFeedbackDialog();
+                    host.querySelector(`[data-fb-type="${type}"]`)?.focus();
+                    return;
+                }
+                if (target.closest('[data-fb-cancel]')) { this.closeFeedbackDialog(); return; }
+                if (target.closest('[data-fb-send]')) { this.submitFeedbackDialog(); }
+            });
+            host.addEventListener('mouseover', (event) => {
+                const state = this.feedbackDialog;
+                const star = event.target instanceof Element ? event.target.closest('[data-fb-star]') : null;
+                if (!state || !star) return;
+                const n = Number(star.dataset.fbStar);
+                if (state.hover === n) return;
+                state.hover = n;
+                host.querySelectorAll('[data-fb-star]').forEach((el) => el.classList.toggle('is-on', Number(el.dataset.fbStar) <= n));
+            });
+            host.addEventListener('mouseout', (event) => {
+                const state = this.feedbackDialog;
+                const stars = event.target instanceof Element ? event.target.closest('[data-fb-stars]') : null;
+                if (!state || !stars) return;
+                const to = event.relatedTarget instanceof Element ? event.relatedTarget : null;
+                if (to && stars.contains(to)) return;
+                state.hover = 0;
+                host.querySelectorAll('[data-fb-star]').forEach((el) => el.classList.toggle('is-on', Number(el.dataset.fbStar) <= state.rating));
+            });
+            host.addEventListener('input', (event) => {
+                const state = this.feedbackDialog;
+                const area = event.target instanceof Element ? event.target.closest('[data-fb-message]') : null;
+                if (!state || !area) return;
+                state.message = area.value;
+                this._autosizeFeedbackMessage(area);
+                const send = host.querySelector('[data-fb-send]');
+                if (send) send.disabled = !this._feedbackDialogCanSend(state);
+            });
+            this._feedbackKeydown = (event) => {
+                const state = this.feedbackDialog;
+                if (!state) return;
+                if (event.key === 'Escape') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this.closeFeedbackDialog();
+                    return;
+                }
+                const star = event.target instanceof Element ? event.target.closest('[data-fb-star]') : null;
+                if (star && ['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+                    event.preventDefault();
+                    const forward = event.key === 'ArrowUp' || (isRtl() ? event.key === 'ArrowLeft' : event.key === 'ArrowRight');
+                    const current = state.rating || Number(star.dataset.fbStar) || 1;
+                    state.rating = Math.min(5, Math.max(1, current + (forward ? 1 : -1)));
+                    state.hover = 0;
+                    this._renderFeedbackDialog();
+                    host.querySelector(`[data-fb-star="${state.rating}"]`)?.focus();
+                    return;
+                }
+                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    this.submitFeedbackDialog();
+                    return;
+                }
+                if (event.key === 'Tab') {
+                    // Keep focus inside the dialog.
+                    const focusable = [...host.querySelectorAll('button:not([disabled]):not([tabindex="-1"]), textarea')];
+                    if (!focusable.length) return;
+                    const first = focusable[0];
+                    const last = focusable[focusable.length - 1];
+                    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+                    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+                }
+            };
+            document.addEventListener('keydown', this._feedbackKeydown, true);
+        },
+
+        async submitFeedbackDialog() {
+            const state = this.feedbackDialog;
+            if (!this._feedbackDialogCanSend(state)) return false;
+            const turn = this.turns.find((item) => item.id === state.turnId);
+            if (!turn) { this.closeFeedbackDialog(); return false; }
+            state.saving = true;
+            state.error = null;
+            this._renderFeedbackDialog();
+            try {
+                await this._postAnswerFeedback(turn, {
+                    rating: state.rating || null,
+                    feedback_type: state.type,
+                    message: state.message,
+                });
+                turn.feedbackSent = true;
+                // The user may have dismissed this dialog and opened another
+                // while the request was in flight; only settle our own.
+                if (this.feedbackDialog === state) {
+                    state.returnFocus = null;
+                    this.closeFeedbackDialog();
+                }
+                if (typeof window.showToast === 'function') window.showToast(t('conversation.feedback.sent'), 'success');
+                this.renderConversation();
+                // renderConversation() rebuilt the card, so focus the new trigger.
+                if (!this.feedbackDialog) {
+                    document.querySelector(`#v3-thread [data-feedback-open="${turn.id}"]`)?.focus();
+                }
+                return true;
+            } catch (error) {
+                console.warn('[Workspace] feedback dialog failed', error);
+                if (this.feedbackDialog !== state) return false;
+                state.saving = false;
+                state.error = t('conversation.feedback.failed');
+                this._renderFeedbackDialog();
+                return false;
+            }
+        },
+
         /** Resume a persisted proposal (confirm / clarification pick / guard exit). */
         async runProposal(turn, { patch = {}, remember = false, override = false } = {}) {
             const proposal = (turn.result || {}).proposal || {};
@@ -3081,6 +3623,7 @@
                 turnId: data.query_id || null,
                 conversationId: data.session_id || null,
                 isFavorite: false,
+                feedback: null,
                 error: null,
                 parentId: parent ? parent.id : null,
                 resultKind: data.proposal ? 'proposal' : undefined,
@@ -3267,7 +3810,7 @@
         },
 
         renderWorkspace() {
-            const turn = this.turns.find((item) => item.id === this.selectedResultId && item.status === 'success');
+            const turn = this.turns.find((item) => item.id === this.selectedResultId && turnShowsResult(item));
             this._renderFavoriteAction(turn);
             const placeholder = document.getElementById('v3-placeholder');
             const chartBlock = document.getElementById('v3-chart-block');
@@ -3347,10 +3890,20 @@
             }
             const mlStrip = isAnalysis && window.JeenAnalysisUI ? window.JeenAnalysisUI.stripSegments(data) : '';
             const metaRow = document.getElementById('v3-meta-row');
+            const streaming = turn.status === 'streaming';
+            const failedAfterRows = turn.status === 'error';
+            const statusHtml = streaming
+                ? `<span class="v3-status is-streaming">${h('results.status.analysing')}</span>`
+                : failedAfterRows
+                    ? `<span class="v3-status is-error">${h('results.status.failedAfterRows')}</span>`
+                    : `<span class="v3-status">${cap.capped ? h('results.status.completedCapped') : h('results.status.completed')}</span>`;
+            const metaHtml = streaming
+                ? `<span class="v3-result-meta">${h('results.status.rowsReady', { rows: rows.length })}</span>`
+                : `<span class="v3-result-meta">${h('results.status.meta', { rows: rows.length, exec: formatMs(metrics.execution_time_ms), llm: formatMs(metrics.llm_latency_ms) })}</span>`;
             metaRow.innerHTML = `
-              <span class="v3-status">${cap.capped ? h('results.status.completedCapped') : h('results.status.completed')}</span>
+              ${statusHtml}
               ${mlStrip}
-              <span class="v3-result-meta">${h('results.status.meta', { rows: rows.length, exec: formatMs(metrics.execution_time_ms), llm: formatMs(metrics.llm_latency_ms) })}</span>
+              ${metaHtml}
               ${restoredNote}
               ${stale ? `<span class="v3-stale-note">${h('results.status.staleNote')}</span>` : ''}`;
             this._bindDefinitionToggle(metaRow, turn);
@@ -3432,7 +3985,10 @@
                     });
                 }
             }
-            this._setActionsEnabled(true);
+            // Export / share / save act on the finished turn (the artifact row
+            // is written when the graph completes), so they stay off while the
+            // narrative is still streaming.
+            this._setActionsEnabled(!streaming);
             const captionColumns = isAnalysis && window.JeenAnalysisUI
                 ? window.JeenAnalysisUI.chartCaption(data)
                 : (results.columns && results.columns.length > 1
@@ -3461,13 +4017,36 @@
                 ? turn.chartCollapsed
                 : !isAnalysis;
             this._renderChartCollapse();
-            this.renderTable();
+            // The final `result` after a `partial` carries the same rows the grid
+            // already shows: leave the DOM (and its scroll position) alone for
+            // every re-render of that same table. Any change to the key (turn,
+            // revision, filter, sort) or a direct renderTable() call repaints.
+            const tableKey = this._tableKey(turn);
+            if (this._tableRepaintHold === tableKey && this._paintedTableKey === tableKey) {
+                // held
+            } else {
+                this._tableRepaintHold = null;
+                this.renderTable();
+            }
             this.renderDock();
+        },
+
+        /** Identity of what the grid currently paints: turn, revision, filter and sort. */
+        _tableKey(turn) {
+            const presentation = window.JeenLegacyBridge?.getTablePresentation?.() || {};
+            return [
+                turn.id,
+                turn.rev || 0,
+                this.filter || '',
+                presentation.sortColumn == null ? '' : presentation.sortColumn,
+                presentation.sortDirection || '',
+            ].join('|');
         },
 
         renderTable() {
             const turn = this.turns.find((item) => item.id === this.selectedResultId);
             if (!turn || !turn.result?.results) return;
+            this._paintedTableKey = this._tableKey(turn);
             const results = turn.result.results;
             const columns = results.columns || [];
             const allRows = normalizeRows(results);
@@ -3666,9 +4245,25 @@
             body.innerHTML = this.dockTab === 'profiling'
                 ? this._profileHtml(turn)
                 : this.dockTab === 'model' && window.JeenAnalysisUI
-                    ? window.JeenAnalysisUI.modelDetailsHtml(turn.result || {})
+                    ? window.JeenAnalysisUI.modelDetailsHtml(turn.result || {}, { tracking: turn.tracking })
                     : this._sqlHtml(turn);
             body.querySelector('[data-copy-sql]')?.addEventListener('click', () => navigator.clipboard.writeText(turn.result.sql || ''));
+            body.querySelector('[data-ml-accuracy]')?.addEventListener('click', () => this.checkForecastAccuracy(turn));
+            // "Adjustments to try": one click re-runs the analysis with the
+            // server-validated patch as a child turn (same path as Edit setup).
+            body.querySelectorAll('[data-ml-adjust]').forEach((chip) => chip.addEventListener('click', async () => {
+                const items = (turn.result?.analysis || {}).adjustments || [];
+                const item = items[Number(chip.dataset.mlAdjust)];
+                if (!item || !item.params_patch) return;
+                body.querySelectorAll('[data-ml-adjust]').forEach((other) => { other.disabled = true; });
+                try {
+                    await this.rerunAnalysis(null, item.params_patch);
+                } catch (error) {
+                    if (typeof window.showToast === 'function') window.showToast(error.message || t('charts.chat.rerunFailed'), 'error');
+                } finally {
+                    body.querySelectorAll('[data-ml-adjust]').forEach((other) => { other.disabled = false; });
+                }
+            }));
             body.querySelector('[data-full-profile]')?.addEventListener('click', () => this._openFullProfile());
             body.querySelector('[data-dev-details]')?.addEventListener('click', () => document.getElementById('dev-panel-btn')?.click());
             body.querySelectorAll('[data-filter-switch]').forEach((button) => button.addEventListener('click', () => {
@@ -3767,10 +4362,16 @@
         },
 
         _scrollThread() {
-            requestAnimationFrame(() => {
+            // The thread was just re-rendered synchronously, so scroll now; the
+            // frame callback catches layout that settles afterwards (fonts,
+            // images). Relying on the frame alone left the thread at the top
+            // when frames were delayed and a later render intervened.
+            const scroll = () => {
                 const thread = document.getElementById('v3-thread');
                 if (thread) thread.scrollTop = thread.scrollHeight;
-            });
+            };
+            scroll();
+            requestAnimationFrame(scroll);
         },
 
         _scrollTurnIntoView(turnId) {
@@ -3792,6 +4393,7 @@
         safeTraceNote,
         filterResultRows,
         selectionForTurn,
+        turnShowsResult,
     };
     window.WorkspaceController = WorkspaceController;
     if (typeof document !== 'undefined' && document.body) {
