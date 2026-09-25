@@ -33,8 +33,12 @@ metadata:
   name: {{ include "jeen-insights-api.fullname" . }}
   labels:
     {{- include "jeen-insights-api.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  type: ClusterIP
+  type: {{ default "ClusterIP" .Values.service.type }}
   ports:
     - name: http
       port: {{ .Values.service.port }}
@@ -72,6 +76,7 @@ spec:
         {{- end }}
       annotations:
         checksum/config: {{ toJson $env | sha256sum }}
+        secrets.jeen.ai/version: {{ .Values.global.secretVersion | quote }}
       {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -87,7 +92,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: api
-          image: "{{ required "jeen-insights-api.image.repository is required" .Values.image.repository }}:{{ required "jeen-insights-api.image.tag is required" .Values.image.tag }}"
+          image: {{ include "jeen-insights-api.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
@@ -95,8 +100,8 @@ spec:
               protocol: TCP
           envFrom:
             - secretRef:
-                name: {{ required "global.existingSecret.name is required" .Values.global.existingSecret.name }}
-                optional: {{ .Values.global.existingSecret.optional }}
+                name: {{ include "jeen-insights-api.existingSecretName" . }}
+                optional: {{ include "jeen-insights-api.existingSecretOptional" . }}
             - configMapRef:
                 name: {{ include "jeen-insights-api.fullname" . }}
           startupProbe:
@@ -138,10 +143,16 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 256Mi
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with $nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

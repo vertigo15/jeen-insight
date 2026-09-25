@@ -33,8 +33,12 @@ metadata:
   name: {{ include "jeen-insights-analytics.fullname" . }}
   labels:
     {{- include "jeen-insights-analytics.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  type: ClusterIP
+  type: {{ default "ClusterIP" .Values.service.type }}
   ports:
     - name: http
       port: {{ .Values.service.port }}
@@ -70,6 +74,7 @@ spec:
         {{- end }}
       annotations:
         checksum/config: {{ toJson $env | sha256sum }}
+        secrets.jeen.ai/version: {{ .Values.global.secretVersion | quote }}
       {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -96,7 +101,7 @@ spec:
         {{- end }}
       containers:
         - name: analytics
-          image: "{{ required "jeen-insights-analytics.image.repository is required" .Values.image.repository }}:{{ required "jeen-insights-analytics.image.tag is required" .Values.image.tag }}"
+          image: {{ include "jeen-insights-analytics.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
@@ -109,9 +114,9 @@ spec:
             - name: INTERNAL_ANALYTICS_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "global.existingSecret.name is required" .Values.global.existingSecret.name }}
+                  name: {{ include "jeen-insights-analytics.existingSecretName" . }}
                   key: INTERNAL_ANALYTICS_SECRET
-                  optional: {{ .Values.global.existingSecret.optional }}
+                  optional: {{ include "jeen-insights-analytics.existingSecretOptional" . }}
             - name: JEEN_DEV_MODE
               value: "false"
           envFrom:
@@ -157,11 +162,17 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir:
             medium: Memory
             sizeLimit: {{ .Values.tmpSizeLimit }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with $nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

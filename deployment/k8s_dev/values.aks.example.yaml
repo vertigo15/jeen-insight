@@ -1,0 +1,116 @@
+# Generic AKS profile. Replace every "replace-with-*" value before deploying.
+# This file contains no credentials or environment-specific Azure identifiers.
+global:
+  environment: aks-example
+  cloudProvider: azure
+  commonLabels:
+    app.kubernetes.io/part-of: jeen-insights
+    # Required on pod templates that use Azure Workload Identity. The chart's
+    # common labels also place it on the generated ServiceAccounts.
+    azure.workload.identity/use: "true"
+  externalSecrets:
+    enabled: true
+    creationPolicy: Owner
+    refreshInterval: 1h
+    # Create this ESO store separately and configure it for Azure Key Vault
+    # with Workload Identity. Change kind to SecretStore for a namespaced store.
+    secretStoreRef:
+      name: azure-key-vault
+      kind: ClusterSecretStore
+    secretMappings:
+      METADATA_DB_HOST: jeen-insights-metadata-db-host
+      METADATA_DB_PORT: jeen-insights-metadata-db-port
+      METADATA_DB_NAME: jeen-insights-metadata-db-name
+      METADATA_DB_USER: jeen-insights-metadata-db-user
+      METADATA_DB_PASSWORD: jeen-insights-metadata-db-password
+      FLASK_SECRET_KEY: jeen-insights-flask-secret-key
+      INTERNAL_API_SECRET: jeen-insights-internal-api-secret
+      INTERNAL_ANALYTICS_SECRET: jeen-insights-internal-analytics-secret
+      APP_ENCRYPTION_KEY: jeen-insights-app-encryption-key
+  # Schedule on AKS user-mode Linux nodes. Add an environment-specific pool
+  # label or matching tolerations here when the cluster dedicates a node pool.
+  nodeSelector:
+    kubernetes.io/os: linux
+    kubernetes.azure.com/mode: user
+  env:
+    RUN_MIGRATIONS_ON_START: "false"
+    SCHEMA_BOOTSTRAP_ON_START: "false"
+
+jeen-insights-api:
+  image:
+    repository: replace-with-registry.azurecr.io/jeen-insights-api
+    tag: replace-with-immutable-api-tag
+  serviceAccount:
+    create: true
+    annotations:
+      azure.workload.identity/client-id: replace-with-managed-identity-client-id
+  env:
+    ML_SKILLS_ENABLED: "true"
+    ANALYSIS_RUNNER: sandbox
+  networkPolicy:
+    enabled: true
+    dnsNamespaces:
+      - kube-system
+    # RFC 5737 documentation range: replace with approved PostgreSQL, Key Vault,
+    # and external API destination CIDRs before enforcing this policy.
+    externalEgressCIDRs:
+      - 192.0.2.0/24
+    externalEgressPorts:
+      - 443
+      - 5432
+
+jeen-insights-analytics:
+  enabled: true
+  image:
+    repository: replace-with-registry.azurecr.io/jeen-insights-analytics
+    tag: replace-with-immutable-analytics-tag
+  serviceAccount:
+    create: true
+    annotations:
+      azure.workload.identity/client-id: replace-with-managed-identity-client-id
+  # Default-deny egress; only API-to-analytics ingress is allowed.
+  networkPolicy:
+    enabled: true
+
+jeen-insights-ui:
+  image:
+    repository: replace-with-registry.azurecr.io/jeen-insights-ui
+    tag: replace-with-immutable-ui-tag
+  serviceAccount:
+    create: true
+    annotations:
+      azure.workload.identity/client-id: replace-with-managed-identity-client-id
+  env:
+    PUBLIC_APP_URL: https://insights.example.invalid
+    SESSION_COOKIE_SECURE: "true"
+  # Public choice: nginx Ingress with a separately provisioned TLS Secret.
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-buffering: "off"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "360"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "360"
+    hosts:
+      - host: insights.example.invalid
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: replace-with-tls-secret
+        hosts:
+          - insights.example.invalid
+  # Internal-only alternative: disable ingress above, then uncomment these
+  # fields. Use private DNS for PUBLIC_APP_URL and add an address only when the
+  # cluster's load-balancer policy requires a preallocated private IP.
+  # service:
+  #   type: LoadBalancer
+  #   annotations:
+  #     service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+  #   loadBalancerIP: replace-with-private-ip
+  networkPolicy:
+    enabled: true
+    ingressNamespaces:
+      - ingress-nginx
+    dnsNamespaces:
+      - kube-system

@@ -84,10 +84,10 @@ def test_workspace_chart_starts_collapsed_with_aligned_controls():
     assert 'aria-expanded="false" aria-controls="v3-chart-types v3-chart-frame v3-chart-edit"' in controller
     assert "controls.hidden = this.chartCollapsed" in controller
     assert "frame.hidden = this.chartCollapsed" in controller
-    assert "edit.hidden = this.chartCollapsed || isAnalysis" in controller
+    assert "edit.hidden = this.chartCollapsed" in controller
     assert "setChartCollapsed?.(this.chartCollapsed)" in controller
     assert 'id="v3-analysis-adjust"' in controller
-    assert "target = isAnalysis ? analysisContent : chartEdit" in controller
+    assert "if (analysisAdjust) analysisAdjust.hidden = true" in controller
     assert ".v3-chart-primary > .chart-type-selector-container {" in styles
     assert ".v3-chart-types[hidden] { display: none !important; }" in styles
     assert ".v3-chart-edit[hidden] { display: none !important; }" in styles
@@ -98,7 +98,7 @@ def test_workspace_chart_starts_collapsed_with_aligned_controls():
     assert "#v3-chart-toggle {" in styles
 
 
-def test_workspace_chart_modes_keep_ml_reruns_separate_from_graph_edits():
+def test_workspace_ml_small_chat_stays_chart_only():
     root = Path(__file__).resolve().parents[2]
     controller = (root / "src/static/workspace/workspaceController.js").read_text()
     manager = (root / "src/static/chart-feature/chartManager.js").read_text()
@@ -109,14 +109,17 @@ def test_workspace_chart_modes_keep_ml_reruns_separate_from_graph_edits():
         root / "src/static/chart-feature/components/ChartOptionsPanel.js"
     ).read_text()
 
-    assert "this._inputEl.placeholder = this._analysisMode ? ANALYSIS_PLACEHOLDER() : CHART_PLACEHOLDER()" in chat
-    assert "rerunAnalysis" in chat and "rerunTitle" in chat
+    assert "fetch('/api/edit-chart'" in chat
     assert "setAnalysisMode(on)" in manager
     assert "this.analysisMode = Boolean(on)" in manager
+    assert "this.chartChat?.setAnalysisMode(false)" in manager
+    assert "onAnalysisRerun:" not in manager
     assert "this.chartTypeSelector?.setDisabled(" in manager
     assert "this.chartOptionsPanel?.setAnalysisMode(this.analysisMode)" in manager
     assert "this.analysisMode && key === 'sortDesc'" in options
     assert "if (this.analysisMode) return;" in options
+    assert "if (chat && chartEdit && chat.parentNode !== chartEdit) chartEdit.appendChild(chat)" in controller
+    assert "if (analysisAdjust) analysisAdjust.hidden = true" in controller
     assert "if (this._analysisRerunInFlight)" in controller
     assert "this._selectionVersion === run.selectionVersion" in controller
     assert "if (id !== this.selectedTurnId) this._selectionVersion += 1" in controller

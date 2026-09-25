@@ -1,0 +1,118 @@
+# Generic EKS profile. Replace every "replace-with-*" value before deploying.
+# This file contains no credentials, AWS account IDs, regions, or live ARNs.
+global:
+  environment: eks-example
+  cloudProvider: aws
+  commonLabels:
+    app.kubernetes.io/part-of: jeen-insights
+  externalSecrets:
+    enabled: true
+    creationPolicy: Owner
+    refreshInterval: 1h
+    # Create this ESO store separately with AWS Secrets Manager as its provider.
+    # Change kind to SecretStore when each namespace owns its store.
+    secretStoreRef:
+      name: aws-secrets-manager
+      kind: ClusterSecretStore
+    secretMappings:
+      METADATA_DB_HOST: jeen-insights/metadata-db-host
+      METADATA_DB_PORT: jeen-insights/metadata-db-port
+      METADATA_DB_NAME: jeen-insights/metadata-db-name
+      METADATA_DB_USER: jeen-insights/metadata-db-user
+      METADATA_DB_PASSWORD: jeen-insights/metadata-db-password
+      FLASK_SECRET_KEY: jeen-insights/flask-secret-key
+      INTERNAL_API_SECRET: jeen-insights/internal-api-secret
+      INTERNAL_ANALYTICS_SECRET: jeen-insights/internal-analytics-secret
+      APP_ENCRYPTION_KEY: jeen-insights/app-encryption-key
+  # Replace or extend this selector for a dedicated managed node group/Karpenter
+  # NodePool; add matching component tolerations if those nodes are tainted.
+  nodeSelector:
+    kubernetes.io/os: linux
+  env:
+    RUN_MIGRATIONS_ON_START: "false"
+    SCHEMA_BOOTSTRAP_ON_START: "false"
+    # METADATA_DB_SSL=true encrypts PostgreSQL transport today, but the
+    # application does not yet expose verify-full hostname/CA verification.
+    # See the platform-profile installation documentation to be added.
+    METADATA_DB_SSL: "true"
+
+jeen-insights-api:
+  image:
+    repository: replace-with-account.dkr.ecr.replace-with-region.amazonaws.com/jeen-insights-api
+    tag: replace-with-immutable-api-tag
+  serviceAccount:
+    create: true
+    annotations:
+      # For IRSA, replace this with the API role ARN. With EKS Pod Identity,
+      # remove the annotation and create the ServiceAccount association outside
+      # Helm. ESO's store identity is configured independently.
+      eks.amazonaws.com/role-arn: replace-with-api-irsa-role-arn
+  env:
+    ML_SKILLS_ENABLED: "true"
+    ANALYSIS_RUNNER: sandbox
+  networkPolicy:
+    enabled: true
+    dnsNamespaces:
+      - kube-system
+    # RFC 5737 documentation range: replace with the private RDS subnet/security
+    # boundary CIDR and any approved HTTPS destinations. Security groups/NACLs
+    # must independently allow pod-to-RDS TCP/5432 connectivity.
+    externalEgressCIDRs:
+      - 192.0.2.0/24
+    externalEgressPorts:
+      - 443
+      - 5432
+
+jeen-insights-analytics:
+  enabled: true
+  image:
+    repository: replace-with-account.dkr.ecr.replace-with-region.amazonaws.com/jeen-insights-analytics
+    tag: replace-with-immutable-analytics-tag
+  serviceAccount:
+    create: true
+    annotations:
+      eks.amazonaws.com/role-arn: replace-with-analytics-irsa-role-arn
+  # Default-deny egress; only API-to-analytics ingress is allowed.
+  networkPolicy:
+    enabled: true
+
+jeen-insights-ui:
+  image:
+    repository: replace-with-account.dkr.ecr.replace-with-region.amazonaws.com/jeen-insights-ui
+    tag: replace-with-immutable-ui-tag
+  serviceAccount:
+    create: true
+    annotations:
+      eks.amazonaws.com/role-arn: replace-with-ui-irsa-role-arn
+  env:
+    PUBLIC_APP_URL: https://insights.example.invalid
+    SESSION_COOKIE_SECURE: "true"
+  ingress:
+    enabled: true
+    className: alb
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+      alb.ingress.kubernetes.io/ssl-redirect: "443"
+      alb.ingress.kubernetes.io/healthcheck-path: /health
+      # Required for long-running SSE insight responses.
+      alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=360
+      # Supply alb.ingress.kubernetes.io/certificate-arn in the environment
+      # overlay; do not commit an ACM certificate ARN to this generic profile.
+      # Configure Route53 alias records (or ExternalDNS) for the host after the
+      # ALB is provisioned.
+    hosts:
+      - host: insights.example.invalid
+        paths:
+          - path: /
+            pathType: Prefix
+    # TLS terminates at the ALB through ACM, so no Kubernetes TLS Secret is
+    # referenced here.
+    tls: []
+  # Keep disabled until approved ALB subnet/source CIDRs can be represented.
+  # The chart's current UI policy accepts namespaces, while an internet-facing
+  # ALB reaches IP targets from VPC addresses. CNI NetworkPolicy enforcement
+  # must be enabled before any chart NetworkPolicy is relied upon.
+  networkPolicy:
+    enabled: false

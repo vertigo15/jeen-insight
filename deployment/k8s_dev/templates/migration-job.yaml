@@ -1,0 +1,102 @@
+{{- if .Values.migration.enabled }}
+{{- $imagePullSecrets := .Values.global.imagePullSecrets }}
+{{- if .Values.migration.imagePullSecrets }}
+{{- $imagePullSecrets = .Values.migration.imagePullSecrets }}
+{{- end }}
+{{- $nodeSelector := default (default dict .Values.global.nodeSelector) .Values.migration.nodeSelector }}
+# This Job is intentionally not a Helm hook. Render it separately, apply it,
+# wait for completion, inspect its logs, and only then upgrade the workloads.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "jeen-insights.migrationName" . }}
+  labels:
+    app.kubernetes.io/name: jeen-insights-migrate
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/part-of: jeen-insights
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    jeen.ai/migration-bundle: {{ .Values.migration.bundleId | quote }}
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}
+  {{- if ne .Values.migration.ttlSecondsAfterFinished nil }}
+  ttlSecondsAfterFinished: {{ .Values.migration.ttlSecondsAfterFinished }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jeen-insights-migrate
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/part-of: jeen-insights
+        jeen.ai/migration-bundle: {{ .Values.migration.bundleId | quote }}
+      annotations:
+        secrets.jeen.ai/version: {{ .Values.global.secretVersion | quote }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- with $imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.migration.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "jeen-insights.migrationImage" . | quote }}
+          imagePullPolicy: {{ .Values.migration.image.pullPolicy }}
+          command:
+            - python
+            - scripts/run_insights_migrations.py
+          env:
+            {{- range $key, $value := .Values.global.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            - name: MIGRATION_LOCK_WAIT_SECONDS
+              value: {{ .Values.migration.lockWaitSeconds | quote }}
+            - name: MIGRATION_LOCK_TIMEOUT
+              value: {{ .Values.migration.lockTimeout | quote }}
+            - name: MIGRATION_STATEMENT_TIMEOUT
+              value: {{ .Values.migration.statementTimeout | quote }}
+            - name: ENCRYPT_MCP_TOKENS_BACKFILL
+              value: {{ .Values.migration.encryptMcpTokensBackfill | quote }}
+            {{- with .Values.migration.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ include "jeen-insights.migrationSecretName" . }}
+                optional: {{ include "jeen-insights.migrationSecretOptional" . }}
+            {{- with .Values.migration.apiConfigMap.name }}
+            - configMapRef:
+                name: {{ . }}
+                optional: {{ $.Values.migration.apiConfigMap.optional }}
+            {{- end }}
+          {{- with .Values.migration.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.migration.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      {{- with $nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.migration.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.migration.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

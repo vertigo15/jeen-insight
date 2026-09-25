@@ -82,10 +82,17 @@ function extractChartSeries(config, spec) {
     if (!source || source.type === 'pie') return null;
     const values = source.data.map(pointNumber);
     if (!values.length || values.every((value) => value === null)) return null;
+    const xValues = source.data.map((point) => {
+        const raw = point && typeof point === 'object' && !Array.isArray(point) && 'value' in point
+            ? point.value
+            : point;
+        return Array.isArray(raw) && raw.length >= 2 ? raw[0] : undefined;
+    });
     return {
         values,
         sourceName: requested || String(source.name || 'series'),
         source,
+        xValues: xValues.every((value) => value !== undefined) ? xValues : null,
     };
 }
 
@@ -262,10 +269,13 @@ export function buildDerivedSeries(spec, results, config = null) {
     // log_scale and normalize_0_1 sit best on a separate Y axis.
     const wantsAuxAxis = operator === 'log_scale' || operator === 'normalize_0_1';
 
+    const derivedData = aligned?.xValues
+        ? computed.map((value, index) => [aligned.xValues[index], value])
+        : computed;
     return {
         name: label,
         type: 'line',
-        data: computed,
+        data: derivedData,
         smooth: true,
         symbol: 'none',
         lineStyle: { type: 'dashed', width: 2 },

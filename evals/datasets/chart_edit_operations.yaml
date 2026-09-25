@@ -1,0 +1,53 @@
+version: 1
+description: Golden natural-language cases for chart-only ECharts operation planning.
+cases:
+  - {id: sql_line_green_labels, kind: sql, instruction: "show line chart in green with labels", ops: [set_chart_type, set_color, set_toggle]}
+  - {id: sql_bar_blue, kind: sql, instruction: "make this a blue bar chart", ops: [set_chart_type, set_color]}
+  - {id: sql_area_transparent, kind: sql, instruction: "use an area chart with 30 percent opacity", ops: [set_chart_type, set_style]}
+  - {id: sql_labels_on, kind: sql, instruction: "show values above every bar", ops: [set_toggle]}
+  - {id: sql_labels_off, kind: sql, instruction: "remove the data labels", ops: [set_toggle]}
+  - {id: sql_legend_off, kind: sql, instruction: "hide the legend", ops: [set_toggle]}
+  - {id: sql_legend_on, kind: sql, instruction: "show the legend", ops: [set_toggle]}
+  - {id: sql_zoom_on, kind: sql, instruction: "add a zoom slider", ops: [set_toggle]}
+  - {id: sql_zoom_off, kind: sql, instruction: "disable chart zoom", ops: [set_toggle]}
+  - {id: sql_sort_desc, kind: sql, instruction: "sort highest to lowest", ops: [set_sort]}
+  - {id: sql_sort_asc, kind: sql, instruction: "sort lowest to highest", ops: [set_sort]}
+  - {id: sql_sort_reset, kind: sql, instruction: "restore the original order", ops: [set_sort]}
+  - {id: sql_stack_on, kind: sql, instruction: "stack the series", ops: [set_stack]}
+  - {id: sql_stack_off, kind: sql, instruction: "unstack the bars", ops: [set_stack]}
+  - {id: sql_currency_usd, kind: sql, instruction: "format values as USD", ops: [set_format]}
+  - {id: sql_percent, kind: sql, instruction: "show the values as percentages", ops: [set_format]}
+  - {id: sql_full_numbers, kind: sql, instruction: "show full numbers instead of K and M", ops: [set_format]}
+  - {id: sql_series_red, kind: sql, instruction: "make the revenue series red", ops: [set_color]}
+  - {id: sql_line_width, kind: sql, instruction: "make the sales line 4 pixels wide", ops: [set_style]}
+  - {id: sql_smooth_line, kind: sql, instruction: "smooth the line", ops: [set_style]}
+  - {id: sql_symbols_large, kind: sql, instruction: "use larger point symbols", ops: [set_style]}
+  - {id: sql_rename_series, kind: sql, instruction: "rename total_sales to Revenue", ops: [rename_series]}
+  - {id: sql_hide_series, kind: sql, instruction: "hide the budget series", ops: [hide_series]}
+  - {id: sql_show_series, kind: sql, instruction: "show the budget series again", ops: [hide_series]}
+  - {id: sql_moving_average, kind: sql, instruction: "add a 3 period moving average", ops: [add_overlay]}
+  - {id: sql_remove_overlay, kind: sql, instruction: "remove the moving average", ops: [remove_overlay]}
+  - {id: sql_binding_x, kind: sql, instruction: "use month_name on the x axis", ops: [set_binding]}
+  - {id: sql_binding_y, kind: sql, instruction: "use gross_profit as the value", ops: [set_binding]}
+  - {id: sql_group_binding, kind: sql, instruction: "group the series by channel", ops: [set_binding]}
+  - {id: sql_query_change, kind: sql, instruction: "group the data by quarter", out_of_scope: true, reason: needs_new_query}
+  - {id: ml_actual_green, kind: ml_band, instruction: "make the actual line green", ops: [set_color]}
+  - {id: ml_forecast_blue, kind: ml_band, instruction: "make the forecast line blue", ops: [set_color]}
+  - {id: ml_expected_orange, kind: ml_band, instruction: "color the expected line orange", ops: [set_color]}
+  - {id: ml_labels_visible, kind: ml_band, instruction: "show labels on the visible lines", ops: [set_toggle]}
+  - {id: ml_legend_off, kind: ml_band, instruction: "hide the legend", ops: [set_toggle]}
+  - {id: ml_zoom_on, kind: ml_band, instruction: "enable zoom", ops: [set_toggle]}
+  - {id: ml_interval_light, kind: ml_band, instruction: "make the confidence band lighter", ops: [set_style]}
+  - {id: ml_interval_purple, kind: ml_band, instruction: "make the forecast interval purple", ops: [set_color]}
+  - {id: ml_actual_thick, kind: ml_band, instruction: "make the actual line thicker", ops: [set_style]}
+  - {id: ml_format_currency, kind: ml_band, instruction: "format the y axis as euros", ops: [set_format]}
+  - {id: ml_type_pie_locked, kind: ml_band, instruction: "turn the forecast into a pie chart", out_of_scope: true, reason: ml_locked}
+  - {id: ml_type_bar_locked, kind: ml_band, instruction: "make this forecast a bar chart", out_of_scope: true, reason: ml_locked}
+  - {id: ml_sort_locked, kind: ml_band, instruction: "sort the forecast high to low", out_of_scope: true, reason: ml_locked}
+  - {id: ml_stack_locked, kind: ml_band, instruction: "stack all forecast series", out_of_scope: true, reason: ml_locked}
+  - {id: ml_binding_locked, kind: ml_band, instruction: "change the x axis to customer", out_of_scope: true, reason: ml_locked}
+  - {id: he_green_labels, kind: sql, instruction: "הצג גרף קו ירוק עם תוויות", ops: [set_chart_type, set_color, set_toggle]}
+  - {id: he_hide_legend, kind: sql, instruction: "הסתר את המקרא", ops: [set_toggle]}
+  - {id: he_actual_red, kind: ml_band, instruction: "צבע את הקו בפועל באדום", ops: [set_color]}
+  - {id: he_query_change, kind: sql, instruction: "קבץ את הנתונים לפי רבעון", out_of_scope: true, reason: needs_new_query}
+  - {id: ambiguous_better, kind: sql, instruction: "make it better", out_of_scope: true, reason: ambiguous}

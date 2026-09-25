@@ -45,6 +45,7 @@ async function mountChartManager(page, script = {}) {
         },
       }],
       edit: chartScript.edit || [],
+      rebuild: chartScript.rebuild || [],
     };
     const { ChartManager } = await import('/src/static/chart-feature/chartManager.js');
     const manager = new ChartManager({ workspaceMode: true });

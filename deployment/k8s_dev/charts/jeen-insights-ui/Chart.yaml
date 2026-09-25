@@ -1,6 +1,7 @@
 apiVersion: v2
 name: jeen-insights-ui
-description: Jeen Insights Flask UI service
+description: Flask web interface for Jeen Insights
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "2.0.0"
+kubeVersion: ">=1.24.0-0"

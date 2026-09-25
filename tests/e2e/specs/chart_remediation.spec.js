@@ -11,12 +11,99 @@ test.afterEach(async ({ page }) => {
   await page.evaluate(() => window.__chartTestManager?.dispose?.()).catch(() => {});
 });
 
+test('small chat applies one compact operation response without any query path', async ({ page }) => {
+  await mountChartManager(page, {
+    edit: [{
+      response: {
+        contract_version: 2,
+        operations: [
+          { op: 'set_chart_type', chart_type: 'line' },
+          { op: 'set_color', target: 'all', color: '#22c55e' },
+          { op: 'set_toggle', key: 'dataLabels', value: true },
+        ],
+        notes: 'Line chart in green with labels.',
+        out_of_scope: false,
+        reason_code: null,
+      },
+    }],
+  });
+
+  await page.evaluate(() => { window.__calls = []; });
+  const refine = page.locator('#v3-chart-edit .chart-refine');
+  await refine.locator('.chart-refine-input').fill('show line chart in green with labels');
+  await refine.locator('.chart-refine-apply').click();
+
+  await expect.poll(() => page.evaluate(() => ({
+    type: window.__chartTestManager.currentEchartsOptions?.series?.[0]?.type,
+    color: window.__chartTestManager.currentEchartsOptions?.series?.[0]?.lineStyle?.color,
+    labels: window.__chartTestManager.currentEchartsOptions?.series?.[0]?.label?.show,
+  }))).toEqual({ type: 'line', color: '#22c55e', labels: true });
+
+  const calls = await page.evaluate(() => window.__calls || []);
+  const edits = calls.filter((call) => call.url.includes('/api/edit-chart'));
+  expect(edits).toHaveLength(1);
+  expect(edits[0].body.contract_version).toBe(2);
+  expect(edits[0].body.chart_manifest.series[0].data_summary.count).toBe(3);
+  expect(JSON.stringify(edits[0].body)).not.toContain('"current_config"');
+  expect(JSON.stringify(edits[0].body)).not.toContain('"sample_data"');
+  expect(JSON.stringify(edits[0].body)).not.toContain('"all_data"');
+  expect(JSON.stringify(edits[0].body).length).toBeLessThan(6000);
+  expect(calls.some((call) => /\/api\/(?:ask|analysis\/rerun|generate-chart|analysis\/chart)/.test(call.url))).toBe(false);
+});
+
+test('binding edit rebuilds without repeating the LLM request', async ({ page }) => {
+  const rebuilt = await page.evaluate(() => ({
+    chart_config: structuredClone(window.__FIXTURES__.CHART.lineEdit.chart_config),
+    chart_spec: structuredClone(window.__FIXTURES__.CHART.lineEdit.chart_spec),
+  }));
+  await mountChartManager(page, {
+    edit: [{
+      response: {
+        contract_version: 2,
+        operations: [{ op: 'set_binding', x: 'region', y: 'sales' }],
+        notes: 'Updated chart bindings.',
+        out_of_scope: false,
+        reason_code: null,
+      },
+    }],
+    rebuild: [
+      { status: 409, response: { detail: 'cache_miss' } },
+      { response: rebuilt },
+    ],
+  });
+
+  await page.evaluate(() => { window.__calls = []; });
+  const refine = page.locator('#v3-chart-edit .chart-refine');
+  await refine.locator('.chart-refine-input').fill('use region on x and sales on y');
+  await refine.locator('.chart-refine-apply').click();
+  await expect(refine.locator('.chart-refine-applied')).toBeVisible();
+
+  const calls = await page.evaluate(() => window.__calls || []);
+  const edits = calls.filter((call) => call.url.endsWith('/api/edit-chart'));
+  const rebuilds = calls.filter((call) => call.url.includes('/api/edit-chart/rebuild'));
+  expect(edits).toHaveLength(1);
+  expect(rebuilds).toHaveLength(2);
+  expect(rebuilds[0].body.all_data).toBeUndefined();
+  expect(rebuilds[1].body.column_names).toEqual(['region', 'sales']);
+  expect(rebuilds[1].body.all_data).toHaveLength(3);
+  expect(calls.some((call) => /\/api\/(?:ask|analysis\/rerun|generate-chart|analysis\/chart)/.test(call.url))).toBe(false);
+});
+
 test('a chart edit survives local presentation changes and Reset restores the baseline', async ({ page }) => {
   await mountChartManager(page, {
-    edit: [
-      { status: 409, response: { detail: 'cache_miss' } },
-      { response: await page.evaluate(() => structuredClone(window.__FIXTURES__.CHART.lineEdit)) },
-    ],
+    edit: [{
+      response: {
+        contract_version: 2,
+        operations: [
+          { op: 'set_chart_type', chart_type: 'line' },
+          { op: 'set_color', target: 'all', color: '#22c55e' },
+          { op: 'set_toggle', key: 'dataLabels', value: true },
+        ],
+        notes: 'Changed to a line chart with labels.',
+        out_of_scope: false,
+        reason_code: null,
+      },
+    }],
   });
 
   const refine = page.locator('#v3-chart-edit .chart-refine');
@@ -25,17 +112,18 @@ test('a chart edit survives local presentation changes and Reset restores the ba
   await expect(input).toBeEnabled();
   await expect(apply).toHaveAttribute('aria-disabled', 'true');
 
-  await input.fill('הצג כגרף קו עם תוויות');
+  await input.fill('show line chart with labels');
   await expect(apply).toHaveAttribute('aria-disabled', 'false');
   await apply.click();
   const editCalls = await page.evaluate(() => (
     (window.__calls || []).filter((call) => call.url.includes('/api/edit-chart'))
   ));
-  expect(editCalls).toHaveLength(2);
-  expect(editCalls[1].body.all_data).toHaveLength(3);
+  expect(editCalls).toHaveLength(1);
+  expect(editCalls[0].body.contract_version).toBe(2);
+  expect(editCalls[0].body.all_data).toBeUndefined();
 
   await expect(refine.locator('.chart-refine-applied')).toBeVisible();
-  await expect(refine.locator('.chart-refine-applied bdi')).toHaveText('Changed the chart to a line and enabled labels.');
+  await expect(refine.locator('.chart-refine-applied bdi')).toHaveText('Changed to a line chart with labels.');
   await expect.poll(() => page.evaluate(() => (
     window.__chartTestManager.currentEchartsOptions?.series?.[0]?.type
   ))).toBe('line');

@@ -44,4 +44,25 @@ const stripped = stripDerivedSeries(withAverage);
 assert.equal(stripped.series.length, 1);
 assert.deepEqual(stripped.series[0].data, [30, 10]);
 
+const timeConfig = {
+    xAxis: { type: 'time' },
+    yAxis: { type: 'value' },
+    series: [{
+        name: 'Actual',
+        jeenRole: 'actual',
+        type: 'line',
+        data: [['2026-01-01', 10], ['2026-02-01', 20], ['2026-03-01', 30]],
+    }],
+};
+const { config: withTimeAverage } = applyDerivedSeries(
+    timeConfig,
+    [{ operator: 'moving_avg', source_column: 'Actual', params: { window: 2 } }],
+    { columns: [], rows: [] },
+);
+assert.deepEqual(withTimeAverage.series[1].data, [
+    ['2026-01-01', null],
+    ['2026-02-01', 15],
+    ['2026-03-01', 25],
+]);
+
 console.log('chart operator JS tests passed');

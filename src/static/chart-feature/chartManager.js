@@ -15,19 +15,23 @@ import { ChartTypeSelector } from './components/ChartTypeSelector.js?v=79';
 import { ChartOptionsPanel } from './components/ChartOptionsPanel.js?v=76';
 import { MapOptionsPanel, MAP_PALETTES } from './components/MapOptionsPanel.js?v=3';
 import { DEFAULT_PALETTE_ID, applyPalette, getPalette, isKnownPalette } from './utils/chartPalettes.js?v=1';
-import { ChartChat } from './components/ChartChat.js?v=107';
-import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js?v=1';
-import { parseChartQuickIntent } from './utils/chartQuickIntents.js?v=2';
+import { ChartChat } from './components/ChartChat.js?v=110';
+import { applyDerivedSeries, stripDerivedSeries } from './utils/chartOperators.js?v=2';
 import { ensureMapsForOption, isMapOption } from './utils/mapAssets.js?v=81';
 import { OsmMapRenderer } from './utils/osmMapRenderer.js?v=9';
 import { CHART_TYPE_VALUES } from './chartTypes.js?v=79';
 import { localizeSeriesLabels } from './utils/seriesLabels.js?v=1';
-import { applyQuickOptions } from './utils/chartQuickOptions.js?v=4';
+import { applyQuickOptions } from './utils/chartQuickOptions.js?v=3';
 import {
     applyStyleOverrides,
     createChartSession,
-    extractStyleOverrides,
-} from './utils/chartSession.js?v=2';
+} from './utils/chartSession.js?v=3';
+import {
+    applyChartEditOperations,
+    applyLocalSort,
+    buildChartManifest,
+    guardMlPresentation,
+} from './utils/chartEditOperations.js?v=1';
 
 // Interface strings come from the locale catalog (static/i18n/i18n.js, loaded first).
 const t = (key, args) => (typeof window !== 'undefined' && window.I18n && typeof window.I18n.t === 'function' ? window.I18n.t(key, args) : String(key));
@@ -85,10 +89,10 @@ export class ChartManager {
         // The current ECharts options object actually rendered.
         this.currentEchartsOptions = null;
         this.chartSession = null;
+        this._chartEditRevision = 0;
         // User-chosen colour palette (a preference, so it follows the user across
         // charts). 'jeen' means "no override": theme tokens / server palette.
         this.paletteId = this._readPalettePreference();
-        this.customPalette = null;
 
         // Per-instance query context + view elements. When set (Chat mode)
         // these override the Ask-mode window globals / fixed element IDs so a
@@ -181,6 +185,7 @@ export class ChartManager {
 
     _setChartSession(snapshot, defaults = {}) {
         this.chartSession = createChartSession(snapshot, defaults);
+        this._chartEditRevision += 1;
         this._syncLegacySessionAliases();
         this._syncPanelFromSession();
     }
@@ -371,28 +376,26 @@ export class ChartManager {
         // container exists in the DOM, so omitting it from the page is fine.
         if (document.getElementById('chart-chat-container')) {
             this.chartChat = new ChartChat('chart-chat-container', {
-                getCurrentConfig: () => this._renderReady ? this._semanticConfig() : null,
-                getCurrentResults: () => this.state.currentData,
-                getConnection: () => (typeof getActiveConnection === 'function' ? getActiveConnection() : ''),
-                getCurrentSpec: () => this._renderReady ? this.chartSession?.working?.spec || null : null,
-                getCurrentDerivedSpecs: () => (
-                    this._renderReady ? this.chartSession?.working?.derivedSpecs || [] : []
+                getChartManifest: () => (
+                    this._renderReady && this.chartSession
+                        ? buildChartManifest(this.chartSession, {
+                            chartKind: this._chartEditKind(),
+                            columns: this.dataAnalysis?.columns || [],
+                        })
+                        : null
                 ),
+                getChartKind: () => this._chartEditKind(),
+                getConnection: () => (typeof getActiveConnection === 'function' ? getActiveConnection() : ''),
                 getQueryId: () => (
                     this.ctx?.queryId != null ? this.ctx.queryId : window.currentQueryId
                 ),
-                onApply: (newConfig, derivedSpecs, notes, edit) => (
-                    this.applyEditedConfig(newConfig, derivedSpecs, notes, edit)
+                getRevision: () => this._chartEditToken(),
+                isRevisionCurrent: (revision) => revision === this._chartEditToken(),
+                onApply: (operations, revision) => (
+                    this.applyEditedOperations(operations, revision)
                 ),
-                onQuickEdit: (instruction) => this.applyQuickInstruction(instruction),
+                onTiming: (timing) => this._devTrace('edit', timing),
                 onReset: () => this.resetChartEdits(),
-                // ML results: the bar re-runs the analysis as a new turn; the
-                // workspace owns that flow (proposal → /api/analysis/rerun).
-                onAnalysisRerun: (instruction) => (
-                    window.WorkspaceController && typeof window.WorkspaceController.rerunAnalysis === 'function'
-                        ? window.WorkspaceController.rerunAnalysis(instruction)
-                        : Promise.reject(new Error(t('charts.errors.rerunUnavailable')))
-                ),
             });
             this.chartChat.mount();
             this.chartChat.disable();
@@ -401,6 +404,27 @@ export class ChartManager {
         this.setAnalysisRerunBusy(this.analysisRerunBusy);
 
         console.log('[ChartManager] Components initialized');
+    }
+
+    _chartEditKind() {
+        if (!this.analysisMode) return 'sql';
+        const roles = new Set(
+            (this.chartSession?.working?.config?.series || [])
+                .map((series) => series?.jeenRole)
+                .filter(Boolean),
+        );
+        return roles.has('interval')
+            || roles.has('interval_base')
+            || roles.has('interval_bound')
+            ? 'ml_band'
+            : 'ml_basic';
+    }
+
+    _chartEditToken() {
+        const queryId = this.ctx?.queryId != null
+            ? this.ctx.queryId
+            : (typeof window !== 'undefined' ? window.currentQueryId : '');
+        return `${String(queryId || '')}:${this._chartEditRevision}`;
     }
 
     async _loadChartCapabilities(owner) {
@@ -521,6 +545,7 @@ export class ChartManager {
         // user starts on a clean baseline.
         if (this.chartChat) this.chartChat.reset();
         this.chartSession = null;
+        this._chartEditRevision += 1;
         this.originalConfig = null;
         this.originalChartSpec = null;
 
@@ -777,6 +802,7 @@ export class ChartManager {
             this.state.currentData,
         ).config;
         displayConfig = this._withQuickToggles(displayConfig, view.toggles);
+        displayConfig = applyLocalSort(displayConfig, view.toggles?.sortDirection);
         displayConfig = this._withMapView(displayConfig, view.mapView);
 
         if (this._isOsmMapOption(displayConfig)) {
@@ -815,6 +841,7 @@ export class ChartManager {
         }
         displayConfig = this._withWorkspaceTheme(displayConfig);
         displayConfig = applyStyleOverrides(displayConfig, working.styleOverrides);
+        displayConfig = guardMlPresentation(displayConfig, this._chartEditKind());
         displayConfig = this._finalizeForRender(displayConfig);
         await ensureMapsForOption(displayConfig);
         this._assertOwner(owner);
@@ -868,7 +895,6 @@ export class ChartManager {
 
     /** Colours to draw with, or null when the server/theme default should stand. */
     _paletteColors() {
-        if (this.customPalette?.colors?.length) return this.customPalette.colors;
         const palette = getPalette(this.paletteId);
         if (palette.colors) return palette.colors;
         return this.workspaceMode ? this._themeTokenColors() : null;
@@ -876,7 +902,6 @@ export class ChartManager {
 
     _withPalette(option) {
         if (!option || this._isOsmMapOption(option) || isMapOption(option)) return option;
-        if (this.customPalette?.colors?.length) return applyPalette(option, this.customPalette.colors);
         const palette = getPalette(this.paletteId);
         if (!palette.colors) return option; // default: leave theme/server colours alone
         return applyPalette(option, palette.colors);
@@ -887,9 +912,8 @@ export class ChartManager {
      * chart in place (no server round-trip, chat edits are preserved).
      */
     async setPalette(id) {
-        if (!isKnownPalette(id) || (id === this.paletteId && !this.customPalette)) return;
+        if (!isKnownPalette(id) || id === this.paletteId) return;
         this.paletteId = id;
-        this.customPalette = null;
         try { window.JeenPreferences?.setChartPalette?.(id); } catch (_) { /* preference is best-effort */ }
         this.chartOptionsPanel?.setPalette(id);
         if (!this.chartSession || this._isOsmMapOption(this._semanticConfig()) || isMapOption(this._semanticConfig())) return;
@@ -905,246 +929,6 @@ export class ChartManager {
         } finally {
             this._finishOperation(owner);
         }
-    }
-
-    _setCustomPalette(name, colors) {
-        if (!Array.isArray(colors) || !colors.length) return;
-        this.customPalette = { name: String(name || 'custom'), colors: colors.slice() };
-        this.chartOptionsPanel?.setCustomPalette(
-            this.customPalette.name,
-            this.customPalette.colors,
-        );
-    }
-
-    async applyQuickInstruction(instruction) {
-        if (!this.chartSession && this.currentEchartsOptions) {
-            this.chartSession = createChartSession({
-                chart_config: this.currentEchartsOptions,
-                chart_spec: this.currentChartSpec,
-                chart_toggles: this.chartOptionsPanel?.getToggles?.() || {},
-            });
-            this._syncLegacySessionAliases();
-        }
-        if (!this.chartSession || this._isOsmMapOption(this._semanticConfig())
-            || isMapOption(this._semanticConfig())) return null;
-        const columns = this.chartOptionsPanel?.columns || this.state.currentData?.columns || [];
-        const parsed = parseChartQuickIntent(instruction, { columns });
-        if (!parsed) return null;
-
-        const previousSnapshot = this.chartSession.snapshot();
-        const previousDisplay = this.currentEchartsOptions;
-        const previousRenderedConfig = this.state.currentConfig;
-        const previousPaletteId = this.paletteId;
-        const previousCustomPalette = this.customPalette
-            ? { name: this.customPalette.name, colors: this.customPalette.colors.slice() }
-            : null;
-        const candidate = createChartSession(previousSnapshot);
-        let config = candidate.working.config;
-        let spec = candidate.working.spec;
-        const toggles = { ...candidate.view.toggles };
-        let paletteId = this.paletteId;
-        let customPalette = previousCustomPalette;
-
-        for (const command of parsed.commands) {
-            if (command.type === 'toggle') {
-                toggles[command.key] = command.value;
-            } else if (command.type === 'palette') {
-                paletteId = command.id;
-                customPalette = null;
-            } else if (command.type === 'customPalette') {
-                customPalette = {
-                    name: command.name,
-                    colors: command.colors.slice(),
-                };
-            } else if (command.type === 'binding') {
-                const rebound = this._withXAxisBinding(config, command.value, spec);
-                if (!rebound) return null;
-                config = rebound;
-                spec = { ...(spec || {}), x: command.value };
-            }
-        }
-
-        candidate.replaceWorking({ ...candidate.working, config, spec });
-        candidate.replaceView({ ...candidate.view, toggles });
-        const noSemanticChange = this._stableOptionJson(candidate.snapshot())
-            === this._stableOptionJson(previousSnapshot);
-        const noPaletteChange = paletteId === previousPaletteId
-            && this._stableOptionJson(customPalette) === this._stableOptionJson(previousCustomPalette);
-        if (noSemanticChange && noPaletteChange) return { applied: false, noChange: true };
-
-        this.paletteId = paletteId;
-        this.customPalette = customPalette;
-        this.chartSession = candidate;
-        this._syncLegacySessionAliases();
-        const owner = this._beginOperation({ invalidate: true });
-        try {
-            await this._renderWorking(owner, candidate);
-            this._assertOwner(owner);
-            this.chartSession = candidate;
-            this._syncLegacySessionAliases();
-            this._syncPanelFromSession();
-            if (customPalette) {
-                this.chartOptionsPanel?.setCustomPalette(customPalette.name, customPalette.colors);
-            } else {
-                this.chartOptionsPanel?.setPalette(paletteId);
-                try { window.JeenPreferences?.setChartPalette?.(paletteId); } catch (_) { /* best effort */ }
-            }
-            return {
-                applied: true,
-                summary: parsed.commands
-                    .map((command) => this._quickCommandSummary(command))
-                    .filter(Boolean)
-                    .join(' · '),
-            };
-        } catch (error) {
-            this.paletteId = previousPaletteId;
-            this.customPalette = previousCustomPalette;
-            const rollback = createChartSession(previousSnapshot);
-            if (this._owns(owner) && error?.name !== 'AbortError') {
-                try {
-                    await this._renderWorking(owner, rollback);
-                    this._assertOwner(owner);
-                } catch (_) {
-                    this.currentEchartsOptions = previousDisplay;
-                    this.state.currentConfig = previousRenderedConfig;
-                    this._renderReady = Boolean(previousDisplay);
-                }
-            }
-            this.chartSession = rollback;
-            this._syncLegacySessionAliases();
-            this._syncPanelFromSession();
-            if (error?.name === 'AbortError') throw error;
-            throw new Error(t('charts.chat.renderFailed'));
-        } finally {
-            this._finishOperation(owner);
-        }
-    }
-
-    _stableOptionJson(value) {
-        const normalize = (item) => {
-            if (Array.isArray(item)) return item.map(normalize);
-            if (!item || typeof item !== 'object') return item;
-            return Object.fromEntries(
-                Object.keys(item).sort().map((key) => [key, normalize(item[key])])
-            );
-        };
-        try { return JSON.stringify(normalize(value)); } catch (_) { return ''; }
-    }
-
-    _explicitPaletteChange(previous, next) {
-        const extract = (option) => {
-            const series = Array.isArray(option?.series) ? option.series : [];
-            const seriesColors = series.map((item) => (
-                item?.itemStyle?.color || item?.lineStyle?.color || null
-            )).filter((color) => typeof color === 'string' && color);
-            if (seriesColors.length) return seriesColors;
-            return Array.isArray(option?.color)
-                ? option.color.filter((color) => typeof color === 'string' && color)
-                : [];
-        };
-        const before = extract(previous);
-        const after = extract(next);
-        return after.length && this._stableOptionJson(before) !== this._stableOptionJson(after)
-            ? after
-            : null;
-    }
-
-    _quickCommandSummary(command) {
-        if (command.type === 'customPalette') {
-            return t('charts.chat.summaryColor', { color: command.name });
-        }
-        if (command.type === 'palette') {
-            return t('charts.chat.summaryPalette', { palette: command.id });
-        }
-        if (command.type === 'binding') {
-            return t('charts.chat.summaryXAxis', { column: command.value });
-        }
-        const keys = {
-            dataLabels: command.value ? 'charts.chat.summaryLabelsOn' : 'charts.chat.summaryLabelsOff',
-            legend: command.value ? 'charts.chat.summaryLegendOn' : 'charts.chat.summaryLegendOff',
-            dataZoom: command.value ? 'charts.chat.summaryZoomOn' : 'charts.chat.summaryZoomOff',
-            sortDesc: command.value ? 'charts.chat.summarySortOn' : 'charts.chat.summarySortOff',
-        };
-        return keys[command.key] ? t(keys[command.key]) : '';
-    }
-
-    _withXAxisBinding(option, column, currentSpec = null) {
-        const data = this.state.currentData || {};
-        const names = (data.columns || []).map((item) => typeof item === 'string' ? item : item?.name);
-        const columnIndex = names.indexOf(column);
-        const rows = data.data || data.rows || [];
-        if (columnIndex < 0 || !Array.isArray(rows) || !rows.length) return null;
-        const categories = rows.map((row) => (
-            Array.isArray(row) ? row[columnIndex] : row?.[column]
-        ));
-        if (categories.some((value) => value === undefined)) return null;
-        const previousColumn = currentSpec?.x;
-        const previousIndex = names.indexOf(previousColumn);
-        const sourceCategories = previousIndex >= 0
-            ? rows.map((row) => Array.isArray(row) ? row[previousIndex] : row?.[previousColumn])
-            : null;
-
-        let out;
-        try { out = JSON.parse(JSON.stringify(option)); } catch (_) { return null; }
-        if (out.dataset) return null;
-        const axes = Array.isArray(out.xAxis) ? out.xAxis : out.xAxis ? [out.xAxis] : [];
-        if (axes.length !== 1 || axes[0]?.type !== 'category') return null;
-        const axis = axes[0];
-        if (!Array.isArray(axis.data) || axis.data.length !== categories.length) return null;
-        const currentCategories = axis.data.slice();
-        if (sourceCategories && sourceCategories.every((value) => value !== undefined)) {
-            const keys = sourceCategories.map((value) => JSON.stringify([typeof value, value]));
-            const hasDuplicates = new Set(keys).size !== keys.length;
-            const currentKeys = currentCategories.map((value) => JSON.stringify([typeof value, value]));
-            if (hasDuplicates && currentKeys.some((key, index) => key !== keys[index])) return null;
-        }
-        axes[0] = { ...axis, data: categories.slice(), name: column };
-        out.xAxis = Array.isArray(out.xAxis) ? axes : axes[0];
-
-        if (Array.isArray(out.series)) {
-            const unsupported = out.series.some((series) => (
-                series && (
-                    Number(series.xAxisIndex || 0) !== 0
-                    || series.datasetIndex !== undefined
-                    || series.encode !== undefined
-                    || (series.data !== undefined && !Array.isArray(series.data))
-                    || (Array.isArray(series.data) && series.data.length !== categories.length)
-                )
-            ));
-            if (unsupported) return null;
-            let alignmentFailed = false;
-            const reboundSeries = out.series.map((series) => {
-                if (!series || !Array.isArray(series.data)) return series;
-                let aligned = series.data.slice();
-                if (sourceCategories && sourceCategories.every((value) => value !== undefined)) {
-                    const queues = new Map();
-                    currentCategories.forEach((value, index) => {
-                        const key = JSON.stringify([typeof value, value]);
-                        if (!queues.has(key)) queues.set(key, []);
-                        queues.get(key).push(series.data[index]);
-                    });
-                    aligned = sourceCategories.map((value) => {
-                        const key = JSON.stringify([typeof value, value]);
-                        return queues.get(key)?.shift();
-                    });
-                    if (aligned.some((point) => point === undefined)) {
-                        alignmentFailed = true;
-                        return series;
-                    }
-                }
-                const points = aligned.map((point, index) => {
-                    if (Array.isArray(point) && point.length >= 2) return [categories[index], ...point.slice(1)];
-                    if (point && typeof point === 'object' && Array.isArray(point.value) && point.value.length >= 2) {
-                        return { ...point, value: [categories[index], ...point.value.slice(1)] };
-                    }
-                    return point;
-                });
-                return { ...series, data: points };
-            });
-            if (alignmentFailed) return null;
-            out.series = reboundSeries;
-        }
-        return out;
     }
 
     /**
@@ -1288,7 +1072,10 @@ export class ChartManager {
 
     setAnalysisMode(on) {
         this.analysisMode = Boolean(on);
-        this.chartChat?.setAnalysisMode(this.analysisMode);
+        // ML semantics still lock type/column/sort controls, but the compact
+        // chat is chart-only. It edits the existing ECharts option through
+        // /api/edit-chart and never re-runs SQL or the analysis pipeline.
+        this.chartChat?.setAnalysisMode(false);
         this.chartTypeSelector?.setDisabled(
             this.analysisMode,
             this.analysisMode ? t('charts.options.analysisTypeLocked') : ''
@@ -1312,7 +1099,8 @@ export class ChartManager {
 
     _syncChartChatEnabled() {
         if (!this.chartChat) return;
-        if (this.interactionEnabled && this._renderReady) this.chartChat.enable();
+        if (this.interactionEnabled && this._renderReady
+            && !this._isOsmMapOption(this.currentEchartsOptions)) this.chartChat.enable();
         else this.chartChat.disable();
     }
 
@@ -1375,83 +1163,50 @@ export class ChartManager {
     }
 
     /**
-     * Applies a chat-edited config to the chart.
-     *
-     * - Strips any previously-applied derived overlays so they don't stack.
-     * - Computes the requested derived overlays locally from currentData.
-     * - Re-renders via ChartContainer; falls back to the previous config on
-     *   failure so the user never ends up with a broken chart.
-     *
-     * @param {object} newConfig
-     * @param {Array} derivedSpecs
+     * Applies a v2 chart-editor operation list to a cloned canonical session.
+     * Validation is transactional: unsupported operations never publish state.
      */
-    async applyEditedConfig(newConfig, derivedSpecs, _notes = null, edit = null) {
-        if (!newConfig || typeof newConfig !== 'object' || !this.chartSession) return;
+    async applyEditedOperations(operations, expectedRevision) {
+        if (!this.chartSession) return;
+        if (expectedRevision !== this._chartEditToken()) {
+            const stale = new Error(t('charts.errors.staleOperation'));
+            stale.name = 'AbortError';
+            throw stale;
+        }
         const previousSnapshot = this.chartSession.snapshot();
-        const previousWorking = this.chartSession.working;
-        const previousDisplay = this.currentEchartsOptions;
-        const previousRenderedConfig = this.state.currentConfig;
-        const previousCustomPalette = this.customPalette;
-        const baselineConfig = this.chartSession.baseline.config;
-        const candidate = createChartSession(previousSnapshot);
-        const cleaned = stripDerivedSeries(newConfig);
-        const editedPalette = this._explicitPaletteChange(previousWorking.config, cleaned);
-        const styleOverrides = extractStyleOverrides(cleaned, baselineConfig);
-        const nextSpec = edit?.chart_spec && typeof edit.chart_spec === 'object'
-            ? edit.chart_spec
-            : previousWorking.spec;
-        candidate.replaceWorking({
-            config: cleaned,
-            spec: nextSpec,
-            derivedSpecs: derivedSpecs || [],
-            styleOverrides,
-        });
-        if (this.chartOptionsPanel && !this._isOsmMapOption(cleaned)) {
-            this.chartOptionsPanel.syncTogglesFromConfig(cleaned);
-            candidate.replaceView({
-                ...candidate.view,
-                toggles: this.chartOptionsPanel.getToggles(),
-                legendUserSet: this.chartOptionsPanel.legendUserSet,
-            });
+        const bindingOperations = operations.filter((operation) => operation?.op === 'set_binding');
+        const localOperations = operations.filter((operation) => operation?.op !== 'set_binding');
+        let sourceSession = this.chartSession;
+        let rebuildTelemetry = { request_count: 0, rows_uploaded: 0, server_timing: '' };
+        if (bindingOperations.length) {
+            const rebuilt = await this._rebuildBindingOperations(
+                bindingOperations,
+                expectedRevision,
+            );
+            sourceSession = rebuilt.session;
+            rebuildTelemetry = rebuilt.telemetry;
         }
-        if (this._stableOptionJson(candidate.snapshot()) === this._stableOptionJson(previousSnapshot)
-            && !editedPalette) {
-            this._syncPanelFromSession();
-            return { applied: false, noChange: true };
-        }
-        if (editedPalette) {
-            this.customPalette = { name: 'custom', colors: editedPalette.slice() };
-        }
+        const candidate = localOperations.length
+            ? applyChartEditOperations(sourceSession, localOperations, {
+                chartKind: this._chartEditKind(),
+            })
+            : createChartSession(sourceSession.snapshot());
 
         // Publish the semantic candidate before rendering so a newer local
         // operation (for example a quick toggle) composes from this edit. Only
         // the current owner may roll it back on an actual render failure.
         this.chartSession = candidate;
+        this._chartEditRevision += 1;
         this._syncLegacySessionAliases();
         const owner = this._beginOperation({ invalidate: true });
         try {
             await this._renderWorking(owner, candidate);
             this._assertOwner(owner);
-            if (this._isOsmMapOption(cleaned) && Array.isArray(edit?.view_commands)) {
-                this.osmMapRenderer?.applyViewCommands(edit.view_commands);
-                this._assertOwner(owner);
-                candidate.replaceView({
-                    ...candidate.view,
-                    mapView: {
-                        ...candidate.view.mapView,
-                        osm: this.osmMapRenderer?.getViewState?.() || {},
-                    },
-                });
-            }
             this.chartSession = candidate;
             this._syncLegacySessionAliases();
             this._syncPanelFromSession();
-            if (editedPalette) {
-                this.chartOptionsPanel?.setCustomPalette('custom', editedPalette);
-            }
-            return { applied: true };
+            return rebuildTelemetry;
         } catch (error) {
-            this.customPalette = previousCustomPalette;
             if (!this._owns(owner) || error?.name === 'AbortError') return;
             if (this._owns(owner) && error?.name !== 'AbortError') {
                 console.error('[ChartManager] Failed to apply edited config:', error);
@@ -1460,18 +1215,116 @@ export class ChartManager {
                     await this._renderWorking(owner, rollback);
                     this._assertOwner(owner);
                     this.chartSession = rollback;
+                    this._chartEditRevision += 1;
                     this._syncLegacySessionAliases();
                     this._syncPanelFromSession();
                 } catch (_) {
-                    this.currentEchartsOptions = previousDisplay;
-                    this.state.currentConfig = previousRenderedConfig;
-                    this._renderReady = Boolean(previousDisplay);
+                    this._invalidateRenderedChart();
                 }
             }
             throw error;
         } finally {
             this._finishOperation(owner);
         }
+    }
+
+    async _rebuildBindingOperations(operations, expectedRevision) {
+        if (this._chartEditKind() !== 'sql') {
+            throw new Error(t('charts.chat.outOfScope'));
+        }
+        const connection = typeof getActiveConnection === 'function'
+            ? getActiveConnection()
+            : '';
+        const queryId = this.ctx?.queryId != null ? this.ctx.queryId : window.currentQueryId;
+        const chartSpec = this.chartSession?.working?.spec;
+        if (!connection || !queryId || !chartSpec) {
+            throw new Error(t('charts.chat.outOfScope'));
+        }
+        const baseBody = {
+            connection,
+            query_id: String(queryId),
+            chart_kind: 'sql',
+            chart_spec: chartSpec,
+            operations,
+        };
+        let requestCount = 1;
+        let rowsUploaded = 0;
+        let response = await fetch('/api/edit-chart/rebuild', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(baseBody),
+        });
+        if (response.status === 409) {
+            if (expectedRevision !== this._chartEditToken()) {
+                const stale = new Error(t('charts.errors.staleOperation'));
+                stale.name = 'AbortError';
+                throw stale;
+            }
+            const fallback = this._bindingFallbackData(operations, chartSpec);
+            requestCount += 1;
+            rowsUploaded = fallback.all_data.length;
+            response = await fetch('/api/edit-chart/rebuild', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...baseBody, ...fallback }),
+            });
+        }
+        const serverTiming = response.headers?.get?.('Server-Timing') || '';
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.chart_config || !data.chart_spec) {
+            const detail = data?.detail || data?.error || `HTTP ${response.status}`;
+            throw new Error(String(detail));
+        }
+        if (expectedRevision !== this._chartEditToken()) {
+            const stale = new Error(t('charts.errors.staleOperation'));
+            stale.name = 'AbortError';
+            throw stale;
+        }
+        const rebuilt = createChartSession(this.chartSession.snapshot());
+        rebuilt.replaceWorking({
+            ...rebuilt.working,
+            config: data.chart_config,
+            spec: data.chart_spec,
+        });
+        return {
+            session: rebuilt,
+            telemetry: {
+                request_count: requestCount,
+                rows_uploaded: rowsUploaded,
+                server_timing: serverTiming,
+            },
+        };
+    }
+
+    _bindingFallbackData(operations, chartSpec) {
+        const data = this.state.currentData || {};
+        const columns = (data.columns || []).map((column) => (
+            typeof column === 'string' ? column : column?.name
+        ));
+        const needed = new Set();
+        const add = (value) => {
+            if (typeof value === 'string' && value) needed.add(value);
+            else if (Array.isArray(value)) value.forEach(add);
+        };
+        add(chartSpec?.x);
+        add(chartSpec?.y);
+        add(chartSpec?.series);
+        operations.forEach((operation) => {
+            add(operation?.x);
+            add(operation?.y);
+            add(operation?.series);
+        });
+        const indexes = columns
+            .map((column, index) => ({ column, index }))
+            .filter(({ column }) => needed.has(column));
+        if (!indexes.length) throw new Error(t('charts.chat.outOfScope'));
+        const rows = data.rows || data.data || [];
+        return {
+            column_names: indexes.map(({ column }) => column),
+            all_data: rows.map((row) => indexes.map(({ column, index }) => (
+                Array.isArray(row) ? row[index] : row?.[column]
+            ))),
+        };
     }
 
     /**
@@ -1481,12 +1334,10 @@ export class ChartManager {
     async resetChartEdits() {
         if (!this.chartSession) return;
         const previousSnapshot = this.chartSession.snapshot();
-        const previousCustomPalette = this.customPalette;
         const candidate = createChartSession(previousSnapshot);
         candidate.reset();
-        this.customPalette = null;
-        this.chartOptionsPanel?.clearCustomPalette?.();
         this.chartSession = candidate;
+        this._chartEditRevision += 1;
         this._syncLegacySessionAliases();
         this._syncPanelFromSession();
         const owner = this._beginOperation({ invalidate: true });
@@ -1497,7 +1348,6 @@ export class ChartManager {
             this._syncLegacySessionAliases();
             this._syncPanelFromSession();
         } catch (error) {
-            this.customPalette = previousCustomPalette;
             if (!this._owns(owner) || error?.name === 'AbortError') return;
             if (this._owns(owner) && error?.name !== 'AbortError') {
                 const rollback = createChartSession(previousSnapshot);
@@ -1505,6 +1355,7 @@ export class ChartManager {
                     await this._renderWorking(owner, rollback);
                     this._assertOwner(owner);
                     this.chartSession = rollback;
+                    this._chartEditRevision += 1;
                     this._syncLegacySessionAliases();
                     this._syncPanelFromSession();
                 } catch (_) {
@@ -2066,6 +1917,7 @@ export class ChartManager {
         }
         candidate.replaceView({ ...candidate.view, mapView: { ...mapView, echarts: echartsView, controls } });
         this.chartSession = candidate;
+        this._chartEditRevision += 1;
         this._syncLegacySessionAliases();
         const owner = this._beginOperation({ invalidate: true });
         try {
@@ -2081,6 +1933,7 @@ export class ChartManager {
                     await this._renderWorking(owner, rollback);
                     this._assertOwner(owner);
                     this.chartSession = rollback;
+                    this._chartEditRevision += 1;
                     this._syncLegacySessionAliases();
                 } catch (_) {
                     this._invalidateRenderedChart();
@@ -2297,6 +2150,7 @@ export class ChartManager {
             legendUserSet: this.chartOptionsPanel?.legendUserSet ?? candidate.view.legendUserSet,
         });
         this.chartSession = candidate;
+        this._chartEditRevision += 1;
         this._syncLegacySessionAliases();
         const owner = this._beginOperation({ invalidate: true });
         try {
@@ -2311,6 +2165,7 @@ export class ChartManager {
                     await this._renderWorking(owner, rollback);
                     this._assertOwner(owner);
                     this.chartSession = rollback;
+                    this._chartEditRevision += 1;
                     this._syncLegacySessionAliases();
                     this._syncPanelFromSession();
                 } catch (_) {

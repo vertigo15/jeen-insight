@@ -1,12 +1,12 @@
 dependencies:
 - name: jeen-insights-api
   repository: file://charts/jeen-insights-api
-  version: 0.1.0
+  version: 0.2.0
 - name: jeen-insights-ui
   repository: file://charts/jeen-insights-ui
-  version: 0.1.0
+  version: 0.2.0
 - name: jeen-insights-analytics
   repository: file://charts/jeen-insights-analytics
-  version: 0.1.0
-digest: sha256:9660b3f4f9f6f8634c1263ed867c380644907b16148f7d7007dccef8766e7db0
-generated: "2026-09-15T00:38:36.544472+03:00"
+  version: 0.2.0
+digest: sha256:25c24f7bd78b095f1ae39be1a638535a4cfe522a9143b1ffdc7538cd6d9afb2c
+generated: "2026-09-25T11:35:03.585877+03:00"

@@ -1,0 +1,35 @@
+# Migration-only render overlay. Copy this file, replace every "replace-with-*"
+# value, and render it together with the target environment overlay.
+global:
+  externalSecrets:
+    enabled: false
+
+jeen-insights-api:
+  enabled: false
+
+jeen-insights-ui:
+  enabled: false
+
+jeen-insights-analytics:
+  enabled: false
+
+migration:
+  enabled: true
+  bundleId: replace-with-bundle-id
+  image:
+    repository: registry.example.invalid/jeen-insights-api
+    tag: replace-with-immutable-tag
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Prefer a dedicated, least-privilege migration DB role. This Secret may be
+  # the global application Secret when a separate role is not available.
+  existingSecret:
+    name: replace-with-migration-secret
+    optional: false
+  # Set to the API ConfigMap only when the migration needs its non-secret
+  # settings. The Job can run before the first workload install.
+  apiConfigMap:
+    name: ""
+    optional: true
+  # Leave unset/null for Argo safety and migration evidence retention.
+  ttlSecondsAfterFinished: null

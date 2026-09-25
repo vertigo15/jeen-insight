@@ -69,6 +69,22 @@ class TestClassifyLlmError:
     def test_unknown_passthrough(self):
         assert classify_llm_error(Exception("weird boom")) == "weird boom"
 
+    def test_response_usage_keeps_cache_and_reasoning_details(self):
+        response = svc_mod._from_lc_response(SimpleNamespace(
+            content="{}",
+            response_metadata={"finish_reason": "stop"},
+            usage_metadata={
+                "input_tokens": 100,
+                "output_tokens": 40,
+                "total_tokens": 140,
+                "input_token_details": {"cache_read": 60},
+                "output_token_details": {"reasoning": 12},
+            },
+            tool_calls=[],
+        ))
+        assert response["usage"]["cached_prompt_tokens"] == 60
+        assert response["usage"]["reasoning_tokens"] == 12
+
 
 # ----------------------------------------------------------------------
 # Auto-fallback
@@ -145,3 +161,47 @@ class TestAutoFallback:
         )
         assert ai.content == "DIRECT"
         assert svc.get_deployment() == "bad"  # unchanged
+
+    async def test_max_fallbacks_caps_provider_attempts(self, monkeypatch):
+        svc = _service(_FakeChat(error=Exception("primary failed")))
+        monkeypatch.setattr(
+            llm_health,
+            "cached_health",
+            lambda: {
+                "first": ModelHealth("first", "openai", "first", llm_health.PASS, "ok", 0.1),
+                "second": ModelHealth("second", "openai", "second", llm_health.PASS, "ok", 0.1),
+            },
+        )
+
+        async def _fake_fetch(pool, name):
+            return {
+                "provider_name": "openai",
+                "provider_model_identifier": name,
+                "model_name": name,
+            }
+
+        attempted = []
+
+        def _fake_build(row):
+            attempted.append(row["model_name"])
+            return _FakeChat(
+                reply="SECOND" if row["model_name"] == "second" else None,
+                error=None if row["model_name"] == "second" else Exception("first failed"),
+            )
+
+        monkeypatch.setattr(svc_mod, "_fetch_model_row", _fake_fetch)
+        monkeypatch.setattr(svc_mod, "_build_chat_model", _fake_build)
+
+        with pytest.raises(LLMUnavailableError):
+            await svc._ainvoke_with_fallback(
+                [],
+                base=svc._chat_model,
+                provider_name="azure_openai",
+                model_name="bad",
+                max_tokens=16,
+                temperature=0.3,
+                tools=None,
+                promote=False,
+                max_fallbacks=1,
+            )
+        assert attempted == ["first"]

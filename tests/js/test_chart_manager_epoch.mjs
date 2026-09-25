@@ -44,6 +44,27 @@ assert.equal(
     'semantic state remains capturable while presentation rendering is in flight',
 );
 
+// A render failure after valid operations restores the exact prior session.
+const beforeEdit = manager.chartSession.snapshot();
+const revision = manager._chartEditToken();
+let renderAttempts = 0;
+manager._renderWorking = async (owner) => {
+    manager._assertOwner(owner);
+    renderAttempts += 1;
+    if (renderAttempts === 1) throw new Error('synthetic render failure');
+};
+const originalConsoleError = console.error;
+console.error = () => {};
+await assert.rejects(
+    manager.applyEditedOperations([
+        { op: 'set_color', target: 'all', color: '#22c55e' },
+    ], revision),
+    /synthetic render failure/,
+);
+console.error = originalConsoleError;
+assert.equal(renderAttempts, 2, 'rollback is rendered after the failed candidate');
+assert.deepEqual(manager.chartSession.snapshot(), beforeEdit);
+
 const disposedOwner = manager._beginOperation();
 manager.dispose();
 assert.equal(disposedOwner.controller.signal.aborted, true);

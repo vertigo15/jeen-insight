@@ -1,0 +1,7 @@
+# Files not needed in packaged chart archives.
+.DS_Store
+.git/
+.gitignore
+*.swp
+*.tmp
+tests/

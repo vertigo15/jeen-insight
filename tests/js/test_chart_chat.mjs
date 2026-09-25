@@ -118,6 +118,7 @@ const applyRender = deferred();
 const resetRender = deferred();
 let fetchCalls = 0;
 let lastPayload = null;
+let lastTiming = null;
 globalThis.fetch = async (_url, options = {}) => {
     fetchCalls += 1;
     lastPayload = options.body ? JSON.parse(options.body) : null;
@@ -126,24 +127,25 @@ globalThis.fetch = async (_url, options = {}) => {
         status: 200,
         async json() {
             return {
-                chart_config: { series: [{ type: 'bar', data: [1] }] },
-                derived_series: [],
-                notes: 'Rendered',
+                contract_version: 2,
+                operations: [{ op: 'set_color', target: 'all', color: '#22c55e' }],
+                notes: 'התרשים עודכן',
+                out_of_scope: false,
+                reason_code: null,
             };
         },
     };
 };
 
 const { chat, container, document } = mountChat({
-    getCurrentConfig: () => ({ series: [] }),
-    getCurrentResults: () => ({ columns: ['value'], rows: [[1]] }),
+    getChartManifest: () => ({ series: [{ identity: 'name:value', data_summary: { count: 1 } }] }),
+    getChartKind: () => 'sql',
     getConnection: () => 'analytics',
-    getCurrentDerivedSpecs: () => [{
-        operator: 'moving_avg',
-        source_column: 'value',
-        params: { window: 2 },
-    }],
+    getQueryId: () => 'query-1',
+    getRevision: () => 7,
+    isRevisionCurrent: (revision) => revision === 7,
     onApply: () => applyRender.promise,
+    onTiming: (timing) => { lastTiming = timing; },
     onReset: () => resetRender.promise,
 });
 
@@ -164,6 +166,7 @@ assert.equal(fetchCalls, 1);
 assert.equal(chat._inputEl.disabled, false);
 assert.equal(chat._inputEl.readOnly, true);
 assert.equal(chat._inputEl.getAttribute('aria-busy'), 'true');
+assert.equal(chat._resetBtnEl.disabled, false, 'Reset remains available to cancel an edit');
 assert.equal(document.activeElement, chat._inputEl);
 chat.disable(); // ChartManager invalidates controls while its render is pending.
 assert.equal(chat._inputEl.disabled, false);
@@ -181,11 +184,22 @@ assert.equal(chat._inputEl.readOnly, false);
 assert.equal(chat._inputEl.getAttribute('aria-busy'), 'false');
 assert.equal(document.activeElement, chat._inputEl);
 assert.equal(chat._statusEl.textContent, 'Chart updated. This edit is session-only and is not saved.');
-assert.deepEqual(lastPayload.active_derived_series, [{
-    operator: 'moving_avg',
-    source_column: 'value',
-    params: { window: 2 },
-}]);
+assert.equal(lastPayload.contract_version, 2);
+assert.equal(lastPayload.chart_kind, 'sql');
+assert.equal(lastPayload.query_id, 'query-1');
+assert.equal(lastPayload.instruction, 'הצג revenue by region');
+assert.deepEqual(lastPayload.chart_manifest, {
+    series: [{ identity: 'name:value', data_summary: { count: 1 } }],
+});
+for (const forbidden of ['current_config', 'sample_data', 'all_data', 'columns', 'column_names']) {
+    assert.equal(forbidden in lastPayload, false, `${forbidden} must not cross the v2 boundary`);
+}
+assert.equal(chat.messages[1].content, 'התרשים עודכן', 'Hebrew response text is preserved');
+assert.equal(lastTiming.request_count, 1);
+assert.equal(lastTiming.rows_uploaded, 0);
+assert.equal(lastTiming.retries, 0);
+assert.equal(lastTiming.operation_count, 1);
+assert.ok(lastTiming.wall_ms >= lastTiming.apply_ms);
 
 // Applied copy is a separate compact row, with localized copy outside BDI.
 assert.equal(container.children[0], chat._rowEl);
@@ -194,7 +208,7 @@ assert.equal(chat._rowEl.children.includes(chat._appliedEl), false);
 assert.equal(chat._appliedLabelEl.textContent, 'Applied:');
 assert.equal(chat._appliedInstructionEl.tagName, 'BDI');
 assert.equal(chat._appliedInstructionEl.getAttribute('dir'), 'auto');
-assert.equal(chat._appliedInstructionEl.textContent, 'Rendered');
+assert.equal(chat._appliedInstructionEl.textContent, 'התרשים עודכן');
 assert.equal(chat._resetBtnEl.getAttribute('aria-label'), 'Reset chart');
 assert.deepEqual(chat.messages.map((message) => message.role), ['user', 'assistant']);
 
@@ -219,11 +233,11 @@ const originalConsoleError = console.error;
 console.error = () => {};
 await chat._handleSend();
 console.error = originalConsoleError;
-assert.equal(chat._statusEl.textContent, 'Got a config back but failed to render it. The chart was not changed.');
+assert.equal(chat._statusEl.textContent, 'The chart change could not be applied safely. The current chart was kept.');
 assert.equal(chat._statusEl.dataset.kind, 'error');
 assert.equal(document.activeElement, chat._inputEl);
 
-chat.hooks.getCurrentConfig = () => null;
+chat.hooks.getChartManifest = () => null;
 chat._inputEl.value = 'needs a chart';
 chat._inputEl.dispatch('input');
 await chat._handleSend();
@@ -231,18 +245,113 @@ assert.equal(chat._statusEl.dataset.kind, 'warn');
 assert.equal(chat._statusEl.textContent, 'Generate a chart first, then I can refine it.');
 assert.equal(document.activeElement, chat._inputEl);
 
-// Analysis mode keeps the same focus/busy contract and does not call chart edit.
-let rerunInstruction = '';
+// Analysis mode is a compatibility no-op: ML still uses the chart editor.
+let mlApplied = 0;
 const { chat: analysisChat, document: analysisDocument } = mountChat({
-    onAnalysisRerun: async (instruction) => { rerunInstruction = instruction; },
+    getChartManifest: () => ({ series: [] }),
+    getChartKind: () => 'ml_basic',
+    getConnection: () => 'analytics',
+    getRevision: () => 1,
+    isRevisionCurrent: () => true,
+    onApply: async () => { mlApplied += 1; },
 });
 analysisChat.setAnalysisMode(true);
 analysisChat._inputEl.value = 'weekly instead of daily';
 analysisChat._inputEl.dispatch('input');
 await analysisChat._handleSend();
-assert.equal(rerunInstruction, 'weekly instead of daily');
-assert.equal(analysisChat._statusEl.textContent, 'The re-run finished and a new result was added to the conversation.');
+assert.equal(mlApplied, 1);
+assert.equal(lastPayload.chart_kind, 'ml_basic');
+assert.equal(lastPayload.instruction, 'weekly instead of daily');
 assert.equal(analysisDocument.activeElement, analysisChat._inputEl);
-assert.equal(fetchCalls, 2);
+assert.equal(fetchCalls, 3);
+
+// A response for an older chart/session revision is silently dropped.
+const staleResponse = deferred();
+let staleApplied = 0;
+let revision = 10;
+globalThis.fetch = () => staleResponse.promise;
+const { chat: staleChat } = mountChat({
+    getChartManifest: () => ({ series: [] }),
+    getChartKind: () => 'sql',
+    getConnection: () => 'analytics',
+    getRevision: () => revision,
+    isRevisionCurrent: (captured) => captured === revision,
+    onApply: async () => { staleApplied += 1; },
+});
+staleChat._inputEl.value = 'make it green';
+const staleSend = staleChat._handleSend();
+revision = 11;
+staleResponse.resolve({
+    ok: true,
+    status: 200,
+    async json() {
+        return {
+            contract_version: 2,
+            operations: [{ op: 'set_color', target: 'all', color: '#22c55e' }],
+            notes: 'done',
+        };
+    },
+});
+await staleSend;
+assert.equal(staleApplied, 0);
+
+// Reset aborts the one in-flight editor call and invalidates its request id.
+let aborted = false;
+globalThis.fetch = (_url, options) => new Promise((_resolve, reject) => {
+    options.signal.addEventListener('abort', () => {
+        aborted = true;
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+    });
+});
+const { chat: cancelChat } = mountChat({
+    getChartManifest: () => ({ series: [] }),
+    getChartKind: () => 'sql',
+    getConnection: () => 'analytics',
+    getRevision: () => 1,
+    isRevisionCurrent: () => true,
+    onReset: async () => {},
+});
+cancelChat._inputEl.value = 'make it blue';
+const cancelledSend = cancelChat._handleSend();
+await Promise.resolve();
+await cancelChat._handleReset();
+await cancelledSend;
+assert.equal(aborted, true);
+assert.equal(cancelChat.inFlight, null);
+
+// Reset also wins if the response arrived and the candidate render is pending.
+const pendingApply = deferred();
+globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+        return {
+            contract_version: 2,
+            operations: [{ op: 'set_color', target: 'all', color: '#2563eb' }],
+            notes: 'late success',
+        };
+    },
+});
+const { chat: renderRaceChat } = mountChat({
+    getChartManifest: () => ({ series: [] }),
+    getChartKind: () => 'sql',
+    getConnection: () => 'analytics',
+    getRevision: () => 1,
+    isRevisionCurrent: () => true,
+    onApply: () => pendingApply.promise,
+    onReset: async () => {},
+});
+renderRaceChat._inputEl.value = 'make it blue';
+const renderRaceSend = renderRaceChat._handleSend();
+await Promise.resolve();
+await Promise.resolve();
+await renderRaceChat._handleReset();
+pendingApply.resolve();
+await renderRaceSend;
+assert.equal(renderRaceChat._appliedEl.hidden, true);
+assert.equal(renderRaceChat._statusEl.textContent, 'Chart reset to its original state.');
+assert.deepEqual(renderRaceChat.messages, []);
 
 console.log('chart chat JS tests passed');

@@ -5,7 +5,11 @@ global:
   cloudProvider: ""
   commonLabels:
     app.kubernetes.io/part-of: jeen-insights
+  # Bump this operator-controlled value after rotating an externally managed
+  # Secret to force workload pods to restart. Secret contents are never hashed.
+  secretVersion: ""
   imagePullSecrets: []
+  nodeSelector: {}
   env:
     LOG_LEVEL: INFO
     METADATA_DB_SSL: "true"
@@ -34,12 +38,73 @@ global:
     # Kubernetes Secret key -> remote provider key.
     secretMappings: {}
 
+# Explicit, operator-run schema migration Job. This is deliberately disabled
+# by default and is not a Helm hook; render and apply it before the workloads.
+migration:
+  enabled: false
+  image:
+    repository: registry.invalid/jeen-insights-api
+    tag: "0.0.0"
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Immutable release/bundle identifier appended to the Job name. When enabled,
+  # it must be a DNS-1123 label and the complete Job name must fit 63 characters.
+  bundleId: ""
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  # Keep completed Jobs for GitOps/Argo visibility. Set an integer to opt in.
+  ttlSecondsAfterFinished: null
+  lockWaitSeconds: 120
+  lockTimeout: 15s
+  statementTimeout: 10min
+  encryptMcpTokensBackfill: false
+  existingSecret:
+    # Blank inherits global.existingSecret.
+    name: ""
+    # null inherits global.existingSecret.optional.
+    optional: null
+  apiConfigMap:
+    # Optional non-secret API configuration. Blank omits the reference.
+    name: ""
+    optional: true
+  # Portable default: no UID/GID is pinned, so OpenShift restricted SCC may
+  # assign them. AKS overlays may add runAsUser/runAsGroup/fsGroup here.
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  extraEnv: []
+  imagePullSecrets: []
+
 jeen-insights-api:
   enabled: true
   image:
-    repository: ""
-    tag: ""
+    # Non-deployable defaults keep lint/template deterministic. Overlays must
+    # supply an immutable tag or digest from their registry.
+    repository: registry.invalid/jeen-insights-api
+    tag: "0.0.0"
+    digest: ""
     pullPolicy: IfNotPresent
+  existingSecret:
+    name: ""
+    optional: null
   replicaCount: 1
   podAnnotations: {}
   serviceAccount:
@@ -47,11 +112,15 @@ jeen-insights-api:
     annotations: {}
   service:
     port: 8000
+    type: ClusterIP
+    annotations: {}
   resources: {}
   nodeSelector: {}
   tolerations: []
   affinity: {}
   topologySpreadConstraints: []
+  extraVolumes: []
+  extraVolumeMounts: []
   autoscaling:
     enabled: false
     minReplicas: 1
@@ -80,9 +149,13 @@ jeen-insights-api:
 jeen-insights-analytics:
   enabled: false
   image:
-    repository: ""
-    tag: ""
+    repository: registry.invalid/jeen-insights-analytics
+    tag: "0.0.0"
+    digest: ""
     pullPolicy: IfNotPresent
+  existingSecret:
+    name: ""
+    optional: null
   replicaCount: 1
   podAnnotations: {}
   serviceAccount:
@@ -90,6 +163,8 @@ jeen-insights-analytics:
     annotations: {}
   service:
     port: 8100
+    type: ClusterIP
+    annotations: {}
   resources:
     requests:
       cpu: 250m
@@ -102,6 +177,8 @@ jeen-insights-analytics:
   tolerations: []
   affinity: {}
   topologySpreadConstraints: []
+  extraVolumes: []
+  extraVolumeMounts: []
   podDisruptionBudget:
     enabled: false
     minAvailable: 1
@@ -117,9 +194,13 @@ jeen-insights-analytics:
 jeen-insights-ui:
   enabled: true
   image:
-    repository: ""
-    tag: ""
+    repository: registry.invalid/jeen-insights-ui
+    tag: "0.0.0"
+    digest: ""
     pullPolicy: IfNotPresent
+  existingSecret:
+    name: ""
+    optional: null
   replicaCount: 1
   podAnnotations: {}
   serviceAccount:
@@ -127,6 +208,8 @@ jeen-insights-ui:
     annotations: {}
   service:
     port: 8501
+    type: ClusterIP
+    annotations: {}
   apiBaseUrl: ""
   ingress:
     enabled: false
@@ -134,11 +217,22 @@ jeen-insights-ui:
     annotations: {}
     hosts: []
     tls: []
+  route:
+    enabled: false
+    host: ""
+    timeout: 360s
+    annotations: {}
+    tls:
+      enabled: true
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
   resources: {}
   nodeSelector: {}
   tolerations: []
   affinity: {}
   topologySpreadConstraints: []
+  extraVolumes: []
+  extraVolumeMounts: []
   autoscaling:
     enabled: false
     minReplicas: 1

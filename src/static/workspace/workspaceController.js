@@ -697,17 +697,15 @@
             this._setActionsEnabled(false);
         },
 
-        _placeChartInteraction(isAnalysis) {
+        _placeChartInteraction(_isAnalysis) {
             const chartEdit = document.getElementById('v3-chart-edit');
             const analysisAdjust = document.getElementById('v3-analysis-adjust');
-            const analysisContent = document.getElementById('v3-analysis-adjust-content');
             const chat = document.getElementById('chart-chat-container');
-            if (chat) {
-                const target = isAnalysis ? analysisContent : chartEdit;
-                if (target && chat.parentNode !== target) target.appendChild(chat);
-            }
-            if (analysisAdjust) analysisAdjust.hidden = !isAnalysis;
-            if (chartEdit && isAnalysis) chartEdit.hidden = true;
+            // The compact chat always edits the currently rendered ECharts
+            // option. ML parameter changes belong to Edit setup; this surface
+            // must never invoke /api/analysis/rerun or execute a new query.
+            if (chat && chartEdit && chat.parentNode !== chartEdit) chartEdit.appendChild(chat);
+            if (analysisAdjust) analysisAdjust.hidden = true;
         },
 
         _bind() {
@@ -3608,8 +3606,6 @@
         },
 
         _renderChartCollapse() {
-            const turn = this.turns.find((item) => item.id === this.selectedResultId);
-            const isAnalysis = Boolean(turn?.result?.analysis?.skill);
             const controls = document.getElementById('v3-chart-types');
             const frame = document.getElementById('v3-chart-frame');
             const edit = document.getElementById('v3-chart-edit');
@@ -3620,7 +3616,7 @@
                 this._renderChartOptionsOverflow();
             }
             if (frame) frame.hidden = this.chartCollapsed;
-            if (edit) edit.hidden = this.chartCollapsed || isAnalysis;
+            if (edit) edit.hidden = this.chartCollapsed;
             if (toggle) {
                 toggle.textContent = this.chartCollapsed ? t('common.expand') : t('common.collapse');
                 toggle.setAttribute('aria-expanded', String(!this.chartCollapsed));

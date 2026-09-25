@@ -2,6 +2,7 @@ enabled: true
 
 global:
   commonLabels: {}
+  secretVersion: ""
   imagePullSecrets: []
   env: {}
   nodeSelector: {}
@@ -19,7 +20,14 @@ image:
   # the deployable image reference.
   repository: registry.invalid/jeen-insights-api
   tag: "0.0.0"
+  # When set, digest takes precedence over tag and renders repository@digest.
+  digest: ""
   pullPolicy: IfNotPresent
+
+# Blank/null fields inherit global.existingSecret.
+existingSecret:
+  name: ""
+  optional: null
 
 replicaCount: 1
 podAnnotations: {}
@@ -30,12 +38,16 @@ serviceAccount:
 
 service:
   port: 8000
+  type: ClusterIP
+  annotations: {}
 
 resources: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
 topologySpreadConstraints: []
+extraVolumes: []
+extraVolumeMounts: []
 
 # Numeric IDs pinned on the container. Set a value to null to omit the field:
 # OpenShift's restricted SCC assigns a UID from the project's range and rejects

@@ -9,20 +9,47 @@ These tests drive both with a fake asyncpg connection.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import re
 import sys
+import types
 from pathlib import Path
 
 import pytest
 
-from src.metadata import insights_schema
-
+_ROOT = Path(__file__).resolve().parents[2]
 _RUNNER = Path(__file__).resolve().parents[2] / "scripts" / "run_insights_migrations.py"
+_SCHEMA = _ROOT / "src" / "metadata" / "insights_schema.py"
 _INTERVAL = re.compile(r"^\s*\d+(\.\d+)?\s*(ms|s|sec|min|h|hour|hours|minutes|seconds)?\s*$")
 
 
-def _load_runner():
+def _load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+insights_schema = _load_module("_migration_test_insights_schema", _SCHEMA)
+
+
+def _load_runner(monkeypatch):
+    # The runner needs only these three metadata symbols. Stub the package so
+    # this focused unit test does not import every optional connector/LLM
+    # dependency exposed by src.metadata.__init__.
+    metadata = types.ModuleType("src.metadata")
+    metadata.__path__ = []
+
+    async def _unused():
+        raise AssertionError("test must replace the metadata pool function")
+
+    metadata.get_metadata_pool = _unused
+    metadata.close_metadata_pool = _unused
+    monkeypatch.setitem(sys.modules, "src.metadata", metadata)
+    monkeypatch.setitem(sys.modules, "src.metadata.insights_schema", insights_schema)
+
     spec = importlib.util.spec_from_file_location("run_insights_migrations", _RUNNER)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -41,10 +68,18 @@ def _interval_seconds(raw: str) -> float:
 
 
 class FakeConn:
-    def __init__(self, try_lock_results=(), *, existing=None, fail_apply=False):
+    def __init__(
+        self,
+        try_lock_results=(),
+        *,
+        existing=None,
+        fail_apply=False,
+        migration_history=None,
+    ):
         self.try_lock_results = list(try_lock_results)
         self.existing = set(existing or ())
         self.fail_apply = fail_apply
+        self.migration_history = dict(migration_history or {})
         self.executed: list[str] = []
         self.fetched: list[tuple] = []
         self.set_config: list[tuple[str, str]] = []
@@ -66,6 +101,15 @@ class FakeConn:
             return f"{args[0]}.{args[1]}" in self.existing
         return None
 
+    async def fetch(self, sql, *args):
+        self.fetched.append((sql, args))
+        if "insights_schema_migrations" in sql:
+            return [
+                {"revision": revision, "checksum": checksum}
+                for revision, checksum in self.migration_history.items()
+            ]
+        return []
+
     async def execute(self, sql, *args):
         self.executed.append(sql)
 
@@ -85,7 +129,7 @@ class FakeConn:
 
 @pytest.fixture()
 def runner(monkeypatch):
-    module = _load_runner()
+    module = _load_runner(monkeypatch)
     monkeypatch.setattr(module, "_LOCK_POLL_SECONDS", 0.0)
     return module
 
@@ -128,10 +172,15 @@ async def test_session_timeouts_go_through_set_config(runner, monkeypatch):
     monkeypatch.setattr(runner, "_STATEMENT_TIMEOUT", "10min")
     conn = FakeConn()
     await runner._configure_session_timeouts(conn)
-    assert conn.set_config == [("lock_timeout", "15s"), ("statement_timeout", "10min")]
+    assert conn.set_config == [
+        ("lock_timeout", "15s"),
+        ("statement_timeout", "10min"),
+        ("search_path", "public"),
+    ]
     # Nothing from the environment is ever spliced into SQL text.
     assert not any("15s" in s or "10min" in s for s in conn.executed)
     assert not any("15s" in s or "10min" in s for s, _ in conn.fetched)
+    assert not any("public" in s for s, _ in conn.fetched)
 
 
 @pytest.mark.asyncio
@@ -152,6 +201,79 @@ async def test_zero_timeout_would_disable_the_limit_and_is_rejected(runner, monk
     with pytest.raises(runner.MigrationConfigError):
         await runner._configure_session_timeouts(conn)
     assert conn.set_config == []
+
+
+# ── applied revision checksums: fail closed on drift ────────────────────────
+
+def _migration_file(tmp_path: Path, contents: str = "SELECT 1;\n") -> tuple[Path, str]:
+    path = tmp_path / "001_example.sql"
+    path.write_text(contents, encoding="utf-8")
+    return path, hashlib.sha256(contents.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_applied_revision_with_matching_checksum_is_skipped(runner, monkeypatch, tmp_path):
+    path, checksum = _migration_file(tmp_path)
+    monkeypatch.setattr(runner, "MIGRATIONS_DIR", tmp_path)
+    conn = FakeConn(migration_history={path.name: checksum})
+
+    assert await runner._apply_sql_files(conn) == 0
+    assert conn.executed == []
+
+
+@pytest.mark.asyncio
+async def test_applied_revision_checksum_drift_fails_closed(runner, monkeypatch, tmp_path):
+    path, _ = _migration_file(tmp_path)
+    monkeypatch.setattr(runner, "MIGRATIONS_DIR", tmp_path)
+    conn = FakeConn(migration_history={path.name: "0" * 64})
+
+    with pytest.raises(runner.MigrationChecksumMismatch, match=path.name):
+        await runner._apply_sql_files(conn)
+    assert conn.executed == []
+
+
+@pytest.mark.asyncio
+async def test_historical_null_checksum_remains_accepted(runner, monkeypatch, tmp_path):
+    path, _ = _migration_file(tmp_path)
+    monkeypatch.setattr(runner, "MIGRATIONS_DIR", tmp_path)
+    conn = FakeConn(migration_history={path.name: None})
+
+    assert await runner._apply_sql_files(conn) == 0
+    assert conn.executed == []
+
+
+@pytest.mark.asyncio
+async def test_checksum_drift_override_is_explicit_and_loud(
+    runner, monkeypatch, tmp_path, caplog
+):
+    path, _ = _migration_file(tmp_path)
+    monkeypatch.setattr(runner, "MIGRATIONS_DIR", tmp_path)
+    monkeypatch.setenv("MIGRATION_ALLOW_CHECKSUM_DRIFT", "true")
+    conn = FakeConn(migration_history={path.name: "f" * 64})
+
+    assert await runner._apply_sql_files(conn) == 0
+    assert conn.executed == []
+    assert "CHECKSUM DRIFT OVERRIDE ENABLED" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_preflight_rejects_a_missing_recorded_sql_file(runner, monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "MIGRATIONS_DIR", tmp_path)
+    conn = FakeConn(migration_history={"001_deleted.sql": "a" * 64})
+
+    with pytest.raises(runner.MigrationChecksumMismatch, match="001_deleted.sql"):
+        await runner._preflight_applied_sql(conn)
+    assert conn.executed == []
+
+
+@pytest.mark.asyncio
+async def test_preflight_allows_historical_null_checksum(runner, monkeypatch, tmp_path):
+    path, _ = _migration_file(tmp_path)
+    monkeypatch.setattr(runner, "MIGRATIONS_DIR", tmp_path)
+    conn = FakeConn(migration_history={path.name: None})
+
+    await runner._preflight_applied_sql(conn)
+    assert conn.executed == []
 
 
 # ── run(): the advisory lock is released even when a revision fails ────────
@@ -180,7 +302,7 @@ async def test_run_unlocks_after_a_failed_revision(runner, monkeypatch):
     async def _baseline(c, **kw):
         pass
 
-    async def _boom(c):
+    async def _boom(c, **kwargs):
         raise RuntimeError("revision 099 exploded")
 
     monkeypatch.setattr(runner, "get_metadata_pool", _pool)
@@ -194,6 +316,50 @@ async def test_run_unlocks_after_a_failed_revision(runner, monkeypatch):
     with pytest.raises(RuntimeError, match="revision 099"):
         await runner.run()
     assert any("pg_advisory_unlock" in s for s in conn.executed)
+
+
+@pytest.mark.asyncio
+async def test_run_preflights_checksum_before_baseline_ddl(
+    runner, monkeypatch, tmp_path
+):
+    path, _ = _migration_file(tmp_path)
+    monkeypatch.setattr(runner, "MIGRATIONS_DIR", tmp_path)
+    conn = FakeConn(
+        [True],
+        existing={"public.insights_schema_migrations"},
+        migration_history={path.name: "0" * 64},
+    )
+    baseline_calls = []
+
+    class _Acquire:
+        async def __aenter__(self):
+            return conn
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Pool:
+        def acquire(self):
+            return _Acquire()
+
+    async def _pool():
+        return _Pool()
+
+    async def _close():
+        pass
+
+    async def _baseline(c, **kwargs):
+        baseline_calls.append((c, kwargs))
+
+    monkeypatch.setattr(runner, "get_metadata_pool", _pool)
+    monkeypatch.setattr(runner, "close_metadata_pool", _close)
+    monkeypatch.setattr(runner, "ensure_insights_baseline", _baseline)
+
+    with pytest.raises(runner.MigrationChecksumMismatch, match=path.name):
+        await runner.run()
+    assert baseline_calls == []
+    assert not any("CREATE TABLE" in sql for sql in conn.executed)
+    assert any("pg_advisory_unlock" in sql for sql in conn.executed)
 
 
 # ── API boot: verify-only mode issues no DDL ────────────────────────────────

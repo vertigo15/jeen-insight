@@ -3911,7 +3911,7 @@ async function initializeChartFeature(results, options = {}) {
     const epoch = ++chartManagerEpoch;
     // Dynamically import ChartManager if not already loaded
     if (!ChartManager) {
-        const module = await import('./chart-feature/chartManager.js?v=118');
+        const module = await import('./chart-feature/chartManager.js?v=121');
         if (epoch !== chartManagerEpoch) return;
         ChartManager = module.ChartManager;
     }

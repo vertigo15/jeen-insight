@@ -1,0 +1,75 @@
+name: Helm deployment validation
+
+on:
+  pull_request:
+    paths:
+      - "deployment/**"
+      - ".env.example"
+      - "docs/oidc-login-setup.md"
+      - "scripts/run_insights_migrations.py"
+      - "tests/unit/test_migration_runner_locks.py"
+      - ".github/workflows/helm-validation.yml"
+  push:
+    paths:
+      - "deployment/**"
+      - ".env.example"
+      - "docs/oidc-login-setup.md"
+      - "scripts/run_insights_migrations.py"
+      - "tests/unit/test_migration_runner_locks.py"
+      - ".github/workflows/helm-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Helm 3.18.4 / Kubernetes 1.24
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned Python dependency
+        run: >-
+          python -m pip install --disable-pip-version-check
+          PyYAML==6.0.2 pytest==8.4.2 pytest-asyncio==1.2.0
+
+      - name: Validate migration runner safety
+        run: python -m pytest tests/unit/test_migration_runner_locks.py -q
+
+      - name: Validate deployment documentation
+        run: python deployment/tests/validate-docs.py
+
+      - name: Validate Argo CD examples
+        run: python deployment/tests/validate-argocd.py
+
+      - name: Install Helm 3.18.4
+        uses: azure/setup-helm@v5
+        with:
+          version: v3.18.4
+
+      - name: Install kubeconform 0.6.7
+        env:
+          KUBECONFORM_SHA256: 95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
+        run: |
+          archive="${RUNNER_TEMP}/kubeconform.tar.gz"
+          bin_dir="${RUNNER_TEMP}/kubeconform-bin"
+          curl --fail --location --silent --show-error \
+            --output "${archive}" \
+            "https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  ${archive}" | sha256sum --check
+          mkdir -p "${bin_dir}"
+          tar -xzf "${archive}" -C "${bin_dir}" kubeconform
+          echo "${bin_dir}" >> "${GITHUB_PATH}"
+
+      - name: Validate chart profiles
+        env:
+          REQUIRE_KUBECONFORM: "1"
+        run: deployment/tests/validate-helm.sh
+
+      - name: Validate offline OpenShift bundle fixture
+        run: deployment/tests/validate-openshift-bundle.sh
