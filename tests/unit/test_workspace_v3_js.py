@@ -157,3 +157,8 @@ def test_workspace_renders_findings_as_key_insights():
     assert ".v3-insights {" in styles
     assert "background: var(--insight-bg);" in styles
     assert "color: var(--text);" in styles
+    # Previous answers collapse: insights / follow-ups / feedback are only
+    # painted on the selected ("Show answer") turn.
+    assert ".v3-turn:not(.is-selected) .v3-insights," in styles
+    assert ".v3-turn:not(.is-selected) .v3-followups," in styles
+    assert ".v3-turn:not(.is-selected) .v3-feedback { display: none; }" in styles

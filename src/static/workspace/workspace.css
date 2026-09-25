@@ -465,6 +465,12 @@ body.v3-ready > .app-layout { display: none !important; }
 }
 .v3-turn:not(.is-selected):not(.is-running):not(.is-editing):hover::after,
 .v3-turn:not(.is-selected):not(.is-running):not(.is-editing):focus-visible::after { opacity: 1; }
+/* Previous answers stay collapsed to question + run strip + summary; Key
+   insights, follow-up chips and the feedback row belong to the selected
+   ("Show answer") turn only. SQL and ML answers share this rule. */
+.v3-turn:not(.is-selected) .v3-insights,
+.v3-turn:not(.is-selected) .v3-followups,
+.v3-turn:not(.is-selected) .v3-feedback { display: none; }
 .v3-turn:focus-visible { outline: 2px solid var(--rose); outline-offset: 2px; }
 .v3-turn.is-selected, .v3-turn.is-running {
   border-color: var(--border2);
