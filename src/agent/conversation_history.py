@@ -107,6 +107,10 @@ class ConversationHistoryService:
         # independent from migration 022 so rolling upgrades keep conversation
         # hydration working before the new table has been applied.
         self.favorite_schema_ready = False
+        # Whether migration 035 added insights_answer_feedback (thumbs, star
+        # rating, message). Probed by the lifespan; without it thumbs fall back
+        # to the legacy user_feedback column on the turn row.
+        self.answer_feedback_schema_ready = False
 
     async def initialize(self) -> None:
         # Pool is already initialized by `get_metadata_pool()`. This method is
@@ -462,14 +466,16 @@ class ConversationHistoryService:
         corrected_sql: Optional[str] = None,
         feedback_notes: Optional[str] = None,
     ) -> bool:
+        # COALESCE: a bare thumbs click must not erase a note or a corrected
+        # query the user already attached to the same turn.
         try:
             async with self.pool.acquire() as conn:
                 result = await conn.execute(
                     """
                     UPDATE insights_conversation_sessions
                     SET user_feedback = $1,
-                        corrected_sql = $2,
-                        feedback_notes = $3
+                        corrected_sql = COALESCE($2, corrected_sql),
+                        feedback_notes = COALESCE($3, feedback_notes)
                     WHERE id = $4 AND user_id = $5
                     """,
                     user_feedback,
@@ -482,6 +488,81 @@ class ConversationHistoryService:
         except Exception:
             logger.exception("Failed to record feedback")
             return False
+
+    async def record_answer_feedback(
+        self,
+        *,
+        query_id: UUID,
+        user_id: str,
+        thumb: Optional[str] = None,
+        rating: Optional[int] = None,
+        feedback_type: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Append one answer-feedback event (migration 035).
+
+        Ownership is enforced in the INSERT: the row is only written when the
+        turn belongs to ``user_id``; ``source_key`` is copied from the turn,
+        never taken from the client. Returns ``{"id", "thumb", "source_key"}``
+        where ``thumb`` is the turn's current thumb after this event, or
+        ``None`` when the turn is not the caller's. Database errors propagate
+        so the route can answer 5xx instead of a misleading 404.
+        """
+        if not self.answer_feedback_schema_ready:
+            return None
+        async with self.pool.acquire() as conn:
+            # A data-modifying CTE's rows are invisible to sibling SELECTs in
+            # the same statement, so the "current thumb" is derived from the
+            # inserted row itself when it carries a thumb and from the prior
+            # events otherwise (a dialog submission never changes the thumb).
+            row = await conn.fetchrow(
+                """
+                WITH owned AS (
+                    SELECT id, source_key
+                    FROM insights_conversation_sessions
+                    WHERE id = $1 AND user_id = $2
+                ), inserted AS (
+                    INSERT INTO insights_answer_feedback
+                        (query_id, user_id, source_key, thumb, rating, feedback_type, message)
+                    SELECT owned.id, $2, owned.source_key, $3, $4, $5, $6
+                    FROM owned
+                    RETURNING id, query_id, source_key, thumb
+                )
+                SELECT inserted.id, inserted.source_key,
+                       COALESCE(inserted.thumb,
+                                (SELECT f.thumb FROM insights_answer_feedback f
+                                  WHERE f.query_id = inserted.query_id AND f.thumb IS NOT NULL
+                                  ORDER BY f.event_seq DESC LIMIT 1)) AS thumb
+                FROM inserted
+                """,
+                query_id,
+                user_id,
+                thumb,
+                rating,
+                feedback_type,
+                message,
+            )
+        if not row:
+            return None
+        current = row["thumb"] if row["thumb"] in ("thumbs_up", "thumbs_down") else None
+        return {"id": str(row["id"]), "thumb": current, "source_key": row["source_key"]}
+
+    def _thumb_select(self, turn_alias: str = "cs") -> str:
+        """Current thumb per turn: newest thumb event, 'cleared' reads as none.
+
+        Falls back to the legacy column on the turn row for turns that have no
+        event yet (thumbs posted by an older UI build to /api/feedback after
+        the migration's backfill ran); a 'cleared' event never falls back.
+        Before migration 035 only the legacy column is read.
+        """
+        if not self.answer_feedback_schema_ready:
+            return f", {turn_alias}.user_feedback"
+        return (
+            ", NULLIF(COALESCE((SELECT f.thumb FROM insights_answer_feedback f "
+            f"WHERE f.query_id = {turn_alias}.id AND f.thumb IS NOT NULL "
+            "ORDER BY f.event_seq DESC LIMIT 1), "
+            f"{turn_alias}.user_feedback), 'cleared') AS user_feedback"
+        )
 
     # ------------------------------------------------------------------
     # Read APIs
@@ -959,6 +1040,13 @@ class ConversationHistoryService:
             "analysis": _jsonb(ConversationHistoryService._row_get(row, "analysis")),
             "low_confidence": bool(ConversationHistoryService._row_get(row, "low_confidence", False)),
             "is_favorite": bool(ConversationHistoryService._row_get(row, "is_favorite", False)),
+            # Only the two thumb values reach the client; the legacy column can
+            # also hold 'edited' / 'catalog_gap', which are not pressed states.
+            "user_feedback": (
+                ConversationHistoryService._row_get(row, "user_feedback", None)
+                if ConversationHistoryService._row_get(row, "user_feedback", None)
+                in ("thumbs_up", "thumbs_down") else None
+            ),
         }
 
     def _analysis_select(self, alias: str = "a") -> str:
@@ -999,7 +1087,7 @@ class ConversationHistoryService:
                            a.metrics, a.findings, a.suggestions, a.followups,
                            a.snapshot_status, a.snapshot_at,
                            (a.chart_config IS NOT NULL) AS has_chart
-                           {self._analysis_select()}{self._favorite_select()}
+                           {self._analysis_select()}{self._favorite_select()}{self._thumb_select()}
                     FROM insights_conversation_sessions cs
                     JOIN insights_conversations c ON c.id = cs.session_id
                     LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id
@@ -1036,7 +1124,7 @@ class ConversationHistoryService:
                            a.metrics, a.findings, a.suggestions, a.followups,
                            a.snapshot_status, a.snapshot_at,
                            (a.chart_config IS NOT NULL) AS has_chart
-                           {self._analysis_select()}{self._favorite_select()}
+                           {self._analysis_select()}{self._favorite_select()}{self._thumb_select()}
                     FROM insights_conversation_sessions cs
                     JOIN insights_conversations c ON c.id = cs.session_id
                     LEFT JOIN insights_turn_artifacts a ON a.turn_id = cs.id

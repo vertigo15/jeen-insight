@@ -104,6 +104,18 @@ async def _probe_analysis_schema(conn) -> bool:
         return False
 
 
+async def _probe_forecast_tracking_schema(conn) -> bool:
+    """True when migration 034 (forecast-vs-actual tracking) is applied."""
+    try:
+        return bool(await conn.fetchval(
+            "SELECT to_regclass('insights_forecast_runs') IS NOT NULL "
+            "AND to_regclass('insights_forecast_points') IS NOT NULL"
+        ))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("startup: forecast tracking schema probe failed: %s", exc)
+        return False
+
+
 async def _probe_favorite_schema(conn, history_service: Any) -> bool:
     """Enable answer favorites only after migration 030 is present."""
     try:
@@ -122,7 +134,26 @@ async def _probe_favorite_schema(conn, history_service: Any) -> bool:
     return present
 
 
-def _build_analysis_runtime(pool, history_service: Any, analysis_schema_ready: bool) -> None:
+async def _probe_answer_feedback_schema(conn, history_service: Any) -> bool:
+    """Enable the answer-feedback log only after migration 035 is present."""
+    try:
+        present = bool(await conn.fetchval(
+            "SELECT to_regclass('insights_answer_feedback') IS NOT NULL"
+        ))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("startup: answer feedback schema probe failed: %s", exc)
+        present = False
+    history_service.answer_feedback_schema_ready = present
+    if not present:
+        logger.warning(
+            "startup: migration 035_answer_feedback is not applied; "
+            "thumbs fall back to the turn row and the Give feedback dialog is unavailable."
+        )
+    return present
+
+
+def _build_analysis_runtime(pool, history_service: Any, analysis_schema_ready: bool, *,
+                            forecast_schema_ready: bool = False) -> None:
     """Wire the ML-skills store and runner into ``state`` (or disable cleanly)."""
     from src.agent.analysis_store import AnalysisStore
     from src.analysis.runner import build_runner
@@ -138,8 +169,14 @@ def _build_analysis_runtime(pool, history_service: Any, analysis_schema_ready: b
             "startup: migration 023_ml_skills is not applied; ML skills run without "
             "proposal persistence or consent memory. Run `python scripts/run_insights_migrations.py`."
         )
+    if not forecast_schema_ready:
+        logger.warning(
+            "startup: migration 034_ml_forecast_tracking is not applied; forecasts are not "
+            "captured for realized-accuracy checks."
+        )
     state.analysis_store = AnalysisStore(
         pool, schema_ready=analysis_schema_ready, ttl_seconds=int(settings.ANALYSIS_PROPOSAL_TTL_SECONDS),
+        forecast_schema_ready=forecast_schema_ready,
     )
     state.analysis_runner = build_runner(settings)
     if state.analysis_runner is None:
@@ -361,8 +398,11 @@ async def lifespan(_app: FastAPI):
         await _seed_prompts(conn)
         await _probe_conversation_persistence(conn, state.history_service)
         await _probe_favorite_schema(conn, state.history_service)
+        await _probe_answer_feedback_schema(conn, state.history_service)
         analysis_schema_ready = await _probe_analysis_schema(conn)
-    _build_analysis_runtime(pool, state.history_service, analysis_schema_ready)
+        forecast_schema_ready = await _probe_forecast_tracking_schema(conn)
+    _build_analysis_runtime(pool, state.history_service, analysis_schema_ready,
+                            forecast_schema_ready=forecast_schema_ready)
 
     # ── Build LLM service from DB credentials ─────────────────────────────────
     async with pool.acquire() as conn:

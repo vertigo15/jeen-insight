@@ -260,6 +260,33 @@
         }
         if (url.indexOf('/api/analysis/suggestions') >= 0) return json({ suggestions: [] });
         if (url.indexOf('/api/analysis/skills') >= 0) return json({ skills: [], contract_version: 'e2e' });
+        if (url.indexOf('/api/analysis/forecast/accuracy') >= 0) {
+            // Two of three forecast weeks elapsed; one landed outside the band.
+            return json({
+                query_id: body.query_id, evaluated_at: '2026-09-14T00:00:00Z', data_end: '2026-09-13', grain: 'week',
+                horizon: 8, elapsed_periods: 2, pending_periods: 6,
+                realized: { n: 2, metric: 'MASE', value: 0.93, band: 'fair', mae: 3900, coverage: 0.5, coverage_n: 2, interval_level: 0.9 },
+                claimed: { metric: 'MASE', value: 0.71, band: 'good', coverage: 0.9, coverage_n: 8, interval_level: 0.9, method: 'AutoETS', interval_method: 'conformal_scaled' },
+                points: [
+                    { ts: '2026-09-07', forecast: 1000, lower: 900, upper: 1100, actual: 1050, error: 50, pct_error: 0.048, inside: true },
+                    { ts: '2026-09-14', forecast: 1100, lower: 1000, upper: 1200, actual: 1350, error: 250, pct_error: 0.185, inside: false },
+                ],
+                pending: [], engine_hash: 'e2e', sql: 'SELECT 1',
+            });
+        }
+        if (url.indexOf('/api/answer-feedback') >= 0) {
+            // Append-only answer feedback (migration 035). Specs can force a
+            // failure with __ANSWER_FEEDBACK_FAILS__ and read every accepted
+            // event from __ANSWER_FEEDBACK_EVENTS__. The response echoes the
+            // turn's current thumb the way the real route does.
+            if (window.__ANSWER_FEEDBACK_FAILS__) return json({ detail: 'feedback unavailable' }, 503);
+            window.__ANSWER_FEEDBACK_EVENTS__ = window.__ANSWER_FEEDBACK_EVENTS__ || [];
+            window.__ANSWER_FEEDBACK_EVENTS__.push(body);
+            const thumbs = window.__ANSWER_FEEDBACK_EVENTS__.filter((e) => e.query_id === body.query_id && e.thumb);
+            const last = thumbs.length ? thumbs[thumbs.length - 1].thumb : null;
+            return json({ status: 'success', feedback_id: `fb-${window.__ANSWER_FEEDBACK_EVENTS__.length}`, thumb: last === 'cleared' ? null : last });
+        }
+        if (url.indexOf('/api/feedback') >= 0) return json({ status: 'success', message: 'Feedback recorded' });
         if (url.indexOf('/api/analysis/chart') >= 0) {
             // Return a chart_config so the controller caches it and stops asking.
             return json({ chart_spec: body.chart_spec || null, chart_config: { option: { series: [] } } });

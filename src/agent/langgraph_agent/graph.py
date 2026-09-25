@@ -382,7 +382,7 @@ def build_graph(
     n("fused_eval_analytics",    make_fused_eval_analytics(llm, prompt_loader))
     n("feedback_classifier",     make_feedback_classifier(max_retries))
     n("response_formatter",      response_formatter)
-    n("save_to_memory",          make_save_to_memory(history_service, deployment_name))
+    n("save_to_memory",          make_save_to_memory(history_service, deployment_name, analysis_store))
     n("observability_log",       observability_log)
 
     # ── ML skills branch ──────────────────────────────────────────────────

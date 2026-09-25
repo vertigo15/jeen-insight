@@ -399,6 +399,13 @@
         star: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></svg>',
         code: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 5l-4 14"/></svg>',
         pencil: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+        thumbUp: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11v9H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3Z"/><path d="M7 11l4-7a2.2 2.2 0 0 1 2.2 2.2V9h5.3a2 2 0 0 1 2 2.3l-1.1 6.9a2 2 0 0 1-2 1.8H7"/></svg>',
+        thumbDown: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M17 13V4h3a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-3Z"/><path d="M17 13l-4 7a2.2 2.2 0 0 1-2.2-2.2V15H5.5a2 2 0 0 1-2-2.3l1.1-6.9A2 2 0 0 1 6.6 4H17"/></svg>',
+        // Jeen UI "feedback" glyph (speech bubble with two lines) and the
+        // "chat + heart" mark used in the Give feedback dialog header.
+        feedback: '<svg width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M6.07 7.29h5.85M6.07 9.89h3.58"/><path d="M2.5 8.59c0-.5.01-.99.03-1.46.05-1.55.08-2.32.7-2.95.63-.63 1.42-.67 3.01-.74A76 76 0 0 1 9 3.39c.96 0 1.89.02 2.76.06 1.59.07 2.38.1 3 .73.63.64.66 1.41.71 2.95.02.47.03.96.03 1.46s-.01.99-.03 1.46c-.05 1.55-.08 2.32-.71 2.95-.62.63-1.41.66-3 .73-.48.02-.97.04-1.48.05-.48.01-.72.01-.93.09-.21.08-.39.24-.75.54l-1.42 1.22a.47.47 0 0 1-.78-.36V13.74l-.16-.01c-1.59-.07-2.38-.1-3.01-.73-.62-.63-.65-1.41-.7-2.95A38 38 0 0 1 2.5 8.59Z"/></svg>',
+        chatHeart: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11.34 10.47h.01M7.88 10.47h.01"/><path d="M20 9.6c0 .29.001.58.001.87 0 .67-.012 1.32-.034 1.95-.073 2.06-.109 3.09-.946 3.93-.836.84-1.894.89-4.01.98-.636.03-1.294.05-1.971.06-.642.01-.963.02-1.246.13-.282.11-.52.31-.994.72l-1.889 1.62a.63.63 0 0 1-1.045-.48v-2.04l-.211-.008c-2.115-.09-3.173-.14-4.01-.98-.836-.84-.873-1.87-.945-3.93A52 52 0 0 1 2.667 10.47c0-.67.012-1.32.034-1.95.072-2.06.109-3.09.945-3.93.837-.84 1.895-.89 4.01-.98.897-.04 1.839-.06 2.812-.07"/><path class="v3-fb-heart" d="M16.53 8.73s-3.47-2.14-3.47-4.21c0-1.02.73-1.85 1.74-1.85.52 0 1.04.18 1.73.89.7-.71 1.22-.89 1.74-.89 1 0 1.73.83 1.73 1.85 0 2.07-3.47 4.21-3.47 4.21Z" fill="currentColor" stroke="none"/></svg>',
+        starFill: '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12.006 17.865l4.737 3.029a.76.76 0 0 0 1.084-.836l-1.288-5.652 4.216-3.781a.75.75 0 0 0-.415-1.33l-5.532-.468-2.132-5.365a.75.75 0 0 0-1.34 0L9.205 8.837l-5.533.468a.75.75 0 0 0-.415 1.335l4.216 3.781-1.288 5.648a.76.76 0 0 0 1.084.836l4.737-3.03Z"/></svg>',
     };
 
     const WorkspaceController = {
@@ -421,6 +428,8 @@
         // working draft of its question. Only one turn edits at a time.
         editingTurnId: null,
         editDraft: '',
+        // The open "Give feedback" dialog (turnId, rating, type, message…) or null.
+        feedbackDialog: null,
         lastAppliedResultId: null,
         // Conversation persistence: the restored conversation header, the
         // hydration state and the generation guard that lets a connection
@@ -1524,6 +1533,7 @@
         reset() {
             this._generation += 1;
             this._abortInFlight();
+            this.closeFeedbackDialog();
             this.turns = [];
             this.editingTurnId = null;
             this.editDraft = '';
@@ -1674,6 +1684,7 @@
             this._abortInFlight();
             const abort = new AbortController();
             this._hydrateAbort = abort;
+            this.closeFeedbackDialog();
             this.turns = [];
             this.editingTurnId = null;
             this.editDraft = '';
@@ -2286,13 +2297,30 @@
             thread.querySelectorAll('[data-report-gap]').forEach((button) => button.addEventListener('click', async (event) => {
                 event.stopPropagation();
                 const turn = this.turns.find((item) => item.id === button.dataset.reportGap);
-                if (!turn) return;
+                if (!turn || button.disabled) return;
+                button.disabled = true;
                 try {
-                    await fetch('/api/feedback', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query_id: turn.result?.query_id, feedback: 'catalog_gap', comment: turn.error }) });
+                    // The error text travels as ``notes`` (the field the API stores);
+                    // _postJson throws on a non-2xx so a rejected report is never
+                    // shown as "Reported".
+                    await this._postFeedback(turn, 'catalog_gap', turn.error);
                     button.textContent = t('conversation.turn.reported');
                 } catch (_) {
+                    button.disabled = false;
                     button.textContent = t('conversation.turn.retryReport');
                 }
+            }));
+            thread.querySelectorAll('[data-feedback]').forEach((button) => button.addEventListener('click', async (event) => {
+                event.stopPropagation();
+                const [turnId, value] = String(button.dataset.feedback).split(':');
+                const turn = this.turns.find((item) => item.id === turnId);
+                if (!turn || turn.feedbackSaving) return;
+                await this.sendThumb(turn, value);
+            }));
+            thread.querySelectorAll('[data-feedback-open]').forEach((button) => button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                const turn = this.turns.find((item) => item.id === button.dataset.feedbackOpen);
+                if (turn) this.openFeedbackDialog(turn);
             }));
             thread.querySelectorAll('[data-edit]').forEach((button) => button.addEventListener('click', (event) => {
                 event.stopPropagation();
@@ -2514,6 +2542,8 @@
             turn.chartUnavailable = false;
             turn.chartCollapsed = undefined;
             turn.isFavorite = false;
+            turn.feedback = null;
+            turn.feedbackSent = false;
         },
 
         /** Focus the edit textarea (after a render), size it, and restore the caret. */
@@ -2656,6 +2686,7 @@
                   </div>`).join('')}</div>
                 </section>` : ''}
                 ${(followups.length && showAnalytics) ? `<div class="v3-followups">${followups.map((question) => `<button class="v3-chip" dir="${directionOf(question)}" data-followup="${esc(textOf(question))}">${esc(textOf(question))}</button>`).join('')}</div>` : ''}
+                ${isEmpty ? '' : this._feedbackHtml(turn)}
               </div>
             </article>`;
         },
@@ -3050,6 +3081,339 @@
             return payload;
         },
 
+        /**
+         * POST one turn-row feedback value (``catalog_gap`` on a failed turn).
+         * Throws on a non-2xx (via _postJson). Answer-quality feedback
+         * (thumbs / dialog) goes through _postAnswerFeedback instead.
+         */
+        async _postFeedback(turn, value, notes = null) {
+            const queryId = turn.result?.query_id || turn.turnId;
+            if (!queryId) throw new Error('feedback: turn has no query id');
+            const body = { query_id: String(queryId), feedback: value };
+            const trimmed = notes == null ? '' : String(notes).trim();
+            if (trimmed) body.notes = trimmed.slice(0, 4000);
+            const connection = this._analysisConnection();
+            if (connection) body.connection = connection;
+            return this._postJson('/api/feedback', body);
+        },
+
+        /** Append one answer-feedback event (insights_answer_feedback). */
+        async _postAnswerFeedback(turn, fields) {
+            const queryId = turn.result?.query_id || turn.turnId;
+            if (!queryId) throw new Error('feedback: turn has no query id');
+            const body = { query_id: String(queryId) };
+            if (fields.thumb) body.thumb = fields.thumb;
+            if (Number.isInteger(fields.rating) && fields.rating >= 1) body.rating = fields.rating;
+            if (fields.feedback_type) body.feedback_type = fields.feedback_type;
+            const message = fields.message == null ? '' : String(fields.message).trim();
+            if (message) body.message = message.slice(0, 4000);
+            const connection = this._analysisConnection();
+            if (connection) body.connection = connection;
+            return this._postJson('/api/answer-feedback', body);
+        },
+
+        /** Answers that can take feedback: a SQL result or an ML analysis, not a greeting/capability text. */
+        _feedbackEligible(turn) {
+            if (!turn || turn.status !== 'success' || !turn.result || turn.result.proposal) return false;
+            if (!(turn.result.query_id || turn.turnId)) return false;
+            return Boolean(turn.result.sql || (turn.result.analysis && turn.result.analysis.skill));
+        },
+
+        /**
+         * Quick signal: thumbs up / down on the answer card. Optimistic — the
+         * thumb paints pressed at once and reverts if the save fails. Clicking
+         * the pressed thumb again withdraws it (a ``cleared`` event).
+         */
+        async sendThumb(turn, value) {
+            if (!turn || !['thumbs_up', 'thumbs_down'].includes(value)) return false;
+            const prior = turn.feedback || null;
+            const next = prior === value ? null : value;
+            turn.feedback = next;
+            turn.feedbackSaving = true;
+            this.renderConversation();
+            try {
+                const saved = await this._postAnswerFeedback(turn, { thumb: next || 'cleared' });
+                // Settle on the server's view of the current thumb.
+                if (saved && Object.prototype.hasOwnProperty.call(saved, 'thumb')) turn.feedback = saved.thumb || null;
+                return true;
+            } catch (error) {
+                console.warn('[Workspace] thumb feedback failed', error);
+                turn.feedback = prior;
+                if (typeof window.showToast === 'function') window.showToast(t('conversation.feedback.failed'), 'error');
+                return false;
+            } finally {
+                turn.feedbackSaving = false;
+                this.renderConversation();
+            }
+        },
+
+        /**
+         * Forecast tracking: compare a shown forecast with the actuals that have
+         * arrived since. Result lives on the turn for this page session and is
+         * drawn over the live chart; nothing saved is rewritten.
+         */
+        async checkForecastAccuracy(turn) {
+            if (!turn || !turn.result?.analysis || turn.result.analysis.skill !== 'forecast') return;
+            if (turn.tracking?.loading) return;
+            const connection = this._analysisConnection();
+            const queryId = turn.result.query_id || turn.turnId;
+            if (!connection || !queryId) return;
+            turn.tracking = { ...(turn.tracking || {}), loading: true, error: null };
+            this.renderDock();
+            try {
+                const data = await this._postJson('/api/analysis/forecast/accuracy', { connection, query_id: String(queryId) }, { timeoutMs: 60_000 });
+                turn.tracking = { loading: false, error: null, evaluation: data };
+                if (this.selectedResultId === turn.id && window.JeenLegacyBridge?.overlayRealizedActuals) {
+                    window.JeenLegacyBridge.overlayRealizedActuals(data.points || [], t('analysis.accuracy.realizedSeries'));
+                }
+            } catch (error) {
+                turn.tracking = { loading: false, error: error.message || t('analysis.accuracy.failed'), evaluation: turn.tracking?.evaluation || null };
+            } finally {
+                this.renderDock();
+            }
+        },
+
+        _feedbackHtml(turn) {
+            if (!this._feedbackEligible(turn)) return '';
+            const value = turn.feedback || null;
+            const saving = Boolean(turn.feedbackSaving);
+            const thumb = (kind, icon, labelKey) => `<button type="button" class="v3-feedback-btn${value === kind ? ' is-active' : ''}" data-feedback="${turn.id}:${kind}" aria-pressed="${value === kind ? 'true' : 'false'}" aria-label="${h(labelKey)}" title="${h(labelKey)}"${saving ? ' disabled' : ''}>${icon}</button>`;
+            return `<div class="v3-feedback" data-feedback-row="${turn.id}" role="group" aria-label="${h('conversation.feedback.groupLabel')}">
+              ${thumb('thumbs_up', ICON.thumbUp, 'conversation.feedback.helpful')}
+              ${thumb('thumbs_down', ICON.thumbDown, 'conversation.feedback.notHelpful')}
+              <button type="button" class="v3-feedback-btn v3-feedback-btn--open${turn.feedbackSent ? ' is-sent' : ''}" data-feedback-open="${turn.id}" aria-label="${h('conversation.feedback.open')}" title="${h('conversation.feedback.open')}" aria-haspopup="dialog">${ICON.feedback}</button>
+            </div>`;
+        },
+
+        // ------------------------------------------------------------------
+        // Give feedback dialog (Jeen UI composition: Modal + rating + Chip +
+        // textarea + Cancel / Send). One instance, mounted on <body>.
+        // ------------------------------------------------------------------
+        FEEDBACK_TYPES: ['general', 'report_bug', 'ui_bug', 'other'],
+
+        openFeedbackDialog(turn) {
+            if (!this._feedbackEligible(turn)) return;
+            this.feedbackDialog = {
+                turnId: turn.id,
+                rating: 0,
+                hover: 0,
+                type: null,
+                message: '',
+                saving: false,
+                error: null,
+                returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+            };
+            this._renderFeedbackDialog();
+            requestAnimationFrame(() => {
+                document.querySelector('#v3-feedback-dialog [data-fb-star="1"]')?.focus();
+            });
+        },
+
+        closeFeedbackDialog() {
+            const state = this.feedbackDialog;
+            if (!state) return;
+            this.feedbackDialog = null;
+            document.getElementById('v3-feedback-dialog')?.remove();
+            document.body.classList.remove('v3-feedback-dialog-open');
+            if (this._feedbackKeydown) {
+                document.removeEventListener('keydown', this._feedbackKeydown, true);
+                this._feedbackKeydown = null;
+            }
+            const back = state.returnFocus;
+            if (back && document.contains(back)) { try { back.focus(); } catch (_) { /* gone */ } }
+        },
+
+        _feedbackDialogCanSend(state) {
+            return Boolean(state) && !state.saving
+                && (state.rating > 0 || String(state.message || '').trim().length > 0);
+        },
+
+        _renderFeedbackDialog() {
+            const state = this.feedbackDialog;
+            if (!state) return;
+            let host = document.getElementById('v3-feedback-dialog');
+            if (!host) {
+                host = document.createElement('div');
+                host.id = 'v3-feedback-dialog';
+                host.className = 'v3-fb-overlay is-entering';
+                document.body.appendChild(host);
+                document.body.classList.add('v3-feedback-dialog-open');
+                this._bindFeedbackDialogOnce(host);
+                setTimeout(() => host.classList.remove('is-entering'), 250);
+            }
+            const shown = state.hover || state.rating;
+            const stars = [1, 2, 3, 4, 5].map((n) => `<button type="button" class="v3-fb-star${n <= shown ? ' is-on' : ''}" data-fb-star="${n}" role="radio" aria-checked="${state.rating === n ? 'true' : 'false'}" aria-label="${h('conversation.feedback.starLabel', { n })}" tabindex="${(state.rating === n || (!state.rating && n === 1)) ? '0' : '-1'}">${ICON.starFill}</button>`).join('');
+            const chips = this.FEEDBACK_TYPES.map((type) => `<button type="button" class="v3-fb-chip${state.type === type ? ' is-selected' : ''}" data-fb-type="${type}" aria-pressed="${state.type === type ? 'true' : 'false'}">${h(`conversation.feedback.type.${type}`)}</button>`).join('');
+            const canSend = this._feedbackDialogCanSend(state);
+            host.innerHTML = `<div class="v3-fb-modal" role="dialog" aria-modal="true" aria-labelledby="v3-fb-title" aria-describedby="v3-fb-subtitle" dir="${isRtl() ? 'rtl' : 'ltr'}">
+              <div class="v3-fb-head">
+                <span class="v3-fb-mark" aria-hidden="true">${ICON.chatHeart}</span>
+                <h2 class="v3-fb-title" id="v3-fb-title">${h('conversation.feedback.title')}</h2>
+                <p class="v3-fb-subtitle" id="v3-fb-subtitle">${h('conversation.feedback.subtitle')}</p>
+              </div>
+              <div class="v3-fb-rating">
+                <div class="v3-fb-rating-label" id="v3-fb-rate-label">${h('conversation.feedback.rate')}</div>
+                <div class="v3-fb-stars" role="radiogroup" aria-labelledby="v3-fb-rate-label" data-fb-stars>${stars}</div>
+              </div>
+              <div class="v3-fb-section">
+                <div class="v3-fb-label" id="v3-fb-type-label">${h('conversation.feedback.typeLabel')}</div>
+                <div class="v3-fb-chips" role="group" aria-labelledby="v3-fb-type-label">${chips}</div>
+              </div>
+              <div class="v3-fb-section">
+                <label class="v3-fb-label" for="v3-fb-message">${h('conversation.feedback.yourFeedback')}</label>
+                <textarea id="v3-fb-message" class="v3-fb-textarea" rows="1" maxlength="4000" placeholder="${h('conversation.feedback.placeholder')}" dir="auto" data-fb-message>${esc(state.message || '')}</textarea>
+              </div>
+              ${state.error ? `<div class="v3-fb-error" role="alert">${esc(state.error)}</div>` : ''}
+              <div class="v3-fb-footer">
+                <button type="button" class="v3-fb-cancel" data-fb-cancel>${h('common.cancel')}</button>
+                <button type="button" class="v3-fb-send" data-fb-send${canSend ? '' : ' disabled'}>${state.saving ? h('conversation.feedback.sending') : h('conversation.feedback.send')}</button>
+              </div>
+            </div>`;
+            this._autosizeFeedbackMessage(host.querySelector('[data-fb-message]'));
+        },
+
+        _autosizeFeedbackMessage(textarea) {
+            if (!textarea) return;
+            textarea.style.height = 'auto';
+            textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, 44), 180)}px`;
+        },
+
+        /**
+         * Event delegation on the overlay, bound once per mount. Re-renders of
+         * the dialog replace innerHTML, so nothing here holds element refs;
+         * typing only patches state and the Send button (never re-renders
+         * the textarea mid-typing).
+         */
+        _bindFeedbackDialogOnce(host) {
+            host.addEventListener('click', (event) => {
+                const state = this.feedbackDialog;
+                if (!state) return;
+                const target = event.target instanceof Element ? event.target : null;
+                if (!target) return;
+                if (target === host) { this.closeFeedbackDialog(); return; }
+                const star = target.closest('[data-fb-star]');
+                if (star) {
+                    const n = Number(star.dataset.fbStar);
+                    state.rating = state.rating === n ? 0 : n;
+                    state.hover = 0;
+                    this._renderFeedbackDialog();
+                    host.querySelector(`[data-fb-star="${state.rating || 1}"]`)?.focus();
+                    return;
+                }
+                const chip = target.closest('[data-fb-type]');
+                if (chip) {
+                    const type = chip.dataset.fbType;
+                    state.type = state.type === type ? null : type;
+                    this._renderFeedbackDialog();
+                    host.querySelector(`[data-fb-type="${type}"]`)?.focus();
+                    return;
+                }
+                if (target.closest('[data-fb-cancel]')) { this.closeFeedbackDialog(); return; }
+                if (target.closest('[data-fb-send]')) { this.submitFeedbackDialog(); }
+            });
+            host.addEventListener('mouseover', (event) => {
+                const state = this.feedbackDialog;
+                const star = event.target instanceof Element ? event.target.closest('[data-fb-star]') : null;
+                if (!state || !star) return;
+                const n = Number(star.dataset.fbStar);
+                if (state.hover === n) return;
+                state.hover = n;
+                host.querySelectorAll('[data-fb-star]').forEach((el) => el.classList.toggle('is-on', Number(el.dataset.fbStar) <= n));
+            });
+            host.addEventListener('mouseout', (event) => {
+                const state = this.feedbackDialog;
+                const stars = event.target instanceof Element ? event.target.closest('[data-fb-stars]') : null;
+                if (!state || !stars) return;
+                const to = event.relatedTarget instanceof Element ? event.relatedTarget : null;
+                if (to && stars.contains(to)) return;
+                state.hover = 0;
+                host.querySelectorAll('[data-fb-star]').forEach((el) => el.classList.toggle('is-on', Number(el.dataset.fbStar) <= state.rating));
+            });
+            host.addEventListener('input', (event) => {
+                const state = this.feedbackDialog;
+                const area = event.target instanceof Element ? event.target.closest('[data-fb-message]') : null;
+                if (!state || !area) return;
+                state.message = area.value;
+                this._autosizeFeedbackMessage(area);
+                const send = host.querySelector('[data-fb-send]');
+                if (send) send.disabled = !this._feedbackDialogCanSend(state);
+            });
+            this._feedbackKeydown = (event) => {
+                const state = this.feedbackDialog;
+                if (!state) return;
+                if (event.key === 'Escape') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this.closeFeedbackDialog();
+                    return;
+                }
+                const star = event.target instanceof Element ? event.target.closest('[data-fb-star]') : null;
+                if (star && ['ArrowRight', 'ArrowLeft', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+                    event.preventDefault();
+                    const forward = event.key === 'ArrowUp' || (isRtl() ? event.key === 'ArrowLeft' : event.key === 'ArrowRight');
+                    const current = state.rating || Number(star.dataset.fbStar) || 1;
+                    state.rating = Math.min(5, Math.max(1, current + (forward ? 1 : -1)));
+                    state.hover = 0;
+                    this._renderFeedbackDialog();
+                    host.querySelector(`[data-fb-star="${state.rating}"]`)?.focus();
+                    return;
+                }
+                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    this.submitFeedbackDialog();
+                    return;
+                }
+                if (event.key === 'Tab') {
+                    // Keep focus inside the dialog.
+                    const focusable = [...host.querySelectorAll('button:not([disabled]):not([tabindex="-1"]), textarea')];
+                    if (!focusable.length) return;
+                    const first = focusable[0];
+                    const last = focusable[focusable.length - 1];
+                    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+                    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+                }
+            };
+            document.addEventListener('keydown', this._feedbackKeydown, true);
+        },
+
+        async submitFeedbackDialog() {
+            const state = this.feedbackDialog;
+            if (!this._feedbackDialogCanSend(state)) return false;
+            const turn = this.turns.find((item) => item.id === state.turnId);
+            if (!turn) { this.closeFeedbackDialog(); return false; }
+            state.saving = true;
+            state.error = null;
+            this._renderFeedbackDialog();
+            try {
+                await this._postAnswerFeedback(turn, {
+                    rating: state.rating || null,
+                    feedback_type: state.type,
+                    message: state.message,
+                });
+                turn.feedbackSent = true;
+                // The user may have dismissed this dialog and opened another
+                // while the request was in flight; only settle our own.
+                if (this.feedbackDialog === state) {
+                    state.returnFocus = null;
+                    this.closeFeedbackDialog();
+                }
+                if (typeof window.showToast === 'function') window.showToast(t('conversation.feedback.sent'), 'success');
+                this.renderConversation();
+                // renderConversation() rebuilt the card, so focus the new trigger.
+                if (!this.feedbackDialog) {
+                    document.querySelector(`#v3-thread [data-feedback-open="${turn.id}"]`)?.focus();
+                }
+                return true;
+            } catch (error) {
+                console.warn('[Workspace] feedback dialog failed', error);
+                if (this.feedbackDialog !== state) return false;
+                state.saving = false;
+                state.error = t('conversation.feedback.failed');
+                this._renderFeedbackDialog();
+                return false;
+            }
+        },
+
         /** Resume a persisted proposal (confirm / clarification pick / guard exit). */
         async runProposal(turn, { patch = {}, remember = false, override = false } = {}) {
             const proposal = (turn.result || {}).proposal || {};
@@ -3253,6 +3617,7 @@
                 turnId: data.query_id || null,
                 conversationId: data.session_id || null,
                 isFavorite: false,
+                feedback: null,
                 error: null,
                 parentId: parent ? parent.id : null,
                 resultKind: data.proposal ? 'proposal' : undefined,
@@ -3874,9 +4239,25 @@
             body.innerHTML = this.dockTab === 'profiling'
                 ? this._profileHtml(turn)
                 : this.dockTab === 'model' && window.JeenAnalysisUI
-                    ? window.JeenAnalysisUI.modelDetailsHtml(turn.result || {})
+                    ? window.JeenAnalysisUI.modelDetailsHtml(turn.result || {}, { tracking: turn.tracking })
                     : this._sqlHtml(turn);
             body.querySelector('[data-copy-sql]')?.addEventListener('click', () => navigator.clipboard.writeText(turn.result.sql || ''));
+            body.querySelector('[data-ml-accuracy]')?.addEventListener('click', () => this.checkForecastAccuracy(turn));
+            // "Adjustments to try": one click re-runs the analysis with the
+            // server-validated patch as a child turn (same path as Edit setup).
+            body.querySelectorAll('[data-ml-adjust]').forEach((chip) => chip.addEventListener('click', async () => {
+                const items = (turn.result?.analysis || {}).adjustments || [];
+                const item = items[Number(chip.dataset.mlAdjust)];
+                if (!item || !item.params_patch) return;
+                body.querySelectorAll('[data-ml-adjust]').forEach((other) => { other.disabled = true; });
+                try {
+                    await this.rerunAnalysis(null, item.params_patch);
+                } catch (error) {
+                    if (typeof window.showToast === 'function') window.showToast(error.message || t('charts.chat.rerunFailed'), 'error');
+                } finally {
+                    body.querySelectorAll('[data-ml-adjust]').forEach((other) => { other.disabled = false; });
+                }
+            }));
             body.querySelector('[data-full-profile]')?.addEventListener('click', () => this._openFullProfile());
             body.querySelector('[data-dev-details]')?.addEventListener('click', () => document.getElementById('dev-panel-btn')?.click());
             body.querySelectorAll('[data-filter-switch]').forEach((button) => button.addEventListener('click', () => {

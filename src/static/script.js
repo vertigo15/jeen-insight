@@ -4958,6 +4958,38 @@ window.JeenLegacyBridge = {
             || typeof chartManager.restoreSavedChart !== 'function') return;
         await chartManager.restoreSavedChart(state);
     },
+    /**
+     * Forecast tracking: draw the actuals that arrived after a forecast on top
+     * of the live band chart (time x-axis, [ts, value] pairs). Client-side and
+     * session-only on purpose: the saved chart baseline is never rewritten and
+     * the chart spec contract gains no new role.
+     */
+    overlayRealizedActuals(points, label) {
+        const instance = chartManager && chartManager.chartContainer && chartManager.chartContainer.chartInstance;
+        if (!instance || typeof instance.setOption !== 'function') return false;
+        const data = (points || [])
+            .filter((p) => p && p.ts != null && Number.isFinite(Number(p.actual)))
+            .map((p) => [String(p.ts), Number(p.actual)]);
+        const current = instance.getOption() || {};
+        const series = (current.series || []).filter((s) => s && s.jeenRole !== 'realized');
+        if (!data.length) {
+            instance.setOption({ series }, { replaceMerge: ['series'] });
+            return true;
+        }
+        const name = label || 'Realized';
+        series.push({
+            name, type: 'line', data, jeenRole: 'realized', z: 5,
+            symbol: 'diamond', symbolSize: 7, showSymbol: true,
+            lineStyle: { type: 'dotted', width: 1.5 },
+            emphasis: { focus: 'series' },
+        });
+        const legend = Array.isArray(current.legend) ? current.legend[0] : current.legend;
+        const legendData = legend && Array.isArray(legend.data) ? legend.data.filter((n) => n !== name) : null;
+        const option = { series };
+        if (legendData) option.legend = { data: [...legendData, name] };
+        instance.setOption(option, { replaceMerge: ['series'] });
+        return true;
+    },
     getTablePresentation() {
         return {
             formats: { ..._colFormats },

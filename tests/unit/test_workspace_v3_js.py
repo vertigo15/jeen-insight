@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -262,3 +263,47 @@ def test_workspace_renders_findings_as_key_insights():
     assert ".v3-insights {" in styles
     assert "background: var(--insight-bg);" in styles
     assert "color: var(--text);" in styles
+    # Previous answers collapse: insights / follow-ups / feedback are only
+    # painted on the selected ("Show answer") turn.
+    assert ".v3-turn:not(.is-selected) .v3-insights," in styles
+    assert ".v3-turn:not(.is-selected) .v3-followups," in styles
+    assert ".v3-turn:not(.is-selected) .v3-feedback { display: none; }" in styles
+
+
+def test_workspace_answer_feedback_triggers_and_dialog():
+    root = Path(__file__).resolve().parents[2]
+    styles = (root / "src/static/workspace/workspace.css").read_text()
+    controller = (root / "src/static/workspace/workspaceController.js").read_text()
+
+    # Triggers: thumbs + feedback bubble, and the padding reset that keeps the
+    # SVGs from collapsing under the global `button { padding: 0 16px }`.
+    assert 'data-feedback="${turn.id}:${kind}"' in controller
+    assert 'data-feedback-open="${turn.id}"' in controller
+    assert 'aria-haspopup="dialog"' in controller
+    assert re.search(r"\.v3-feedback-btn \{[^}]*padding: 0;", styles)
+    # Thumb events go to the append-only log; a second click withdraws.
+    assert "'/api/answer-feedback'" in controller
+    assert "thumb: next || 'cleared'" in controller
+    # Only SQL / ML answers carry the row.
+    assert "_feedbackEligible(turn)" in controller
+    # No dock side-effect on thumbs-down any more.
+    assert "dockTab = 'model'" not in controller.split("async sendThumb")[1].split("_feedbackHtml(turn)")[0]
+
+    # Dialog: labelled, modal, radiogroup stars, single-select chips, Send gate.
+    for needle in (
+        'role="dialog" aria-modal="true" aria-labelledby="v3-fb-title"',
+        'role="radiogroup"',
+        'role="radio" aria-checked=',
+        "FEEDBACK_TYPES: ['general', 'report_bug', 'ui_bug', 'other']",
+        "_feedbackDialogCanSend(state)",
+        "closeFeedbackDialog()",
+    ):
+        assert needle in controller, needle
+    # Entrance animation is scoped to the mount, not replayed on re-render.
+    assert ".v3-fb-overlay.is-entering .v3-fb-modal { animation:" in styles
+    # Jeen UI Modal dimensions: 448px card, radius 16, 24px padding.
+    assert re.search(r"\.v3-fb-modal \{[^}]*width: min\(448px, 100%\)", styles, re.S)
+    assert re.search(r"\.v3-fb-modal \{[^}]*border-radius: 16px", styles, re.S)
+    assert re.search(r"\.v3-fb-modal \{[^}]*padding: 24px", styles, re.S)
+    # Dark mode via tokens, no black send button (panel review).
+    assert re.search(r"\.v3-fb-send \{[^}]*background: var\(--rose\)", styles, re.S)

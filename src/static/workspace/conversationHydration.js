@@ -71,6 +71,9 @@ export function turnFromServer(dto, conversationId) {
         askedAt: dto.created_at || null,
         hasChart: Boolean(dto.has_chart),
         isFavorite: Boolean(dto.is_favorite),
+        // Result-quality feedback already recorded for this turn (thumbs_up /
+        // thumbs_down), so the buttons render pressed after a reload.
+        feedback: dto.user_feedback || null,
         canLoadData,
         artifactState: needsArtifact ? ARTIFACT_MISSING : ARTIFACT_LOADED,
         startedAt: 0,

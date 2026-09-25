@@ -60,6 +60,7 @@ statsmodels>=0.14
 scipy>=1.11
 ruptures>=1.1,<2
 scikit-learn>=1.5,<2
+holidays>=0.100,<1  # forecast holiday-calendar regressor (ForecastParams.holidays)
 # Optional gradient-boosting engines for driver_analysis (method=auto/xgboost/lightgbm).
 # The engine falls back to scikit-learn HistGradientBoosting when they are absent.
 xgboost>=2.0,<3

@@ -39,11 +39,180 @@ def _jsonb(value: Any) -> Any:
     return value
 
 
+def forecast_capture(envelope: Dict[str, Any], params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Shape a completed forecast envelope into the run row + point rows.
+
+    Pure: shared by the Postgres store and the in-memory double. Returns None
+    for anything that is not a forecast with forecast rows. Multi-series
+    results are captured per ``series_id``; their facts sit under
+    ``facts.series[sid]`` and the top series' method/validation stand in.
+    """
+    if not isinstance(envelope, dict) or envelope.get("skill") != "forecast":
+        return None
+    facts: Dict[str, Any] = envelope.get("facts") or {}
+    validation: Dict[str, Any] = envelope.get("validation") or {}
+    series_params: Dict[str, Any] = (params or {}).get("series") or {}
+    rows = envelope.get("rows") or []
+    points = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("is_forecast") or row.get("forecast") is None:
+            continue
+        points.append({
+            "series_id": str(row.get("series_id") or ""),
+            "ts": str(row.get("ts")),
+            "forecast": float(row["forecast"]),
+            "lower": None if row.get("lower") is None else float(row["lower"]),
+            "upper": None if row.get("upper") is None else float(row["upper"]),
+        })
+    if not points:
+        return None
+    multi = bool(facts.get("series"))
+    top_facts = facts if not multi else (facts.get("series") or {}).get(facts.get("top_series") or "", {}) or {}
+    last_actual = (top_facts.get("last_actual") or {}).get("ts")
+    return {
+        "run": {
+            "skill": "forecast",
+            "contract_version": str(envelope.get("schema_version") or CONTRACT_VERSION),
+            "params": params or {},
+            "grain": str(top_facts.get("grain") or series_params.get("grain") or ""),
+            "horizon": int(top_facts.get("horizon") or (params or {}).get("horizon") or len(points)),
+            "interval_level": float(top_facts.get("interval") or (params or {}).get("interval") or 0.8),
+            "method": envelope.get("method_used"),
+            "interval_method": top_facts.get("interval_method"),
+            "metric": validation.get("metric"),
+            "mase_scale": top_facts.get("mase_scale"),
+            "measure_label": top_facts.get("measure"),
+            "engine_hash": (envelope.get("engine") or {}).get("module_hash"),
+            "history_end": last_actual,
+            "multi_series": multi,
+        },
+        "points": points,
+    }
+
+
 class AnalysisStore:
-    def __init__(self, pool: asyncpg.Pool, *, schema_ready: bool = True, ttl_seconds: int = 900) -> None:
+    def __init__(self, pool: asyncpg.Pool, *, schema_ready: bool = True, ttl_seconds: int = 900,
+                 forecast_schema_ready: bool = False) -> None:
         self.pool = pool
         self.schema_ready = schema_ready
+        self.forecast_schema_ready = forecast_schema_ready
         self.ttl_seconds = int(ttl_seconds)
+
+    # ── Forecast tracking (migration 034) ─────────────────────────────────
+
+    async def record_forecast(
+        self, *, query_id: UUID, user_id: str, source_key: str, session_id: Optional[UUID],
+        params: Dict[str, Any], envelope: Dict[str, Any],
+    ) -> bool:
+        """Capture a completed forecast (run + points) in one transaction. Idempotent
+        per turn; best-effort against a missing schema."""
+        if not self.forecast_schema_ready:
+            return False
+        shaped = forecast_capture(envelope, params)
+        if shaped is None:
+            return False
+        run, points = shaped["run"], shaped["points"]
+        try:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        """
+                        INSERT INTO insights_forecast_runs
+                            (query_id, user_id, source_key, session_id, skill, contract_version, params, grain,
+                             horizon, interval_level, method, interval_method, metric, mase_scale, measure_label,
+                             engine_hash, history_end, multi_series)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                                $17::date, $18)
+                        ON CONFLICT (query_id) DO UPDATE SET
+                            params = EXCLUDED.params, method = EXCLUDED.method,
+                            interval_method = EXCLUDED.interval_method, metric = EXCLUDED.metric,
+                            mase_scale = EXCLUDED.mase_scale, engine_hash = EXCLUDED.engine_hash,
+                            history_end = EXCLUDED.history_end, multi_series = EXCLUDED.multi_series
+                        """,
+                        query_id, user_id, source_key, session_id, run["skill"], run["contract_version"],
+                        json.dumps(run["params"], default=str), run["grain"], run["horizon"], run["interval_level"],
+                        run["method"], run["interval_method"], run["metric"], run["mase_scale"], run["measure_label"],
+                        run["engine_hash"], run["history_end"], run["multi_series"],
+                    )
+                    await conn.execute("DELETE FROM insights_forecast_points WHERE query_id = $1", query_id)
+                    await conn.executemany(
+                        """
+                        INSERT INTO insights_forecast_points (query_id, series_id, ts, forecast, lower, upper)
+                        VALUES ($1, $2, $3::date, $4, $5, $6)
+                        ON CONFLICT (query_id, series_id, ts) DO UPDATE SET
+                            forecast = EXCLUDED.forecast, lower = EXCLUDED.lower, upper = EXCLUDED.upper
+                        """,
+                        [(query_id, p["series_id"], p["ts"], p["forecast"], p["lower"], p["upper"]) for p in points],
+                    )
+            return True
+        except Exception:  # noqa: BLE001
+            logger.exception("analysis_store: failed to record forecast for %s", query_id)
+            return False
+
+    async def get_forecast_run(self, query_id: UUID, *, user_id: str, source_key: str) -> Optional[Dict[str, Any]]:
+        """The captured run and its points, owner + connection bound."""
+        if not self.forecast_schema_ready:
+            return None
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT query_id, session_id, params, grain, horizon, interval_level, method, interval_method,
+                           metric, mase_scale, measure_label, engine_hash, history_end, multi_series,
+                           created_at, evaluated_at, evaluation
+                    FROM insights_forecast_runs
+                    WHERE query_id = $1 AND user_id = $2 AND source_key = $3
+                    """,
+                    query_id, user_id, source_key,
+                )
+                if row is None:
+                    return None
+                points = await conn.fetch(
+                    "SELECT series_id, ts, forecast, lower, upper FROM insights_forecast_points "
+                    "WHERE query_id = $1 ORDER BY series_id, ts",
+                    query_id,
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("analysis_store: failed to load forecast run %s", query_id)
+            return None
+        return {
+            "query_id": str(row["query_id"]),
+            "session_id": row["session_id"],
+            "params": _jsonb(row["params"]) or {},
+            "grain": row["grain"],
+            "horizon": int(row["horizon"]),
+            "interval_level": float(row["interval_level"]),
+            "method": row["method"],
+            "interval_method": row["interval_method"],
+            "metric": row["metric"],
+            "mase_scale": row["mase_scale"],
+            "measure_label": row["measure_label"],
+            "engine_hash": row["engine_hash"],
+            "history_end": row["history_end"].isoformat() if row["history_end"] else None,
+            "multi_series": bool(row["multi_series"]),
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "evaluated_at": row["evaluated_at"].isoformat() if row["evaluated_at"] else None,
+            "evaluation": _jsonb(row["evaluation"]),
+            "points": [
+                {"series_id": p["series_id"], "ts": p["ts"].isoformat(), "forecast": p["forecast"],
+                 "lower": p["lower"], "upper": p["upper"]}
+                for p in points
+            ],
+        }
+
+    async def save_forecast_evaluation(self, query_id: UUID, *, user_id: str, evaluation: Dict[str, Any]) -> None:
+        """Upsert the latest realized-accuracy result (late data can change it)."""
+        if not self.forecast_schema_ready:
+            return
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE insights_forecast_runs SET evaluation = $3::jsonb, evaluated_at = NOW() "
+                    "WHERE query_id = $1 AND user_id = $2",
+                    query_id, user_id, json.dumps(evaluation, default=str),
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("analysis_store: failed to save forecast evaluation for %s", query_id)
 
     # ── Proposals ─────────────────────────────────────────────────────────
 
@@ -285,8 +454,33 @@ class InMemoryAnalysisStore:
     def __init__(self, *, ttl_seconds: int = 900) -> None:
         self.ttl_seconds = ttl_seconds
         self.schema_ready = True
+        self.forecast_schema_ready = True
         self.proposals: Dict[str, Dict[str, Any]] = {}
         self.prefs: set = set()
+        self.forecasts: Dict[str, Dict[str, Any]] = {}
+
+    async def record_forecast(self, *, query_id, user_id, source_key, session_id, params, envelope) -> bool:
+        shaped = forecast_capture(envelope, params)
+        if shaped is None:
+            return False
+        self.forecasts[str(query_id)] = {
+            **shaped["run"], "query_id": str(query_id), "user_id": user_id, "source_key": source_key,
+            "session_id": session_id, "points": shaped["points"],
+            "created_at": datetime.now(timezone.utc).isoformat(), "evaluated_at": None, "evaluation": None,
+        }
+        return True
+
+    async def get_forecast_run(self, query_id, *, user_id, source_key):
+        row = self.forecasts.get(str(query_id))
+        if not row or row["user_id"] != user_id or row["source_key"] != source_key:
+            return None
+        return dict(row)
+
+    async def save_forecast_evaluation(self, query_id, *, user_id, evaluation) -> None:
+        row = self.forecasts.get(str(query_id))
+        if row and row["user_id"] == user_id:
+            row["evaluation"] = evaluation
+            row["evaluated_at"] = datetime.now(timezone.utc).isoformat()
 
     def _key_taken(self, key: Optional[str], *, user_id: str, source_key: str, except_id: Optional[str] = None) -> bool:
         return bool(key) and any(

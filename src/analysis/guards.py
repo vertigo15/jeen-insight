@@ -15,13 +15,15 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from src.analysis.contracts import GuardExit, GuardResult
+from src.analysis.grains import COARSER as _COARSER
+from src.analysis.grains import FINER as _FINER
+from src.analysis.grains import grain_label as _grain_label
+from src.analysis.grains import grain_patch
 from src.analysis.series import SeriesFrame, min_points_for_period
 
 SERIES_LENGTH_MIN = 12
 GAP_RATIO_MAX = 0.20
 ZERO_SHARE_MAX = 0.50
-
-_COARSER: Dict[str, Optional[str]] = {"day": "week", "week": "month", "month": None}
 
 
 def _override_exit(what: str = "Run it anyway") -> GuardExit:
@@ -32,15 +34,30 @@ def _override_exit(what: str = "Run it anyway") -> GuardExit:
     )
 
 
-def _coarser_exit(sf: SeriesFrame, *, recommended: bool) -> Optional[GuardExit]:
+def _coarser_exit(sf: SeriesFrame, *, recommended: bool, horizon: Optional[int] = None,
+                  window: Optional[int] = None) -> Optional[GuardExit]:
     coarser = _COARSER.get(sf.grain)
     if not coarser:
         return None
     return GuardExit(
         kind="patch",
-        label=f"Use a {coarser}ly grain instead" if coarser != "day" else "Use a daily grain instead",
+        label=_grain_label(coarser),
         description=f"Rolls the same measure up to one point per {coarser}.",
-        params_patch={"series": {"grain": coarser}},
+        params_patch=grain_patch(sf.grain, coarser, horizon=horizon, window=window),
+        recommended=recommended,
+    )
+
+
+def _finer_exit(sf: SeriesFrame, *, recommended: bool, horizon: Optional[int] = None,
+                window: Optional[int] = None) -> Optional[GuardExit]:
+    finer = _FINER.get(sf.grain)
+    if not finer:
+        return None
+    return GuardExit(
+        kind="patch",
+        label=_grain_label(finer),
+        description=f"One point per {finer} gives the model more periods to learn from.",
+        params_patch=grain_patch(sf.grain, finer, horizon=horizon, window=window),
         recommended=recommended,
     )
 
@@ -57,21 +74,15 @@ def _wider_window_exit(sf: SeriesFrame, needed: int) -> GuardExit:
 # ── Individual guards ─────────────────────────────────────────────────────────
 
 
-def series_length(sf: SeriesFrame) -> GuardResult:
+def series_length(sf: SeriesFrame, *, horizon: Optional[int] = None, window: Optional[int] = None) -> GuardResult:
     n = sf.n
     ok = n >= SERIES_LENGTH_MIN
     exits: List[GuardExit] = []
     if not ok:
         exits.append(_wider_window_exit(sf, max(SERIES_LENGTH_MIN * 2, 24)))
-        finer = {"week": "day", "month": "week"}.get(sf.grain)
+        finer = _finer_exit(sf, recommended=True, horizon=horizon, window=window)
         if finer:
-            exits.append(GuardExit(
-                kind="patch",
-                label=f"Use a {finer}ly grain instead" if finer != "day" else "Use a daily grain instead",
-                description=f"One point per {finer} gives the model more periods to learn from.",
-                params_patch={"series": {"grain": finer}},
-                recommended=True,
-            ))
+            exits.append(finer)
         exits.append(_override_exit())
     return GuardResult(
         name="series_length",
@@ -83,12 +94,12 @@ def series_length(sf: SeriesFrame) -> GuardResult:
     )
 
 
-def gap_ratio(sf: SeriesFrame) -> GuardResult:
+def gap_ratio(sf: SeriesFrame, *, horizon: Optional[int] = None, window: Optional[int] = None) -> GuardResult:
     ratio = sf.gap_ratio
     ok = ratio <= GAP_RATIO_MAX
     exits: List[GuardExit] = []
     if not ok:
-        coarser = _coarser_exit(sf, recommended=True)
+        coarser = _coarser_exit(sf, recommended=True, horizon=horizon, window=window)
         if coarser:
             exits.append(coarser)
         exits.append(_override_exit())
@@ -105,7 +116,7 @@ def gap_ratio(sf: SeriesFrame) -> GuardResult:
     )
 
 
-def min_history(sf: SeriesFrame) -> GuardResult:
+def min_history(sf: SeriesFrame, **_: object) -> GuardResult:
     """Informational unless there is not even a candidate cycle to test.
 
     A seasonal term needs more than two full cycles (``2·period + 1`` points).
@@ -185,24 +196,31 @@ def max_horizon(sf: SeriesFrame, horizon: int) -> GuardResult:
     )
 
 
-def intermittent(sf: SeriesFrame) -> GuardResult:
+def intermittent(sf: SeriesFrame, *, horizon: Optional[int] = None, window: Optional[int] = None,
+                 informational: bool = False) -> GuardResult:
+    """Refuses a mostly-zero history for engines that would smooth the zeros
+    away. ``informational`` (the forecast skill) records the share and passes:
+    that engine adds Croston/ADIDA/IMAPA to its shortlist instead of refusing,
+    and a refusal whose exit changed the method would only refuse again."""
     share = sf.zero_share
-    ok = share <= ZERO_SHARE_MAX
+    over = share > ZERO_SHARE_MAX
+    ok = not over or informational
     exits: List[GuardExit] = []
-    if not ok:
-        coarser = _coarser_exit(sf, recommended=True)
+    if over and not informational:
+        coarser = _coarser_exit(sf, recommended=True, horizon=horizon, window=window)
         if coarser:
             exits.append(coarser)
         exits.append(_override_exit())
+    detail = f"{share:.0%} of {sf.period_label(plural=True)} are exactly zero; the limit is {ZERO_SHARE_MAX:.0%}"
+    if over and informational:
+        detail += "; intermittent-demand models were added to the shortlist"
     return GuardResult(
         name="intermittent",
         passed=ok,
-        detail=(
-            f"{share:.0%} of {sf.period_label(plural=True)} are exactly zero; "
-            f"the limit is {ZERO_SHARE_MAX:.0%}"
-        ),
+        detail=detail,
         observed=round(share, 4),
         required=ZERO_SHARE_MAX,
+        overridable=not informational,
         exits=exits,
     )
 
@@ -359,23 +377,38 @@ _GUARDS = {
 }
 
 
+# Skills whose engine handles intermittent demand itself; the guard only records it.
+INTERMITTENT_INFORMATIONAL_SKILLS = frozenset({"forecast"})
+
+
 def run_post_sql_guards(
     sf: SeriesFrame,
     *,
     guard_names: List[str],
     horizon: Optional[int] = None,
+    window: Optional[int] = None,
+    skill: Optional[str] = None,
 ) -> List[GuardResult]:
-    """Evaluate the skill's declared guards in order. Never raises."""
+    """Evaluate the skill's declared guards in order. Never raises.
+
+    ``horizon``/``window`` are the run's own counts so a grain-changing exit
+    can restate them in the new grain; ``skill`` lets a shared guard behave
+    per engine (``intermittent`` is informational for forecasting).
+    """
     results: List[GuardResult] = []
     for name in guard_names:
         if name == "max_horizon":
             if horizon is not None:
                 results.append(max_horizon(sf, horizon))
             continue
+        if name == "intermittent":
+            results.append(intermittent(sf, horizon=horizon, window=window,
+                                        informational=skill in INTERMITTENT_INFORMATIONAL_SKILLS))
+            continue
         fn = _GUARDS.get(name)
         if fn is None:
             continue
-        results.append(fn(sf))
+        results.append(fn(sf, horizon=horizon, window=window))
     return results
 
 
