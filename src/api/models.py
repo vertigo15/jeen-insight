@@ -349,6 +349,8 @@ class ChartManifest(BaseModel):
         validation_alias=AliasChoices("chart_spec", "chartSpec", "spec"),
         serialization_alias="chart_spec",
     )
+    # Active reference lines / highlights so the model can remove or amend them.
+    annotations: Optional[Dict[str, Any]] = None
     columns: List[ColumnInfo] = Field(
         default_factory=list,
         validation_alias=AliasChoices("columns", "sql_columns", "sqlColumns"),
@@ -356,8 +358,6 @@ class ChartManifest(BaseModel):
         max_length=256,
     )
     locks: Dict[str, Any] = Field(default_factory=dict)
-    # Active reference lines / highlights so the model can remove or amend them.
-    annotations: Optional[Dict[str, Any]] = None
 
     @model_validator(mode="before")
     @classmethod
