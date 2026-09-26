@@ -1128,7 +1128,7 @@ export class SettingsPage {
 
     _mcpCacheCard(S) {
         const src     = S.catalog_source || 'db';
-        const ttl     = S.cache_ttl_seconds ?? 900;  // per-connection TTL from API
+        const ttl     = S.cache_ttl_seconds ?? 3600;  // per-connection TTL from API
         const ttlOpts = [
             [0,     t('settings.catalog.cache.live')],
             [300,   t('settings.catalog.minutes', { count: 5 })],

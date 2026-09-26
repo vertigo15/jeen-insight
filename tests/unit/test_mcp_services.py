@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -36,6 +36,7 @@ from src.metadata.mcp_server_service import (
 from src.metadata.mcp_cache_service import (
     McpCacheService,
     CacheResult,
+    KEY_CATALOG,
     KEY_TABLES,
     KEY_COLUMNS,
     KEY_CONNECTIONS,
@@ -54,7 +55,9 @@ from src.metadata.mcp_catalog_client import (
     _normalise_connections,
     _parse_catalog_markdown,
     normalize_columns_markdown,
+    build_date_column_index,
     restore_date_columns,
+    restore_date_columns_from_index,
     _map_tool_to_need,
     _empty_bundle,
     _normalise_value_search,
@@ -337,6 +340,197 @@ class TestMcpCacheServiceL1:
 
         result = await cache.get(1, "AdventureWorks", KEY_TABLES, ttl_seconds=900)
         assert result is None  # L2 also empty
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("expired", "marked", "stale", "invalidated"),
+        [
+            (False, False, False, False),
+            (True, False, True, False),   # past its TTL: may be served while refreshing
+            (False, True, True, True),    # explicitly cleared: must be refetched
+        ],
+    )
+    async def test_l2_row_says_whether_it_expired_or_was_invalidated(self, expired, marked, stale, invalidated):
+        now = datetime.now(tz=timezone.utc)
+        pool = _mock_pool(fetchrow_return={
+            "payload": '"- FactSales"',
+            "fetched_at": now - timedelta(hours=2),
+            "expires_at": now - timedelta(minutes=1) if expired else now + timedelta(minutes=30),
+            "is_stale": marked,
+        })
+        cache = McpCacheService(pool)
+
+        result = await cache.get(1, "AdventureWorks", KEY_TABLES, ttl_seconds=3600)
+
+        assert result.payload == "- FactSales"
+        assert (result.is_stale, result.invalidated) == (stale, invalidated)
+        assert ((1, "AdventureWorks", KEY_TABLES) in cache._l1) is not stale, "only a fresh row warms L1"
+
+    @pytest.mark.asyncio
+    async def test_write_from_before_an_invalidation_is_refused(self):
+        cache = McpCacheService(_mock_pool())
+        cache._upsert_db = AsyncMock()
+        before = cache.generation(1, "AdventureWorks")
+
+        await cache.invalidate(1, "AdventureWorks")
+        stored = await cache.set(1, "AdventureWorks", KEY_CATALOG, {"tables": "- Old"}, 3600, generation=before)
+
+        assert stored is False
+        assert cache._l1 == {}
+        cache._upsert_db.assert_not_awaited()
+        other = cache.generation(1, "Trinity")
+        assert await cache.set(1, "Trinity", KEY_CATALOG, {"tables": "- T"}, 3600, generation=other) is True
+
+    @pytest.mark.asyncio
+    async def test_invalidation_during_the_l2_write_waits_for_it_then_marks_it(self):
+        """If the invalidation's UPDATE could run before the upsert commits, the
+        outdated copy would stay fresh in L2. It waits for the write instead,
+        and the write's L1 entry is ignored as soon as the generation moves."""
+        pool = _mock_pool()
+        cache = McpCacheService(pool)
+        events = []
+        conn = pool.acquire.return_value._v
+        conn.execute = AsyncMock(side_effect=lambda *_a: events.append("marked stale") or "UPDATE 1")
+        before = cache.generation(1, "AdventureWorks")
+        seen_mid_write = []
+        invalidation = None
+
+        async def _upsert(*_args):
+            nonlocal invalidation
+            events.append("upsert started")
+            invalidation = asyncio.create_task(cache.invalidate(1, "AdventureWorks"))
+            for _ in range(3):
+                await asyncio.sleep(0)
+            seen_mid_write.append(await cache.get(1, "AdventureWorks", KEY_CATALOG, 3600))
+            events.append("upsert committed")
+
+        cache._upsert_db = _upsert
+
+        await cache.set(1, "AdventureWorks", KEY_CATALOG, {"tables": "- Old"}, 3600, generation=before)
+        await invalidation
+
+        assert events == ["upsert started", "upsert committed", "marked stale"]
+        assert seen_mid_write == [None], "the pre-invalidation L1 entry is not served while the write finishes"
+        assert await cache.get(1, "AdventureWorks", KEY_CATALOG, 3600) is None
+
+    @pytest.mark.asyncio
+    async def test_l2_read_racing_an_invalidation_is_not_warmed_into_l1(self):
+        """The SELECT can see the row before the invalidation's UPDATE lands."""
+        now = datetime.now(tz=timezone.utc)
+        fresh_row = {"payload": {"tables": "- Old"}, "fetched_at": now, "expires_at": now + timedelta(minutes=30), "is_stale": False}
+        pool = _mock_pool()
+        cache = McpCacheService(pool)
+        conn = pool.acquire.return_value._v
+
+        async def _fetchrow(*_args):
+            await cache.invalidate(1, "AdventureWorks")
+            return fresh_row
+
+        conn.fetchrow = AsyncMock(side_effect=_fetchrow)
+
+        result = await cache.get(1, "AdventureWorks", KEY_CATALOG, 3600)
+
+        assert result.invalidated and result.is_stale
+        assert (1, "AdventureWorks", KEY_CATALOG) not in cache._l1
+
+    @pytest.mark.asyncio
+    async def test_read_while_an_invalidation_waits_for_its_update_is_not_served_fresh(self):
+        """After a write commits and before the invalidation's UPDATE runs, the
+        L2 row still looks fresh; a read in that window must not trust it."""
+        now = datetime.now(tz=timezone.utc)
+        pool = _mock_pool(fetchrow_return={
+            "payload": {"tables": "- Old"}, "fetched_at": now,
+            "expires_at": now + timedelta(minutes=30), "is_stale": False,
+        })
+        cache = McpCacheService(pool)
+        conn = pool.acquire.return_value._v
+        update_gate = asyncio.Event()
+
+        async def _execute(*_args):
+            await update_gate.wait()
+            return "UPDATE 1"
+
+        conn.execute = AsyncMock(side_effect=_execute)
+        invalidation = asyncio.create_task(cache.invalidate(1, "AdventureWorks"))
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert not invalidation.done()
+
+        result = await cache.get(1, "AdventureWorks", KEY_CATALOG, 3600)
+        status = await cache.get_status(1, "AdventureWorks")
+
+        assert result.invalidated and result.is_stale
+        assert (1, "AdventureWorks", KEY_CATALOG) not in cache._l1
+        assert status["cache_hit"] is False
+        update_gate.set()
+        await invalidation
+        assert cache._pending == {}, "the pending marker is cleared once the UPDATE ran"
+
+    @pytest.mark.asyncio
+    async def test_failed_invalidation_keeps_distrusting_the_rows_it_could_not_mark(self):
+        """The UPDATE failed, so L2 still says fresh: that must not bring the
+        pre-invalidation copy back once the invalidation is over."""
+        now = datetime.now(tz=timezone.utc)
+        pool = _mock_pool(fetchrow_return={
+            "payload": {"tables": "- Old"}, "fetched_at": now,
+            "expires_at": now + timedelta(minutes=30), "is_stale": False,
+        })
+        conn = pool.acquire.return_value._v
+        conn.execute = AsyncMock(side_effect=RuntimeError("db down"))
+        cache = McpCacheService(pool)
+
+        with pytest.raises(RuntimeError):
+            await cache.invalidate(1, "AdventureWorks")
+
+        assert cache._pending == {}
+        result = await cache.get(1, "AdventureWorks", KEY_CATALOG, 3600)
+        assert result.invalidated, "the unmarked row is not served as fresh"
+        assert (1, "AdventureWorks", KEY_CATALOG) not in cache._l1
+        assert (await cache.get(1, "Trinity", KEY_CATALOG, 3600)).invalidated is False, "other sources are unaffected"
+
+        # A fetch after the failure still caches in L1 and is served from it.
+        await cache.set(1, "AdventureWorks", KEY_CATALOG, {"tables": "- New"}, 3600,
+                        generation=cache.generation(1, "AdventureWorks"))
+        assert (await cache.get(1, "AdventureWorks", KEY_CATALOG, 3600)).payload == {"tables": "- New"}
+
+        # Once an invalidation of the scope succeeds, L2 is trusted again.
+        conn.execute = AsyncMock(return_value="UPDATE 1")
+        await cache.invalidate(1, "AdventureWorks")
+        assert cache._unmarked == set()
+        assert (await cache.get(1, "AdventureWorks", KEY_CATALOG, 3600)).invalidated is False
+
+    @pytest.mark.asyncio
+    async def test_startup_warm_skips_the_old_per_section_rows(self):
+        now = datetime.now(tz=timezone.utc)
+
+        def row(source_key, cache_key):
+            return {"source_key": source_key, "cache_key": cache_key, "payload": '"x"',
+                    "fetched_at": now, "expires_at": now + timedelta(minutes=30)}
+
+        pool = _mock_pool(fetch_return=[
+            row("AdventureWorks", KEY_CATALOG),
+            row(SOURCE_GLOBAL, KEY_CONNECTIONS),
+            row("AdventureWorks", KEY_TABLES),
+            row("AdventureWorks", KEY_COLUMNS),
+            row("AdventureWorks", KEY_CONNECTIONS),
+            row("AdventureWorks", "tables_rich"),
+        ])
+        cache = McpCacheService(pool)
+
+        assert await cache.warm_from_db(1) == 3
+        assert set(cache._l1) == {
+            (1, "AdventureWorks", KEY_CATALOG), (1, SOURCE_GLOBAL, KEY_CONNECTIONS), (1, "AdventureWorks", "tables_rich"),
+        }
+
+    @pytest.mark.asyncio
+    async def test_server_wide_invalidation_changes_every_source_generation(self):
+        cache = McpCacheService(_mock_pool())
+        before = {source: cache.generation(1, source) for source in ("AdventureWorks", "Trinity")}
+
+        await cache.invalidate(1)
+
+        assert all(cache.generation(1, source) != gen for source, gen in before.items())
+        assert cache.generation(2, "AdventureWorks") == (0, 0), "other servers are untouched"
 
     @pytest.mark.asyncio
     async def test_invalidate_clears_l1_for_source(self):
@@ -829,9 +1023,8 @@ class TestMcpCatalogClientLoadAll:
         """
         Build a McpCatalogClient with a real McpCacheService using a mocked pool.
 
-        cached_payloads: dict of cache_key → payload to pre-seed into L1.
-        "connections" key: stored per source_key ("AdventureWorks", KEY_CONNECTIONS)
-                           NOT under SOURCE_GLOBAL (global list uses a separate path).
+        cached_payloads: the full-catalog bundle (section → text) to pre-seed
+        into L1 as the single ("AdventureWorks", KEY_CATALOG) entry.
         """
         srv_svc = AsyncMock()
         srv_svc.get_active = AsyncMock(return_value=server)
@@ -840,15 +1033,11 @@ class TestMcpCatalogClientLoadAll:
         cache = McpCacheService(pool)
 
         if cached_payloads:
-            for ck, payload in cached_payloads.items():
-                # "connections" in this context is the per-source sources text
-                source_key = "AdventureWorks"
-                l1_key = (server.id, source_key, ck)
-                result = CacheResult(
-                    payload=payload, source="l1",
-                    fetched_at=datetime.now(tz=timezone.utc), is_stale=False
-                )
-                cache._l1[l1_key] = (time.monotonic() + 900, result)
+            result = CacheResult(
+                payload=dict(cached_payloads), source="l1",
+                fetched_at=datetime.now(tz=timezone.utc), is_stale=False
+            )
+            cache._l1[(server.id, "AdventureWorks", KEY_CATALOG)] = (time.monotonic() + 900, result)
 
         return McpCatalogClient(srv_svc, cache)
 
@@ -878,8 +1067,7 @@ class TestMcpCatalogClientLoadAll:
             "relationships":   "[(factinternetsales.productkey → dimproduct.productkey,)]",
             "business_terms":  "- Term: ARR | Definition: Annual Recurring Revenue",
             "knowledge_pairs": "Q: Total sales? SQL: SELECT SUM(salesamount) FROM factinternetsales",
-            # sources is stored per source_key under KEY_CONNECTIONS
-            "connections":     "AdventureWorks | postgres | (Active: True)",
+            "sources":         "AdventureWorks | postgres | (Active: True)",
         })
 
         bundle = await client.load_all("AdventureWorks")
@@ -888,6 +1076,9 @@ class TestMcpCatalogClientLoadAll:
         assert "DimProduct.ProductKey" in bundle["columns"]
         assert "AdventureWorks" in bundle["sources"]
         assert "No tables registered." not in bundle["tables"]
+        assert bundle["column_samples"] == "", "a section the cached bundle lacks gets its default"
+        bundle["tables"] = "mutated"
+        assert (await client.load_all("AdventureWorks"))["tables"] != "mutated", "callers get their own copy"
 
     @pytest.mark.asyncio
     async def test_load_all_returns_empty_bundle_when_server_has_no_health(self):
@@ -952,16 +1143,22 @@ class TestMcpCatalogClientLoadAll:
         server = _make_server(health=health)
         client = self._make_client(server)
         client._resolve_connection_id = AsyncMock(return_value=42)
+        full_started = asyncio.Event()
+        filtered_started = asyncio.Event()
 
+        # Each call answers only once the other one is under way, so if the full
+        # catalog still loaded after the filtered call, this would time out.
         async def _tool(_server, tool, args):
             if tool == "get_filtered_prompt":
-                await asyncio.sleep(0.02)
+                filtered_started.set()
+                await asyncio.wait_for(full_started.wait(), timeout=2)
                 question = args["question"]
                 return {"prompt": (
                     f"## Tables\n- FactSales\n## Columns\n- FactSales.Amount - Type: money\n"
                     f"## Business Terms\n- {question}\n## Source\nAdventureWorks"
                 )}
-            await asyncio.sleep(0.03)
+            full_started.set()
+            await asyncio.wait_for(filtered_started.wait(), timeout=2)
             return (
                 "## Tables\n- FactSales\n"
                 "## Columns\n- FactSales.Amount - Type: money\n- FactSales.OrderDate - Type: date\n"
@@ -985,13 +1182,13 @@ class TestMcpCatalogClientLoadAll:
         assert "sales by month" in first["business_terms"]
         assert "sales by region" in second["business_terms"]
         assert set(first_timing) == {
-            "connection_ms", "filtered_tool_ms", "parse_ms", "full_restore_ms", "total_ms",
+            "connection_ms", "filtered_tool_ms", "parse_ms", "full_restore_ms", "full_restore_cache", "total_ms",
         }
-        assert first_timing["filtered_tool_ms"] >= 15
-        assert second_timing["filtered_tool_ms"] >= 15
-        assert first_timing["full_restore_ms"] >= 25
-        assert second_timing["full_restore_ms"] < first_timing["full_restore_ms"]
-        assert first_timing["total_ms"] > second_timing["total_ms"]
+        assert first_timing["full_restore_cache"] == "miss"
+        assert second_timing["full_restore_cache"] == "hit"
+        # The restore still added the date column the filtered prompt dropped.
+        assert "FactSales.OrderDate" in first["columns"]
+        assert "FactSales.OrderDate" in second["columns"]
 
     @pytest.mark.asyncio
     async def test_load_filtered_restores_only_the_kept_tables_date_columns(self):
@@ -1010,23 +1207,24 @@ class TestMcpCatalogClientLoadAll:
             "## Columns\n- FactInternetSales.OrderDateKey - Type: integer\n- FactInternetSales.SalesAmount - Type: money\n"
             "## Source\nAdventureWorks | postgres"
         )})
-        client.load_all = AsyncMock(return_value={**_empty_bundle(), "columns": (
+        client._load_full = AsyncMock(return_value=({**_empty_bundle(), "columns": (
             "- FactInternetSales.OrderDateKey - Type: integer\n"
             "- FactInternetSales.OrderDate - Type: timestamp\n"
             "- FactInternetSales.UnitPrice - Type: money\n"
             "- DimCustomer.DateFirstPurchase - Type: date\n"
-        )})
+        )}, "hit"))
 
-        bundle = await client.load_filtered("AdventureWorks", "what drove the change last quarter")
+        bundle, timing = await client.load_filtered_with_meta("AdventureWorks", "what drove the change last quarter")
 
         lines = bundle["columns"].splitlines()
         assert "- FactInternetSales.OrderDate - Type: timestamp" in lines
         assert not any("UnitPrice" in line for line in lines), "measures the filter dropped stay dropped"
         assert not any("DimCustomer" in line for line in lines), "tables the filter did not pick stay out"
-        client.load_all.assert_awaited_once_with("AdventureWorks")
+        client._load_full.assert_awaited_once_with(server, "AdventureWorks")
+        assert timing["full_restore_cache"] == "hit"
 
         # A full-catalog failure leaves the filtered bundle as it came.
-        client.load_all = AsyncMock(side_effect=RuntimeError("mcp down"))
+        client._load_full = AsyncMock(side_effect=RuntimeError("mcp down"))
         bundle = await client.load_filtered("AdventureWorks", "what drove the change last quarter")
         assert bundle["columns"].splitlines() == [
             "- FactInternetSales.OrderDateKey - Type: integer", "- FactInternetSales.SalesAmount - Type: money",
@@ -1046,17 +1244,17 @@ class TestMcpCatalogClientLoadAll:
             "## Columns\n- FactSales.Amount - Type: money\n"
             "## Source\nAdventureWorks"
         )})
-        client.load_all = AsyncMock(return_value={
+        client._load_full = AsyncMock(return_value=({
             **_empty_bundle(),
             "columns": "- FactSales.OrderDate - Type: date",
-        })
+        }, "hit"))
 
-        def _slow_restore(filtered, full):
+        def _slow_restore(filtered, index):
             time.sleep(0.02)
-            return restore_date_columns(filtered, full)
+            return restore_date_columns_from_index(filtered, index)
 
         with patch(
-            "src.metadata.mcp_catalog_client.restore_date_columns",
+            "src.metadata.mcp_catalog_client.restore_date_columns_from_index",
             side_effect=_slow_restore,
         ):
             _bundle, timing = await client.load_filtered_with_meta(
@@ -1075,21 +1273,16 @@ class TestMcpCatalogClientLoadAll:
         started = asyncio.Event()
         release = asyncio.Event()
         calls = 0
-        ready = False
         populated = {**_empty_bundle(), "tables": "- FactSales"}
 
-        async def _ensure(_server, _source_key):
-            nonlocal calls, ready
+        async def _ensure(_server, _source_key, _generation=None):
+            nonlocal calls
             calls += 1
             started.set()
             await release.wait()
-            ready = True
-
-        async def _bundle(_server, _source_key):
-            return populated if ready else None
+            return populated
 
         client._ensure_catalog = _ensure
-        client._bundle_from_cache = _bundle
         first = asyncio.create_task(client.load_all("AdventureWorks"))
         await started.wait()
         second = asyncio.create_task(client.load_all("AdventureWorks"))
@@ -1098,6 +1291,7 @@ class TestMcpCatalogClientLoadAll:
         results = await asyncio.gather(first, second)
         assert calls == 1
         assert results == [populated, populated]
+        assert results[0] is not results[1], "each waiter gets its own copy of the shared result"
 
     @pytest.mark.asyncio
     async def test_cancelling_one_coalesced_waiter_does_not_cancel_the_other(self):
@@ -1108,20 +1302,14 @@ class TestMcpCatalogClientLoadAll:
         client = self._make_client(server)
         started = asyncio.Event()
         release = asyncio.Event()
-        ready = False
         populated = {**_empty_bundle(), "tables": "- FactSales"}
 
-        async def _ensure(_server, _source_key):
-            nonlocal ready
+        async def _ensure(_server, _source_key, _generation=None):
             started.set()
             await release.wait()
-            ready = True
-
-        async def _bundle(_server, _source_key):
-            return populated if ready else None
+            return populated
 
         client._ensure_catalog = _ensure
-        client._bundle_from_cache = _bundle
         cancelled = asyncio.create_task(client.load_all("AdventureWorks"))
         await started.wait()
         survivor = asyncio.create_task(client.load_all("AdventureWorks"))
@@ -1143,7 +1331,7 @@ class TestMcpCatalogClientLoadAll:
         started = asyncio.Event()
         release = asyncio.Event()
 
-        async def _ensure(_server, _source_key):
+        async def _ensure(_server, _source_key, _generation=None):
             started.set()
             await release.wait()
 
@@ -1168,7 +1356,7 @@ class TestMcpCatalogClientLoadAll:
         client = self._make_client(server)
         calls = 0
 
-        async def _ensure(_server, _source_key):
+        async def _ensure(_server, _source_key, _generation=None):
             nonlocal calls
             calls += 1
             await asyncio.sleep(0)
@@ -1192,7 +1380,7 @@ class TestMcpCatalogClientLoadAll:
         client = self._make_client(server)
         started = asyncio.Event()
 
-        async def _ensure(_server, _source_key):
+        async def _ensure(_server, _source_key, _generation=None):
             started.set()
             await asyncio.Event().wait()
 
@@ -1205,6 +1393,216 @@ class TestMcpCatalogClientLoadAll:
         assert client._catalog_inflight == {}
         with pytest.raises(RuntimeError, match="closing"):
             await client.load_all("AdventureWorks")
+
+    # ── Shared full catalog: stale-while-refresh, invalidation, TTL 0 ─────────
+
+    @staticmethod
+    def _stub_cache(client, *, stale=False, invalidated=False, empty=False):
+        """The full catalog cached as its single entry, optionally past its TTL or invalidated."""
+        payloads = {
+            "tables": "- FactSales",
+            "columns": "- FactSales.Amount - Type: money\n- FactSales.OrderDate - Type: date",
+            "relationships": "[]",
+            "business_terms": "",
+            "knowledge_pairs": "",
+            "sources": "AdventureWorks | postgres",
+        }
+
+        async def _get(_server_id, _source_key, cache_key, _ttl):
+            if empty or cache_key != KEY_CATALOG:
+                return None
+            return CacheResult(
+                payload=payloads, source="l2_stale" if stale or invalidated else "l1",
+                is_stale=stale or invalidated, invalidated=invalidated,
+            )
+
+        client._cache_svc.get = _get
+        return payloads
+
+    def _counting_ensure(self, client, bundle=None, *, fail=False):
+        calls = []
+
+        async def _ensure(_server, source_key, _generation=None):
+            calls.append(source_key)
+            await asyncio.sleep(0)
+            if fail:
+                raise RuntimeError("provider down")
+            return bundle or {**_empty_bundle(), "tables": "- FreshTable"}
+
+        client._ensure_catalog = _ensure
+        return calls
+
+    def _catalog_server(self, ttl=3600):
+        server = _make_server(health=_health_with_tools({
+            NEED_LIST_SOURCES: "list_connections",
+            NEED_LIST_TABLES: "get_catalog_prompt",
+        }))
+        server.cache_ttl_seconds = ttl
+        return server
+
+    @pytest.mark.asyncio
+    async def test_expired_catalog_is_served_at_once_and_refreshed_once_in_background(self):
+        client = self._make_client(self._catalog_server())
+        self._stub_cache(client, stale=True)
+        calls = self._counting_ensure(client)
+
+        first, second = await asyncio.gather(
+            client.load_all("AdventureWorks"), client.load_all("AdventureWorks"),
+        )
+
+        assert first["tables"] == second["tables"] == "- FactSales", "the expired copy is served, not awaited"
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert calls == ["AdventureWorks"], "one shared background refresh"
+        assert client._catalog_inflight == {}
+
+    @pytest.mark.asyncio
+    async def test_invalidated_catalog_is_refetched_before_answering(self):
+        client = self._make_client(self._catalog_server())
+        self._stub_cache(client, invalidated=True)
+        calls = self._counting_ensure(client)
+
+        bundle = await client.load_all("AdventureWorks")
+
+        assert bundle["tables"] == "- FreshTable"
+        assert calls == ["AdventureWorks"]
+
+    @pytest.mark.asyncio
+    async def test_provider_failure_falls_back_to_any_earlier_copy(self):
+        server = self._catalog_server()
+        client = self._make_client(server)
+        self._stub_cache(client, invalidated=True)
+        self._counting_ensure(client, fail=True)
+
+        bundle, state = await client._load_full(server, "AdventureWorks")
+
+        assert bundle["tables"] == "- FactSales", "stale-if-error beats an empty catalog"
+        assert state == "fallback", "the trace must not claim a refresh is running"
+
+    @pytest.mark.asyncio
+    async def test_provider_failure_without_any_copy_is_reported_as_failed(self):
+        server = self._catalog_server()
+        client = self._make_client(server)
+        self._stub_cache(client, empty=True)
+        self._counting_ensure(client, fail=True)
+
+        bundle, state = await client._load_full(server, "AdventureWorks")
+
+        assert (bundle, state) == (_empty_bundle(), "failed")
+
+    @pytest.mark.asyncio
+    async def test_catalog_is_cached_as_one_entry(self):
+        """One entry: a reader can never combine sections from two fetches, and
+        a cold L1 costs one L2 row instead of eight."""
+        server = self._catalog_server()
+        client = self._make_client(server)
+        client._resolve_connection_id = AsyncMock(return_value=42)
+        client._call_tool = AsyncMock(return_value=(
+            "## Tables\n- FactSales\n## Columns\n- FactSales.Amount - Type: money\n## Source\nAdventureWorks"
+        ))
+
+        await client.load_all("AdventureWorks")
+
+        assert list(client._cache_svc._l1) == [(server.id, "AdventureWorks", KEY_CATALOG)]
+        payload = client._cache_svc._l1[(server.id, "AdventureWorks", KEY_CATALOG)][1].payload
+        assert set(payload) == set(_empty_bundle())
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("old_finishes_first", [True, False])
+    async def test_refresh_does_not_join_or_keep_a_fetch_that_predates_it(self, old_finishes_first):
+        """A fetch that was already running when the catalog was invalidated may
+        hold the old catalog: the refresh starts its own fetch, and the old one
+        reaches only its own waiter, never the cache — whichever finishes first."""
+        server = self._catalog_server()
+        client = self._make_client(server)
+        client._resolve_connection_id = AsyncMock(return_value=42)
+        gates = [asyncio.Event(), asyncio.Event()]
+        versions = []
+
+        async def _tool(_server, _tool_name, _args):
+            version = len(versions)
+            versions.append(version)
+            await gates[version].wait()
+            return f"## Tables\n- Version{version}\n## Columns\n- Version{version}.Id - Type: integer\n## Source\nAdventureWorks"
+
+        client._call_tool = _tool
+        before = asyncio.create_task(client.load_all("AdventureWorks"))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert versions == [0]
+
+        await client.invalidate(server.id, "AdventureWorks")
+        client.refresh_in_background(server, "AdventureWorks")
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert versions == [0, 1], "the refresh started its own fetch"
+
+        for gate in (gates if old_finishes_first else reversed(gates)):
+            gate.set()
+            for _ in range(5):
+                await asyncio.sleep(0)
+        assert (await before)["tables"] == "- Version0", "its own waiter still gets the old fetch"
+        assert client._catalog_inflight == {} and client._catalog_tasks == set()
+        assert (await client.load_all("AdventureWorks"))["tables"] == "- Version1"
+
+    @pytest.mark.asyncio
+    async def test_connection_list_fetched_before_a_refresh_is_not_cached(self):
+        server = self._catalog_server()
+        client = self._make_client(server)
+
+        async def _list_connections(_server, _tool, _args):
+            await client.invalidate(server.id, "AdventureWorks")
+            return {"connections": [{"connection_id": 7, "name": "AdventureWorks", "service_type": "Postgres"}]}
+
+        client._call_tool = _list_connections
+
+        assert await client._get_connections(server)
+        assert (server.id, SOURCE_GLOBAL, KEY_CONNECTIONS) not in client._cache_svc._l1
+
+    @pytest.mark.asyncio
+    async def test_no_cache_ttl_returns_the_catalog_just_fetched(self):
+        """TTL 0 stores nothing; load_all used to re-read the (empty) cache and
+        return an empty bundle. It must return what the provider sent."""
+        server = self._catalog_server(ttl=NO_CACHE_TTL)
+        client = self._make_client(server)
+        client._resolve_connection_id = AsyncMock(return_value=42)
+        client._call_tool = AsyncMock(return_value=(
+            "## Tables\n- FactSales\n## Columns\n- FactSales.Amount - Type: money\n## Source\nAdventureWorks"
+        ))
+
+        bundle = await client.load_all("AdventureWorks")
+
+        assert "FactSales" in bundle["tables"]
+        assert "FactSales.Amount" in bundle["columns"]
+        assert client._cache_svc._l1 == {}, "TTL 0 must not write the cache"
+
+    @pytest.mark.asyncio
+    async def test_date_index_is_built_once_per_cached_catalog(self):
+        client = self._make_client(self._catalog_server())
+        payloads = self._stub_cache(client)
+        with patch(
+            "src.metadata.mcp_catalog_client.build_date_column_index", wraps=build_date_column_index,
+        ) as build:
+            for _ in range(3):
+                bundle = await client.load_all("AdventureWorks")
+            # An L2 read decodes a new string object with the same text.
+            l2_copy = (payloads["columns"] + " ")[:-1]
+            assert l2_copy is not payloads["columns"]
+            view = client._columns_view(1, "AdventureWorks", l2_copy)
+            assert build.call_count == 1
+            client._columns_view(1, "AdventureWorks", "- FactSales.ShipDate - Type: date")
+            assert build.call_count == 2, "a changed catalog is indexed again"
+        assert bundle["columns"] == view.text
+        assert [column for column, _line in view.dates["factsales"]] == ["orderdate"]
+
+    @pytest.mark.asyncio
+    async def test_background_refresh_is_skipped_with_caching_off(self):
+        server = self._catalog_server(ttl=NO_CACHE_TTL)
+        client = self._make_client(server)
+
+        client.refresh_in_background(server, "AdventureWorks")
+
+        assert client._catalog_inflight == {}
 
     @pytest.mark.asyncio
     async def test_pooled_http_client_is_reused_and_closed(self):

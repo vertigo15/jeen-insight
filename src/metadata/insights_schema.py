@@ -238,18 +238,19 @@ async def _apply_baseline_ddl(conn, *, platform_missing: bool) -> None:
             mcp_server_id   INT          NOT NULL
                                 REFERENCES insights_mcp_servers(id) ON DELETE CASCADE,
             source_key      VARCHAR(255) NOT NULL,
-            -- Keep in sync with migrations 016_mcp_cache_keys.sql and
-            -- 024_mcp_cache_statistics_keys.sql. Includes the structured
-            -- autocomplete datasets (tables_rich / knowledge_questions /
-            -- columns_struct:<scope>) and the optional statistics / sample
-            -- sections so fresh-DB bootstrap does not drift from the migrated schema.
+            -- Keep in sync with migrations 016_mcp_cache_keys.sql,
+            -- 024_mcp_cache_statistics_keys.sql and 037_mcp_cache_catalog_key.sql.
+            -- Includes the structured autocomplete datasets (tables_rich /
+            -- knowledge_questions / columns_struct:<scope>), the optional
+            -- statistics / sample sections and the whole-catalog entry so
+            -- fresh-DB bootstrap does not drift from the migrated schema.
             cache_key       VARCHAR(160) NOT NULL
                                 CHECK (
                                     cache_key IN (
                                         'connections','tables','columns',
                                         'relationships','business_terms','knowledge_pairs',
                                         'tables_rich','knowledge_questions','columns_struct',
-                                        'column_statistics','column_samples'
+                                        'column_statistics','column_samples','catalog'
                                     )
                                     OR starts_with(cache_key, 'columns_struct:')
                                 ),

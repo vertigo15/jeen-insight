@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -894,3 +895,259 @@ async def test_planner_is_skipped_without_cue_word_or_hit():
     result = await planner(_state([], question="Moscow sales"))
     llm.generate.assert_not_awaited()
     assert result["filter_plan"] == {"filters": [], "invalid_filters": []}
+
+
+# ── Catalog example values replace the value search ──────────────────────────
+
+_CATALOG_WITH_EXAMPLES = {
+    "columns": "\n".join([
+        # MCP shape: the example clause survives normalisation inside the line.
+        '- "public"."dimproductcategory"."englishproductcategoryname" - Type: character varying, Distinct: 4, '
+        "Description: Category name — values (all): 'Accessories', 'Bikes', 'Clothing', 'Components'",
+        "- dim_customer.city - Type: text, Description: Customer city — values: 'Moscow', 'O''Hare' (+120 more)",
+        "- sales.region - Type: text",
+    ]),
+    # Metadata-DB shape: fenced sample lines.
+    "column_samples": "<<<BEGIN_UNTRUSTED_DATA>>>\n- product.name: 'Road Bike', 'Helmet' (+3 more)\n<<<END_UNTRUSTED_DATA>>>",
+}
+
+
+def test_catalog_example_values_reads_both_catalog_shapes():
+    found = filtering.catalog_example_values(_CATALOG_WITH_EXAMPLES)
+    assert found[("dimproductcategory", "englishproductcategoryname")] == ["Accessories", "Bikes", "Clothing", "Components"]
+    assert found[("dim_customer", "city")] == ["Moscow", "O'Hare"]
+    assert found[("product", "name")] == ["Road Bike", "Helmet"]
+    assert ("sales", "region") not in found
+
+
+def test_catalog_value_hits_match_case_and_plural_and_leave_the_rest_for_search():
+    table_columns = {"dimproductcategory": ["englishproductcategoryname"], "dim_customer": ["city"], "product": ["name"]}
+    hits, unmatched = filtering.catalog_value_hits(_CATALOG_WITH_EXAMPLES, ["bikes", "helmets", "Paris"], table_columns)
+    assert [(h.table, h.column, h.value, h.similarity, h.source) for h in hits] == [
+        ("dimproductcategory", "englishproductcategoryname", "Bikes", 1.0, "catalog"),
+        ("product", "name", "Helmet", 1.0, "catalog"),
+    ]
+    assert unmatched == ["Paris"]
+    # A column outside the catalog allowlist is never offered.
+    assert filtering.catalog_value_hits(_CATALOG_WITH_EXAMPLES, ["bikes"], {"dim_customer": ["city"]}) == ([], ["bikes"])
+
+
+class _CountingStore(_Store):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.searched: List[List[str]] = []
+        self.profiled: List[Tuple[str, str]] = []
+
+    async def find_columns_for_value(self, source, needles, *, tables=None, limit=12):
+        self.searched.append(list(needles))
+        return list(self.hits)
+
+    async def column_profile(self, source, table, column):
+        self.profiled.append((table, column))
+        return await super().column_profile(source, table, column)
+
+
+def _bikes_state(question):
+    state = _state([], question=question)
+    state["metadata_bundle"] = _CATALOG_WITH_EXAMPLES
+    state["table_columns"] = {**state["table_columns"], "dimproductcategory": ["englishproductcategoryname"]}
+    return state
+
+
+@pytest.mark.asyncio
+async def test_planner_skips_the_value_search_when_the_catalog_already_shows_the_value():
+    llm = AsyncMock()
+    llm.generate = AsyncMock(return_value={"content": json.dumps({"filters": [
+        {"table": "dimproductcategory", "column": "englishproductcategoryname", "op": "equals", "value": "Bikes"},
+    ]}), "usage": {}})
+    store = _CountingStore(hits=[ColumnHit("dim_customer", "city", "Moscow", 0.9, 3, "categorical")])
+    planner = make_filter_planner(llm, _PromptLoader(), value_store_provider=lambda _s: store)
+
+    result = await planner(_bikes_state("show sales by month for bikes"))
+
+    assert store.searched == [], "the MCP value search must not run for a value the catalog shows"
+    # The latest profile still decides: a cached catalog can predate a column
+    # being marked sensitive.
+    assert store.profiled == [("dimproductcategory", "englishproductcategoryname")]
+    assert result["filter_value_search"] == {"catalog": ["bikes"], "searched": []}
+    assert [(c["column"], c["value"], c["source"]) for c in result["filter_candidates"]] == [
+        ("englishproductcategoryname", "Bikes", "catalog"),
+    ]
+    prompt = json.loads(llm.generate.call_args.kwargs["messages"][0]["content"])
+    assert "Bikes" in prompt["candidate_columns"]
+    assert result["filter_plan"]["filters"][0]["candidate_columns"][0]["source"] == "catalog"
+
+
+@pytest.mark.asyncio
+async def test_planner_searches_only_the_words_the_catalog_does_not_show():
+    llm = AsyncMock()
+    llm.generate = AsyncMock(return_value={"content": json.dumps({"filters": []}), "usage": {}})
+    store = _CountingStore(hits=[ColumnHit("dim_customer", "city", "Moscow", 0.9, 3, "categorical")])
+    planner = make_filter_planner(llm, _PromptLoader(), value_store_provider=lambda _s: store)
+
+    result = await planner(_bikes_state("show sales for bikes in mosco"))
+
+    assert store.searched == [["mosco"]]
+    search = result["filter_value_search"]
+    assert (search["catalog"], search["searched"]) == (["bikes"], ["mosco"])
+    assert (search["lookup"]["mode"], search["lookup"]["timed_out"]) == ("live", False)
+    assert {c["source"] for c in result["filter_candidates"]} == {"catalog", "captured"}
+
+
+# ── Reverse lookup started during pre-graph setup ────────────────────────────
+
+
+def _no_filters_llm():
+    llm = AsyncMock()
+    llm.generate = AsyncMock(return_value={"content": json.dumps({"filters": []}), "usage": {}})
+    return llm
+
+
+@pytest.mark.asyncio
+async def test_a_catalog_example_on_a_column_now_marked_sensitive_is_not_offered():
+    sensitive = ColumnProfile(
+        table="dimproductcategory", column="englishproductcategoryname", data_type="text",
+        semantic_type="categorical", distinct_count=4, sensitivity_tag="restricted",
+    )
+    store = _CountingStore(profiles={("dimproductcategory", "englishproductcategoryname"): sensitive})
+    planner = make_filter_planner(_no_filters_llm(), _PromptLoader(), value_store_provider=lambda _s: store)
+
+    result = await planner(_bikes_state("show sales by month for bikes"))
+
+    assert result["filter_candidates"] == []
+
+
+@pytest.mark.asyncio
+async def test_profile_checks_for_different_columns_run_side_by_side():
+    both = asyncio.Event()
+    seen: List[str] = []
+
+    class _Slow(_CountingStore):
+        async def column_profile(self, source, table, column):
+            seen.append(table)
+            if len(seen) == 2:
+                both.set()
+            await asyncio.wait_for(both.wait(), timeout=1)
+            return None
+
+    store = _Slow(hits=[ColumnHit("dim_customer", "city", "Moscow", 0.9, 3, "categorical"),
+                        ColumnHit("dim_dealer", "city", "Moscow", 0.8, 2, "categorical")])
+    planner = make_filter_planner(_no_filters_llm(), _PromptLoader(), value_store_provider=lambda _s: store)
+
+    result = await planner(_state([], question="show sales in mosco"))
+
+    assert sorted(seen) == ["dim_customer", "dim_dealer"]
+    assert {c["table"] for c in result["filter_candidates"]} == {"dim_customer", "dim_dealer"}
+
+
+def _prefetch_for(state, store, *, store_kind="db", table_columns=None):
+    async def resolve_store():
+        return store_kind, store
+
+    async def load_catalog():
+        return state["metadata_bundle"], (table_columns if table_columns is not None else state["table_columns"])
+
+    return filtering.start_value_lookup_prefetch(
+        state["question"], state["source_key"], resolve_store=resolve_store, load_catalog=load_catalog,
+    )
+
+
+@pytest.mark.asyncio
+async def test_planner_reuses_the_lookup_started_during_setup():
+    live = _CountingStore()
+    early = _CountingStore(hits=[ColumnHit("dim_customer", "city", "Moscow", 0.9, 3, "categorical")])
+    state = _bikes_state("show sales for bikes in mosco")
+    state["filter_value_prefetch"] = _prefetch_for(state, early)
+    await state["filter_value_prefetch"].task
+    planner = make_filter_planner(_no_filters_llm(), _PromptLoader(), value_store_provider=lambda _s: live)
+
+    result = await planner(state)
+
+    assert live.searched == [], "the planner takes the early hits instead of searching again"
+    # The full catalog shows "Bikes" as an example value: only "mosco" is searched.
+    assert early.searched == [["mosco"]]
+    assert [(c["column"], c["value"]) for c in result["filter_candidates"] if c["source"] != "catalog"] == [
+        ("city", "Moscow"),
+    ]
+    lookup = result["filter_value_search"]["lookup"]
+    assert (lookup["mode"], lookup["timed_out"]) == ("prefetched", False)
+    assert lookup["lookup_ms"] is not None
+
+
+@pytest.mark.asyncio
+async def test_planner_searches_live_only_the_words_the_early_lookup_did_not():
+    live = _CountingStore(hits=[ColumnHit("dim_dealer", "city", "Moscow", 0.9, 2, "categorical")])
+    early = _CountingStore()
+    state = _bikes_state("show sales for bikes in mosco")
+    # The full catalog has a table named after the word, so the early lookup
+    # took it for a schema reference; the question-specific catalog does not.
+    prefetch = _prefetch_for(state, early, table_columns={**state["table_columns"], "mosco_regions": ["id"]})
+    await prefetch.task
+    state["filter_value_prefetch"] = prefetch
+    planner = make_filter_planner(_no_filters_llm(), _PromptLoader(), value_store_provider=lambda _s: live)
+
+    result = await planner(state)
+
+    assert early.searched == [], "its only word, bikes, is a catalog example"
+    assert live.searched == [["mosco"]]
+    assert result["filter_value_search"]["lookup"]["mode"] == "prefetched"
+
+
+@pytest.mark.asyncio
+async def test_a_slow_early_lookup_costs_the_planner_no_more_than_its_usual_wait(monkeypatch):
+    monkeypatch.setattr(filtering, "_REVERSE_LOOKUP_WAIT_S", 0.05)
+    release = asyncio.Event()
+
+    class _Slow(_CountingStore):
+        async def find_columns_for_value(self, source, needles, *, tables=None, limit=12):
+            await release.wait()
+            return []
+
+    live = _CountingStore()
+    state = _bikes_state("show sales for bikes in mosco")
+    prefetch = _prefetch_for(state, _Slow())
+    for _ in range(3):
+        await asyncio.sleep(0)
+    state["filter_value_prefetch"] = prefetch
+    planner = make_filter_planner(_no_filters_llm(), _PromptLoader(), value_store_provider=lambda _s: live)
+
+    result = await planner(state)
+
+    lookup = result["filter_value_search"]["lookup"]
+    assert lookup["timed_out"] is True and lookup["waited_ms"] < 1000
+    assert live.searched == []
+    assert not prefetch.task.done(), "the planner's timeout does not cancel the shared lookup"
+    release.set()
+    assert [hit.source for hit in await prefetch.task] == ["catalog"], "bikes came from the catalog examples"
+
+
+@pytest.mark.asyncio
+async def test_an_early_lookup_over_another_catalog_transport_is_not_used():
+    live = _CountingStore(hits=[ColumnHit("dim_dealer", "city", "Moscow", 0.9, 2, "categorical")])
+    early = _CountingStore(hits=[ColumnHit("dim_customer", "city", "Moscow", 0.9, 3, "categorical")])
+    state = _bikes_state("show sales for bikes in mosco")  # catalog_source_used == "db"
+    prefetch = _prefetch_for(state, early, store_kind="mcp")
+    await prefetch.task
+    state["filter_value_prefetch"] = prefetch
+    planner = make_filter_planner(_no_filters_llm(), _PromptLoader(), value_store_provider=lambda _s: live)
+
+    result = await planner(state)
+
+    assert live.searched == [["mosco"]]
+    assert result["filter_value_search"]["lookup"]["mode"] == "live"
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_prefetched_without_a_question_or_a_store():
+    async def no_store():
+        return None
+
+    async def catalog():
+        return {}, {}
+
+    assert filtering.start_value_lookup_prefetch(" ", "s", resolve_store=no_store, load_catalog=catalog) is None
+    prefetch = filtering.start_value_lookup_prefetch(
+        "sales in mosco", "s", resolve_store=no_store, load_catalog=catalog,
+    )
+    assert await prefetch.task == []
+    assert prefetch.store_kind is None and prefetch.literals is None

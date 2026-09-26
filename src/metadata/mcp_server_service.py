@@ -370,7 +370,7 @@ class McpServerService:
         transport: str = "http",
         auth_type: str = "none",
         bearer_token: Optional[str] = None,
-        cache_ttl_seconds: int = 900,
+        cache_ttl_seconds: int = 3600,
     ) -> McpServer:
         from src.security import crypto
 

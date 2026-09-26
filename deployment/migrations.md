@@ -184,6 +184,15 @@ Operational notes:
   filters; no bodies). `USAGE_EVENTS_ENABLED=false` disables both writing and
   the Analytics API.
 
+## Migration 037: whole-catalog MCP cache entry
+
+`037_mcp_cache_catalog_key.sql` adds `catalog` to the `insights_mcp_cache`
+cache-key allowlist. The API caches the full MCP catalog as that one entry so a
+reader never mixes sections from two fetches. Until the migration is applied the
+API logs a startup warning and the L2 write of that entry is rejected: the
+catalog is then cached in the API process only, so each restart downloads it
+again. Expand-only; every earlier key stays allowed.
+
 ## Failure and recovery
 
 1. Stop before workload upgrade and save Job logs/events.

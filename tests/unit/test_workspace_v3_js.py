@@ -17,10 +17,13 @@ def test_workspace_v3_pure_utilities():
       }};
       vm.runInThisContext(fs.readFileSync({str(controller)!r}, 'utf8'));
       const u = window.WorkspaceV3Utils;
-      if (u.PHASES.length !== 9) throw new Error('phase count');
+      if (u.PHASES.length !== 11) throw new Error('phase count');
+      if (u.PHASES[0].id !== 'setup') throw new Error('the pre-load phase runs first');
       if (u.NODE_PHASE.pbi_execute_query !== 'execution') throw new Error('DAX mapping');
       if (u.NODE_PHASE.sql_generator !== 'generation') throw new Error('SQL mapping');
-      if (u.NODE_PHASE.pre_graph_setup !== 'catalog') throw new Error('pre-graph mapping');
+      if (u.NODE_PHASE.pre_graph_setup !== 'setup') throw new Error('pre-graph mapping');
+      if (u.NODE_PHASE.filter_planner !== 'filters' || u.NODE_PHASE.filter_grounder !== 'filters') throw new Error('filter mapping');
+      if (u.NODE_PHASE.empty_filter_result_check !== 'execution') throw new Error('empty-check mapping');
 
       const results = {{
         columns: ['amount', 'region'],
@@ -156,6 +159,145 @@ def test_workspace_progressive_result_merges_partial_without_chart_rebuild():
       turn = newTurn('t4'); c.turns = [turn]; captured = 0;
       c._onResult(turn, {{ query_id: 'q4', sql: 'select 1', results: rows, answer: 'a', trace: [] }});
       if (turn.status !== 'success' || turn.rev !== 0 || captured !== 1) throw new Error('plain result path changed');
+    """
+
+    subprocess.run(["node", "-e", script], cwd=root, check=True)
+
+
+def test_workspace_run_details_tooltips_and_execution_order():
+    """Run-details rows explain each step (time split, tokens); token counts say
+    which is input and which is output; the final trace puts the pre-load first
+    and its breakdown adds up; the shown turn's milestones reach the drawer."""
+    root = Path(__file__).resolve().parents[2]
+    controller = root / "src/static/workspace/workspaceController.js"
+    script = f"""
+      const fs = require('fs');
+      const vm = require('vm');
+      const milestones = [];
+      global.window = {{
+        addEventListener() {{}},
+        escapeHtml(value) {{ return String(value); }},
+        I18n: {{
+          t(key, args) {{ return args ? key + ' ' + JSON.stringify(args) : key; }},
+          has(key) {{ return key === 'conversation.trace.nodes.filter_planner'; }},
+          formatNumber(n) {{ return 'N' + n; }},
+        }},
+        JeenLegacyBridge: {{ applyResultNarrative() {{}}, setRunMilestones(t) {{ milestones.push(t); }} }},
+      }};
+      global.document = {{ dispatchEvent() {{}} }};
+      vm.runInThisContext(fs.readFileSync({str(controller)!r}, 'utf8'));
+      const u = window.WorkspaceV3Utils;
+
+      const lines = u.nodeTip({{ node: 'filter_planner', elapsed_ms: 4690, llm_ms: 400, input_tokens: 3012, output_tokens: 58 }}).split('\\n');
+      if (lines[0] !== 'conversation.trace.nodes.filter_planner') throw new Error('description: ' + lines[0]);
+      if (!lines[1].startsWith('conversation.trace.tips.timeSplit') || !lines[1].includes('"model":"400ms"') || !lines[1].includes('"other":"4.29s"')) throw new Error('time split: ' + lines[1]);
+      if (!lines[2].includes('"input":"N3012"') || !lines[2].includes('"output":"N58"')) throw new Error('tokens: ' + lines[2]);
+      const plain = u.nodeTip({{ node: 'mystery_step', elapsed_ms: 12 }}).split('\\n');
+      if (plain[0] !== 'conversation.trace.nodes.fallback' || plain.length !== 2) throw new Error('fallback tip: ' + plain);
+
+      const tips = u.tokenTips({{ input_tokens: 10712, output_tokens: 494 }}, [
+        {{ node: 'fused_router', status: 'node_finished', input_tokens: 2100, output_tokens: 40 }},
+        {{ node: 'sql_generator', status: 'node_finished', input_tokens: 4200, output_tokens: 150 }},
+        {{ node: 'sql_generator', status: 'node_started' }},
+      ]);
+      if (!tips.input.startsWith('results.tokens.inTip {{"count":"N10712"}}')) throw new Error('input tip: ' + tips.input);
+      if (!tips.input.includes('fused_router N2100 · sql_generator N4200')) throw new Error('input split: ' + tips.input);
+      if (!tips.output.startsWith('results.tokens.outTip {{"count":"N494"}}') || !tips.output.includes('sql_generator N150')) throw new Error('output tip: ' + tips.output);
+      const detail = '1 filter(s) planned · catalog examples matched 1 column(s): dimproductcategory.englishproductcategoryname · value search skipped';
+      if (u.safeTraceNote({{ node: 'filter_planner', type: 'llm', detail }}) !== detail) throw new Error('filter planner detail hidden');
+
+      const c = window.WorkspaceController;
+      c.render = () => {{}};
+      c.renderConversation = () => {{}};
+      c._scrollThread = () => {{}};
+      c._captureSelectedChart = () => {{}};
+      const turn = {{ id: 't1', question: 'q', status: 'running', startedAt: 0, rev: 0,
+        phaseState: Object.fromEntries(u.PHASES.map((p) => [p.id, 'pending'])), trace: [], result: null, error: null }};
+      c.turns = [turn];
+      for (const node of ['context_composer', 'fused_router']) {{
+        c._onNode(turn, {{ node, status: 'node_started' }});
+        c._onNode(turn, {{ node, status: 'node_finished', elapsed_ms: 5 }});
+      }}
+      // An older server sends the pre-load only in the final trace: it still lists first.
+      c._onResult(turn, {{ query_id: 'q1', sql: 'select 1', results: {{ columns: ['x'], rows: [[1]] }}, answer: 'a', trace: [
+        {{ node: 'pre_graph_setup', elapsed_ms: 10500, mcp_timing: {{ filtered_tool_ms: 4850, full_restore_ms: 4600, connection_ms: 0, parse_ms: 1, full_restore_cache: 'invalidated' }} }},
+        {{ node: 'context_composer', elapsed_ms: 1 }},
+        {{ node: 'fused_router', elapsed_ms: 1810, llm_ms: 1700, input_tokens: 2100, output_tokens: 40 }},
+      ] }});
+      const order = turn.trace.map((e) => e.node).join(',');
+      if (order !== 'pre_graph_setup,context_composer,fused_router') throw new Error('order: ' + order);
+      if (turn.trace.some((e) => e.status !== 'node_finished')) throw new Error('started events kept after the result');
+      if (turn.trace[2].llm_ms !== 1700) throw new Error('server fields not merged');
+      if (turn.phaseState.setup !== 'done') throw new Error('setup phase not marked done');
+      if (turn.persisting || turn.phaseState.save !== 'done') throw new Error('a result that does not say saving is final');
+
+      const html = c._traceHtml(turn, turn.trace);
+      if (!html.includes('conversation.trace.mcpOther') || !html.includes('1.05s')) throw new Error('other-setup row: ' + html);
+      if (!html.includes('conversation.trace.cache.invalidated')) throw new Error('cache state missing');
+      if (!html.includes('data-tip="conversation.trace.tips.mcpFiltered"')) throw new Error('sub-row tooltip missing');
+      if (!html.includes('data-tip="conversation.trace.tips.reconcile"')) throw new Error('reconcile tooltip missing');
+
+      turn.timeline = {{ tableMs: 22900, insightsMs: 27300 }};
+      c._syncRunMilestones(turn);
+      if (milestones.at(-1).tableMs !== 22900 || milestones.at(-1).insightsMs !== 27300) throw new Error('milestones not sent');
+      c._syncRunMilestones({{ ...turn, restored: true }});
+      if (milestones.at(-1) !== null) throw new Error('a restored turn has no milestones');
+    """
+
+    subprocess.run(["node", "-e", script], cwd=root, check=True)
+
+
+def test_workspace_steps_after_the_answer_complete_its_trace():
+    """The answer arrives before the history writes; their steps come in the
+    enrichment event, join the run list in order, and do not count against
+    the time to the answer."""
+    root = Path(__file__).resolve().parents[2]
+    controller = root / "src/static/workspace/workspaceController.js"
+    script = f"""
+      const fs = require('fs');
+      const vm = require('vm');
+      let narrated = 0;
+      global.window = {{
+        addEventListener() {{}},
+        escapeHtml(value) {{ return String(value); }},
+        I18n: {{ t(key, args) {{ return args ? key + ' ' + JSON.stringify(args) : key; }}, has() {{ return false; }} }},
+        JeenLegacyBridge: {{ applyResultNarrative() {{ narrated += 1; }}, setRunMilestones() {{}} }},
+      }};
+      global.document = {{ dispatchEvent() {{}} }};
+      vm.runInThisContext(fs.readFileSync({str(controller)!r}, 'utf8'));
+      const u = window.WorkspaceV3Utils;
+      const c = window.WorkspaceController;
+      for (const name of ['render', 'renderConversation', '_scrollThread', '_captureSelectedChart', '_setActionsEnabled', '_renderFavoriteAction']) c[name] = () => {{}};
+      const turn = {{ id: 't1', question: 'q', status: 'running', startedAt: 0, rev: 0,
+        phaseState: Object.fromEntries(u.PHASES.map((p) => [p.id, 'pending'])), trace: [], result: null, error: null, timeline: {{}} }};
+      c.turns = [turn];
+      c._onResult(turn, {{ query_id: 'q1', sql: 'select 1', results: {{ columns: ['x'], rows: [[1]] }}, answer: 'a', saving: true, trace: [
+        {{ node: 'execute_query', elapsed_ms: 800 }},
+        {{ node: 'response_formatter', elapsed_ms: 0 }},
+      ] }});
+      c.lastAppliedResultId = 't1';
+      turn.durationMs = 1000;
+      // Until the history row is written the turn cannot be favorited.
+      if (!turn.persisting || turn.phaseState.save !== 'running') throw new Error('early answer treated as saved');
+      // The history write streams live after the answer, then the tail lands.
+      c._onNode(turn, {{ node: 'save_to_memory', status: 'node_started' }});
+      c._onNode(turn, {{ node: 'save_to_memory', status: 'node_finished', elapsed_ms: 1200 }});
+      c._onEnrichment(turn, {{ result_handle: 'h1', trace_tail: [
+        {{ node: 'save_to_memory', elapsed_ms: 1200, after_answer: true, detail: 'query_id=q1' }},
+        {{ node: 'observability_log', elapsed_ms: 0, after_answer: true }},
+      ] }});
+
+      const order = turn.trace.map((e) => e.node).join(',');
+      if (order !== 'execute_query,response_formatter,save_to_memory,observability_log') throw new Error('order: ' + order);
+      if (turn.trace.some((e) => e.status !== 'node_finished')) throw new Error('live started event kept');
+      if (turn.persisting || turn.phaseState.save !== 'done') throw new Error('not settled after the tail');
+      if (turn.result.trace.length !== 4 || 'trace_tail' in turn.result) throw new Error('result trace not completed');
+      if (turn.result.result_handle !== 'h1') throw new Error('other enrichment fields dropped');
+      if (narrated !== 1) throw new Error('drawer not refreshed');
+      const html = c._traceHtml(turn, turn.trace);
+      if (!html.includes('&quot;graph&quot;:&quot;800ms&quot;') || !html.includes('&quot;overhead&quot;:&quot;200ms&quot;')) throw new Error('reconcile: ' + html);
+      if (!u.nodeTip(turn.trace[2]).includes('conversation.trace.tips.afterAnswer')) throw new Error('after-answer tip');
+      if (u.nodeTip(turn.trace[0]).includes('afterAnswer')) throw new Error('tip on a step before the answer');
     """
 
     subprocess.run(["node", "-e", script], cwd=root, check=True)

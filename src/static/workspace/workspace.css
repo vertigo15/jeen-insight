@@ -116,6 +116,29 @@ body.v3-ready > .app-layout { display: none !important; }
   transform: translate(0, -50%);
   transition-delay: .25s, .25s, 0s;
 }
+
+/* Explanatory tooltips (tooltip.js): one bubble fixed on <body>, so the
+   scrolling conversation panel and the Run Details drawer cannot clip it. */
+.jeen-tip {
+  position: fixed;
+  z-index: 10000;
+  max-width: min(360px, calc(100vw - 16px));
+  padding: 8px 10px;
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .12);
+  font: 400 12px/1.45 var(--font-sans);
+  text-align: start;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  unicode-bidi: plaintext;
+}
+.jeen-tip[hidden] { display: none; }
+[data-tip] { cursor: help; }
+[data-tip]:focus-visible { outline: 2px solid var(--rose); outline-offset: 1px; }
+.v3-token-count { text-decoration: underline dotted; text-underline-offset: 2px; }
 .v3-rail-btn--settings {
   border: 1px solid var(--border);
   background: var(--soft);

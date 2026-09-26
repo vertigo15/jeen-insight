@@ -100,6 +100,24 @@ async def _execute_query(
             status_code=429,
             detail="Too many concurrent queries. Please wait for the current one to finish.",
         )
+    answered = False
+
+    def on_answer(answer: dict[str, Any]) -> None:
+        # The finished answer, before the history writes. Its rows go in the
+        # cache first: the browser asks for the chart as soon as it sees them.
+        nonlocal answered
+        try:
+            result_cache.put(
+                user_id=user_id,
+                connection=request.connection,
+                query_id=answer.get("query_id"),
+                dataset=answer.get("results"),
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("result_cache put (answer) failed", exc_info=True)
+        result_callback(QueryResponse(**answer))
+        answered = True
+
     try:
         result = await agent.process_question(
             question=request.question,
@@ -113,6 +131,7 @@ async def _execute_query(
             analysis_enabled=request.analysis,
             filter_choices=request.filter_choices,
             partial_callback=partial_callback,
+            answer_callback=on_answer if result_callback is not None else None,
         )
         # Cache the result so charts / describe / insights can reuse the full
         # rows (keyed by user+connection+query_id) instead of the browser
@@ -126,7 +145,7 @@ async def _execute_query(
             )
         except Exception:  # noqa: BLE001
             logger.debug("result_cache put failed", exc_info=True)
-        if result_callback is not None:
+        if result_callback is not None and not answered:
             try:
                 # Surface the completed query before optional connector snapshot
                 # and tool-planning work. Those best-effort enrichments can be
@@ -157,6 +176,20 @@ async def _execute_query(
 def _sse(event: str, data: Any) -> str:
     payload = json.dumps(data, default=str, separators=(",", ":"))
     return f"event: {event}\ndata: {payload}\n\n"
+
+
+# Queries whose client left after the answer; referenced until they finish.
+_finishing: set[asyncio.Task[Any]] = set()
+
+
+def _finish_in_background(task: asyncio.Task[Any]) -> None:
+    def _done(finished: asyncio.Task[Any]) -> None:
+        _finishing.discard(finished)
+        if not finished.cancelled() and finished.exception() is not None:
+            logger.warning("query finished after its client left, with an error: %s", finished.exception())
+
+    _finishing.add(task)
+    task.add_done_callback(_done)
 
 
 @router.post("/query/stream")
@@ -240,6 +273,14 @@ async def query_database_stream(
                                 for key in ("result_handle", "tool_proposal")
                                 if payload.get(key) is not None
                             }
+                            # The answer went out before the history writes:
+                            # their steps complete its trace.
+                            tail = [
+                                event for event in payload.get("trace") or []
+                                if isinstance(event, dict) and event.get("after_answer")
+                            ]
+                            if tail:
+                                enrichment["trace_tail"] = tail
                             if enrichment:
                                 yield _sse("enrichment", enrichment)
                     break
@@ -254,9 +295,11 @@ async def query_database_stream(
                     if event_wait in done:
                         queued = event_wait.result()
                         event_name = queued.get("event", "node")
-                        yield _sse(event_name, queued.get("data", {}))
+                        # Before the yield: a client that leaves while the
+                        # generator waits there has already received it.
                         if event_name == "result":
                             result_sent = True
+                        yield _sse(event_name, queued.get("data", {}))
                     elif task not in done:
                         yield ": heartbeat\n\n"
                     # When the query task wins, loop immediately instead of
@@ -268,10 +311,15 @@ async def query_database_stream(
                         with contextlib.suppress(asyncio.CancelledError):
                             await event_wait
         finally:
-            if not task.done():
-                task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+            if result_sent and not task.done():
+                # The answer is on screen and the history writes are still
+                # running: a reload or closed tab must not cancel them.
+                _finish_in_background(task)
+            else:
+                if not task.done():
+                    task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
 
     return StreamingResponse(
         event_stream(),

@@ -4897,7 +4897,7 @@ a.sp-nav-item {
 }
 .trace-flow-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(128px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
   gap: 8px;
   align-items: stretch;
 }
@@ -5102,6 +5102,52 @@ a.sp-nav-item {
 .trace-transition-node.is-skipped {
   opacity: 0.55;
 }
+/* Post-query chart: a dashed branch off the step that sent the rows. */
+.trace-chart-edge path { stroke-dasharray: 5 4; }
+.trace-chart-node rect { stroke-dasharray: 4 3; }
+
+/* Answer milestones: flags on the map and a time strip above it. */
+.trace-milestone rect { stroke-width: 1; }
+.trace-milestone text {
+  font-size: 9.5px;
+  font-weight: var(--weight-semibold);
+  pointer-events: none;
+}
+.trace-milestone.trace-ms-table rect { fill: color-mix(in srgb, var(--color-success) 16%, var(--color-surface)); stroke: var(--color-success); }
+.trace-milestone.trace-ms-answer rect { fill: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface)); stroke: var(--color-accent); }
+.trace-milestone.trace-ms-chart rect { fill: color-mix(in srgb, var(--color-warning) 18%, var(--color-surface)); stroke: var(--color-warning); }
+.trace-milestone text { fill: var(--color-text); }
+.trace-milestones { margin: 2px 0 10px; }
+.trace-ms-track {
+  position: relative;
+  height: 4px;
+  margin: 10px 6px 8px 22px;
+  border-radius: 2px;
+  background: var(--color-border);
+}
+.trace-ms-zero {
+  position: absolute;
+  top: -6px;
+  left: -22px;
+  color: var(--color-faint);
+  font: 10px var(--font-mono);
+}
+.trace-ms-mark {
+  position: absolute;
+  top: -4px;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border: 2px solid var(--color-surface-2);
+  border-radius: 50%;
+}
+.trace-ms-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--color-muted); font-size: var(--text-xs); }
+.trace-ms-chip { display: inline-flex; align-items: center; gap: 5px; }
+.trace-ms-chip i { width: 8px; height: 8px; border-radius: 50%; }
+.trace-ms-chip b { color: var(--color-text); font-variant-numeric: tabular-nums; }
+.trace-ms-table.trace-ms-mark, .trace-ms-table i { background: var(--color-success); }
+.trace-ms-answer.trace-ms-mark, .trace-ms-answer i { background: var(--color-accent); }
+.trace-ms-chart.trace-ms-mark, .trace-ms-chart i { background: var(--color-warning); }
 .trace-flow-reconcile {
   margin-top: 4px;
   padding: 8px 10px;

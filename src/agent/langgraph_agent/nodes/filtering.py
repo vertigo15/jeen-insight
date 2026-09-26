@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
@@ -847,11 +847,15 @@ async def _displayable_hits(
     """Drop hits on columns that must never be offered: governed names, the
     denylist, non-text catalog types, and (per the latest profile) sensitive or
     hidden columns. The store already filters in SQL; this re-checks with the
-    request's own policy and the catalog the planner is about to see."""
+    request's own policy and the catalog the planner is about to see.
+
+    Catalog hits get the profile read too: the catalog is cached (an hour by
+    default) and can still print examples for a column marked sensitive since.
+    The reads for different columns run side by side.
+    """
     denylist = _denylist(state)
     table_columns = state.get("table_columns") or {}
     types = column_types((state.get("metadata_bundle") or {}).get("columns", ""))
-    kept: List[ColumnHit] = []
     checked: Dict[Tuple[str, str], bool] = {}
     for hit in hits:
         key = (hit.table.lower(), hit.column.lower())
@@ -859,20 +863,93 @@ async def _displayable_hits(
             ok = key[0] in table_columns and key[1] in table_columns.get(key[0], [])
             ok = ok and not denied_by_name(key[0], key[1], governed, denylist)
             declared = types.get(key)
-            ok = ok and (declared is None or _kind_for_type(declared) == "text")
-            if ok and store.available:
-                try:
-                    profile = await asyncio.wait_for(
-                        store.column_profile(str(state.get("source_key") or ""), key[0], key[1]), timeout=2.0
-                    )
-                except Exception:  # noqa: BLE001
-                    profile = None
-                if profile is not None and (profile.is_sensitive or profile.is_hidden or not profile.is_text):
-                    ok = False
-            checked[key] = ok
-        if checked[key]:
-            kept.append(hit)
-    return kept
+            checked[key] = ok and (declared is None or _kind_for_type(declared) == "text")
+    if store.available:
+        source = str(state.get("source_key") or "")
+
+        async def _profile(key: Tuple[str, str]) -> Optional[ColumnProfile]:
+            try:
+                return await asyncio.wait_for(store.column_profile(source, key[0], key[1]), timeout=2.0)
+            except Exception:  # noqa: BLE001
+                return None
+
+        eligible = [key for key, ok in checked.items() if ok]
+        for key, profile in zip(eligible, await asyncio.gather(*(_profile(key) for key in eligible))):
+            if profile is not None and (profile.is_sensitive or profile.is_hidden or not profile.is_text):
+                checked[key] = False
+    return [hit for hit in hits if checked[(hit.table.lower(), hit.column.lower())]]
+
+
+# Example values the catalog already prints. The Schema Modeler (MCP) appends
+# "values (all): 'a', 'b'" or "values: 'a', 'b' (+N more)" to each column line
+# (quotes doubled inside a value); the metadata-DB bundle lists them in
+# ``column_samples`` as "- table.column: 'a', 'b' (+N more)".
+_COLUMN_VALUES_RE = re.compile(r"\bvalues(?:\s*\(all\))?\s*:\s*(?P<values>'.*)$", re.IGNORECASE)
+_SAMPLE_LINE_RE = re.compile(r"^\s*-\s*(?P<target>[^:]+?)\s*:\s*(?P<values>'.*)$")
+_QUOTED_VALUE_RE = re.compile(r"'((?:[^']|'')*)'")
+
+
+def catalog_example_values(bundle: Dict[str, str]) -> Dict[Tuple[str, str], List[str]]:
+    """Example values printed in the catalog, keyed by normalised ``(table, column)``."""
+    found: Dict[Tuple[str, str], List[str]] = {}
+
+    def add(target: str, values_text: str) -> None:
+        table, column = table_column_from_identifier(target.strip())
+        values = [value.replace("''", "'") for value in _QUOTED_VALUE_RE.findall(values_text)]
+        if table and column and values:
+            found.setdefault((table, column), []).extend(values)
+
+    for line in (bundle.get("columns") or "").splitlines():
+        match = _COLUMN_VALUES_RE.search(line)
+        if match:
+            add(line.lstrip("- ").strip().split(" - ", 1)[0], match.group("values"))
+    for line in (bundle.get("column_samples") or "").splitlines():
+        match = _SAMPLE_LINE_RE.match(line)
+        if match:
+            add(match.group("target"), match.group("values"))
+    return found
+
+
+def _literal_forms(literal: str) -> Set[str]:
+    """The literal normalised, with its singular/plural twin ("bike" ~ "Bikes")."""
+    norm = normalize(literal)
+    forms = {norm}
+    if norm.endswith("es") and len(norm) > 4:
+        forms.add(norm[:-2])
+    if norm.endswith("s") and len(norm) > 3:
+        forms.add(norm[:-1])
+    else:
+        forms.add(f"{norm}s")
+    return forms
+
+
+def catalog_value_hits(
+    bundle: Dict[str, str],
+    literals: Sequence[str],
+    table_columns: Dict[str, Sequence[str]],
+) -> Tuple[List[ColumnHit], List[str]]:
+    """Hits for the literals the catalog already shows as an example value.
+
+    Returns ``(hits, unmatched)``: a matched word needs no value search — its
+    column and exact spelling are in the prompt — while the unmatched words
+    still go to the value store's reverse lookup.
+    """
+    examples = catalog_example_values(bundle)
+    hits: List[ColumnHit] = []
+    unmatched: List[str] = []
+    for literal in literals:
+        forms = _literal_forms(literal)
+        matched = False
+        for (table, column), values in examples.items():
+            if column not in (table_columns.get(table) or []):
+                continue
+            value = next((v for v in values if normalize(v) in forms), None)
+            if value is not None:
+                hits.append(ColumnHit(table=table, column=column, value=value, similarity=1.0, source="catalog"))
+                matched = True
+        if not matched:
+            unmatched.append(literal)
+    return hits, unmatched
 
 
 def make_filter_planner(
@@ -905,11 +982,17 @@ def make_filter_planner(
         literals = extract_candidate_literals(question, table_columns)
         store = store_for(state)
         hits: List[ColumnHit] = []
+        value_search: Dict[str, Any] = {"catalog": [], "searched": []}
         if literals and store.available and _metadata_evidence_allowed(state):
-            raw_hits = await _safe_reverse_lookup(store, str(state.get("source_key") or ""), literals)
-            hits = await _displayable_hits(
-                state, store, rank_hits(literals, raw_hits, threshold=threshold), governed
-            )
+            found, to_search = catalog_value_hits(bundle, literals, table_columns)
+            value_search = {"catalog": [lit for lit in literals if lit not in to_search], "searched": to_search}
+            if to_search:
+                raw_hits, value_search["lookup"] = await _reverse_lookup(
+                    state, store, str(state.get("source_key") or ""), to_search,
+                )
+                found += rank_hits(to_search, raw_hits, threshold=threshold)
+            hits = await _displayable_hits(state, store, found, governed)
+            hits.sort(key=lambda h: (h.similarity, h.count or 0), reverse=True)
 
         intent = _has_filter_intent(question) or any(
             h.similarity >= _REVERSE_TRIGGER_SIMILARITY for h in hits
@@ -918,6 +1001,7 @@ def make_filter_planner(
             return {
                 "filter_plan": {"filters": [], "invalid_filters": []},
                 "filter_candidates": [_hit_dict(h) for h in hits],
+                "filter_value_search": value_search,
                 "filter_clarification_required": False,
                 "filter_resolution_attempts": 0,
             }
@@ -1005,6 +1089,7 @@ def make_filter_planner(
         return {
             "filter_plan": {"filters": valid, "invalid_filters": invalid},
             "filter_candidates": [_hit_dict(h) for h in hits],
+            "filter_value_search": value_search,
             "filter_clarification_required": bool(clarification),
             "clarification": clarification or None,
             "answer": clarification or None,
@@ -1017,12 +1102,148 @@ def make_filter_planner(
     return filter_planner
 
 
-async def _safe_reverse_lookup(store: ValueStore, source: str, literals: Sequence[str]) -> List[ColumnHit]:
+# The longest the planner itself waits for the reverse lookup.
+_REVERSE_LOOKUP_WAIT_S = 2.5
+# Bound on a lookup started during pre-graph setup, which nobody may await.
+_PREFETCH_TIMEOUT_S = 12.0
+
+
+@dataclass
+class ValueLookupPrefetch:
+    """The planner's reverse lookup, started while the pre-graph catalog loads.
+
+    The provider's value search takes seconds; started next to the
+    question-specific catalog call it is usually done before the planner runs
+    instead of adding to its time. It searches the literals the planner will
+    (schema words taken from the full catalog). ``store_kind`` is the catalog
+    transport it searched over once known; the planner only uses it when the
+    request's catalog came over the same one.
+    """
+
+    started_at: float = field(default_factory=time.monotonic)
+    store_kind: Optional[str] = None
+    literals: Optional[List[str]] = None
+    search_started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    task: Optional["asyncio.Task[List[ColumnHit]]"] = None
+
+    def lookup_ms(self) -> Optional[int]:
+        if self.search_started_at is None or self.finished_at is None:
+            return None
+        return int((self.finished_at - self.search_started_at) * 1000)
+
+    def cancel(self) -> None:
+        if self.task is not None and not self.task.done():
+            self.task.cancel()
+
+    async def hits_for(
+        self, literals: Sequence[str], store: ValueStore, source: str,
+    ) -> Tuple[List[ColumnHit], Dict[str, Any]]:
+        """Its hits plus a live lookup of what it has not covered, within one bounded wait.
+
+        Until it knows its literals (a cold full catalog is still loading) it
+        covers nothing, so every literal is also searched now.
+        """
+        t0 = time.monotonic()
+        searched = {normalize(lit) for lit in (self.literals or [])}
+        missing = [lit for lit in literals if normalize(lit) not in searched]
+        waits: List[Awaitable[List[ColumnHit]]] = [asyncio.shield(self.task)] if self.task is not None else []
+        if missing:
+            waits.append(store.find_columns_for_value(source, missing, limit=12))
+        outcomes = await asyncio.gather(
+            *(asyncio.wait_for(wait, timeout=_REVERSE_LOOKUP_WAIT_S) for wait in waits),
+            return_exceptions=True,
+        )
+        hits: List[ColumnHit] = []
+        seen: Set[Tuple[str, str, str]] = set()
+        timed_out = False
+        for outcome in outcomes:
+            if isinstance(outcome, asyncio.TimeoutError):
+                timed_out = True
+            elif isinstance(outcome, Exception):
+                logger.info("filter_planner: reverse lookup unavailable (%s)", type(outcome).__name__)
+            elif isinstance(outcome, list):
+                for hit in outcome:
+                    key = (hit.table.lower(), hit.column.lower(), hit.value)
+                    if key not in seen:
+                        seen.add(key)
+                        hits.append(hit)
+        if timed_out:
+            logger.info("filter_planner: reverse lookup started during setup still running after %.1fs",
+                        time.monotonic() - self.started_at)
+        return hits, {
+            "mode": "prefetched",
+            "waited_ms": int((time.monotonic() - t0) * 1000),
+            "lookup_ms": self.lookup_ms(),
+            "timed_out": timed_out and not hits,
+        }
+
+
+def start_value_lookup_prefetch(
+    question: str,
+    source_key: str,
+    *,
+    resolve_store: Callable[[], Awaitable[Optional[Tuple[str, ValueStore]]]],
+    load_catalog: Callable[[], Awaitable[Tuple[Dict[str, str], Dict[str, List[str]]]]],
+) -> Optional[ValueLookupPrefetch]:
+    """Start the reverse lookup in the background; the planner collects it.
+
+    ``resolve_store`` gives ``(store_kind, store)`` for the request's catalog
+    transport, or None when there is nothing to prefetch. ``load_catalog``
+    gives the full catalog bundle and its table columns: the schema words to
+    leave out, and the example values that answer a word without a search.
+    """
+    if not str(question or "").strip():
+        return None
+    prefetch = ValueLookupPrefetch()
+
+    async def _run() -> List[ColumnHit]:
+        resolved = await resolve_store()
+        if resolved is None or not resolved[1].available:
+            return []
+        prefetch.store_kind, store = resolved
+        bundle, table_columns = await load_catalog()
+        prefetch.literals = extract_candidate_literals(question, table_columns)
+        found, to_search = catalog_value_hits(bundle, prefetch.literals, table_columns)
+        if not to_search:
+            return found
+        prefetch.search_started_at = time.monotonic()
+        try:
+            return found + await asyncio.wait_for(
+                store.find_columns_for_value(source_key, to_search, limit=12), timeout=_PREFETCH_TIMEOUT_S,
+            )
+        finally:
+            prefetch.finished_at = time.monotonic()
+
+    prefetch.task = asyncio.create_task(_run())
+    prefetch.task.add_done_callback(lambda task: task.cancelled() or task.exception())
+    return prefetch
+
+
+async def _reverse_lookup(
+    state: AgentState, store: ValueStore, source: str, literals: Sequence[str],
+) -> Tuple[List[ColumnHit], Dict[str, Any]]:
+    prefetch = state.get("filter_value_prefetch")
+    if (
+        isinstance(prefetch, ValueLookupPrefetch)
+        and prefetch.store_kind is not None
+        and prefetch.store_kind == (state.get("catalog_source_used") or "db")
+    ):
+        return await prefetch.hits_for(literals, store, source)
+    t0 = time.monotonic()
+    hits: List[ColumnHit] = []
+    timed_out = False
     try:
-        return await asyncio.wait_for(store.find_columns_for_value(source, literals, limit=12), timeout=2.5)
+        hits = await asyncio.wait_for(
+            store.find_columns_for_value(source, literals, limit=12), timeout=_REVERSE_LOOKUP_WAIT_S,
+        )
+    except asyncio.TimeoutError:
+        timed_out = True
+        logger.info("filter_planner: reverse lookup unavailable (TimeoutError)")
     except Exception as exc:  # noqa: BLE001 - reverse lookup is a hint, never a blocker
         logger.info("filter_planner: reverse lookup unavailable (%s)", type(exc).__name__)
-        return []
+    waited_ms = int((time.monotonic() - t0) * 1000)
+    return hits, {"mode": "live", "waited_ms": waited_ms, "lookup_ms": waited_ms, "timed_out": timed_out}
 
 
 def _hit_dict(hit: ColumnHit) -> Dict[str, Any]:
@@ -1776,6 +1997,8 @@ __all__ = [
     "ColumnDecision",
     "SqlValueProbe",
     "ValueOutcome",
+    "catalog_example_values",
+    "catalog_value_hits",
     "column_descriptions",
     "column_types",
     "decide_column",

@@ -46,7 +46,8 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 
@@ -60,6 +61,8 @@ from .mcp_server_service import (
 )
 from .mcp_cache_service import (
     McpCacheService,
+    NO_CACHE_TTL,
+    KEY_CATALOG,
     KEY_CONNECTIONS,
     KEY_TABLES,
     KEY_COLUMNS,
@@ -89,6 +92,37 @@ class McpError(Exception):
     """Raised when an MCP call returns an application-level error."""
 
 
+# (column, flat line) of each native date/timestamp column, per table.
+DateColumnIndex = Dict[str, List[Tuple[str, str]]]
+
+
+@dataclass
+class _ColumnsView:
+    """A cached full-catalog columns section, normalised once, with its date index.
+
+    Kept per source and reused while the cache hands back the same payload,
+    so a question neither re-normalises nor re-scans a large catalog.
+    """
+
+    raw: str
+    text: str
+    dates: DateColumnIndex
+
+
+@dataclass
+class _CatalogFetch:
+    """The shared full-catalog fetch for one source, and the cache generation it started at."""
+
+    generation: Tuple[int, int]
+    task: "asyncio.Task[Dict[str, str]]"
+
+
+def _consume_task_exception(task: "asyncio.Task[Any]") -> None:
+    """Mark a fire-and-forget task's failure as retrieved (it is handled elsewhere)."""
+    if not task.cancelled():
+        task.exception()
+
+
 # ── Client ────────────────────────────────────────────────────────────────────
 
 class McpCatalogClient:
@@ -110,7 +144,11 @@ class McpCatalogClient:
         self._srv_svc   = server_service
         self._cache_svc = cache_service
         self._http_client: Optional[httpx.AsyncClient] = None
-        self._catalog_inflight: Dict[tuple[int, str], "asyncio.Task[None]"] = {}
+        self._catalog_inflight: Dict[tuple[int, str], _CatalogFetch] = {}
+        # Every running fetch, including ones an invalidation superseded, so
+        # shutdown can cancel them all.
+        self._catalog_tasks: Set["asyncio.Task[Dict[str, str]]"] = set()
+        self._columns_views: Dict[tuple[int, str], _ColumnsView] = {}
         self._closing = False
 
     def _ensure_open(self) -> None:
@@ -126,13 +164,15 @@ class McpCatalogClient:
     async def aclose(self) -> None:
         """Close the pooled transport after all background work has drained."""
         self._closing = True
-        tasks = list(self._catalog_inflight.values())
+        tasks = list(self._catalog_tasks)
         for task in tasks:
             if not task.done():
                 task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._catalog_inflight.clear()
+        self._catalog_tasks.clear()
+        self._columns_views.clear()
         if self._http_client is not None and not self._http_client.is_closed:
             await self._http_client.aclose()
         self._http_client = None
@@ -161,30 +201,42 @@ class McpCatalogClient:
         Keys: tables, columns, relationships, sources, knowledge_pairs,
         business_terms, column_statistics, column_samples.
 
-        Calls get_catalog_prompt once → parses markdown → caches all 6 sections.
-        Returns empty fallbacks on errors so the prompt degrades gracefully.
+        The full catalog is cached as one entry per MCP server and connection,
+        so every conversation and user on the connection shares it. A copy
+        past its TTL is still served while a background refresh runs; only a
+        first load or an invalidated catalog makes the caller wait. Returns
+        empty fallbacks on errors so the prompt degrades gracefully.
         """
         self._ensure_open()
         server = await self._srv_svc.get_active()
         if not server:
             return _empty_bundle()
+        bundle, _state = await self._load_full(server, source_key)
+        return bundle
 
-        # Try full bundle from cache first.
-        cached = await self._bundle_from_cache(server, source_key)
+    async def _load_full(self, server: McpServer, source_key: str) -> Tuple[Dict[str, str], str]:
+        """The full catalog and how it was served.
+
+        ``hit``, ``stale`` (expired copy, refresh started), ``invalidated`` /
+        ``miss`` / ``off`` (fetched now), ``fallback`` (the fetch failed, an
+        earlier copy was used) or ``failed`` (no catalog at all).
+        """
+        cached, state = await self._cached_bundle(server, source_key)
         if cached is not None:
-            return cached
-
-        # Cache miss — fetch from MCP and populate all sections. Warm-cache and
-        # a first query can race; share one provider request per source.
+            if state == "stale":
+                self.refresh_in_background(server, source_key)
+            return cached, state
         try:
-            await self._ensure_catalog_coalesced(server, source_key)
-        except Exception as exc:
+            # Warm-cache and a first query can race; share one provider request.
+            return await self._ensure_catalog_coalesced(server, source_key), state
+        except Exception as exc:  # noqa: BLE001
             logger.error("mcp: load_all failed for %s: %s", source_key, exc)
-            return _empty_bundle()
-
-        # Second attempt from cache (now populated).
-        result = await self._bundle_from_cache(server, source_key)
-        return result if result is not None else _empty_bundle()
+            # Stale-if-error: while the provider is down, any earlier copy
+            # (even an invalidated one) beats an empty catalog.
+            fallback, _ = await self._cached_bundle(server, source_key, accept_invalidated=True)
+            if fallback is not None:
+                return fallback, "fallback"
+            return _empty_bundle(), "failed"
 
     async def load_filtered(
         self, source_key: str, question: str
@@ -194,16 +246,22 @@ class McpCatalogClient:
 
     async def load_filtered_with_meta(
         self, source_key: str, question: str
-    ) -> tuple[Dict[str, str], Dict[str, int]]:
+    ) -> tuple[Dict[str, str], Dict[str, Any]]:
         """Return a question-focused catalog bundle from ``get_filtered_prompt``.
 
         Filtered prompts are request-specific, so they deliberately bypass the
         shared full-catalog cache. Callers should fall back to ``load_all`` when
         this optional MCP capability is unavailable or fails.
+
+        ``timing`` carries the millisecond cost of each step plus
+        ``full_restore_cache`` — how the reusable full catalog was served
+        (see ``_load_full``) — so the trace can say why the date-column restore
+        was fast or slow. The full catalog loads next to the question-specific
+        call, so ``full_restore_ms`` is only the extra wait it added after it.
         """
         self._ensure_open()
         started = time.monotonic()
-        timing = {
+        timing: Dict[str, Any] = {
             "connection_ms": 0,
             "filtered_tool_ms": 0,
             "parse_ms": 0,
@@ -223,6 +281,13 @@ class McpCatalogClient:
         timing["connection_ms"] = int((time.monotonic() - step) * 1000)
         if conn_id is None:
             raise McpError(f"No connection found for source_key={source_key!r}")
+
+        # The full catalog is only needed to restore date columns: load it next
+        # to the question-specific call rather than after it. Usually a cache
+        # hit; on a cold cache the two waits overlap. If the filtered call
+        # fails, the fetch keeps going and the caller's load_all fallback joins it.
+        full_task = asyncio.create_task(self._load_full(server, source_key))
+        full_task.add_done_callback(_consume_task_exception)
 
         step = time.monotonic()
         raw = await self._call_tool(
@@ -253,8 +318,9 @@ class McpCatalogClient:
         # unnecessary; the time-series skills need them — see restore_date_columns.
         try:
             step = time.monotonic()
-            full = await self.load_all(source_key)
-            bundle["columns"] = restore_date_columns(bundle.get("columns", ""), full.get("columns", ""))
+            full, timing["full_restore_cache"] = await full_task
+            dates = self._columns_view(server.id, source_key, full.get("columns", "")).dates
+            bundle["columns"] = restore_date_columns_from_index(bundle.get("columns", ""), dates)
             timing["full_restore_ms"] = int((time.monotonic() - step) * 1000)
         except Exception as exc:  # noqa: BLE001
             timing["full_restore_ms"] = int((time.monotonic() - step) * 1000)
@@ -275,6 +341,7 @@ class McpCatalogClient:
         )
         timing["total_ms"] = int((time.monotonic() - started) * 1000)
         return bundle, timing
+
     async def search_column_values(
         self,
         source_key: str,
@@ -432,10 +499,11 @@ class McpCatalogClient:
             return cached.payload if (cached and isinstance(cached.payload, list)) else []
 
         args = {"connection_id": conn_id, **arguments}
+        generation = self._cache_svc.generation(server.id, source_key)
         try:
             raw = await self._call_tool(server, tool, args)
             items = _normalise_list(raw)
-            await self._cache_svc.set(server.id, source_key, cache_key, items, ttl)
+            await self._cache_svc.set(server.id, source_key, cache_key, items, ttl, generation=generation)
             return items
         except Exception as exc:  # noqa: BLE001
             logger.warning("mcp: %s failed: %s", tool, exc)
@@ -487,6 +555,8 @@ class McpCatalogClient:
     async def invalidate(
         self, mcp_server_id: int, source_key: Optional[str] = None
     ) -> None:
+        for key in [k for k in self._columns_views if k[0] == mcp_server_id and source_key in (None, k[1])]:
+            self._columns_views.pop(key, None)
         await self._cache_svc.invalidate(mcp_server_id, source_key)
 
     async def inspect_tools(self, server: McpServer) -> List[Dict[str, Any]]:
@@ -613,11 +683,15 @@ class McpCatalogClient:
             logger.warning("mcp: no list_connections tool mapped for server id=%d", server.id)
             return cached.payload if cached else []
 
+        # A list fetched before a refresh must not come back as fresh: the
+        # refreshed catalog resolves its connection id from it.
+        generation = self._cache_svc.generation(server.id, SOURCE_GLOBAL)
         try:
             raw   = await self._call_tool(server, tool, {})
             items = _normalise_connections(raw)
             await self._cache_svc.set(
-                server.id, SOURCE_GLOBAL, KEY_CONNECTIONS, items, server.cache_ttl_seconds
+                server.id, SOURCE_GLOBAL, KEY_CONNECTIONS, items, server.cache_ttl_seconds,
+                generation=generation,
             )
             return items
         except Exception as exc:
@@ -635,13 +709,24 @@ class McpCatalogClient:
         logger.warning("mcp: no connection_id found for source_key=%r", source_key)
         return None
 
-    async def _ensure_catalog(self, server: McpServer, source_key: str) -> None:
+    async def _ensure_catalog(
+        self,
+        server: McpServer,
+        source_key: str,
+        generation: Optional[Tuple[int, int]] = None,
+    ) -> Dict[str, str]:
         """
         Call get_catalog_prompt for source_key, parse the markdown response,
-        and store all 6 bundle sections in cache atomically.
+        cache the bundle as one entry and return it.
 
-        After this call, _bundle_from_cache() will find all keys populated.
+        The bundle is returned directly rather than re-read from the cache, so
+        with caching off (TTL 0, nothing stored) the caller still gets the
+        catalog that was just fetched. ``generation`` is the cache generation
+        when the fetch started: if the source is invalidated meanwhile, the
+        result still reaches this fetch's waiters but is not cached.
         """
+        if generation is None:
+            generation = self._cache_svc.generation(server.id, source_key)
         conn_id = await self._resolve_connection_id(server, source_key)
         if conn_id is None:
             raise McpError(f"No connection found for source_key={source_key!r}")
@@ -656,62 +741,80 @@ class McpCatalogClient:
             raise McpError(f"Empty response from {tool} for connection_id={conn_id}")
 
         sections = _parse_catalog_markdown(text)
-        ttl      = server.cache_ttl_seconds
-
-        # Store catalog sections atomically.
-        await asyncio.gather(
-            self._cache_svc.set(server.id, source_key, KEY_TABLES,          sections["tables"],          ttl),
-            self._cache_svc.set(server.id, source_key, KEY_COLUMNS,         sections["columns"],         ttl),
-            self._cache_svc.set(server.id, source_key, KEY_RELATIONSHIPS,   sections["relationships"],   ttl),
-            self._cache_svc.set(server.id, source_key, KEY_BUSINESS_TERMS,  sections["business_terms"],  ttl),
-            self._cache_svc.set(server.id, source_key, KEY_KNOWLEDGE_PAIRS, sections["knowledge_pairs"], ttl),
-            self._cache_svc.set(
-                server.id, source_key, KEY_COLUMN_STATISTICS,
-                sections["column_statistics"], ttl,
-            ),
-            self._cache_svc.set(
-                server.id, source_key, KEY_COLUMN_SAMPLES,
-                sections["column_samples"], ttl,
-            ),
-        )
-
         # sources — prefer the ## Source section from the prompt; fall back to
         # connection list metadata.
         sources_text = sections.get("sources") or await self._build_sources(server, source_key)
-        # Store sources keyed by (source_key, KEY_CONNECTIONS) — distinct from
-        # the global connection list which lives at (SOURCE_GLOBAL, KEY_CONNECTIONS).
-        await self._cache_svc.set(server.id, source_key, KEY_CONNECTIONS, sources_text, ttl)
-
-        logger.info(
-            "mcp: catalog cached source_key=%s connection_id=%d (%d chars)",
-            source_key, conn_id, len(text),
+        bundle = {
+            "tables":          sections["tables"],
+            "columns":         self._columns_view(server.id, source_key, sections["columns"]).text,
+            "relationships":   sections["relationships"],
+            "sources":         sources_text,
+            "knowledge_pairs": sections["knowledge_pairs"],
+            "business_terms":  sections["business_terms"],
+            "column_statistics": sections["column_statistics"],
+            "column_samples":  sections["column_samples"],
+        }
+        stored = await self._cache_svc.set(
+            server.id, source_key, KEY_CATALOG, bundle, server.cache_ttl_seconds,
+            generation=generation,
         )
+        logger.info(
+            "mcp: catalog %s source_key=%s connection_id=%d (%d chars)",
+            "cached" if stored else "fetched, not cached", source_key, conn_id, len(text),
+        )
+        return bundle
+
+    def _start_catalog_fetch(
+        self, server: McpServer, source_key: str
+    ) -> "asyncio.Task[Dict[str, str]]":
+        """The in-flight full-catalog fetch for this source, starting one if none runs.
+
+        A fetch that started before the source was invalidated is not joined:
+        its result may predate the change the invalidation was made for.
+        """
+        self._ensure_open()
+        key = (server.id, source_key)
+        generation = self._cache_svc.generation(server.id, source_key)
+        current = self._catalog_inflight.get(key)
+        if current is not None and current.generation == generation:
+            return current.task
+        task = asyncio.create_task(self._ensure_catalog(server, source_key, generation))
+        self._catalog_inflight[key] = _CatalogFetch(generation, task)
+        self._catalog_tasks.add(task)
+        task.add_done_callback(
+            lambda completed, cache_key=key: self._catalog_task_done(
+                cache_key, completed
+            )
+        )
+        return task
 
     async def _ensure_catalog_coalesced(
         self, server: McpServer, source_key: str
-    ) -> None:
-        self._ensure_open()
-        key = (server.id, source_key)
-        task = self._catalog_inflight.get(key)
-        if task is None:
-            task = asyncio.create_task(self._ensure_catalog(server, source_key))
-            self._catalog_inflight[key] = task
-            task.add_done_callback(
-                lambda completed, cache_key=key: self._catalog_task_done(
-                    cache_key, completed
-                )
-            )
+    ) -> Dict[str, str]:
+        task = self._start_catalog_fetch(server, source_key)
         try:
-            await asyncio.shield(task)
+            # Waiters share the result (it is also the cached payload): each
+            # gets its own copy.
+            return dict(await asyncio.shield(task))
         except asyncio.CancelledError:
             # The provider fetch remains shared and may still serve another
             # waiter. The done callback owns eviction and exception retrieval.
             raise
 
+    def refresh_in_background(self, server: McpServer, source_key: str) -> None:
+        """Refetch the full catalog without anyone waiting on it (coalesced per source).
+
+        A no-op with caching off: nothing would keep the result.
+        """
+        if not self._closing and server.cache_ttl_seconds != NO_CACHE_TTL:
+            self._start_catalog_fetch(server, source_key)
+
     def _catalog_task_done(
-        self, key: tuple[int, str], task: "asyncio.Task[None]"
+        self, key: tuple[int, str], task: "asyncio.Task[Dict[str, str]]"
     ) -> None:
-        if self._catalog_inflight.get(key) is task:
+        self._catalog_tasks.discard(task)
+        current = self._catalog_inflight.get(key)
+        if current is not None and current.task is task:
             self._catalog_inflight.pop(key, None)
         if task.cancelled():
             return
@@ -720,7 +823,8 @@ class McpCatalogClient:
         except asyncio.CancelledError:
             return
         if error is not None:
-            logger.debug(
+            # A background refresh has no waiter to report to.
+            logger.warning(
                 "mcp: shared catalog fetch failed source_key=%s: %s",
                 key[1],
                 error,
@@ -745,70 +849,44 @@ class McpCatalogClient:
             parts.append(ctx)
         return "\n".join(parts)
 
-    async def _bundle_from_cache(
-        self, server: McpServer, source_key: str
-    ) -> Optional[Dict[str, str]]:
+    async def _cached_bundle(
+        self, server: McpServer, source_key: str, *, accept_invalidated: bool = False,
+    ) -> Tuple[Optional[Dict[str, str]], str]:
+        """The cached full bundle and how it may be used.
+
+        ``hit``: fresh. ``stale``: past its TTL but not invalidated, so it may
+        be served while it refreshes. ``invalidated``: someone asked for a
+        refetch, so no copy is returned (unless ``accept_invalidated``: the
+        provider-down fallback). ``miss``: never stored. ``off``: TTL 0.
         """
-        Build a full bundle from cache.
-        Returns None on any miss or stale entry (triggers _ensure_catalog).
-        """
-        spec = [
-            (KEY_TABLES,          "No tables registered."),
-            (KEY_COLUMNS,         "No columns registered."),
-            (KEY_RELATIONSHIPS,   "No relationships registered."),
-            (KEY_BUSINESS_TERMS,  "No business terms registered."),
-            (KEY_KNOWLEDGE_PAIRS, "No knowledge pairs registered."),
-        ]
-        bundle: Dict[str, str] = {}
         ttl = server.cache_ttl_seconds
+        if ttl == NO_CACHE_TTL:
+            return None, "off"
+        entry = await self._cache_svc.get(server.id, source_key, KEY_CATALOG, ttl)
+        if entry is None or not isinstance(entry.payload, dict):
+            return None, "miss"
+        if entry.invalidated and not accept_invalidated:
+            return None, "invalidated"
+        # A new dict every time: the payload is the shared cached object.
+        bundle = _empty_bundle()
+        for key, default in bundle.items():
+            value = entry.payload.get(key)
+            bundle[key] = value if isinstance(value, str) else default
+        bundle["columns"] = self._columns_view(server.id, source_key, bundle["columns"]).text
+        return bundle, "stale" if entry.is_stale else "hit"
 
-        for cache_key, empty in spec:
-            entry = await self._cache_svc.get(server.id, source_key, cache_key, ttl)
-            if entry is None or entry.is_stale:
-                return None
-            bundle[cache_key] = entry.payload if isinstance(entry.payload, str) else empty
-
-        # sources stored under (source_key, KEY_CONNECTIONS)
-        src_entry = await self._cache_svc.get(server.id, source_key, KEY_CONNECTIONS, ttl)
-        if src_entry and not src_entry.is_stale and isinstance(src_entry.payload, str):
-            bundle["sources"] = src_entry.payload
-        else:
-            bundle["sources"] = "No source description."
-
-        # Statistics and samples are optional sections. A cache populated by an
-        # older server version remains usable; it simply provides no extra
-        # ranking evidence until the catalog is refreshed.
-        statistics_entry = await self._cache_svc.get(
-            server.id, source_key, KEY_COLUMN_STATISTICS, ttl
-        )
-        samples_entry = await self._cache_svc.get(
-            server.id, source_key, KEY_COLUMN_SAMPLES, ttl
-        )
-        column_statistics = (
-            statistics_entry.payload
-            if statistics_entry and not statistics_entry.is_stale
-            and isinstance(statistics_entry.payload, str)
-            else ""
-        )
-        column_samples = (
-            samples_entry.payload
-            if samples_entry and not samples_entry.is_stale
-            and isinstance(samples_entry.payload, str)
-            else ""
-        )
-
-        return {
-            "tables":          bundle[KEY_TABLES],
-            # A cache filled before the normaliser existed still holds the
-            # grouped shape; normalising is idempotent, so always do it.
-            "columns":         normalize_columns_markdown(bundle[KEY_COLUMNS]),
-            "relationships":   bundle[KEY_RELATIONSHIPS],
-            "sources":         bundle["sources"],
-            "knowledge_pairs": bundle[KEY_KNOWLEDGE_PAIRS],
-            "business_terms":  bundle[KEY_BUSINESS_TERMS],
-            "column_statistics": column_statistics,
-            "column_samples": column_samples,
-        }
+    def _columns_view(self, server_id: int, source_key: str, raw: str) -> _ColumnsView:
+        """Normalised columns text and date index, reused while the payload is unchanged."""
+        key = (server_id, source_key)
+        view = self._columns_views.get(key)
+        # Identity covers L1 hits; an L2 read decodes a new but equal string,
+        # and comparing it is far cheaper than normalising and re-indexing.
+        if view is not None and (raw is view.raw or raw is view.text or raw == view.raw or raw == view.text):
+            return view
+        text = normalize_columns_markdown(raw)
+        view = _ColumnsView(raw=raw, text=text, dates=build_date_column_index(text))
+        self._columns_views[key] = view
+        return view
 
     # ── MCP protocol ─────────────────────────────────────────────────────────
 
@@ -1195,6 +1273,18 @@ def _is_date_type(dtype: str) -> bool:
     return dtype != "time" and any(token in dtype for token in _DATE_TYPE_TOKENS)
 
 
+def build_date_column_index(full_columns: str) -> DateColumnIndex:
+    """Each table's native date/timestamp columns, from the full columns section."""
+    index: DateColumnIndex = {}
+    for line in (full_columns or "").splitlines():
+        table, column, dtype = _flat_line_parts(line)
+        if table and _is_date_type(dtype):
+            index.setdefault(table, []).append(
+                (column, line.strip() if line.lstrip().startswith("-") else f"- {line.strip()}")
+            )
+    return index
+
+
 def restore_date_columns(filtered_columns: str, full_columns: str) -> str:
     """Give each table in a question-filtered bundle its native date columns back.
 
@@ -1206,7 +1296,12 @@ def restore_date_columns(filtered_columns: str, full_columns: str) -> str:
     choice of measures and dimensions is untouched, and nothing changes once
     the modeler keeps them itself.
     """
-    if not (filtered_columns or "").strip() or not (full_columns or "").strip():
+    return restore_date_columns_from_index(filtered_columns, build_date_column_index(full_columns))
+
+
+def restore_date_columns_from_index(filtered_columns: str, date_index: DateColumnIndex) -> str:
+    """``restore_date_columns`` from a prebuilt index, so a large full catalog is scanned once."""
+    if not (filtered_columns or "").strip() or not date_index:
         return filtered_columns
     tables: set[str] = set()
     present: set[tuple[str, str]] = set()
@@ -1219,11 +1314,13 @@ def restore_date_columns(filtered_columns: str, full_columns: str) -> str:
         present.add((table, column))
         if _is_date_type(dtype):
             has_date.add(table)
-    additions: List[str] = []
-    for line in full_columns.splitlines():
-        table, column, dtype = _flat_line_parts(line)
-        if table in tables and table not in has_date and _is_date_type(dtype) and (table, column) not in present:
-            additions.append(line.strip() if line.lstrip().startswith("-") else f"- {line.strip()}")
+    additions = [
+        line
+        for table, columns in date_index.items()
+        if table in tables and table not in has_date
+        for column, line in columns
+        if (table, column) not in present
+    ]
     if not additions:
         return filtered_columns
     return filtered_columns.rstrip("\n") + "\n" + "\n".join(additions)

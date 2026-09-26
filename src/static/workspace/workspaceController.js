@@ -22,9 +22,11 @@
         : fallback);
 
     const PHASES = [
+        { id: 'setup', label: t('phases.setup') },
         { id: 'memory', label: t('phases.memory') },
         { id: 'router', label: t('phases.router') },
         { id: 'catalog', label: t('phases.catalog') },
+        { id: 'filters', label: t('phases.filters') },
         { id: 'generation', label: t('phases.generation') },
         { id: 'validation', label: t('phases.validation') },
         { id: 'execution', label: t('phases.execution') },
@@ -39,24 +41,32 @@
         history_search: 'memory',
         fused_router: 'router',
         capability_answer: 'router',
-        pre_graph_setup: 'catalog',
+        pre_graph_setup: 'setup',
         catalog_help_answer: 'catalog',
         catalog_lookup: 'catalog',
+        filter_planner: 'filters',
+        filter_grounder: 'filters',
         prior_data_binder: 'catalog',
         prompt_builder: 'catalog',
         dax_catalog_lookup: 'catalog',
         dax_entity_resolver: 'catalog',
         dax_prompt_builder: 'catalog',
         dax_query_planner: 'generation',
+        analysis_planner: 'generation',
+        analysis_sql: 'generation',
         sql_generator: 'generation',
         dax_generator: 'generation',
         dax_repair: 'generation',
         sqlglot_validate: 'validation',
         dlp_check: 'validation',
+        analysis_guard: 'validation',
         dax_static_validate: 'validation',
         result_integrity_check: 'validation',
         execute_query: 'execution',
         pbi_execute_query: 'execution',
+        analysis_run: 'execution',
+        empty_filter_result_check: 'execution',
+        empty_result_check: 'execution',
         trivial_result_check: 'execution',
         feedback_classifier: 'execution',
         dax_feedback_router: 'execution',
@@ -377,14 +387,65 @@
         if (node === 'execute_query' || node === 'pbi_execute_query') {
             return /^\d+ rows/.test(event.detail || '') ? event.detail : t('conversation.trace.readOnlyQuery');
         }
+        // Details that carry counts, column names and verification tiers — never
+        // SQL, prompts or data values.
         const safeNodes = new Set([
             'context_composer', 'fused_router', 'pre_graph_setup', 'catalog_lookup',
-            'dax_catalog_lookup', 'sqlglot_validate', 'dlp_check',
-            'dax_static_validate', 'trivial_result_check', 'feedback_classifier',
+            'dax_catalog_lookup', 'filter_planner', 'filter_grounder', 'sqlglot_validate', 'dlp_check',
+            'dax_static_validate', 'empty_filter_result_check', 'empty_result_check',
+            'trivial_result_check', 'feedback_classifier',
             'dax_feedback_router', 'result_integrity_check', 'response_formatter',
             'save_to_memory', 'observability_log',
         ]);
         return safeNodes.has(node) ? String(event.detail || event.type || '') : String(event.type || '');
+    }
+
+    function formatNumber(value) {
+        if (window.I18n && typeof window.I18n.formatNumber === 'function') return window.I18n.formatNumber(value);
+        const n = Number(value);
+        return Number.isFinite(n) ? n.toLocaleString() : String(value == null ? '' : value);
+    }
+
+    /** Tooltip for one run-details row: what the step does, its time split and tokens. */
+    function nodeTip(event) {
+        const key = `conversation.trace.nodes.${event && event.node}`;
+        const known = window.I18n && typeof window.I18n.has === 'function' && window.I18n.has(key);
+        const lines = [known ? t(key) : t('conversation.trace.nodes.fallback')];
+        const ms = Number(event && event.elapsed_ms);
+        const llmMs = Number(event && event.llm_ms);
+        if (event && event.elapsed_ms != null && Number.isFinite(ms)) {
+            lines.push(Number.isFinite(llmMs) && llmMs > 0
+                ? t('conversation.trace.tips.timeSplit', {
+                    time: formatMs(ms), model: formatMs(llmMs), other: formatMs(Math.max(0, ms - llmMs)),
+                })
+                : t('conversation.trace.tips.time', { time: formatMs(ms) }));
+        }
+        const input = Number(event && event.input_tokens) || 0;
+        const output = Number(event && event.output_tokens) || 0;
+        if (input || output) {
+            lines.push(t('conversation.trace.tips.tokens', { input: formatNumber(input), output: formatNumber(output) }));
+        }
+        if (event && event.after_answer) lines.push(t('conversation.trace.tips.afterAnswer'));
+        return lines.join('\n');
+    }
+
+    /** Input/output token tooltips for a result, with the per-step split when the trace has it. */
+    function tokenTips(metrics, trace) {
+        const m = metrics || {};
+        const steps = (trace || []).filter((event) => event && event.status === 'node_finished');
+        const split = (field) => steps
+            .filter((event) => Number(event[field]) > 0)
+            .map((event) => `${event.node} ${formatNumber(event[field])}`)
+            .join(' · ');
+        const tip = (key, count, field) => {
+            const head = t(key, { count: count == null ? '—' : formatNumber(count) });
+            const perStep = split(field);
+            return perStep ? `${head}\n${t('results.tokens.byStep', { steps: perStep })}` : head;
+        };
+        return {
+            input: tip('results.tokens.inTip', m.input_tokens, 'input_tokens'),
+            output: tip('results.tokens.outTip', m.output_tokens, 'output_tokens'),
+        };
     }
 
     const ICON = {
@@ -1297,21 +1358,12 @@
                 turn.chartCollapsed = undefined;
                 this.lastAppliedResultId = null;
             }
-            const used = new Set();
-            (data.trace || []).forEach((raw) => {
-                const index = turn.trace.findIndex((event, eventIndex) =>
-                    !used.has(eventIndex)
-                    && event.status === 'node_finished'
-                    && event.node === raw.node
-                );
-                if (index >= 0) {
-                    turn.trace[index] = { ...turn.trace[index], ...raw, status: 'node_finished' };
-                    used.add(index);
-                } else {
-                    turn.trace.push({ ...raw, status: 'node_finished' });
-                }
-                turn.phaseState[NODE_PHASE[raw.node] || 'execution'] = 'done';
-            });
+            this._mergeServerTrace(turn, Array.isArray(data.trace) ? data.trace : []);
+            // An answer sent before its history writes (`saving`): the turn row
+            // is not final until the trace tail arrives, so Favorite waits for
+            // it. A stream that breaks off before then leaves it hidden; the
+            // writes may still be running on the server.
+            turn.persisting = data.saving === true;
             turn.status = 'success';
             // Onboarding signal: a question was answered successfully.
             document.dispatchEvent(new CustomEvent('jeen:onboarding:ask_first_question'));
@@ -1346,7 +1398,7 @@
             }
             if (data.answer || (data.findings || []).length) turn.timeline.insightsMs = turn.durationMs;
             turn.phaseState.format = 'done';
-            turn.phaseState.save = 'done';
+            turn.phaseState.save = turn.persisting ? 'running' : 'done';
             if (!sameDataset) this._captureSelectedChart();
             this.selectedTurnId = turn.id;
             this.selectedResultId = turn.id;
@@ -1414,6 +1466,17 @@
         },
 
         /**
+         * Hand the shown turn's "table / answer / chart" moments to the Run
+         * Details drawer, which marks them on its transition map. Restored
+         * turns have no timeline: their clock started at hydration.
+         */
+        _syncRunMilestones(turn) {
+            const bridge = window.JeenLegacyBridge;
+            if (!bridge || typeof bridge.setRunMilestones !== 'function') return;
+            bridge.setRunMilestones(turn && !turn.restored && turn.timeline ? { ...turn.timeline } : null);
+        },
+
+        /**
          * The chart for a turn is on screen (ChartManager `jeen:chart-rendered`).
          * Stamp the first render of the current rows; later re-renders (type
          * switches, edits) are not "time to chart". Restored turns are skipped:
@@ -1428,14 +1491,55 @@
             turn.timeline.chartMs = this._sinceStart(turn);
             turn.timeline.chartSettled = true;
             console.info('[Workspace] timeline', turn.question, turn.timeline);
+            if (turn.id === this.selectedResultId) this._syncRunMilestones(turn);
             this.renderConversation();
+        },
+
+        /**
+         * The server trace is the execution order; the live events only add
+         * what they saw (timestamps). A live failure the final trace does not
+         * carry keeps its place at the end.
+         */
+        _mergeServerTrace(turn, serverTrace) {
+            if (!serverTrace.length) return;
+            const used = new Set();
+            const ordered = serverTrace.map((raw) => {
+                const index = turn.trace.findIndex((event, eventIndex) =>
+                    !used.has(eventIndex)
+                    && event.status === 'node_finished'
+                    && event.node === raw.node
+                );
+                if (index >= 0) used.add(index);
+                turn.phaseState[NODE_PHASE[raw.node] || 'execution'] = 'done';
+                return { ...(index >= 0 ? turn.trace[index] : {}), ...raw, status: 'node_finished' };
+            });
+            const failed = turn.trace.filter((event, eventIndex) => !used.has(eventIndex) && event.status === 'node_failed');
+            turn.trace = ordered.concat(failed);
         },
 
         _onEnrichment(turn, data) {
             if (!turn.result || !data) return;
-            Object.assign(turn.result, data);
-            if (data.result_handle) window._resultHandle = data.result_handle;
+            const { trace_tail: tail, ...rest } = data;
+            Object.assign(turn.result, rest);
+            if (rest.result_handle) window._resultHandle = rest.result_handle;
             if (turn.id === this.selectedResultId) this._setActionsEnabled(true);
+            if (Array.isArray(tail) && tail.length) {
+                // The answer was sent before the history writes; their steps
+                // (marked after_answer) complete its trace.
+                turn.result.trace = (turn.result.trace || []).concat(tail);
+                this._mergeServerTrace(turn, turn.result.trace);
+                this._settlePersisted(turn);
+                if (this.lastAppliedResultId === turn.id) window.JeenLegacyBridge?.applyResultNarrative?.(turn.result);
+                this.renderConversation();
+            }
+        },
+
+        /** The trace tail arrived, so the turn's history row is written: it can be favorited now. */
+        _settlePersisted(turn) {
+            if (!turn || !turn.persisting) return;
+            turn.persisting = false;
+            if (turn.phaseState && turn.phaseState.save === 'running') turn.phaseState.save = 'done';
+            if (turn.id === this.selectedResultId) this._renderFavoriteAction(turn);
         },
 
         selectTurn(id) {
@@ -1548,6 +1652,7 @@
             this.filter = '';
             this.sending = false;
             this._setComposerBusy(false);
+            this._syncRunMilestones(null);
             if (typeof window._jeenSetSessionId === 'function') window._jeenSetSessionId(null);
             this.render();
         },
@@ -1578,8 +1683,10 @@
             const button = document.getElementById('v3-favorite-action');
             if (!button) return;
             // A streaming turn has no persisted success row yet (save_to_memory
-            // runs after the narrative), so it cannot be favorited until then.
-            const coordinates = turn && turn.status === 'streaming' ? null : this._favoriteCoordinates(turn);
+            // runs after the narrative), and neither has an answer that arrived
+            // before its history writes: neither can be favorited until then.
+            const coordinates = turn && (turn.status === 'streaming' || turn.persisting)
+                ? null : this._favoriteCoordinates(turn);
             button.hidden = !coordinates;
             if (!coordinates) return;
             const active = Boolean(turn.isFavorite);
@@ -2661,7 +2768,7 @@
                 const events = finished.filter((item) => (NODE_PHASE[item.node] || 'execution') === phase.id);
                 const elapsed = events.reduce((total, item) => total + Number(item.elapsed_ms || 0), 0);
                 const ran = events.length > 0;
-                return `<span class="v3-dot${ran ? ' is-done' : ''}" title="${escFull(phase.label)}${ran ? ` · ${formatMs(elapsed)}` : ` · ${h('conversation.turn.notRun')}`}"></span>`;
+                return `<span class="v3-dot${ran ? ' is-done' : ''}" data-tip="${escFull(phase.label)}${ran ? ` · ${formatMs(elapsed)}` : ` · ${h('conversation.turn.notRun')}`}"></span>`;
             }).join('');
             const trace = turn.trace.filter((item) => item.status !== 'node_started');
             const routePath = (result.routing || {}).path || (analysis ? 'ml' : 'sql');
@@ -2699,50 +2806,74 @@
         _timelineHtml(turn) {
             const timeline = turn.timeline || {};
             const parts = [
-                ['tableMs', 'conversation.turn.timelineTable'],
-                ['insightsMs', 'conversation.turn.timelineInsights'],
-                ['chartMs', 'conversation.turn.timelineChart'],
+                ['tableMs', 'conversation.turn.timelineTable', 'conversation.turn.timelineTableTip'],
+                ['insightsMs', 'conversation.turn.timelineInsights', 'conversation.turn.timelineInsightsTip'],
+                ['chartMs', 'conversation.turn.timelineChart', 'conversation.turn.timelineChartTip'],
             ].filter(([key]) => Number.isFinite(timeline[key]))
-                .map(([key, label]) => `<span class="v3-timeline-part" data-timeline="${key.replace('Ms', '')}">${h(label, { time: formatMs(timeline[key]) })}</span>`);
+                .map(([key, label, tip]) => `<span class="v3-timeline-part" data-timeline="${key.replace('Ms', '')}" data-tip="${h(tip)}" tabindex="0">${h(label, { time: formatMs(timeline[key]) })}</span>`);
             if (!parts.length) return '';
-            return `<span class="v3-timeline" dir="ltr" title="${h('conversation.turn.timelineTitle')}">${parts.join('<span class="v3-timeline-sep" aria-hidden="true">·</span>')}</span>`;
+            return `<span class="v3-timeline" dir="ltr" role="group" aria-label="${h('conversation.turn.timelineTitle')}">${parts.join('<span class="v3-timeline-sep" aria-hidden="true">·</span>')}</span>`;
         },
 
         _traceHtml(turn, trace) {
             const rows = trace.map((item) => {
-                let html = `<div class="v3-trace-row">
+                let html = `<div class="v3-trace-row" tabindex="0" data-tip="${escFull(nodeTip(item))}">
                   <span class="v3-dot ${item.status === 'node_failed' ? '' : 'is-ok'}"></span>
                   <span>${esc(item.node)}</span><span class="v3-trace-note">${esc(safeTraceNote(item))}</span>
                   <span class="v3-trace-ms">${formatMs(item.elapsed_ms)}</span></div>`;
                 const timing = item.node === 'pre_graph_setup' && item.mcp_timing;
-                if (timing && typeof timing === 'object') {
-                    const parts = [
-                        ['mcpFiltered', timing.filtered_tool_ms],
-                        ['mcpReusable', timing.full_restore_ms],
-                        ['mcpConnection', timing.connection_ms],
-                        ['mcpParse', timing.parse_ms],
-                    ];
-                    html += parts
-                        .filter(([, value]) => Number.isFinite(Number(value)))
-                        .map(([label, value]) => `<div class="v3-trace-row v3-trace-row--breakdown">
-                          <span></span><span>${h(`conversation.trace.${label}`)}</span>
-                          <span class="v3-trace-note">${h('conversation.trace.includedInPreGraph')}</span>
-                          <span class="v3-trace-ms">${formatMs(Number(value))}</span></div>`)
-                        .join('');
-                }
+                if (timing && typeof timing === 'object') html += this._preloadBreakdownHtml(item, timing);
                 return html;
             }).join('');
-            const graphMs = trace.reduce((total, item) => total + Number(item.elapsed_ms || 0), 0);
+            // Steps that ran after the answer was shown did not delay it.
+            const graphMs = trace.reduce((total, item) => total + (item.after_answer ? 0 : Number(item.elapsed_ms || 0)), 0);
             const wallMs = Number(turn.durationMs || 0);
             const overheadMs = Math.max(0, wallMs - graphMs);
             const reconcile = wallMs > 0 && graphMs > 0
-                ? `<div class="v3-trace-reconcile">${h('conversation.trace.reconcile', {
+                ? `<div class="v3-trace-reconcile" tabindex="0" data-tip="${h('conversation.trace.tips.reconcile')}">${h('conversation.trace.reconcile', {
                     wall: formatMs(wallMs),
                     graph: formatMs(graphMs),
                     overhead: formatMs(overheadMs),
                 })}</div>`
                 : '';
             return `<div class="v3-trace">${rows}${reconcile}</div>`;
+        },
+
+        /**
+         * The pre-load's parts under its row. The MCP steps run one after another
+         * inside the catalog load, which runs next to the history and audit
+         * loads; "Other setup" is the rest of the pre-load, so the rows add up.
+         */
+        _preloadBreakdownHtml(item, timing) {
+            const cacheNote = {
+                hit: 'conversation.trace.cache.hit',
+                stale: 'conversation.trace.cache.stale',
+                invalidated: 'conversation.trace.cache.invalidated',
+                miss: 'conversation.trace.cache.miss',
+                off: 'conversation.trace.cache.off',
+                fallback: 'conversation.trace.cache.fallback',
+                failed: 'conversation.trace.cache.failed',
+            }[timing.full_restore_cache];
+            const parts = [
+                ['mcpFiltered', timing.filtered_tool_ms],
+                ['mcpReusable', timing.full_restore_ms, cacheNote],
+                ['mcpConnection', timing.connection_ms],
+                ['mcpParse', timing.parse_ms],
+            ].filter(([, value]) => value != null && Number.isFinite(Number(value)));
+            const accounted = parts.reduce((total, [, value]) => total + Number(value), 0);
+            const other = Number(item.elapsed_ms) - accounted;
+            const row = (label, value, note, tip) => `<div class="v3-trace-row v3-trace-row--breakdown" tabindex="0" data-tip="${h(tip)}">
+              <span></span><span>${h(label)}</span>
+              <span class="v3-trace-note">${h(note)}</span>
+              <span class="v3-trace-ms">${formatMs(value)}</span></div>`;
+            return parts.map(([label, value, note]) => row(
+                `conversation.trace.${label}`,
+                Number(value),
+                note || 'conversation.trace.includedInPreGraph',
+                `conversation.trace.tips.${label}`,
+            )).join('') + (Number.isFinite(other) && other >= 1
+                ? row('conversation.trace.mcpOther', other, 'conversation.trace.otherSetupNote', 'conversation.trace.tips.mcpOther')
+                : '');
         },
 
         _routePillHtml(result) {
@@ -3755,6 +3886,7 @@
                 }
             }
             document.getElementById('v3-dock-meta').textContent = t('conversation.pending.noQueryText');
+            this._syncRunMilestones(turn);
             this._setActionsEnabled(false);
             this.renderDock();
         },
@@ -3998,12 +4130,19 @@
             const inputTokens = metrics.input_tokens == null ? '—' : formatCompact(metrics.input_tokens);
             const outputTokens = metrics.output_tokens == null ? '—' : formatCompact(metrics.output_tokens);
             const validated = turn.trace.some((event) => ['sqlglot_validate', 'dax_static_validate'].includes(event.node) && event.status === 'node_finished');
-            document.getElementById('v3-dock-meta').textContent = t('results.dockMeta', {
-                input: inputTokens,
-                output: outputTokens,
+            // Format with placeholders so the translated sentence keeps its word
+            // order, then swap each token count for a span carrying its tooltip.
+            const tips = tokenTips(metrics, turn.trace);
+            const line = t('results.dockMeta', {
+                input: '\u0001',
+                output: '\u0002',
                 retries: metrics.retry_count == null ? '—' : metrics.retry_count,
                 validation: validated ? t('results.validation.validated') : data.sql ? t('results.validation.generated') : t('results.validation.none'),
             });
+            document.getElementById('v3-dock-meta').innerHTML = escFull(line)
+                .replace('\u0001', `<span class="v3-token-count" tabindex="0" data-tip="${escFull(tips.input)}">${escFull(inputTokens)}</span>`)
+                .replace('\u0002', `<span class="v3-token-count" tabindex="0" data-tip="${escFull(tips.output)}">${escFull(outputTokens)}</span>`);
+            this._syncRunMilestones(turn);
             // The plot is the point of an ML/analysis result, so expand it by
             // default; plain SQL stays collapsed. A manual toggle on this result
             // (stored above) always wins.
@@ -4278,14 +4417,24 @@
             const validation = nodes.has('sqlglot_validate')
                 ? t('results.sql.sqlglotValidated')
                 : nodes.has('dax_static_validate') ? t('results.sql.daxValidated') : t('results.sql.validationUnavailable');
+            const tips = tokenTips(metrics, turn.trace);
             const stats = [
                 [t('results.sql.rows'), rows],
                 [t('results.sql.exec'), formatMs(metrics.execution_time_ms)],
                 [t('results.sql.llm'), formatMs(metrics.llm_latency_ms)],
-                [t('results.sql.tokens'), formatCompact(metrics.total_tokens)],
+                [
+                    t('results.sql.tokens'),
+                    metrics.input_tokens == null && metrics.output_tokens == null
+                        ? formatCompact(metrics.total_tokens)
+                        : t('results.tokens.inOut', {
+                            input: formatCompact(metrics.input_tokens || 0),
+                            output: formatCompact(metrics.output_tokens || 0),
+                        }),
+                    `${tips.input}\n\n${tips.output}`,
+                ],
                 [t('results.sql.retries'), metrics.retry_count == null ? '—' : metrics.retry_count],
             ];
-            return `<div class="v3-stats">${stats.map(([label, value]) => `<div class="v3-stat"><div class="v3-stat-label">${escFull(label)}</div><div class="v3-stat-value">${esc(value)}</div></div>`).join('')}</div>
+            return `<div class="v3-stats">${stats.map(([label, value, tip]) => `<div class="v3-stat"${tip ? ` tabindex="0" data-tip="${escFull(tip)}"` : ''}><div class="v3-stat-label">${escFull(label)}</div><div class="v3-stat-value">${esc(value)}</div></div>`).join('')}</div>
               ${this._filtersHtml(data)}
               <div class="v3-sql-card">
                 <div class="v3-sql-provenance">${h('results.sql.provenance', { validation })} <button data-dev-details>${h('results.sql.developerDetails')}</button><button data-copy-sql>${h('common.copy')}</button></div>
@@ -4385,6 +4534,8 @@
         textOf,
         directionOf,
         safeTraceNote,
+        nodeTip,
+        tokenTips,
         filterResultRows,
         selectionForTurn,
         turnShowsResult,
