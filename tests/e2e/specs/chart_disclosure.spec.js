@@ -92,9 +92,12 @@ test('run details separate MCP stages and reconcile traced time with browser wal
     controller.renderConversation();
   });
 
+  // The parts add up to the pre-load, so no "Other setup" row is added.
   await expect(page.locator('.v3-trace-row--breakdown')).toHaveCount(4);
-  await expect(page.locator('.v3-trace')).toContainText('Question-specific MCP');
-  await expect(page.locator('.v3-trace')).toContainText('Reusable catalog restore');
+  await expect(page.locator('.v3-trace')).toContainText('Question-specific catalog');
+  await expect(page.locator('.v3-trace')).toContainText('Full catalog for date columns');
+  await expect(page.locator('.v3-trace-row--breakdown').first()).toHaveAttribute('data-tip', /get_filtered_prompt/);
+  await expect(page.locator('.v3-trace-row').first()).toHaveAttribute('data-tip', /Prepares the request before the pipeline starts/);
   await expect(page.locator('.v3-trace-reconcile')).toContainText('proxy/network 300ms');
 });
 

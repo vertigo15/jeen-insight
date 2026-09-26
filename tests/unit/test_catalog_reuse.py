@@ -456,6 +456,43 @@ class TestPreGraphCatalogFailure:
         assert result["sql"] == "SELECT SUM(SalesAmount) FROM FactSales"
 
     @pytest.mark.asyncio
+    async def test_pre_load_is_streamed_live_before_the_graph(self):
+        """The pre-load runs first, so the live run list shows it first."""
+        history = _history_mock()
+        agent = _build_agent(history)
+        events = []
+
+        in_graph, _loader = _loader_patch(_BUNDLE)
+        with in_graph, \
+             patch("src.metadata.runtime_settings.get_runtime_settings",
+                   AsyncMock(return_value=_runtime_defaults())):
+            await agent.process_question(
+                question="What are total sales?", eval_analytics=False, progress_callback=events.append,
+            )
+
+        assert [(e["node"], e["status"]) for e in events[:2]] == [
+            ("pre_graph_setup", "node_started"),
+            ("pre_graph_setup", "node_finished"),
+        ]
+        assert events[1]["elapsed_ms"] >= 0
+        assert events[2]["node"] == "context_composer"
+
+    @pytest.mark.asyncio
+    async def test_pre_load_failure_closes_the_live_step(self):
+        history = _history_mock()
+        agent = _build_agent(history)
+        agent.user_resolver.resolve_user = AsyncMock(side_effect=RuntimeError("identity provider down"))
+        events = []
+
+        result = await agent.process_question(question="What are total sales?", progress_callback=events.append)
+
+        assert result["error"]
+        assert [(e["node"], e["status"]) for e in events] == [
+            ("pre_graph_setup", "node_started"),
+            ("pre_graph_setup", "node_failed"),
+        ]
+
+    @pytest.mark.asyncio
     async def test_persisted_trace_carries_timings_but_no_prompts(self):
         history = _history_mock()
         agent = _build_agent(history)
@@ -480,6 +517,121 @@ class TestPreGraphCatalogFailure:
         assert pre_graph_event["elapsed_ms"] >= 0
         assert "catalog/history/audit pre-load" in pre_graph_event["detail"]
         assert any("prompt" in ev for ev in result["trace"])
+        assert not any(ev.get("after_answer") for ev in result["trace"]), "no early answer was asked for"
+
+    @pytest.mark.asyncio
+    async def test_answer_goes_out_before_the_history_writes(self):
+        history = _history_mock()
+        agent = _build_agent(history)
+        order = []
+        history.update_llm_response = AsyncMock(side_effect=lambda **_kw: order.append("history write"))
+        answers = []
+
+        def on_answer(answer):
+            order.append("answer")
+            answers.append(answer)
+
+        in_graph, _loader = _loader_patch(_BUNDLE)
+        with in_graph, \
+             patch("src.metadata.runtime_settings.get_runtime_settings",
+                   AsyncMock(return_value=_runtime_defaults())):
+            result = await agent.process_question(
+                question="What are total sales?", eval_analytics=False, answer_callback=on_answer,
+            )
+
+        assert order[:2] == ["answer", "history write"]
+        assert len(answers) == 1
+        assert answers[0]["saving"] is True and not result.get("saving"), "only the early answer says it is still saving"
+        early = [ev["node"] for ev in answers[0]["trace"]]
+        assert early[-1] == "response_formatter" and "save_to_memory" not in early
+        assert answers[0]["sql"] == result["sql"] and answers[0]["results"] == result["results"]
+        assert "prompt" in next(ev for ev in answers[0]["trace"] if ev["node"] == "sql_generator")
+        # The final trace is the early one plus the steps that ran after it.
+        assert [ev["node"] for ev in result["trace"][:len(early)]] == early
+        assert not any(ev.get("after_answer") for ev in result["trace"][:len(early)])
+        assert [ev["node"] for ev in result["trace"][len(early):]] == ["save_to_memory", "observability_log"]
+        assert all(ev.get("after_answer") for ev in result["trace"][len(early):])
+
+    @pytest.mark.asyncio
+    async def test_an_unused_value_lookup_is_cancelled_when_the_request_ends(self):
+        history = _history_mock()
+        agent = _build_agent(history)
+        prefetch = MagicMock()
+        agent._start_value_prefetch = MagicMock(return_value=prefetch)
+
+        in_graph, _loader = _loader_patch(_BUNDLE)
+        with in_graph, \
+             patch("src.metadata.runtime_settings.get_runtime_settings",
+                   AsyncMock(return_value=_runtime_defaults())):
+            await agent.process_question(question="What are total sales?", eval_analytics=False)
+
+        prefetch.cancel.assert_called_once()
+
+
+class TestValueLookupPrefetchStart:
+    """The planner's value lookup starts with the pre-load, for MCP catalogs."""
+
+    @staticmethod
+    def _agent():
+        from src.agent.jeen_insights_agent import JeenInsightsAgent
+
+        agent = object.__new__(JeenInsightsAgent)
+        agent.source_key = "AdventureWorks"
+        return agent
+
+    @staticmethod
+    def _wire(monkeypatch, *, catalog_source="mcp"):
+        from src.api import state as app_state
+
+        service = MagicMock()
+        service.get_catalog_source = AsyncMock(return_value=catalog_source)
+        client = MagicMock()
+        client.load_all = AsyncMock(return_value={"columns": "- dim_customer.city - Type: text"})
+        store = MagicMock(available=True)
+        store.find_columns_for_value = AsyncMock(return_value=[])
+        monkeypatch.setattr(app_state, "mcp_server_service", service)
+        monkeypatch.setattr(app_state, "mcp_catalog_client", client)
+        monkeypatch.setattr("src.agent.langgraph_agent.value_store_provider.value_store_for", lambda _state: store)
+        return store
+
+    @staticmethod
+    def _runtime(**overrides):
+        from dataclasses import replace
+
+        return replace(_runtime_defaults(), **{
+            "sql_filter_metadata_evidence_enabled": True, "sql_filter_value_visibility": "source_wide", **overrides,
+        })
+
+    @pytest.mark.asyncio
+    async def test_starts_with_the_full_catalogs_schema_words_left_out(self, monkeypatch):
+        store = self._wire(monkeypatch)
+
+        prefetch = self._agent()._start_value_prefetch("show sales by city in mosco", self._runtime())
+        await prefetch.task
+
+        assert prefetch.store_kind == "mcp"
+        assert "mosco" in prefetch.literals and "city" not in prefetch.literals
+        store.find_columns_for_value.assert_awaited_once()
+        assert "mosco" in store.find_columns_for_value.await_args.args[1]
+
+    @pytest.mark.asyncio
+    async def test_a_db_catalog_searches_in_the_planner_as_before(self, monkeypatch):
+        store = self._wire(monkeypatch, catalog_source="db")
+
+        prefetch = self._agent()._start_value_prefetch("show sales in mosco", self._runtime())
+
+        assert await prefetch.task == []
+        assert prefetch.store_kind is None
+        store.find_columns_for_value.assert_not_awaited()
+
+    def test_not_started_when_value_evidence_is_off(self, monkeypatch):
+        self._wire(monkeypatch)
+        agent = self._agent()
+
+        assert agent._start_value_prefetch("show sales in mosco", self._runtime(sql_filter_value_visibility="none")) is None
+        assert agent._start_value_prefetch(
+            "show sales in mosco", self._runtime(sql_filter_metadata_evidence_enabled=False),
+        ) is None
 
 
 def _runtime_defaults():

@@ -81,7 +81,9 @@ class CreateServerRequest(BaseModel):
     transport: str = "http"
     auth_type: str = "none"
     bearer_token: Optional[str] = None
-    cache_ttl_seconds: int = 900
+    # Catalog metadata rarely changes, and an expired copy is still served while
+    # it refreshes, so an hour costs freshness only after an unannounced edit.
+    cache_ttl_seconds: int = 3600
 
 
 class UpdateServerRequest(BaseModel):
@@ -241,7 +243,7 @@ async def get_mcp_status(
     catalog_source = await svc.get_catalog_source()
     servers        = await svc.list_all()
     active_server  = next((s for s in servers if s.is_active), None)
-    conn_ttl       = active_server.cache_ttl_seconds if active_server else 900
+    conn_ttl       = active_server.cache_ttl_seconds if active_server else 3600
 
     # DB stats
     db_info: Dict[str, Any] = {}

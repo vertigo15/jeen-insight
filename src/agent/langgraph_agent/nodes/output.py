@@ -310,6 +310,9 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
             "retry_count": state.get("retry_count", 0),
             "llm_call_count": state.get("llm_call_count", 0),
             "route": route,
+            # Which engine answered ("powerbi" for the DAX graph): the Run Details
+            # map picks its layout from this even when no engine-specific step ran.
+            "database_type": state.get("database_type"),
             # Conversation memory: turns loaded vs window, ledger size, what the
             # memory nodes did and where prior rows came from (developer panel).
             "memory": state.get("memory_telemetry") or None,
@@ -552,14 +555,36 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
         elif node == "filter_planner":
             plan = state.get("filter_plan") or {}
             planned = [f for f in (plan.get("filters") or []) if isinstance(f, dict)]
-            candidates = state.get("filter_candidates") or []
-            columns = {f"{c.get('table')}.{c.get('column')}" for c in candidates if isinstance(c, dict)}
+            candidates = [c for c in (state.get("filter_candidates") or []) if isinstance(c, dict)]
+            from_catalog = {f"{c.get('table')}.{c.get('column')}" for c in candidates if c.get("source") == "catalog"}
+            searched = {f"{c.get('table')}.{c.get('column')}" for c in candidates} - from_catalog
+            search = state.get("filter_value_search") or {}
             detail = f"{len(planned)} filter(s) planned"
-            if columns:
-                detail += f" · reverse lookup hit {len(columns)} column(s): {', '.join(sorted(columns)[:3])}"
-            elif not planned:
+            if from_catalog:
+                detail += (f" · catalog examples matched {len(from_catalog)} column(s): "
+                           f"{', '.join(sorted(from_catalog)[:3])}")
+            if searched:
+                detail += f" · reverse lookup hit {len(searched)} column(s): {', '.join(sorted(searched)[:3])}"
+            if search.get("catalog") and not search.get("searched"):
+                detail += " · value search skipped"
+            elif not candidates and not planned:
                 detail += " · no predicate cue or captured-value hit"
+            lookup = search.get("lookup") if isinstance(search.get("lookup"), dict) else {}
+            if lookup.get("timed_out"):
+                detail += " · value lookup timed out"
+            elif lookup.get("mode") == "prefetched":
+                ran = f" ({lookup['lookup_ms']}ms)" if lookup.get("lookup_ms") is not None else ""
+                detail += f" · value lookup ran during setup{ran}, waited {lookup.get('waited_ms', 0)}ms"
+            elif lookup:
+                detail += f" · value lookup {lookup.get('waited_ms', 0)}ms"
             ev["detail"] = detail
+            ev["value_search"] = {
+                "catalog": len(search.get("catalog") or []),
+                "searched": len(search.get("searched") or []),
+                "lookup": lookup.get("mode"),
+                "waited_ms": lookup.get("waited_ms"),
+                "timed_out": bool(lookup.get("timed_out")),
+            }
 
         elif node == "filter_grounder":
             metrics = state.get("filter_metrics") or {}
@@ -639,6 +664,13 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
                 rc = result.get("row_count", len(result.get("rows") or []))
                 cols = len(result.get("columns") or [])
                 ev["detail"] = f"{rc} rows × {cols} cols"
+
+        elif node == "empty_filter_result_check":
+            rows = len(result.get("rows") or [])
+            ev["detail"] = f"{rows} rows — filters accepted" if rows else "0 rows — checking the filters"
+
+        elif node == "empty_result_check":
+            ev["detail"] = "checked whether 0 rows is a plausible answer"
 
         elif node == "trivial_result_check":
             is_t = state.get("is_trivial")
@@ -793,6 +825,15 @@ def make_save_to_memory(history_service: ConversationHistoryService, deployment_
             logger.exception("save_to_memory: forecast capture failed for query_id=%s", query_id)
 
     async def save_to_memory(state: AgentState) -> Dict[str, Any]:
+        # The answer is final here and nothing below changes it: hand it to the
+        # caller first so the history writes do not hold it back.
+        emit = state.get("answer_callback")
+        if callable(emit):
+            try:
+                emit(state)
+            except Exception:  # noqa: BLE001 - it still goes out with the final result
+                logger.debug("save_to_memory: early answer callback failed", exc_info=True)
+
         query_id = state.get("query_id")
         if not query_id:
             return {}

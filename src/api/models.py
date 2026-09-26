@@ -91,6 +91,10 @@ class QueryResponse(BaseModel):
     history_matches: Optional[List[Dict[str, Any]]] = None
     # Per-node execution trace. Each entry: {node, elapsed_ms, icon, type, detail, ...}
     trace: Optional[List[Dict[str, Any]]] = None
+    # True on an answer streamed before its history writes ran; the stream's
+    # final ``enrichment`` (``trace_tail``) follows once they have. Until then
+    # the turn row is not final, so the UI does not offer Favorite.
+    saving: Optional[bool] = None
     # Result analysis from the inline eval node, present only when the caller
     # asked for it (eval_analytics=true). Named to match
     # GenerateInsightsResponse so both endpoints expose the same shape; the

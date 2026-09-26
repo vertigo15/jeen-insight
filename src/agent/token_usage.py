@@ -29,4 +29,27 @@ def merge_usage(current: Dict[str, int], new: Dict[str, Any]) -> Dict[str, int]:
     }
 
 
-__all__ = ["merge_usage"]
+def usage_delta(before: Dict[str, Any], after: Dict[str, Any]) -> Dict[str, int]:
+    """One step's own share of the running totals, for its trace event.
+
+    ``before`` is the state a node received and ``after`` the update it
+    returned. Both carry question-wide totals, so the difference is what this
+    step's model calls cost: ``input_tokens``, ``output_tokens`` and ``llm_ms``
+    (time spent waiting on the model). A key is present only when it grew.
+    """
+    fields: Dict[str, int] = {}
+    new_usage = after.get("token_usage")
+    if isinstance(new_usage, dict):
+        old_usage = before.get("token_usage") or {}
+        for key in ("input_tokens", "output_tokens"):
+            gained = int(new_usage.get(key) or 0) - int(old_usage.get(key) or 0)
+            if gained > 0:
+                fields[key] = gained
+    if after.get("llm_latency_ms") is not None:
+        gained_ms = int(after.get("llm_latency_ms") or 0) - int(before.get("llm_latency_ms") or 0)
+        if gained_ms > 0:
+            fields["llm_ms"] = gained_ms
+    return fields
+
+
+__all__ = ["merge_usage", "usage_delta"]

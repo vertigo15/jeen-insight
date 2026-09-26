@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
@@ -330,3 +331,24 @@ async def test_mcp_store_reverse_lookup_needs_per_match_columns_and_falls_back_t
     store = McpValueStore(_Client(), fallback=_Fallback())
     assert [(h.table, h.column) for h in await store.find_columns_for_value("src", ["mosco"])] == [("dim_dealer", "city")]
     assert len(await store.relationships("src")) == 1
+
+
+@pytest.mark.asyncio
+async def test_mcp_reverse_lookup_searches_the_words_side_by_side():
+    """Each provider search takes seconds: one after the other, two words
+    doubled the wait the planner can afford."""
+    started: List[str] = []
+    both_started = asyncio.Event()
+
+    class _SlowClient(_Client):
+        async def search_column_values(self, source, *, table, column, query, limit):
+            started.append(query)
+            if len(started) == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), timeout=1)
+            return {"matches": [{"value": query.title(), "table": "dim_customer", "column": "city", "score": 0.8}]}
+
+    hits = await McpValueStore(_SlowClient()).find_columns_for_value("src", ["mosco", "paris", " "])
+
+    assert sorted(started) == ["mosco", "paris"]
+    assert sorted(h.value for h in hits) == ["Mosco", "Paris"]

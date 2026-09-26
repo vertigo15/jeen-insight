@@ -169,6 +169,8 @@ async function loadConnections() {
         const validStored = availableConnections.find(c => c.source_key === stored);
         const active = validStored ? validStored.source_key : availableConnections[0].source_key;
         setActiveConnection(active);
+        // The connection shown on load gets the same head start as a switched one.
+        _warmConnectionCache(active);
     const activeRow = availableConnections.find(c => c.source_key === active);
         setConnectionPillName(activeRow ? activeRow.display_name : active);
         _updateMcpBadge(active);
@@ -236,9 +238,15 @@ function onConnectionChange(sourceKey) {
     document.dispatchEvent(new CustomEvent('jeen:connection-resolved', {
         detail: { source_key: newConnection, reason: 'switch' },
     }));
-    // Fire-and-forget: pre-warm the metadata cache on the API server so the
-    // first query after a connection switch doesn't pay the fetch penalty.
-    fetch(`/api/connections/${encodeURIComponent(newConnection)}/warm-cache`, {
+    _warmConnectionCache(newConnection);
+}
+
+// Fire-and-forget: pre-warm the catalog cache on the API server (shared by
+// every conversation and user on the connection) so the first question does
+// not pay for the download.
+function _warmConnectionCache(sourceKey) {
+    if (!sourceKey) return;
+    fetch(`/api/connections/${encodeURIComponent(sourceKey)}/warm-cache`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
     }).catch(() => {}); // non-critical
@@ -543,6 +551,10 @@ async function askQuestion() {
 function displayResults(data) {
     _lastResultData = data;  // kept so the post-paint frame can rebuild the header
     _resetPostQueryTrace();
+    _syncInlineInsightsCard(data);
+    // A new result never inherits the previous one's milestones; the
+    // conversation view sends the shown turn's own right after this.
+    _runMilestones = null;
     // Reset column presentation state for every new result set
     _colFormats  = {};
     _derivedCols = [];
@@ -2800,175 +2812,48 @@ function _traceSearchInput(val) {
 }
 window._traceSearchInput = _traceSearchInput;
 
-// ── Text-to-SQL LangGraph layout ────────────────────────────────────────────
-const _TRACE_FLOW_COLUMNS_SQL = [
-    {
-        title: 'Memory',
-        hint: 'Builds the turn ledger, answers from stored prior results, or searches past questions.',
-        nodes: ['context_composer', 'memory_answer_generator', 'history_search'],
-    },
-    {
-        title: 'Routing',
-        hint: 'Classifies the request and chooses the logical branch; "what can you do?" is answered here.',
-        nodes: ['fused_router', 'capability_answer'],
-    },
-    {
-        title: 'Catalog + Prompt',
-        hint: 'Loads MCP/DB metadata, binds values from prior results, and builds the system prompt.',
-        nodes: ['pre_graph_setup', 'catalog_lookup', 'prior_data_binder', 'prompt_builder'],
-    },
-    {
-        title: 'SQL + Safety',
-        hint: 'Generates SQL, validates syntax/tables, and checks DLP rules.',
-        nodes: ['sql_generator', 'sqlglot_validate', 'dlp_check'],
-    },
-    {
-        title: 'Execution + Eval',
-        hint: 'Runs SQL, decides whether eval is needed, and checks intent.',
-        nodes: ['execute_query', 'trivial_result_check', 'fused_eval_analytics', 'feedback_classifier'],
-    },
-    {
-        title: 'Output',
-        hint: 'Formats the answer, saves memory, and writes observability logs.',
-        nodes: ['response_formatter', 'save_to_memory', 'observability_log'],
-    },
-];
-
-const _TRACE_FLOW_EDGES_SQL = [
-    ['context_composer', 'fused_router', 'ledger'],
-    ['fused_router', 'memory_answer_generator', 'from memory'],
-    ['fused_router', 'history_search', 'history lookup'],
-    ['fused_router', 'capability_answer', 'capability'],
-    ['capability_answer', 'response_formatter', 'help answer'],
-    ['fused_router', 'catalog_lookup', 'needs query'],
-    ['fused_router', 'response_formatter', 'blocked / greeting'],
-    ['memory_answer_generator', 'catalog_lookup', 'needs fresh data'],
-    ['memory_answer_generator', 'trivial_result_check', 'computed table'],
-    ['memory_answer_generator', 'response_formatter', 'answer ready'],
-    ['history_search', 'response_formatter', 'matches'],
-    ['catalog_lookup', 'prior_data_binder', 'uses prior result'],
-    ['catalog_lookup', 'prompt_builder', 'catalog bundle'],
-    ['prior_data_binder', 'prompt_builder', 'bound values'],
-    ['prompt_builder', 'sql_generator', 'system prompt'],
-    ['sql_generator', 'sqlglot_validate', 'SQL'],
-    ['sql_generator', 'response_formatter', 'clarification'],
-    ['sqlglot_validate', 'dlp_check', 'valid'],
-    ['sqlglot_validate', 'feedback_classifier', 'syntax / table issue'],
-    ['dlp_check', 'execute_query', 'safe'],
-    ['dlp_check', 'response_formatter', 'blocked'],
-    ['execute_query', 'trivial_result_check', 'rows'],
-    ['execute_query', 'feedback_classifier', 'exec error'],
-    ['trivial_result_check', 'fused_eval_analytics', 'needs eval'],
-    ['trivial_result_check', 'response_formatter', 'trivial / eval off'],
-    ['fused_eval_analytics', 'response_formatter', 'answers intent'],
-    ['fused_eval_analytics', 'feedback_classifier', 'wrong result'],
-    ['feedback_classifier', 'sql_generator', 'retry SQL'],
-    ['feedback_classifier', 'catalog_lookup', 'missing table'],
-    ['feedback_classifier', 'response_formatter', 'exhausted'],
-    ['response_formatter', 'save_to_memory', 'final payload'],
-    ['save_to_memory', 'observability_log', 'persisted'],
-];
-
-// ── Text-to-DAX (Power BI) LangGraph layout ─────────────────────────────────
-// Mirrors src/agent/langgraph_agent_dax/graph.py so a Power BI run shows the
-// nodes that actually ran (typed planner, DAX generate/validate/repair, the
-// executeQueries call + result-integrity check, and the DAX feedback router)
-// instead of the SQL topology.
-const _TRACE_FLOW_COLUMNS_DAX = [
-    {
-        title: 'Memory',
-        hint: 'Builds the turn ledger, answers from stored prior results, or searches past questions.',
-        nodes: ['context_composer', 'memory_answer_generator', 'history_search'],
-    },
-    {
-        title: 'Routing',
-        hint: 'Classifies the request and chooses the logical branch; "what can you do?" is answered here.',
-        nodes: ['fused_router', 'capability_answer'],
-    },
-    {
-        title: 'Catalog + Plan',
-        hint: 'Loads the Power BI model catalog, builds a typed query plan, and assembles the DAX prompt.',
-        nodes: ['pre_graph_setup', 'dax_catalog_lookup', 'dax_query_planner', 'dax_prompt_builder'],
-    },
-    {
-        title: 'DAX + Safety',
-        hint: 'Generates DAX, statically validates it (read-only gate, symbols, DLP, TOPN), and repairs on failure.',
-        nodes: ['dax_generator', 'dax_static_validate', 'dax_repair'],
-    },
-    {
-        title: 'Execution + Eval',
-        hint: 'Runs executeQueries against the dataset, checks result integrity, then evaluates intent.',
-        nodes: ['pbi_execute_query', 'result_integrity_check', 'trivial_result_check', 'fused_eval_analytics', 'dax_feedback_router'],
-    },
-    {
-        title: 'Output',
-        hint: 'Formats the answer, saves memory, and writes observability logs.',
-        nodes: ['response_formatter', 'save_to_memory', 'observability_log'],
-    },
-];
-
-const _TRACE_FLOW_EDGES_DAX = [
-    ['context_composer', 'fused_router', 'ledger'],
-    ['fused_router', 'memory_answer_generator', 'from memory'],
-    ['fused_router', 'history_search', 'history lookup'],
-    ['fused_router', 'capability_answer', 'capability'],
-    ['capability_answer', 'response_formatter', 'help answer'],
-    ['fused_router', 'dax_catalog_lookup', 'needs query'],
-    ['fused_router', 'response_formatter', 'blocked / greeting'],
-    ['memory_answer_generator', 'dax_catalog_lookup', 'needs fresh data'],
-    ['memory_answer_generator', 'trivial_result_check', 'computed table'],
-    ['memory_answer_generator', 'response_formatter', 'answer ready'],
-    ['history_search', 'response_formatter', 'matches'],
-    ['dax_catalog_lookup', 'dax_query_planner', 'catalog ready'],
-    ['dax_catalog_lookup', 'response_formatter', 'blocked'],
-    ['dax_query_planner', 'dax_prompt_builder', 'plan ready'],
-    ['dax_query_planner', 'response_formatter', 'clarification'],
-    ['dax_prompt_builder', 'dax_generator', 'system prompt'],
-    ['dax_generator', 'dax_static_validate', 'DAX'],
-    ['dax_generator', 'response_formatter', 'clarification'],
-    ['dax_static_validate', 'pbi_execute_query', 'valid'],
-    ['dax_static_validate', 'dax_repair', 'repairable'],
-    ['dax_static_validate', 'response_formatter', 'invalid / blocked'],
-    ['dax_repair', 'dax_static_validate', 're-validate'],
-    ['pbi_execute_query', 'result_integrity_check', 'rows'],
-    ['pbi_execute_query', 'dax_feedback_router', 'exec error'],
-    ['pbi_execute_query', 'response_formatter', 'needs connect'],
-    ['result_integrity_check', 'trivial_result_check', 'ok'],
-    ['result_integrity_check', 'dax_feedback_router', 'empty diagnostic'],
-    ['trivial_result_check', 'fused_eval_analytics', 'needs eval'],
-    ['trivial_result_check', 'response_formatter', 'trivial / eval off'],
-    ['fused_eval_analytics', 'response_formatter', 'answers intent'],
-    ['fused_eval_analytics', 'dax_feedback_router', 'wrong result'],
-    ['dax_feedback_router', 'dax_repair', 'local repair'],
-    ['dax_feedback_router', 'dax_generator', 'regenerate'],
-    ['dax_feedback_router', 'dax_query_planner', 'replan'],
-    ['dax_feedback_router', 'dax_catalog_lookup', 'refresh catalog'],
-    ['dax_feedback_router', 'response_formatter', 'exhausted'],
-    ['response_formatter', 'save_to_memory', 'final payload'],
-    ['save_to_memory', 'observability_log', 'persisted'],
-];
+// ── Transition-map layouts ──────────────────────────────────────────────────
+// The SQL and DAX layouts live in static/trace/traceFlowLayout.js, where a
+// unit test keeps their arrows equal to the compiled graphs'.
+const _TRACE_FLOW_LAYOUTS = window.TraceFlowLayout || { sql: { columns: [], edges: [], optional: [] }, dax: { columns: [], edges: [], optional: [] } };
 
 // Active layout — reassigned per render by ``_selectTraceFlowLayout`` based on
 // whether the run was text-to-SQL or text-to-DAX. The trace-flow builders read
 // these two names, so switching layouts is a single reassignment.
-let _TRACE_FLOW_COLUMNS = _TRACE_FLOW_COLUMNS_SQL;
-let _TRACE_FLOW_EDGES = _TRACE_FLOW_EDGES_SQL;
+let _TRACE_FLOW_COLUMNS = _TRACE_FLOW_LAYOUTS.sql.columns;
+let _TRACE_FLOW_EDGES = _TRACE_FLOW_LAYOUTS.sql.edges;
 
 /** True when this run went through the text-to-DAX (Power BI) LangGraph. */
 function _isDaxRun(events, metrics) {
     const dbType = String((metrics && metrics.database_type) || '').toLowerCase();
     if (dbType === 'powerbi' || dbType === 'power-bi' || dbType === 'dax') return true;
+    // A reported SQL engine is authoritative; older payloads fall back to the steps.
+    if (dbType) return false;
     return (events || []).some(ev => {
         const n = ev && ev.node ? String(ev.node) : '';
         return n.startsWith('dax_') || n === 'pbi_execute_query' || n === 'result_integrity_check';
     });
 }
 
-/** Point the active trace-flow layout at the SQL or DAX topology for this run. */
+/**
+ * Point the active trace-flow layout at the SQL or DAX topology for this run.
+ * Optional nodes (the ML branch) are shown only when the run used one of them,
+ * so a plain SQL answer is not drawn with four steps it never takes.
+ */
 function _selectTraceFlowLayout(events, metrics) {
-    const dax = _isDaxRun(events, metrics);
-    _TRACE_FLOW_COLUMNS = dax ? _TRACE_FLOW_COLUMNS_DAX : _TRACE_FLOW_COLUMNS_SQL;
-    _TRACE_FLOW_EDGES = dax ? _TRACE_FLOW_EDGES_DAX : _TRACE_FLOW_EDGES_SQL;
+    const layout = _isDaxRun(events, metrics) ? _TRACE_FLOW_LAYOUTS.dax : _TRACE_FLOW_LAYOUTS.sql;
+    const optional = new Set(layout.optional || []);
+    const usedOptional = (events || []).some(ev => ev && optional.has(ev.node));
+    _TRACE_FLOW_COLUMNS = layout.columns
+        .map(col => ({ ...col, nodes: col.nodes.filter(node => usedOptional || !optional.has(node)) }))
+        .filter(col => col.nodes.length);
+    _TRACE_FLOW_EDGES = layout.edges;
+}
+
+// Steps that ran after the answer was on screen (the history writes) did not
+// delay it: they are left out when step times are reconciled with wall time.
+function _beforeAnswerMs(events) {
+    return (events || []).reduce((sum, ev) => sum + (ev && !ev.after_answer ? (ev.elapsed_ms || 0) : 0), 0);
 }
 
 function _traceStatsByNode(events) {
@@ -3001,13 +2886,15 @@ function _traceRanEdges(events) {
     return edges;
 }
 
-function _traceFlowLayout() {
+function _traceFlowLayout(extraRows = 0) {
     const nodeW = 122;
     const nodeH = 34;
-    const colGap = 170;
+    const colGap = 152;
     const rowGap = 58;
     const marginX = 44;
     const marginY = 56;
+    // Room on the right for same-column side curves off the last column.
+    const sideRoom = 40;
     const maxRows = Math.max(..._TRACE_FLOW_COLUMNS.map(col => col.nodes.length), 1);
     const positions = {};
 
@@ -3027,9 +2914,127 @@ function _traceFlowLayout() {
         positions,
         nodeW,
         nodeH,
-        width: marginX * 2 + (_TRACE_FLOW_COLUMNS.length - 1) * colGap + nodeW,
-        height: marginY * 2 + maxRows * rowGap,
+        colGap,
+        rowGap,
+        marginY,
+        maxRows,
+        width: marginX * 2 + (_TRACE_FLOW_COLUMNS.length - 1) * colGap + nodeW + sideRoom,
+        height: marginY * 2 + (maxRows + extraRows) * rowGap,
     };
+}
+
+/**
+ * Path of one arrow. Across columns it runs edge to edge (a back edge curves
+ * out to the left); inside a column it drops straight down to the next node,
+ * or bulges out to the right when it skips a node in between.
+ */
+function _traceEdgeGeometry(a, b, nodeW, nodeH, idx) {
+    if (a.col === b.col) {
+        const up = b.row < a.row;
+        if (Math.abs(a.row - b.row) === 1) {
+            const x = a.x + nodeW / 2;
+            const startY = up ? a.y : a.y + nodeH;
+            const endY = up ? b.y + nodeH : b.y;
+            return { d: `M ${x} ${startY} L ${x} ${endY}`, labelX: x + 6, labelY: (startY + endY) / 2 + 3, anchor: 'start', back: up };
+        }
+        // Kept inside the 30px gap to the next column, and unlabelled: a label
+        // there would sit on the next column's cards (the <title> still has it).
+        const startX = a.x + nodeW;
+        const startY = a.y + nodeH / 2;
+        const endY = b.y + nodeH / 2;
+        const bulgeX = startX + 10 + (idx % 3) * 5;
+        return {
+            d: `M ${startX} ${startY} C ${bulgeX} ${startY}, ${bulgeX} ${endY}, ${startX} ${endY}`,
+            labelX: bulgeX + 3, labelY: (startY + endY) / 2 + 3, anchor: 'start', back: up, noLabel: true,
+        };
+    }
+    const isBack = b.col < a.col;
+    const startX = isBack ? a.x : a.x + nodeW;
+    const endX = isBack ? b.x + nodeW : b.x;
+    const startY = a.y + nodeH / 2;
+    const endY = b.y + nodeH / 2;
+    if (isBack) {
+        const lift = 40 + (idx % 3) * 14;
+        const controlX = Math.min(startX, endX) - lift;
+        return {
+            d: `M ${startX} ${startY} C ${controlX} ${startY}, ${controlX} ${endY}, ${endX} ${endY}`,
+            labelX: controlX + 4, labelY: (startY + endY) / 2 - 6, anchor: 'end', back: true,
+        };
+    }
+    const midX = (startX + endX) / 2;
+    return {
+        d: `M ${startX} ${startY} C ${midX} ${startY}, ${midX} ${endY}, ${endX} ${endY}`,
+        labelX: midX, labelY: (startY + endY) / 2 - 7, anchor: 'middle', back: false,
+    };
+}
+
+// ── Answer milestones ───────────────────────────────────────────────────────
+// When each part of the answer reached the screen, measured by the
+// conversation view from the moment the question was asked (see
+// WorkspaceController._syncRunMilestones). The chart is built outside the
+// graph, so it hangs off the step that sent the rows.
+let _runMilestones = null;
+
+// ``nodes``: where the flag goes — the first of them that ran. A table computed
+// from memory never reaches the trivial check, so the replay step stands in.
+const _MILESTONE_SPECS = [
+    {
+        key: 'table', field: 'tableMs',
+        nodes: ['trivial_result_check', 'execute_query', 'pbi_execute_query', 'memory_answer_generator', 'response_formatter'],
+    },
+    { key: 'answer', field: 'insightsMs', nodes: ['observability_log', 'response_formatter'] },
+    { key: 'chart', field: 'chartMs', nodes: [] },
+];
+
+function _milestoneText(key) {
+    if (key === 'table') return [_t('conversation.trace.milestones.table'), _t('conversation.trace.milestones.tableTip')];
+    if (key === 'answer') return [_t('conversation.trace.milestones.answer'), _t('conversation.trace.milestones.answerTip')];
+    return [_t('conversation.trace.milestones.chart'), _t('conversation.trace.milestones.chartTip')];
+}
+
+function _setRunMilestones(timeline) {
+    _runMilestones = timeline && typeof timeline === 'object' ? { ...timeline } : null;
+    if (_allTraceEvents.length) _renderTraceEvents();
+}
+
+function _visibleMilestones() {
+    const times = _runMilestones || {};
+    return _MILESTONE_SPECS
+        .filter(spec => Number.isFinite(times[spec.field]))
+        .map(spec => {
+            const [label, tip] = _milestoneText(spec.key);
+            return { ...spec, ms: times[spec.field], label, tip };
+        });
+}
+
+function _buildMilestoneStripHtml(milestones) {
+    if (!milestones.length) return '';
+    const max = Math.max(...milestones.map(m => m.ms), 1);
+    const sorted = [...milestones].sort((x, y) => x.ms - y.ms);
+    const placed = [];
+    const marks = sorted.map(m => {
+        const pct = m.ms / max * 100;
+        // Moments within a hair of each other (answer and chart often land
+        // together) sit side by side instead of one dot hiding the other.
+        const nudge = placed.filter(p => Math.abs(p - pct) < 1.5).length * 13;
+        placed.push(pct);
+        return `<span class="trace-ms-mark trace-ms-${m.key}" style="left:calc(${pct.toFixed(1)}% - ${nudge}px)"`
+            + ` tabindex="0" data-tip="${escapeAttr(`${m.label} · ${_fmtMs(m.ms)}\n${m.tip}`)}"></span>`;
+    }).join('');
+    const legend = sorted.map(m => `<span class="trace-ms-chip trace-ms-${m.key}" tabindex="0" data-tip="${escapeAttr(m.tip)}">`
+        + `<i aria-hidden="true"></i>${escapeHtml(m.label)} <b>${_fmtMs(m.ms)}</b></span>`).join('');
+    return `<div class="trace-milestones" role="group" aria-label="${escapeAttr(_t('conversation.trace.milestones.strip'))}">`
+        + `<div class="trace-ms-track"><span class="trace-ms-zero">0s</span>${marks}</div>`
+        + `<div class="trace-ms-legend">${legend}</div></div>`;
+}
+
+function _milestoneFlagHtml(milestone, pos, nodeW, stack) {
+    const y = pos.y - 20 - stack * 18;
+    return `<g class="trace-milestone trace-ms-${milestone.key}">`
+        + `<title>${escapeHtml(milestone.tip)}</title>`
+        + `<rect x="${pos.x}" y="${y}" width="${nodeW}" height="16" rx="8"></rect>`
+        + `<text x="${pos.x + nodeW / 2}" y="${y + 11.5}" text-anchor="middle">${escapeHtml(`${milestone.label} · ${_fmtMs(milestone.ms)}`)}</text>`
+        + '</g>';
 }
 
 function _shortTraceLabel(label, max = 17) {
@@ -3038,13 +3043,17 @@ function _shortTraceLabel(label, max = 17) {
 }
 
 function _buildTraceTransitionsHtml(ranEdges, ranNodes) {
-    const layout = _traceFlowLayout();
-    const { positions, nodeW, nodeH, width, height } = layout;
+    const milestones = _visibleMilestones();
+    const chart = milestones.find(m => m.key === 'chart');
+    const layout = _traceFlowLayout(chart ? 1 : 0);
+    const { positions, nodeW, nodeH, colGap, rowGap, marginY, maxRows, width, height } = layout;
 
     let html = '<div class="trace-flow-edges trace-transition-map">';
     html += '<div class="trace-flow-edge-title">Transitions</div>';
-    html += '<p class="trace-flow-edge-help">Directed transition map. The layout reads left-to-right, but retry/back edges can loop, so this is not a strict DAG.</p>';
-    html += `<svg class="trace-transition-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="LangGraph transition map">`;
+    html += '<p class="trace-flow-edge-help">Directed transition map. The layout reads left-to-right, but retry/back edges can loop, so this is not a strict DAG. '
+        + 'Arrows this run took are highlighted and labelled; hover any arrow for its condition.</p>';
+    html += _buildMilestoneStripHtml(milestones);
+    html += `<svg class="trace-transition-svg" viewBox="0 0 ${width} ${height}" style="min-width:${Math.round(width * 0.8)}px" role="img" aria-label="LangGraph transition map">`;
     html += '<defs>'
         + '<marker id="trace-arrow-run" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 Z" fill="var(--color-accent)"/></marker>'
         + '<marker id="trace-arrow-near" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 Z" fill="var(--color-muted)"/></marker>'
@@ -3060,43 +3069,59 @@ function _buildTraceTransitionsHtml(ranEdges, ranNodes) {
         const ran = ranEdges.has(key);
         const near = !ran && (ranNodes.has(from) || ranNodes.has(to));
         const marker = ran ? 'trace-arrow-run' : near ? 'trace-arrow-near' : 'trace-arrow-skip';
-        const isBack = b.col <= a.col;
-        const startX = isBack ? a.x : a.x + nodeW;
-        const endX = isBack ? b.x + nodeW : b.x;
-        const startY = a.y + nodeH / 2;
-        const endY = b.y + nodeH / 2;
-        const className = `trace-transition-edge${ran ? ' is-run' : near ? ' is-near' : ' is-skipped'}${isBack ? ' is-back' : ''}`;
-        let d;
-        let labelX;
-        let labelY;
-
-        if (isBack) {
-            const lift = 40 + (idx % 3) * 14;
-            const controlX = Math.min(startX, endX) - lift;
-            d = `M ${startX} ${startY} C ${controlX} ${startY}, ${controlX} ${endY}, ${endX} ${endY}`;
-            labelX = controlX + 4;
-            labelY = (startY + endY) / 2 - 6;
-        } else {
-            const midX = (startX + endX) / 2;
-            d = `M ${startX} ${startY} C ${midX} ${startY}, ${midX} ${endY}, ${endX} ${endY}`;
-            labelX = midX;
-            labelY = (startY + endY) / 2 - 7;
-        }
+        const geo = _traceEdgeGeometry(a, b, nodeW, nodeH, idx);
+        const className = `trace-transition-edge${ran ? ' is-run' : near ? ' is-near' : ' is-skipped'}${geo.back ? ' is-back' : ''}`;
 
         html += `<g class="${className}">`;
         html += `<title>${escapeHtml(_nodeLabel(from))} → ${escapeHtml(_nodeLabel(to))}: ${escapeHtml(label)}</title>`;
-        html += `<path d="${d}" marker-end="url(#${marker})"></path>`;
-        html += `<text x="${labelX}" y="${labelY}" text-anchor="${isBack ? 'end' : 'middle'}">${escapeHtml(_shortTraceLabel(label, isBack ? 14 : 18))}</text>`;
+        html += `<path d="${geo.d}" marker-end="url(#${marker})"></path>`;
+        // Only arrows this run took carry a visible label; ~60 labelled
+        // arrows overlap into noise, and every arrow keeps its <title>.
+        if (ran && !geo.noLabel) {
+            html += `<text x="${geo.labelX}" y="${geo.labelY}" text-anchor="${geo.anchor}">${escapeHtml(_shortTraceLabel(label, geo.back ? 14 : 18))}</text>`;
+        }
         html += '</g>';
     });
+
+    // The chart is post-query work: a dashed branch off the step that sent the
+    // rows (the same step the "table ready" flag marks), in the spare bottom row.
+    const tableNode = _MILESTONE_SPECS[0].nodes.find(n => positions[n] && ranNodes.has(n));
+    const chartFrom = tableNode ? positions[tableNode] : null;
+    let chartPos = null;
+    if (chart && chartFrom) {
+        const lastCol = _TRACE_FLOW_COLUMNS.length - 1;
+        const col = Math.min(chartFrom.col + 1, lastCol);
+        chartPos = { x: chartFrom.x + (col - chartFrom.col) * colGap, y: marginY + maxRows * rowGap, col, row: maxRows + 1 };
+        const geo = _traceEdgeGeometry(chartFrom, chartPos, nodeW, nodeH, 0);
+        html += '<g class="trace-transition-edge is-run trace-chart-edge">'
+            + `<title>${escapeHtml(_nodeLabel(tableNode))} → ${escapeHtml(chart.label)}</title>`
+            + `<path d="${geo.d}" marker-end="url(#trace-arrow-run)"></path>`
+            + '</g>';
+        html += '<g class="trace-transition-node is-run trace-chart-node">'
+            + `<title>${escapeHtml(chart.tip)}</title>`
+            + `<rect x="${chartPos.x}" y="${chartPos.y}" width="${nodeW}" height="${nodeH}" rx="8"></rect>`
+            + `<text x="${chartPos.x + nodeW / 2}" y="${chartPos.y + nodeH / 2 + 4}" text-anchor="middle">${escapeHtml(_shortTraceLabel(_t('conversation.trace.milestones.chartNode'), 20))}</text>`
+            + '</g>';
+    }
 
     Object.entries(positions).forEach(([node, pos]) => {
         const ran = ranNodes.has(node);
         html += `<g class="trace-transition-node${ran ? ' is-run' : ' is-skipped'}">`;
-        html += `<title>${escapeHtml(node)} — ${escapeHtml(_NODE_INFO[node] || 'Pipeline step.')}</title>`;
+        html += `<title>${escapeHtml(node)} — ${escapeHtml(_nodeInfo(node))}</title>`;
         html += `<rect x="${pos.x}" y="${pos.y}" width="${nodeW}" height="${nodeH}" rx="8"></rect>`;
         html += `<text x="${pos.x + nodeW / 2}" y="${pos.y + nodeH / 2 + 4}" text-anchor="middle">${escapeHtml(_shortTraceLabel(_nodeLabel(node), 18))}</text>`;
         html += '</g>';
+    });
+
+    // Flags go last so they sit above the arrows; two on one node stack.
+    const stacked = {};
+    milestones.forEach(m => {
+        const node = m.key === 'chart' ? null : m.nodes.find(n => positions[n] && ranNodes.has(n));
+        const pos = m.key === 'chart' ? chartPos : node && positions[node];
+        if (!pos) return;
+        const slot = m.key === 'chart' ? 'chart' : node;
+        html += _milestoneFlagHtml(m, pos, nodeW, stacked[slot] || 0);
+        stacked[slot] = (stacked[slot] || 0) + 1;
     });
 
     html += '</svg>';
@@ -3133,8 +3158,8 @@ function _buildTraceFlowHtml(events, metrics) {
 
     html += '<div class="trace-flow-grid">';
     _TRACE_FLOW_COLUMNS.forEach(col => {
-        html += `<section class="trace-flow-col" title="${escapeHtml(col.hint)}">`;
-        html += `<div class="trace-flow-col-head"><span>${escapeHtml(col.title)}</span></div>`;
+        html += `<section class="trace-flow-col">`;
+        html += `<div class="trace-flow-col-head"><span tabindex="0" data-tip="${escapeAttr(col.hint)}">${escapeHtml(col.title)}</span></div>`;
         col.nodes.forEach(node => {
             const s = stats[node];
             const ran = !!s;
@@ -3142,9 +3167,8 @@ function _buildTraceFlowHtml(events, metrics) {
             const lv = last ? _traceEventLevel(last) : 'info';
             const type = last?.type || _traceNodeType(node);
             const detail = last?.detail || (ran ? 'executed' : 'not run in this query');
-            const title = `${node} — ${_NODE_INFO[node] || 'Pipeline step.'}`;
             const isSlowest = node === slowestNode;
-            html += `<div class="trace-flow-node${ran ? ' is-run' : ' is-skipped'}${isSlowest ? ' is-slowest' : ''} trace-flow-${escapeHtml(type)}" title="${escapeHtml(title)}">`;
+            html += `<div class="trace-flow-node${ran ? ' is-run' : ' is-skipped'}${isSlowest ? ' is-slowest' : ''} trace-flow-${escapeHtml(type)}" tabindex="0" data-tip="${escapeAttr(_nodeTipText(node, s ? s.events : []))}">`;
             html += `  <div class="trace-flow-node-main">`;
             html += `    <span class="trace-lv-dot trace-lv-${lv}" aria-hidden="true"></span>`;
             html += `    <span class="trace-flow-node-name">${escapeHtml(_nodeLabel(node))}</span>`;
@@ -3172,7 +3196,7 @@ function _buildTraceFlowHtml(events, metrics) {
     // Reconcile the per-step times with the wall clock so the numbers "add up".
     // Node cards below sum to the main-graph time; the remainder up to wall is
     // network + proxy/serialization overhead (net), not charged to any node.
-    const graphMs = Object.values(stats).reduce((sum, s) => sum + (s.totalMs || 0), 0);
+    const graphMs = _beforeAnswerMs(events);
     const wallMs  = lastQueryDurationMs;
     if (Number.isFinite(wallMs) && wallMs > 0 && graphMs > 0) {
         const netMs = Math.max(0, wallMs - graphMs);
@@ -3191,10 +3215,30 @@ function _buildTraceFlowHtml(events, metrics) {
 
 function _traceNodeType(node) {
     if (['fused_router', 'capability_answer', 'memory_answer_generator', 'prior_data_binder', 'sql_generator',
+         'filter_planner', 'empty_result_check', 'analysis_planner',
          'fused_eval_analytics', 'dax_query_planner', 'dax_generator', 'dax_repair'].includes(node)) return 'llm';
-    if (['catalog_lookup', 'execute_query', 'save_to_memory', 'history_search',
-         'dax_catalog_lookup', 'pbi_execute_query'].includes(node)) return 'db';
+    if (['pre_graph_setup', 'catalog_lookup', 'filter_grounder', 'execute_query', 'save_to_memory', 'history_search',
+         'analysis_guard', 'dax_catalog_lookup', 'dax_entity_resolver', 'pbi_execute_query'].includes(node)) return 'db';
     return 'logic';
+}
+
+/** A step's description, time split (model vs other work) and tokens, for its tooltip. */
+function _nodeTipText(node, events) {
+    const lines = [`${node} — ${_nodeInfo(node)}`];
+    const runs = events || [];
+    if (runs.length) {
+        const sum = (field) => runs.reduce((total, ev) => total + (Number(ev[field]) || 0), 0);
+        const totalMs = sum('elapsed_ms');
+        const llmMs = sum('llm_ms');
+        lines.push(llmMs > 0
+            ? `Time: ${_fmtMs(totalMs)} (model ${_fmtMs(llmMs)}, other work ${_fmtMs(Math.max(0, totalMs - llmMs))})`
+            : `Time: ${_fmtMs(totalMs)}`);
+        const inTok = sum('input_tokens');
+        const outTok = sum('output_tokens');
+        if (inTok || outTok) lines.push(`Tokens: ${inTok.toLocaleString()} in · ${outTok.toLocaleString()} out`);
+        if (runs.length > 1) lines.push(`Ran ${runs.length}× in this query.`);
+    }
+    return lines.join('\n');
 }
 
 const _POST_QUERY_SPECS = {
@@ -3270,14 +3314,54 @@ function _postQueryElapsed(item) {
     return null;
 }
 
+// The conversation view writes insights inside the graph (fused_eval_analytics)
+// instead of calling the separate insights endpoint, so its card mirrors that step.
+const _INLINE_INSIGHTS_SPEC = {
+    label: 'Insights calculation',
+    kind: 'In the pipeline (Analyze & insights)',
+    idle: 'Written inside the pipeline by the Analyze & insights step, after the table appears.',
+};
+
+function _syncInlineInsightsCard(data) {
+    if (!data || !data._inlineAnalytics || !Array.isArray(data.trace) || !data.trace.length) return;
+    const runs = data.trace.filter(ev => ev && ev.node === 'fused_eval_analytics');
+    if (!runs.length) {
+        _postQueryTrace.insights = {
+            kind: 'insights',
+            status: 'skipped',
+            details: ['Not run for this answer: the result was small enough to read as is, or AI analytics is off.'],
+            metrics: {},
+        };
+        return;
+    }
+    const sum = (field) => runs.reduce((total, ev) => total + (Number(ev[field]) || 0), 0);
+    const metrics = {};
+    if (sum('llm_ms') > 0) metrics.llm_latency_ms = sum('llm_ms');
+    if (sum('input_tokens') > 0) metrics.input_tokens = sum('input_tokens');
+    if (sum('output_tokens') > 0) metrics.output_tokens = sum('output_tokens');
+    _postQueryTrace.insights = {
+        kind: 'insights',
+        status: 'done',
+        elapsedMs: sum('elapsed_ms'),
+        details: ['Written inside the pipeline by the Analyze & insights step (see the transition map above).'],
+        metrics,
+    };
+}
+
 function _buildPostQueryWorkHtml() {
+    const inline = !!(_lastResultData && _lastResultData._inlineAnalytics);
     let html = '<div class="post-query-work">';
     html += '<div class="post-query-head">'
-        + '<div><strong>Post-query work</strong><span>Insights and charts run after the main SQL answer, so they are tracked separately from the LangGraph trace above.</span></div>'
+        + '<div><strong>Post-query work</strong><span>'
+        + (inline
+            ? 'The chart is built after the table appears, by its own model call. In this view the insights are written inside the pipeline, by the Analyze & insights step above.'
+            : 'Insights and charts run after the main SQL answer, so they are tracked separately from the LangGraph trace above.')
+        + '</span></div>'
         + '</div>';
     html += '<div class="post-query-grid">';
 
-    Object.entries(_POST_QUERY_SPECS).forEach(([kind, spec]) => {
+    Object.entries(_POST_QUERY_SPECS).forEach(([kind, baseSpec]) => {
+        const spec = inline && kind === 'insights' ? _INLINE_INSIGHTS_SPEC : baseSpec;
         const item = _postQueryTrace[kind] || { status: 'idle', details: [spec.idle], metrics: {} };
         const status = item.status || 'idle';
         const elapsed = _postQueryElapsed(item);
@@ -3335,8 +3419,8 @@ function _renderTraceEvents() {
         );
     }
 
-    const graphMs  = events.reduce((s, e) => s + (e.elapsed_ms || 0), 0);
-    const totalMs  = graphMs;  // alias kept for bar scaling below
+    const graphMs  = _beforeAnswerMs(events);
+    const totalMs  = events.reduce((s, e) => s + (e.elapsed_ms || 0), 0);  // bar scaling below
     const maxMs    = Math.max(...events.map(e => e.elapsed_ms || 0), 1);
     const llmMs    = metrics.llm_latency_ms || 0;
     const dbMs     = metrics.execution_time_ms;   // actual DB execution time
@@ -3411,11 +3495,11 @@ function _renderTraceEvents() {
         const isSlowest = origIdx === slowestIdx;
 
         // Tooltip keeps the raw node name accessible alongside its description.
-        const nodeTip = escapeHtml(`${ev.node || '?'} — ${_NODE_INFO[ev.node] || 'Pipeline step.'}`);
+        const nodeTip = escapeAttr(_nodeTipText(ev.node || '?', [ev]));
         html += `<div class="trace-event${isSlowest ? ' trace-event-slowest' : ''}" data-idx="${idx}" onclick="_toggleTraceEvent(this)">`;
         html += `  <span class="trace-lv-dot trace-lv-${lv}" title="severity: ${lv}"></span>`;
         html += `  <span class="trace-event-icon">${icon}</span>`;
-        html += `  <span class="trace-event-name" title="${nodeTip}">${name}</span>`;
+        html += `  <span class="trace-event-name" data-tip="${nodeTip}">${name}</span>`;
         const repeatOrd = _repeatOrdinal[origIdx];
         html += `  <div class="trace-event-bar-wrap">`;
         if (isSlowest)
@@ -3509,7 +3593,7 @@ function _updateDevRunHeader(data) {
 
     const m        = data.metrics || {};
     const route    = m.route || '—';
-    const graphMs  = (_allTraceEvents || []).reduce((s, e) => s + (e.elapsed_ms || 0), 0);
+    const graphMs  = _beforeAnswerMs(_allTraceEvents);
     const llmMs    = m.llm_latency_ms;
     const dbMs     = m.execution_time_ms;
     const inTok    = m.input_tokens;
@@ -3519,24 +3603,26 @@ function _updateDevRunHeader(data) {
     const netMs    = (Number.isFinite(wallMs) && wallMs > 0 && graphMs > 0)
         ? Math.max(0, wallMs - graphMs) : null;
 
+    // Every chip explains its number through the shared delayed tooltip.
+    const tip = (text) => ` tabindex="0" data-tip="${escapeAttr(text)}"`;
     const chips = [];
-    chips.push(`<span class="dp-chip dp-chip-status ${statusClass}" title="${_METRIC_TIPS.status}">${statusText}</span>`);
-    chips.push(`<span class="dp-chip${_routeChipCls(route)}" title="${escapeHtml(_routeTip(route))}">route: <strong>${escapeHtml(String(route))}</strong></span>`);
+    chips.push(`<span class="dp-chip dp-chip-status ${statusClass}"${tip(_METRIC_TIPS.status)}>${statusText}</span>`);
+    chips.push(`<span class="dp-chip${_routeChipCls(route)}"${tip(_routeTip(route))}>route: <strong>${escapeHtml(String(route))}</strong></span>`);
     if (Number.isFinite(lastTotalDurationMs) && lastTotalDurationMs > 0)
-        chips.push(`<span class="dp-chip dp-chip-total${_slowCls(lastTotalDurationMs)}" title="${_TIMING_TIPS.total}">total: <strong>${_fmtMs(lastTotalDurationMs)}</strong></span>`);
+        chips.push(`<span class="dp-chip dp-chip-total${_slowCls(lastTotalDurationMs)}"${tip(_TIMING_TIPS.total)}>total: <strong>${_fmtMs(lastTotalDurationMs)}</strong></span>`);
     if (Number.isFinite(wallMs) && wallMs > 0)
-        chips.push(`<span class="dp-chip dp-chip-wall${_slowCls(wallMs)}" title="${_TIMING_TIPS.wall}">wall: <strong>${_fmtMs(wallMs)}</strong></span>`);
+        chips.push(`<span class="dp-chip dp-chip-wall${_slowCls(wallMs)}"${tip(_TIMING_TIPS.wall)}>wall: <strong>${_fmtMs(wallMs)}</strong></span>`);
     if (Number.isFinite(graphMs) && graphMs > 0)
-        chips.push(`<span class="dp-chip${_slowCls(graphMs)}" title="${_TIMING_TIPS.graph}">main graph: <strong>${_fmtMs(graphMs)}</strong></span>`);
+        chips.push(`<span class="dp-chip${_slowCls(graphMs)}"${tip(_TIMING_TIPS.graph)}>main graph: <strong>${_fmtMs(graphMs)}</strong></span>`);
     if (Number.isFinite(llmMs))
-        chips.push(`<span class="dp-chip${_slowCls(llmMs)}" title="${_TIMING_TIPS.llm}">LLM: <strong>${_fmtMs(llmMs)}</strong></span>`);
+        chips.push(`<span class="dp-chip${_slowCls(llmMs)}"${tip(_TIMING_TIPS.llm)}>LLM: <strong>${_fmtMs(llmMs)}</strong></span>`);
     if (Number.isFinite(dbMs) && dbMs > 0)
-        chips.push(`<span class="dp-chip dp-chip-db${_slowCls(dbMs)}" title="${_TIMING_TIPS.db}">DB: <strong>${_fmtMs(dbMs)}</strong></span>`);
+        chips.push(`<span class="dp-chip dp-chip-db${_slowCls(dbMs)}"${tip(_TIMING_TIPS.db)}>DB: <strong>${_fmtMs(dbMs)}</strong></span>`);
     if (netMs !== null && netMs > 50)
-        chips.push(`<span class="dp-chip dp-chip-net${_slowCls(netMs)}" title="${_TIMING_TIPS.net}">net: <strong>${_fmtMs(netMs)}</strong></span>`);
-    if (inTok)  chips.push(`<span class="dp-chip" title="${_METRIC_TIPS.in}">in: <strong>${_formatTokens(inTok)}</strong></span>`);
-    if (outTok) chips.push(`<span class="dp-chip" title="${_METRIC_TIPS.out}">out: <strong>${_formatTokens(outTok)}</strong></span>`);
-    if (rows !== null) chips.push(`<span class="dp-chip" title="${_METRIC_TIPS.rows}">rows: <strong>${rows}</strong></span>`);
+        chips.push(`<span class="dp-chip dp-chip-net${_slowCls(netMs)}"${tip(_TIMING_TIPS.net)}>net: <strong>${_fmtMs(netMs)}</strong></span>`);
+    if (inTok)  chips.push(`<span class="dp-chip"${tip(_t('results.tokens.inTip', { count: Number(inTok).toLocaleString() }))}>in: <strong>${_formatTokens(inTok)}</strong></span>`);
+    if (outTok) chips.push(`<span class="dp-chip"${tip(_t('results.tokens.outTip', { count: Number(outTok).toLocaleString() }))}>out: <strong>${_formatTokens(outTok)}</strong></span>`);
+    if (rows !== null) chips.push(`<span class="dp-chip"${tip(_METRIC_TIPS.rows)}>rows: <strong>${rows}</strong></span>`);
 
     metaEl.innerHTML = chips.join('');
     header.hidden = false;
@@ -3751,40 +3837,13 @@ function _buildTimingBar(wallMs, graphMs, llmMs, dbMs) {
 }
 
 // ── Per-node explanations ─────────────────────────────────────────────────────
-// Hovering a node name in the log shows what that pipeline step does, so the
-// log is self-documenting. Keep in sync with the LangGraph nodes in graph.py.
-const _NODE_INFO = {
-    context_composer:        'Builds the turn ledger (question, SQL, answer, result shape and data availability of the last N turns) that the router, SQL generator and memory nodes read. Detail shows turns loaded vs window and the ledger size.',
-    fused_router:            'LLM router that classifies the question (needs_query / from_memory / history_lookup / capability / greeting / out_of_scope / unsafe), names the prior turns it refers to, and picks the path.',
-    memory_answer_generator: 'Serves a follow-up about a prior answer or its data from the stored result: replays the table, computes over the stored rows (one SELECT in the metadata Postgres, rows passed as a JSONB parameter, no tables created), answers from the ledger, or falls through to a live query.',
-    history_search:          'Answers "did I ask about X last week?" by searching the persisted questions of this user on this connection. No LLM call.',
-    capability_answer:       'Answers questions about the assistant itself ("what can you do?", "can I change the model?") from a help prompt. No query, no data lookup.',
-    pre_graph_setup:         'Prepares the request before LangGraph starts: resolves the user and runtime settings, then loads catalog metadata, conversation history, audit state and filter preferences in parallel.',
-    prior_data_binder:       'When the new question builds on a prior result ("the top 4 products from the previous answer"), extracts the values from the stored rows and binds them as a verified filter for the SQL generator.',
-    catalog_lookup:          'Loads the metadata catalog (tables, columns, relationships) from the MCP server or the metadata DB. Detail shows the source, cache HIT/MISS and load time.',
-    prompt_builder:          'Assembles the system prompt and the structured prompt shown in the Prompt tab.',
-    sql_generator:           'LLM call that writes the SQL for the question (and repairs it on retries).',
-    sqlglot_validate:        'Parses the SQL with sqlglot and checks table names before anything runs.',
-    dlp_check:               'Data-loss-prevention / governance check that can block queries touching governed data.',
-    execute_query:           'Runs the read-only SQL against the data warehouse. Detail shows rows × columns; ms is the DB execution time.',
-    trivial_result_check:    'Decides whether the result is trivial enough to skip the analytics/eval LLM call.',
-    fused_eval_analytics:    'LLM call that evaluates the result against the question and writes the answer, insights and follow-ups.',
-    feedback_classifier:     'Classifies failures and decides whether to retry SQL generation.',
-    response_formatter:      'Pure-Python step that assembles the final API response object.',
-    save_to_memory:          'Persists the SQL, token usage and execution result to the conversation history.',
-    observability_log:       'Emits the structured QUERY_EVENT log line at the end of every run.',
-
-    // ── Text-to-DAX (Power BI) nodes ──────────────────────────────────────
-    dax_catalog_lookup:      'Loads the Power BI model catalog (tables, columns, measures, relationships, date table) from the metadata DB. Detail shows the source, cache HIT/MISS and load time.',
-    dax_query_planner:       'LLM call that produces a typed semantic plan (grain, measures, filters, time intelligence) before any DAX is written.',
-    dax_prompt_builder:      'Assembles the DAX system prompt (catalog + DAX authoring rules) shown in the Prompt tab.',
-    dax_generator:           'LLM call that writes the DAX query for the question (and repairs it on retries).',
-    dax_static_validate:     'DAX lexer/linter: read-only safety gate, symbol resolution, DLP over columns/measures, and TOPN row-cap — no engine round-trip.',
-    dax_repair:              'LLM call that repairs the DAX using the static-validator feedback, then re-validates.',
-    pbi_execute_query:       'Runs the read-only DAX against the Power BI dataset via the executeQueries REST API. Detail shows rows × columns; ms is the Power BI execution time.',
-    result_integrity_check:  'Annotates empty/partial results and decides whether a one-shot empty-result diagnostic is warranted.',
-    dax_feedback_router:     'Classifies DAX failures (transport / local repair / regenerate / replan / refresh-catalog) and picks the next retry step within budget.',
-};
+// Hovering a step shows what it does. The text lives in the locale catalogs
+// (conversation.trace.nodes.*), shared with the conversation panel's run list.
+function _nodeInfo(node) {
+    const key = `conversation.trace.nodes.${node}`;
+    if (window.I18n && typeof window.I18n.has === 'function' && window.I18n.has(key)) return _t(key);
+    return _t('conversation.trace.nodes.fallback');
+}
 
 // Friendly, human-readable label for each pipeline node. The raw node name is
 // still shown on hover (and is searchable), but the timeline reads in plain
@@ -3795,15 +3854,24 @@ const _NODE_LABELS = {
     memory_answer_generator: 'Answer from memory',
     history_search:          'Search history',
     capability_answer:       'Capability answer',
+    catalog_help_answer:     'Catalog help',
     pre_graph_setup:         'Request pre-load',
     prior_data_binder:       'Bind prior data',
     catalog_lookup:          'Catalog lookup',
+    filter_planner:          'Filter planner',
+    filter_grounder:         'Filter check',
     prompt_builder:          'Prompt build',
     sql_generator:           'SQL generation',
     sqlglot_validate:        'SQL validate',
     dlp_check:               'Governance check',
     execute_query:           'Run SQL',
+    empty_filter_result_check: 'Empty-filter check',
+    empty_result_check:      'Empty-result check',
     trivial_result_check:    'Trivial check',
+    analysis_planner:        'Analysis plan',
+    analysis_guard:          'Analysis guard',
+    analysis_sql:            'Analysis SQL',
+    analysis_run:            'Run analysis',
     fused_eval_analytics:    'Analyze & insights',
     feedback_classifier:     'Retry classify',
     response_formatter:      'Format response',
@@ -3813,6 +3881,7 @@ const _NODE_LABELS = {
     // ── Text-to-DAX (Power BI) nodes ──────────────────────────────────────
     dax_catalog_lookup:      'Catalog lookup',
     dax_query_planner:       'Query plan',
+    dax_entity_resolver:     'Value check',
     dax_prompt_builder:      'Prompt build',
     dax_generator:           'DAX generation',
     dax_static_validate:     'DAX validate',
@@ -4862,6 +4931,10 @@ window.JeenLegacyBridge = {
     applyResult(data) {
         displayResults({ ...(data || {}), _inlineAnalytics: true });
     },
+    /** "table / answer / chart" times of the shown turn, marked on the transition map. */
+    setRunMilestones(timeline) {
+        _setRunMilestones(timeline);
+    },
     /**
      * Progressive answer, second half: the rows were applied from the
      * `partial` event (table + chart already built), and the final `result`
@@ -4872,6 +4945,7 @@ window.JeenLegacyBridge = {
     applyResultNarrative(data) {
         if (!data) return;
         _lastResultData = { ...data, _inlineAnalytics: true };
+        _syncInlineInsightsCard(_lastResultData);
         currentQuestion = data.question;
         currentQueryId = data.query_id || null;
         currentSessionId = data.session_id || null;

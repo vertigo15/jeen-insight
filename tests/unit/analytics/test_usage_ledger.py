@@ -220,5 +220,6 @@ def test_migration_036_defines_the_ledger_its_guards_and_a_utc_safe_backfill():
 
 def test_migration_files_are_sequential():
     names = sorted(p.name for p in (ROOT / "db/migrations/insights").glob("*.sql"))
-    assert names[-1].startswith("036_")
-    assert names[-2].startswith("035_")
+    numbers = [int(name.split("_", 1)[0]) for name in names]
+    assert numbers == list(range(1, len(names) + 1)), "migration numbers must be consecutive and unique"
+    assert "036_usage_events.sql" in names

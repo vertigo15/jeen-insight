@@ -33,7 +33,7 @@ from src.agent.langgraph_agent.nodes.output import _enrich_trace, slim_trace
 from src.agent.langgraph_agent_dax import DaxPromptLoader, build_dax_graph
 from src.agent.langgraph_agent_dax.state import DaxAgentState
 from src.agent.llm_service import LangChainLlmService
-from src.agent.progress import ProgressCallback
+from src.agent.progress import ProgressCallback, emit_pre_graph
 from src.agent.user_resolver import SimpleUserResolver
 from src.config import settings
 from src.connections import Connection, ConnectionService
@@ -161,19 +161,23 @@ class DaxInsightsAgent:
         analysis_enabled: Optional[bool] = None,
         filter_choices: Optional[List[Dict[str, Any]]] = None,
         partial_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        answer_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         """Run the text-to-DAX pipeline for one question.
 
-        ``analysis_enabled``, ``filter_choices`` and ``partial_callback`` are
-        accepted so the shared ``/api/query`` route can call every agent with
-        the same keyword set; the DAX graph has no ML skills branch, asks its
-        own entity questions and does not stream provisional rows, so all
-        three are ignored.
+        ``analysis_enabled``, ``filter_choices``, ``partial_callback`` and
+        ``answer_callback`` are accepted so the shared ``/api/query`` route can
+        call every agent with the same keyword set; the DAX graph has no ML
+        skills branch, asks its own entity questions, does not stream
+        provisional rows and returns its answer only when it has finished, so
+        all four are ignored.
         """
         if not session_id:
             session_id = uuid4()
 
         request_started = time.monotonic()
+        pre_graph_open = True
+        emit_pre_graph(progress_callback, "node_started")
         try:
             user = await self.user_resolver.resolve_user(user_context or {})
 
@@ -204,6 +208,8 @@ class DaxInsightsAgent:
             )
             query_id = results[2] if not isinstance(results[2], Exception) else None
             pre_graph_ms = int((time.monotonic() - request_started) * 1000)
+            emit_pre_graph(progress_callback, "node_finished", elapsed_ms=pre_graph_ms)
+            pre_graph_open = False
             mcp_timing = catalog_meta.get("mcp_timing") if isinstance(catalog_meta, dict) else None
             if isinstance(mcp_timing, dict):
                 pre_graph_detail = (
@@ -393,6 +399,11 @@ class DaxInsightsAgent:
             return formatted
 
         except Exception as e:  # noqa: BLE001
+            if pre_graph_open:
+                emit_pre_graph(
+                    progress_callback, "node_failed",
+                    elapsed_ms=int((time.monotonic() - request_started) * 1000),
+                )
             logger.exception("Error processing question via DAX LangGraph")
             return {
                 "question": question,

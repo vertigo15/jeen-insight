@@ -55,7 +55,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from langgraph.graph import END, START, StateGraph
 
@@ -104,6 +104,7 @@ from src.agent.llm_service import LangChainLlmService
 from src.agent.prior_results import PriorResultStore, make_sql_rerun
 from src.agent.progress import emit_progress
 from src.agent.snapshot_sql import SnapshotSqlEngine
+from src.agent.token_usage import usage_delta
 from src.metadata import MetadataLoader
 from src.connectors import SqlRunner
 
@@ -203,7 +204,10 @@ def _timed(name: str, fn: Any) -> Any:
                 elapsed_ms=elapsed,
             )
             out = {} if result is None else dict(result)
-            out["trace"] = [{"node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype}]
+            out["trace"] = [{
+                "node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype,
+                **usage_delta(state, out),
+            }]
             return out
         return _async_wrapper
     else:
@@ -236,7 +240,10 @@ def _timed(name: str, fn: Any) -> Any:
                 elapsed_ms=elapsed,
             )
             out = {} if result is None else dict(result)
-            out["trace"] = [{"node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype}]
+            out["trace"] = [{
+                "node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype,
+                **usage_delta(state, out),
+            }]
             return out
         return _sync_wrapper
 
@@ -413,10 +420,7 @@ def build_graph(
     # A confirmed analysis (re-entered from /api/analysis/run with
     # server-validated params) skips memory, routing and filter planning and
     # goes straight to the catalog so the guard has the schema it needs.
-    builder.add_conditional_edges(
-        START,
-        lambda s: "catalog_lookup" if (s.get("analysis_resume") or s.get("analysis_confirmed")) else "context_composer",
-    )
+    builder.add_conditional_edges(START, _route_from_start)
     builder.add_edge("context_composer", "fused_router")
 
     builder.add_conditional_edges("fused_router", _route_from_router)
@@ -461,10 +465,21 @@ def build_graph(
 
 
 # ── Routing functions ─────────────────────────────────────────────────────────
-# Each returns the name of the next node to execute.
+# Each returns the name of the next node to execute. The ``Literal`` return
+# type is load-bearing: LangGraph reads it as the branch's possible targets
+# (``get_graph()`` draws exactly those arrows, which the UI transition map is
+# tested against) and raises at run time for a name that is not listed.
 
 
-def _route_from_router(state: AgentState) -> str:
+def _route_from_start(state: AgentState) -> Literal["catalog_lookup", "context_composer"]:
+    if state.get("analysis_resume") or state.get("analysis_confirmed"):
+        return "catalog_lookup"
+    return "context_composer"
+
+
+def _route_from_router(state: AgentState) -> Literal[
+    "memory_answer_generator", "history_search", "capability_answer", "catalog_lookup", "response_formatter",
+]:
     route = state.get("route", "needs_query")
     if route == "from_memory":
         return "memory_answer_generator"
@@ -483,7 +498,9 @@ def _route_from_router(state: AgentState) -> str:
     return "catalog_lookup"  # needs_query (default)
 
 
-def _route_from_memory_answer(state: AgentState) -> str:
+def _route_from_memory_answer(state: AgentState) -> Literal[
+    "catalog_lookup", "trivial_result_check", "response_formatter",
+]:
     # If the memory-answer node set escape hatch, run a real query
     if state.get("route") == "needs_query":
         return "catalog_lookup"
@@ -494,7 +511,9 @@ def _route_from_memory_answer(state: AgentState) -> str:
     return "response_formatter"
 
 
-def _route_from_catalog(state: AgentState) -> str:
+def _route_from_catalog(state: AgentState) -> Literal[
+    "response_formatter", "catalog_help_answer", "analysis_guard", "filter_planner",
+]:
     # Deny-by-default: when no usable catalog is available, skip SQL generation
     # entirely and return a clear error rather than querying blindly.
     if state.get("catalog_blocked"):
@@ -509,11 +528,13 @@ def _route_from_catalog(state: AgentState) -> str:
     return "filter_planner"
 
 
-def _route_from_filter_planner(state: AgentState) -> str:
+def _route_from_filter_planner(state: AgentState) -> Literal["response_formatter", "filter_grounder"]:
     return "response_formatter" if state.get("filter_clarification_required") else "filter_grounder"
 
 
-def _route_from_filter_grounder(state: AgentState) -> str:
+def _route_from_filter_grounder(state: AgentState) -> Literal[
+    "response_formatter", "analysis_planner", "prior_data_binder", "prompt_builder",
+]:
     if state.get("filter_clarification_required"):
         return "response_formatter"
     # Branch here (not at catalog_lookup) so grounded literal filters are
@@ -527,12 +548,14 @@ def _route_from_filter_grounder(state: AgentState) -> str:
     return "prompt_builder"
 
 
-def _route_from_binder(state: AgentState) -> str:
+def _route_from_binder(state: AgentState) -> Literal["response_formatter", "prompt_builder"]:
     # Too many values to carry into an IN list → ask the user to narrow it.
     return "response_formatter" if state.get("filter_clarification_required") else "prompt_builder"
 
 
-def _route_from_analysis_planner(state: AgentState) -> str:
+def _route_from_analysis_planner(state: AgentState) -> Literal[
+    "response_formatter", "prompt_builder", "analysis_guard",
+]:
     if state.get("analysis_clarification"):
         return "response_formatter"
     if not on_analysis_branch(state):
@@ -540,7 +563,7 @@ def _route_from_analysis_planner(state: AgentState) -> str:
     return "analysis_guard"
 
 
-def _route_from_analysis_guard(state: AgentState) -> str:
+def _route_from_analysis_guard(state: AgentState) -> Literal["response_formatter", "analysis_sql"]:
     if (
         state.get("analysis_guard_failure")
         or state.get("analysis_confirm_required")
@@ -550,34 +573,36 @@ def _route_from_analysis_guard(state: AgentState) -> str:
     return "analysis_sql"
 
 
-def _route_from_analysis_sql(state: AgentState) -> str:
+def _route_from_analysis_sql(state: AgentState) -> Literal["response_formatter", "sqlglot_validate"]:
     return "response_formatter" if state.get("analysis_error") else "sqlglot_validate"
 
 
-def _route_from_analysis_run(state: AgentState) -> str:
+def _route_from_analysis_run(state: AgentState) -> Literal["response_formatter", "trivial_result_check"]:
     if state.get("analysis_guard_failure") or state.get("analysis_error"):
         return "response_formatter"
     return "trivial_result_check"
 
 
-def _route_from_sql_gen(state: AgentState) -> str:
+def _route_from_sql_gen(state: AgentState) -> Literal["sqlglot_validate", "response_formatter"]:
     if state.get("generated_sql"):
         return "sqlglot_validate"
     return "response_formatter"  # clarification or empty
 
 
-def _route_from_sqlglot(state: AgentState) -> str:
+def _route_from_sqlglot(state: AgentState) -> Literal["response_formatter", "feedback_classifier", "dlp_check"]:
     if state.get("sqlglot_error"):
         # A deterministic builder cannot be "repaired" by the LLM loop.
         return "response_formatter" if on_analysis_branch(state) else "feedback_classifier"
     return "dlp_check"
 
 
-def _route_from_dlp(state: AgentState) -> str:
+def _route_from_dlp(state: AgentState) -> Literal["response_formatter", "execute_query"]:
     return "response_formatter" if state.get("dlp_blocked") else "execute_query"
 
 
-def _route_from_execute(state: AgentState) -> str:
+def _route_from_execute(state: AgentState) -> Literal[
+    "response_formatter", "feedback_classifier", "analysis_run", "empty_filter_result_check",
+]:
     if state.get("exec_error"):
         return "response_formatter" if on_analysis_branch(state) else "feedback_classifier"
     if on_analysis_branch(state):
@@ -585,7 +610,9 @@ def _route_from_execute(state: AgentState) -> str:
     return "empty_filter_result_check"
 
 
-def _route_from_empty_filter(state: AgentState) -> str:
+def _route_from_empty_filter(state: AgentState) -> Literal[
+    "feedback_classifier", "empty_result_check", "trivial_result_check",
+]:
     if state.get("needs_filter_reground"):
         return "feedback_classifier"
     # A genuinely empty result is diagnosed for a likely SQL mistake before it is
@@ -596,7 +623,7 @@ def _route_from_empty_filter(state: AgentState) -> str:
     return "trivial_result_check"
 
 
-def _route_from_empty_result(state: AgentState) -> str:
+def _route_from_empty_result(state: AgentState) -> Literal["feedback_classifier", "trivial_result_check"]:
     # An implausible 0-row result regenerates SQL once (own budget); otherwise
     # accept the empty result and format the "no records" answer.
     return "feedback_classifier" if state.get("needs_sql_recheck") else "trivial_result_check"
@@ -604,7 +631,7 @@ def _route_from_empty_result(state: AgentState) -> str:
 
 def _make_route_from_trivial(eval_enabled: bool):
     """Return a routing function that respects both the compiled flag and per-request override."""
-    def _route_from_trivial(state: AgentState) -> str:
+    def _route_from_trivial(state: AgentState) -> Literal["response_formatter", "fused_eval_analytics"]:
         # Per-request override (from UI) takes priority over the compiled default.
         per_request = state.get("eval_analytics_override")
         effective_eval = per_request if per_request is not None else eval_enabled
@@ -614,7 +641,7 @@ def _make_route_from_trivial(eval_enabled: bool):
     return _route_from_trivial
 
 
-def _route_from_eval(state: AgentState) -> str:
+def _route_from_eval(state: AgentState) -> Literal["response_formatter", "feedback_classifier"]:
     eval_result = state.get("eval_result") or {}
     # An ML result was produced by a validated engine, and a memory result was
     # computed from stored rows; a doubtful narration must never trigger the
@@ -628,7 +655,9 @@ def _route_from_eval(state: AgentState) -> str:
     )
 
 
-def _route_from_feedback(state: AgentState) -> str:
+def _route_from_feedback(state: AgentState) -> Literal[
+    "response_formatter", "catalog_lookup", "filter_grounder", "sql_generator",
+]:
     feedback = state.get("feedback_type")
     if feedback == "exhausted":
         return "response_formatter"

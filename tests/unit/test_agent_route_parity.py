@@ -34,6 +34,7 @@ def test_route_keywords_are_accepted_by_both_agents():
     route_kwargs = {
         "question", "session_id", "user_context", "limit", "temperature",
         "eval_analytics", "llm_timeout", "progress_callback", "analysis_enabled",
+        "filter_choices", "partial_callback", "answer_callback",
     }
     for agent_cls in (JeenInsightsAgent, DaxInsightsAgent):
         missing = route_kwargs - _keyword_params(agent_cls.process_question)

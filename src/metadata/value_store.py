@@ -797,16 +797,21 @@ class McpValueStore:
         )
 
     async def find_columns_for_value(self, source, needles, *, tables=None, limit=12):
-        hits: List[ColumnHit] = []
-        for needle in [n for n in needles if str(n or "").strip()][:4]:
+        async def _search(needle: str) -> Dict[str, Any]:
             try:
-                result = await self.client.search_column_values(
+                return await self.client.search_column_values(
                     source, table=None, column=None, query=needle, limit=min(int(limit), 100),
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.info("value_store(mcp): reverse lookup failed (%s)", exc)
-                continue
-            for match in result.get("matches") or []:
+                return {}
+
+        # One provider search per word, side by side: each takes seconds.
+        wanted = [n for n in needles if str(n or "").strip()][:4]
+        results = await asyncio.gather(*(_search(needle) for needle in wanted))
+        hits: List[ColumnHit] = []
+        for result in results:
+            for match in (result or {}).get("matches") or []:
                 if not isinstance(match, dict) or not match.get("column"):
                     continue
                 table = str(match.get("table") or "")

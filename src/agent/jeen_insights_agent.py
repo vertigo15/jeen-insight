@@ -15,16 +15,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from uuid import UUID, uuid4
 
 from src.agent.conversation_history import ConversationHistoryService
 from src.agent.langgraph_agent import PromptLoader, build_graph
-from src.agent.langgraph_agent.nodes.catalog import _load_catalog_bundle
+from src.agent.langgraph_agent.nodes.catalog import _extract_columns, _load_catalog_bundle
+from src.agent.langgraph_agent.nodes.filtering import ValueLookupPrefetch, start_value_lookup_prefetch
 from src.agent.langgraph_agent.nodes.output import _enrich_trace, slim_trace
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
-from src.agent.progress import PartialCallback, ProgressCallback
+from src.agent.progress import PartialCallback, ProgressCallback, emit_pre_graph
 from src.agent.user_resolver import SimpleUserResolver
 from src.config import settings
 from src.connections import Connection, ConnectionService
@@ -129,6 +130,7 @@ class JeenInsightsAgent:
         analysis_enabled: Optional[bool] = None,
         filter_choices: Optional[List[Dict[str, Any]]] = None,
         partial_callback: Optional[PartialCallback] = None,
+        answer_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         """Run the LangGraph text-to-SQL pipeline.
 
@@ -141,6 +143,10 @@ class JeenInsightsAgent:
         (``{literal, table, column, any}``) so the grounder honours them
         instead of asking again. ``partial_callback`` receives the accepted
         rows before the narration LLM call (streaming route only).
+        ``answer_callback`` receives the finished response, with the trace up
+        to that point, before the history writes run (streaming route only);
+        the returned response then carries the complete trace, with the steps
+        that ran after the answer marked ``after_answer``.
         """
         extra: Dict[str, Any] = {}
         if analysis_enabled is not None:
@@ -157,6 +163,7 @@ class JeenInsightsAgent:
             llm_timeout=llm_timeout,
             progress_callback=progress_callback,
             partial_callback=partial_callback,
+            answer_callback=answer_callback,
             analysis=extra or None,
         )
 
@@ -217,11 +224,33 @@ class JeenInsightsAgent:
         parent_query_id: Optional[UUID] = None,
         analysis: Optional[Dict[str, Any]] = None,
         partial_callback: Optional[PartialCallback] = None,
+        answer_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         if not session_id:
             session_id = uuid4()
 
         request_started = time.monotonic()
+        pre_graph_open = True
+        emit_pre_graph(progress_callback, "node_started")
+        value_prefetch: Optional[ValueLookupPrefetch] = None
+        # Trace length when the answer went out; later steps ran after it.
+        answered_at: Optional[int] = None
+
+        def emit_answer(state: AgentState) -> None:
+            nonlocal answered_at
+            if answer_callback is None or answered_at is not None:
+                return
+            formatted = dict(state.get("formatted_response") or {})
+            # Copies: enrichment writes onto the events, and the state's own
+            # events are persisted (slimmed) and enriched after the graph.
+            trace = [dict(event) for event in state.get("trace") or []]
+            if trace:
+                _enrich_trace(trace, state)
+                formatted["trace"] = trace
+            formatted["saving"] = True
+            answer_callback(formatted)
+            answered_at = len(trace)
+
         try:
             user = await self.user_resolver.resolve_user(user_context or {})
 
@@ -229,6 +258,12 @@ class JeenInsightsAgent:
             # conversation-context window). Cached briefly inside the service.
             from src.metadata.runtime_settings import get_runtime_settings
             runtime = await get_runtime_settings()
+            # The filter planner's value lookup runs next to the catalog
+            # pre-load below instead of after it.
+            try:
+                value_prefetch = self._start_value_prefetch(question, runtime)
+            except Exception:  # noqa: BLE001 - an optimisation must never fail the question
+                logger.debug("value lookup prefetch not started", exc_info=True)
 
             # ── Parallel DB round-trips ──────────────────────────────────────
             # metadata_loader, conversation history, and query audit log are
@@ -283,6 +318,8 @@ class JeenInsightsAgent:
                 results[3] if not isinstance(results[3], Exception) else []
             )
             pre_graph_ms = int((time.monotonic() - request_started) * 1000)
+            emit_pre_graph(progress_callback, "node_finished", elapsed_ms=pre_graph_ms)
+            pre_graph_open = False
             mcp_timing = catalog_meta.get("mcp_timing") if isinstance(catalog_meta, dict) else None
             if isinstance(mcp_timing, dict):
                 pre_graph_detail = (
@@ -325,6 +362,7 @@ class JeenInsightsAgent:
                 "progress_callback": progress_callback,
                 "partial_callback": partial_callback,
                 "partial_revision": 0,
+                "answer_callback": emit_answer,
                 # ── Connection ──────────────────────────────────────────
                 "connection_display_name": self.display_name,
                 "database_type": self.database_type,
@@ -387,6 +425,8 @@ class JeenInsightsAgent:
                 "filter_existence_max_age_hours": runtime.sql_filter_existence_max_age_hours,
                 "filter_absence_max_age_hours": runtime.sql_filter_absence_max_age_hours,
                 "filter_candidates": [],
+                "filter_value_search": None,
+                "filter_value_prefetch": value_prefetch,
                 "filter_choices": [],
                 "filter_preferences": filter_preferences,
                 "filter_clarification": None,
@@ -477,11 +517,19 @@ class JeenInsightsAgent:
                 # so taking the projection first makes leaking one impossible.
                 await self._safe_persist_trace(query_id, slim_trace(raw_trace))
                 _enrich_trace(raw_trace, final_state)
+                if answered_at is not None:
+                    for event in raw_trace[answered_at:]:
+                        event["after_answer"] = True
                 formatted["trace"] = raw_trace
 
             return formatted
 
         except Exception as e:  # noqa: BLE001
+            if pre_graph_open:
+                emit_pre_graph(
+                    progress_callback, "node_failed",
+                    elapsed_ms=int((time.monotonic() - request_started) * 1000),
+                )
             logger.exception("Error processing question via LangGraph")
             return {
                 "question": question,
@@ -493,10 +541,49 @@ class JeenInsightsAgent:
                 "error": str(e),
                 "metrics": None,
             }
+        finally:
+            # Routes that never reach the planner leave it running.
+            if value_prefetch is not None:
+                value_prefetch.cancel()
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _start_value_prefetch(self, question: str, runtime: Any) -> Optional[ValueLookupPrefetch]:
+        """Start the planner's reverse lookup now, for an MCP catalog only.
+
+        That is where the value search is a slow provider call; a metadata-DB
+        lookup is local SQL and runs in the planner as before. Everything
+        async (the catalog source, the full catalog's schema words) resolves
+        inside the background task, so the pre-load does not wait on it.
+        """
+        if not runtime.sql_filter_metadata_evidence_enabled or runtime.sql_filter_value_visibility == "none":
+            return None
+        from src.api import state as app_state  # noqa: PLC0415
+        from src.agent.langgraph_agent.value_store_provider import value_store_for  # noqa: PLC0415
+
+        service = getattr(app_state, "mcp_server_service", None)
+        client = getattr(app_state, "mcp_catalog_client", None)
+        if service is None or client is None:
+            return None
+
+        async def resolve_store():
+            if await service.get_catalog_source(self.source_key) != "mcp":
+                return None
+            return "mcp", value_store_for({
+                "catalog_source_used": "mcp",
+                "filter_metadata_evidence_enabled": runtime.sql_filter_metadata_evidence_enabled,
+            })
+
+        async def load_catalog():
+            bundle = await client.load_all(self.source_key)
+            table_columns, _ = _extract_columns(bundle.get("columns", ""))
+            return bundle, table_columns
+
+        return start_value_lookup_prefetch(
+            question, self.source_key, resolve_store=resolve_store, load_catalog=load_catalog,
+        )
 
     async def _safe_log_query(
         self,

@@ -45,7 +45,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from langgraph.graph import END, START, StateGraph
 
@@ -92,6 +92,7 @@ from src.agent.llm_service import LangChainLlmService
 from src.agent.prior_results import PriorResultStore
 from src.agent.progress import emit_progress
 from src.agent.snapshot_sql import SnapshotSqlEngine
+from src.agent.token_usage import usage_delta
 from src.connectors.powerbi_token import TokenProviderFactory
 from src.metadata import MetadataLoader
 
@@ -162,7 +163,10 @@ def _timed(name: str, fn: Any) -> Any:
                 elapsed_ms=elapsed,
             )
             out = {} if result is None else dict(result)
-            out["trace"] = [{"node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype}]
+            out["trace"] = [{
+                "node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype,
+                **usage_delta(state, out),
+            }]
             return out
         return _async_wrapper
 
@@ -195,7 +199,10 @@ def _timed(name: str, fn: Any) -> Any:
             elapsed_ms=elapsed,
         )
         out = {} if result is None else dict(result)
-        out["trace"] = [{"node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype}]
+        out["trace"] = [{
+            "node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype,
+            **usage_delta(state, out),
+        }]
         return out
     return _sync_wrapper
 
@@ -326,7 +333,14 @@ def _dax_capability_fallback(display: str) -> str:
     )
 
 
-def _route_from_router(state: DaxAgentState) -> str:
+# The ``Literal`` return types are load-bearing: LangGraph reads them as each
+# branch's possible targets (the UI transition map is tested against them) and
+# raises at run time for a name that is not listed.
+
+
+def _route_from_router(state: DaxAgentState) -> Literal[
+    "memory_answer_generator", "history_search", "capability_answer", "dax_catalog_lookup", "response_formatter",
+]:
     route = state.get("route", "needs_query")
     if route == "from_memory":
         return "memory_answer_generator"
@@ -344,7 +358,9 @@ def _route_from_router(state: DaxAgentState) -> str:
     return "dax_catalog_lookup"
 
 
-def _route_from_memory_answer(state: DaxAgentState) -> str:
+def _route_from_memory_answer(state: DaxAgentState) -> Literal[
+    "dax_catalog_lookup", "trivial_result_check", "response_formatter",
+]:
     if state.get("route") == "needs_query":
         return "dax_catalog_lookup"
     # A recomputed table gets the same narration as a live result; a replay
@@ -354,7 +370,9 @@ def _route_from_memory_answer(state: DaxAgentState) -> str:
     return "response_formatter"
 
 
-def _route_from_catalog(state: DaxAgentState) -> str:
+def _route_from_catalog(state: DaxAgentState) -> Literal[
+    "response_formatter", "catalog_help_answer", "dax_query_planner",
+]:
     if state.get("catalog_blocked"):
         return "response_formatter"
     if state.get("route") == "catalog_help":
@@ -362,13 +380,13 @@ def _route_from_catalog(state: DaxAgentState) -> str:
     return "dax_query_planner"
 
 
-def _route_from_planner(state: DaxAgentState) -> str:
+def _route_from_planner(state: DaxAgentState) -> Literal["response_formatter", "dax_entity_resolver"]:
     if state.get("clarification_required"):
         return "response_formatter"
     return "dax_entity_resolver"
 
 
-def _route_from_entity_resolver(state: DaxAgentState) -> str:
+def _route_from_entity_resolver(state: DaxAgentState) -> Literal["response_formatter", "dax_prompt_builder"]:
     # A filter literal that matches nothing (or several things) is a question for
     # the user, not a query to run: executing it would return an empty table and
     # hide the real problem.
@@ -377,13 +395,13 @@ def _route_from_entity_resolver(state: DaxAgentState) -> str:
     return "dax_prompt_builder"
 
 
-def _route_from_generator(state: DaxAgentState) -> str:
+def _route_from_generator(state: DaxAgentState) -> Literal["dax_static_validate", "response_formatter"]:
     if state.get("generated_dax"):
         return "dax_static_validate"
     return "response_formatter"  # clarification or empty
 
 
-def _route_from_validate(state: DaxAgentState) -> str:
+def _route_from_validate(state: DaxAgentState) -> Literal["response_formatter", "dax_repair", "pbi_execute_query"]:
     if state.get("dax_validation_error") or state.get("dlp_blocked"):
         return "response_formatter"
     if state.get("dax_repairable_error"):
@@ -391,7 +409,9 @@ def _route_from_validate(state: DaxAgentState) -> str:
     return "pbi_execute_query"
 
 
-def _route_from_execute(state: DaxAgentState) -> str:
+def _route_from_execute(state: DaxAgentState) -> Literal[
+    "response_formatter", "dax_feedback_router", "result_integrity_check",
+]:
     if state.get("dax_terminal"):
         return "response_formatter"
     if state.get("exec_error"):
@@ -399,14 +419,14 @@ def _route_from_execute(state: DaxAgentState) -> str:
     return "result_integrity_check"
 
 
-def _route_from_integrity(state: DaxAgentState) -> str:
+def _route_from_integrity(state: DaxAgentState) -> Literal["dax_feedback_router", "trivial_result_check"]:
     if state.get("integrity_action") == "empty_diagnostic":
         return "dax_feedback_router"
     return "trivial_result_check"
 
 
 def _make_route_from_trivial(eval_enabled: bool):
-    def _route_from_trivial(state: DaxAgentState) -> str:
+    def _route_from_trivial(state: DaxAgentState) -> Literal["response_formatter", "fused_eval_analytics"]:
         per_request = state.get("eval_analytics_override")
         effective_eval = per_request if per_request is not None else eval_enabled
         if state.get("is_trivial") or not effective_eval:
@@ -415,7 +435,7 @@ def _make_route_from_trivial(eval_enabled: bool):
     return _route_from_trivial
 
 
-def _route_from_eval(state: DaxAgentState) -> str:
+def _route_from_eval(state: DaxAgentState) -> Literal["response_formatter", "dax_feedback_router"]:
     eval_result = state.get("eval_result") or {}
     # A memory result was computed deterministically from stored rows; the DAX
     # repair loop has no planner/prompt state for it and must not be entered.
@@ -428,7 +448,10 @@ def _route_from_eval(state: DaxAgentState) -> str:
     )
 
 
-def _route_from_feedback(state: DaxAgentState) -> str:
+def _route_from_feedback(state: DaxAgentState) -> Literal[
+    "dax_repair", "dax_generator", "dax_query_planner", "dax_entity_resolver", "dax_catalog_lookup",
+    "response_formatter",
+]:
     action = state.get("dax_feedback_action")
     if action == "local_repair":
         return "dax_repair"

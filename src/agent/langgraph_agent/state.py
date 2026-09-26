@@ -162,6 +162,16 @@ class AgentState(TypedDict, total=False):
     # Reverse-lookup hits for the question's literals: which catalogued columns
     # actually contain a value like the word the user typed.
     filter_candidates: List[Dict[str, Any]]
+    # Where those hits came from: {"catalog": [...], "searched": [...]} — the
+    # question words already shown as catalog example values (no search) and
+    # the words sent to the value store's reverse lookup — plus "lookup":
+    # {mode: prefetched|live, waited_ms, lookup_ms, timed_out} when it ran.
+    filter_value_search: Optional[Dict[str, Any]]
+    # The reverse lookup started during pre-graph setup
+    # (filtering.ValueLookupPrefetch); None when it was not started.
+    filter_value_prefetch: Optional[Any]
+    # Streams the finished answer before save_to_memory runs; see the agent.
+    answer_callback: Optional[Any]
     # The user's answers to earlier column/value clarifications in this request
     # ({literal, table, column, any, value}); honoured before asking again.
     filter_choices: List[Dict[str, Any]]

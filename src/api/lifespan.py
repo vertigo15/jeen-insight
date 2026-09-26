@@ -170,6 +170,26 @@ async def _probe_usage_events_schema(conn) -> bool:
     return present
 
 
+async def _probe_mcp_cache_catalog_key(conn) -> bool:
+    """Warn when migration 037 is missing: the full MCP catalog then stays in memory only."""
+    try:
+        definition = await conn.fetchval(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = to_regclass('insights_mcp_cache') "
+            "AND conname = 'insights_mcp_cache_cache_key_check'"
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("startup: MCP cache key probe failed: %s", exc)
+        return False
+    present = definition is None or "'catalog'" in definition
+    if not present:
+        logger.warning(
+            "startup: migration 037_mcp_cache_catalog_key is not applied; the MCP full catalog "
+            "is cached in this process only, so every restart downloads it again."
+        )
+    return present
+
+
 def _build_usage_ledger(pool, schema_ready: bool) -> None:
     """Wire the usage ledger (write) and analytics repository (read) into ``state``."""
     from src.analytics import UsageAnalyticsRepository, UsageLedger
@@ -472,6 +492,7 @@ async def lifespan(_app: FastAPI):
         analysis_schema_ready = await _probe_analysis_schema(conn)
         forecast_schema_ready = await _probe_forecast_tracking_schema(conn)
         usage_events_schema_ready = await _probe_usage_events_schema(conn)
+        await _probe_mcp_cache_catalog_key(conn)
     _build_analysis_runtime(pool, state.history_service, analysis_schema_ready,
                             forecast_schema_ready=forecast_schema_ready)
     _build_usage_ledger(pool, usage_events_schema_ready)

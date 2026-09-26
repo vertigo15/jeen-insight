@@ -7,8 +7,11 @@ is exercised by integration tests, not unit tests.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 def test_query_rejects_empty_question(client, fake_state):
@@ -283,6 +286,107 @@ def test_query_json_route_passes_no_partial_callback(client, fake_state):
 
     assert resp.status_code == 200
     assert fake_agent.process_question.await_args.kwargs["partial_callback"] is None
+    assert fake_agent.process_question.await_args.kwargs["answer_callback"] is None
+
+
+def test_query_stream_sends_the_answer_before_the_history_writes(client, fake_state, monkeypatch):
+    """The agent hands over the finished answer before save_to_memory runs: one
+    `result` event (rows cached before it leaves), then an `enrichment` event
+    with the steps that ran after it, so the run details stay complete."""
+    fake_state.agent_registry.get_agent = AsyncMock()
+    monkeypatch.setattr("src.api.routes.query._maybe_snapshot", AsyncMock())
+    monkeypatch.setattr("src.api.routes.query._maybe_propose_tool", AsyncMock(return_value=None))
+    cache_put = MagicMock()
+    monkeypatch.setattr("src.api.routes.query.result_cache.put", cache_put)
+    query_id = "22222222-2222-2222-2222-222222222222"
+    early_trace = [{"node": "execute_query", "elapsed_ms": 8}, {"node": "response_formatter", "elapsed_ms": 0}]
+    tail = [
+        {"node": "save_to_memory", "elapsed_ms": 1200, "after_answer": True},
+        {"node": "observability_log", "elapsed_ms": 0, "after_answer": True},
+    ]
+    answer = {
+        "question": "show all customers", "query_id": query_id,
+        "session_id": "33333333-3333-3333-3333-333333333333", "sql": "select 1",
+        "results": {"columns": ["x"], "rows": [[1]]}, "answer": "One row.", "error": None,
+        "metrics": {"execution_time_ms": 8}, "trace": early_trace,
+    }
+    cache_writes_by_answer = []
+
+    async def process_question(**kwargs):
+        kwargs["answer_callback"](answer)
+        cache_writes_by_answer.append(cache_put.call_count)
+        return {**answer, "trace": early_trace + tail}
+
+    fake_agent = MagicMock()
+    fake_agent.process_question = AsyncMock(side_effect=process_question)
+    fake_state.agent_registry.get_agent.return_value = fake_agent
+
+    body = client.post("/api/query/stream", json={"question": "show all customers", "connection": "sales_db"}).text
+
+    assert body.count("event: result") == 1
+    result_part = body[body.index("event: result"):body.index("event: enrichment")]
+    assert '"response_formatter"' in result_part and '"save_to_memory"' not in result_part
+    enrichment = json.loads(body[body.index("event: enrichment"):].split("data: ", 1)[1].split("\n", 1)[0])
+    assert [e["node"] for e in enrichment["trace_tail"]] == ["save_to_memory", "observability_log"]
+    # Written inside the callback, i.e. before the queued event could leave.
+    assert cache_writes_by_answer == [1]
+    assert cache_put.call_args_list[0].kwargs["query_id"] == query_id
+
+
+@pytest.mark.parametrize("leaves", ["noticed_disconnect", "closed_at_the_answer"])
+def test_a_client_leaving_after_the_answer_does_not_cancel_the_history_writes(monkeypatch, leaves):
+    """The answer is on screen while save_to_memory still runs; a reload or a
+    closed tab ends the stream but must not cancel the writes — whether the
+    loop notices the disconnect or the stream is closed while it waits at the
+    answer's yield."""
+    from src.api.models import QueryRequest
+    from src.api.routes import query as query_routes
+
+    saved = asyncio.Event()
+    release = asyncio.Event()
+    answer = {"question": "q", "query_id": "22222222-2222-2222-2222-222222222222", "sql": "select 1",
+              "results": {"columns": ["x"], "rows": [[1]]}, "error": None, "trace": []}
+
+    async def process_question(**kwargs):
+        kwargs["answer_callback"](answer)
+        await release.wait()
+        saved.set()
+        return answer
+
+    agent = MagicMock()
+    agent.process_question = AsyncMock(side_effect=process_question)
+    monkeypatch.setattr(query_routes, "_prepare_query", AsyncMock(return_value=(agent, "user-a", {})))
+    monkeypatch.setattr(query_routes, "_maybe_snapshot", AsyncMock())
+    monkeypatch.setattr(query_routes, "_maybe_propose_tool", AsyncMock(return_value=None))
+    monkeypatch.setattr(query_routes.result_cache, "put", MagicMock())
+    monkeypatch.setattr(query_routes, "query_limiter", MagicMock(acquire=AsyncMock(), release=AsyncMock()))
+
+    async def scenario():
+        request = MagicMock()
+        if leaves == "noticed_disconnect":
+            # Connected until the answer is out, then gone.
+            request.is_disconnected = AsyncMock(side_effect=[False, True, True, True])
+        else:
+            request.is_disconnected = AsyncMock(return_value=False)
+        response = await query_routes.query_database_stream(
+            QueryRequest(question="q", connection="sales_db"), request, MagicMock(),
+        )
+        body = []
+        async for chunk in response.body_iterator:
+            body.append(chunk)
+            if leaves == "closed_at_the_answer" and "event: result" in chunk:
+                break
+        if leaves == "closed_at_the_answer":
+            await response.body_iterator.aclose()
+        assert any("event: result" in chunk for chunk in body)
+        assert not saved.is_set(), "the stream ended before the writes did"
+        release.set()
+        await asyncio.wait_for(saved.wait(), timeout=1)
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert not query_routes._finishing, "the finished query is released"
+
+    asyncio.run(scenario())
 
 
 def test_query_stream_requires_authenticated_user(anon_client, fake_state):

@@ -49,6 +49,27 @@ def emit_progress(
         logger.debug("query progress callback failed", exc_info=True)
 
 
+def emit_pre_graph(
+    callback: Optional[ProgressCallback],
+    status: str,
+    *,
+    elapsed_ms: Optional[int] = None,
+) -> None:
+    """Report the request pre-load (``pre_graph_setup``) as a live step.
+
+    It runs before the graph starts, so no ``_timed`` wrapper announces it; the
+    agents call this around the pre-load so the UI lists it first, as it ran.
+    """
+    emit_progress(
+        {"progress_callback": callback},
+        node="pre_graph_setup",
+        status=status,
+        icon="⏱",
+        node_type="db",
+        elapsed_ms=elapsed_ms,
+    )
+
+
 PartialCallback = Callable[[Dict[str, Any]], None]
 
 
@@ -69,4 +90,4 @@ def emit_partial(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
         logger.debug("partial result callback failed", exc_info=True)
 
 
-__all__ = ["PartialCallback", "ProgressCallback", "emit_partial", "emit_progress"]
+__all__ = ["PartialCallback", "ProgressCallback", "emit_partial", "emit_pre_graph", "emit_progress"]
