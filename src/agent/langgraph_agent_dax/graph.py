@@ -220,6 +220,7 @@ def build_dax_graph(
     entity_cross_column_enabled: bool = True,
     token_provider_factory: Optional[TokenProviderFactory] = None,
     snapshot_engine: Optional[SnapshotSqlEngine] = None,
+    usage_ledger: Any = None,
 ) -> Any:
     """Build and compile the text-to-DAX LangGraph.
 
@@ -250,7 +251,8 @@ def build_dax_graph(
     n("trivial_result_check",    trivial_result_check)
     n("fused_eval_analytics",    make_fused_eval_analytics(llm, prompt_loader))
     n("response_formatter",      response_formatter)
-    n("save_to_memory",          make_save_to_memory(history_service, deployment_name))
+    n("save_to_memory",          make_save_to_memory(history_service, deployment_name,
+                                                     usage_ledger=usage_ledger))
     n("observability_log",       observability_log)
 
     # DAX-specific query core.

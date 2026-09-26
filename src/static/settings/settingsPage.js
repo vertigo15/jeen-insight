@@ -23,6 +23,7 @@
 
 import { Preferences } from './preferences.js';
 import { CHART_TYPE_OPTIONS } from '../chart-feature/chartTypes.js?v=78';
+import { AnalyticsSection } from './analyticsSection.js';
 
 // Interface strings come from the locale catalog (static/i18n/i18n.js, a classic
 // script that is loaded before this module). `t` is plain text; `h` is
@@ -48,6 +49,7 @@ const ICONS = {
     link:     `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
     shield:   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>`,
     plug:     `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a6 6 0 0 1-12 0V8z"/></svg>`,
+    analytics:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg>`,
 };
 
 // ── Navigation definition ─────────────────────────────────────────────────────
@@ -68,6 +70,7 @@ const NAV = [
             { id: 'my-connections',    label: 'settings.nav.myConnections',   icon: ICONS.link,     gate: 'connections' },
             { id: 'integrations',      label: 'settings.nav.integrations',    icon: ICONS.plug,     gate: 'admin' },
             { id: 'users',             label: 'settings.nav.users',           icon: ICONS_USERS,    gate: 'admin' },
+            { id: 'analytics',         label: 'settings.nav.analytics',       icon: ICONS.analytics, gate: 'admin' },
         ],
     },
     {
@@ -124,6 +127,8 @@ export class SettingsPage {
         this._mcpToolResult = null; // last test-call response/error
         this._mcpToolResultView = 'content';
         this._mcpToolCalling = false;
+        // Admin Analytics tab (usage ledger); built lazily on first open.
+        this._analytics = null;
     }
 
     mount(hooks = {}) {
@@ -314,6 +319,9 @@ export class SettingsPage {
             this._promptOpen = null;
         }
 
+        // Leaving Analytics: release its ECharts instance and observers.
+        if (this._activeId === 'analytics' && id !== 'analytics' && this._analytics) this._analytics.dispose();
+
         this._activeId = id;
         this._renderSeq += 1;
 
@@ -338,6 +346,8 @@ export class SettingsPage {
             this._renderUsers();
         } else if (id === 'integrations') {
             this._renderIntegrations();
+        } else if (id === 'analytics') {
+            this._renderAnalytics();
         } else if (id === 'my-connections') {
             this._renderMyConnections();
         } else if (id === 'about') {
@@ -3321,6 +3331,23 @@ export class SettingsPage {
             } catch (e) {
                 _showToast(t('settings.myConnections.disconnectFailed', { detail: iso(e.message) }), 'error');
             }
+        });
+    }
+
+    // ── Analytics (admin) ────────────────────────────────────────────────────
+
+    async _renderAnalytics() {
+        if (!this._onTab('analytics')) return;
+        // Server-side the routes are admin-only; don't even fetch for members.
+        if (!_isAdmin()) {
+            this._content.innerHTML = `<p class="sp-section-desc">${h('errors.forbidden')}</p>`;
+            return;
+        }
+        if (!this._analytics) this._analytics = new AnalyticsSection();
+        const seq = this._renderSeq;
+        await this._analytics.render({
+            content: this._content,
+            isCurrent: () => this._onTab('analytics') && seq === this._renderSeq,
         });
     }
 

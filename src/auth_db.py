@@ -138,13 +138,27 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def touch_last_active(user_id: int) -> None:
-    """Update last_active_at to NOW() for *user_id*."""
+    """Update last_active_at to NOW() for *user_id* and record a ``login`` event
+    in the usage ledger (migration 036) in the same transaction.
+
+    The ledger insert runs inside a savepoint so a missing table (migration not
+    yet applied) never costs the ``last_active_at`` update.
+    """
     try:
         with _connect() as conn:
             conn.execute(
                 "UPDATE auth_users SET last_active_at = NOW() WHERE id = %s",
                 (user_id,),
             )
+            try:
+                with conn.transaction():
+                    conn.execute(
+                        "INSERT INTO insights_usage_events (event_type, user_id) "
+                        "VALUES ('login', %s)",
+                        (str(user_id),),
+                    )
+            except Exception:  # noqa: BLE001 — analytics is best-effort
+                pass
             conn.commit()
     except Exception:  # noqa: BLE001
         pass  # non-critical; never block login

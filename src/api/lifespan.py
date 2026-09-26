@@ -7,6 +7,7 @@ Routes never instantiate services themselves; they read from `src.api.state`
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Optional
@@ -152,6 +153,52 @@ async def _probe_answer_feedback_schema(conn, history_service: Any) -> bool:
     return present
 
 
+async def _probe_usage_events_schema(conn) -> bool:
+    """Enable the usage ledger / admin analytics only after migration 036 is present."""
+    try:
+        present = bool(await conn.fetchval(
+            "SELECT to_regclass('insights_usage_events') IS NOT NULL"
+        ))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("startup: usage events schema probe failed: %s", exc)
+        present = False
+    if not present:
+        logger.warning(
+            "startup: migration 036_usage_events is not applied; "
+            "the admin Analytics page is unavailable and usage is not recorded."
+        )
+    return present
+
+
+def _build_usage_ledger(pool, schema_ready: bool) -> None:
+    """Wire the usage ledger (write) and analytics repository (read) into ``state``."""
+    from src.analytics import UsageAnalyticsRepository, UsageLedger
+
+    enabled = bool(settings.USAGE_EVENTS_ENABLED)
+    state.usage_ledger = UsageLedger(pool, schema_ready=schema_ready, enabled=enabled)
+    state.usage_analytics = UsageAnalyticsRepository(pool) if (schema_ready and enabled) else None
+    if not enabled:
+        logger.info("startup: usage ledger disabled (USAGE_EVENTS_ENABLED=false)")
+        return
+    if not schema_ready:
+        return
+
+    async def _prune_loop() -> None:
+        # Startup, then daily. Batched + advisory-locked inside prune().
+        while True:
+            try:
+                await state.usage_ledger.prune(int(settings.USAGE_EVENTS_RETENTION_DAYS))
+            except Exception:  # noqa: BLE001
+                logger.debug("usage ledger prune loop iteration failed", exc_info=True)
+            await asyncio.sleep(24 * 3600)
+
+    background.spawn(_prune_loop(), name="usage_events_prune")
+    logger.info(
+        "startup: usage ledger enabled — retention %d days",
+        int(settings.USAGE_EVENTS_RETENTION_DAYS),
+    )
+
+
 def _build_analysis_runtime(pool, history_service: Any, analysis_schema_ready: bool, *,
                             forecast_schema_ready: bool = False) -> None:
     """Wire the ML-skills store and runner into ``state`` (or disable cleanly)."""
@@ -201,7 +248,30 @@ async def _analysis_limiter(user_id: str) -> bool:
 
 
 async def _analysis_audit(event: dict) -> None:
-    """One append-only audit row per analysis run — never values."""
+    """One append-only audit row per analysis run — never values.
+
+    Also mirrors the run into the usage ledger (admin Analytics). The ledger
+    write does not depend on the audit service being wired.
+    """
+    ledger = state.usage_ledger
+    if ledger is not None:
+        try:
+            await ledger.record_analysis(
+                user_id=str(event.get("user_id") or ""),
+                source_key=event.get("source_key"),
+                query_id=event.get("query_id"),
+                skill=event.get("skill"),
+                outcome=str(event.get("outcome") or ""),
+                execution_time_ms=event.get("elapsed_ms"),
+                detail={
+                    "method": event.get("method_used"),
+                    "refused_by": event.get("refused_by"),
+                    "low_confidence": event.get("low_confidence"),
+                    "runner": event.get("runner"),
+                },
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("analysis usage event failed", exc_info=True)
     audit = state.audit_service
     if audit is None:
         return
@@ -401,8 +471,10 @@ async def lifespan(_app: FastAPI):
         await _probe_answer_feedback_schema(conn, state.history_service)
         analysis_schema_ready = await _probe_analysis_schema(conn)
         forecast_schema_ready = await _probe_forecast_tracking_schema(conn)
+        usage_events_schema_ready = await _probe_usage_events_schema(conn)
     _build_analysis_runtime(pool, state.history_service, analysis_schema_ready,
                             forecast_schema_ready=forecast_schema_ready)
+    _build_usage_ledger(pool, usage_events_schema_ready)
 
     # ── Build LLM service from DB credentials ─────────────────────────────────
     async with pool.acquire() as conn:
@@ -489,6 +561,7 @@ async def lifespan(_app: FastAPI):
         analysis_runner_provider=lambda: state.analysis_runner,
         analysis_limiter=_analysis_limiter,
         analysis_audit=_analysis_audit,
+        usage_ledger=state.usage_ledger,
     )
 
     # Separate registry for Power BI (text-to-DAX) connections. Shares the same
@@ -514,6 +587,7 @@ async def lifespan(_app: FastAPI):
         history_service=state.history_service,
         user_resolver=_user_resolver,
         token_provider_factory=state.powerbi_token_provider_factory,
+        usage_ledger=state.usage_ledger,
     )
 
     # ── Build LangGraph insights eval subgraph ────────────────────────────
@@ -589,3 +663,5 @@ async def lifespan(_app: FastAPI):
         state.action_gate           = None
         state.analysis_store        = None
         state.analysis_runner       = None
+        state.usage_ledger          = None
+        state.usage_analytics       = None

@@ -173,6 +173,14 @@ class Settings(BaseSettings):
     # Turns returned per hydration page.
     CONVERSATION_MAX_TURNS_HYDRATED: int = 50
 
+    # ── Usage ledger (admin Analytics) ──────────────────────────────────────
+    # insights_usage_events (migration 036): durable copy of logins, completed
+    # turns, feedback events and ML runs that survives conversation retention.
+    USAGE_EVENTS_ENABLED: bool = True
+    # Time-based expiry of ledger rows, pruned in batches at API startup and
+    # then daily. Question excerpts and feedback messages live this long.
+    USAGE_EVENTS_RETENTION_DAYS: int = 400
+
     # ── Cost governors ──────────────────────────────────────────────────────
     # Max concurrent text-to-SQL queries a single user may run (per replica).
     # Prevents one user from pinning the LLM / exhausting the DB pool. 0 = off.
