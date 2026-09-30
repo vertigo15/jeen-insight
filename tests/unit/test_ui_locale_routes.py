@@ -80,6 +80,29 @@ def test_unknown_cookie_value_is_ignored(client):
     assert "<script>alert(1)" not in res.get_data(as_text=True)
 
 
+def test_landing_is_public_english_and_contains_product_proof(client):
+    client.set_cookie("locale", "he")
+    res = client.get("/landing", headers={"Accept-Language": "he-IL,he;q=0.9"})
+
+    assert res.status_code == 200
+    body = res.get_data(as_text=True)
+    assert _html_attrs(body) == ("en", "ltr")
+    assert res.headers["Content-Language"] == "en"
+    assert "natural-language analytics workspace powered by the Jeen Data semantic layer" in body
+    assert 'href="/"' in body and "Open Jeen Insights" in body
+    assert "mailto:sales@jeen.ai?subject=Jeen%20Insights%20demo" in body
+
+    screenshot_names = (
+        "insights-answer.png",
+        "jeen-data-catalog.png",
+        "inspectable-sql.png",
+        "advanced-analytics.png",
+    )
+    for name in screenshot_names:
+        assert f"/static/landing/{name}" in body
+        assert client.get(f"/static/landing/{name}").status_code == 200
+
+
 def test_signed_in_account_language_beats_a_stale_cookie(client, monkeypatch):
     _login(client, locale="he")
     client.set_cookie("locale", "en")  # another user's choice on a shared browser
