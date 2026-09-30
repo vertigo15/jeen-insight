@@ -455,6 +455,47 @@
         { id: 40, occurred_at: '2026-09-23T11:00:00+00:00', user_id: 'sso-abc', name: null, email: null, source_key: 'hr_db',
           thumb: null, rating: 5, feedback_type: 'general', message: 'Great chart', question: Q.sqlCount, query_id: 'q-40' },
     ];
+    const RUN_ITEMS = [
+        { id: 103, query_id: 'run-sql-103', occurred_at: '2026-09-25T10:05:00+00:00', user_id: '7', name: 'Dana Levi', email: 'dana@jeen.ai',
+          source_key: 'sales_db', outcome: 'success', error_type: null, route: 'needs_query', skill: null, llm_model: 'gpt-5.1',
+          total_tokens: 840, input_tokens: 610, llm_latency_ms: 780, execution_time_ms: 46, graph_time_ms: 1340, row_count: 3,
+          question: Q.sqlAggregate, detail_available: true },
+        { id: 102, query_id: 'run-dax-102', occurred_at: '2026-09-24T14:30:00+00:00', user_id: '8', name: null, email: 'noa@jeen.ai',
+          source_key: 'powerbi_sales', outcome: 'error', error_type: 'execution', route: 'needs_dax', skill: null, llm_model: 'gpt-5.1',
+          total_tokens: 510, input_tokens: 402, llm_latency_ms: 620, execution_time_ms: 18, graph_time_ms: 910, row_count: 0,
+          question: 'Show sales by product category', detail_available: true },
+        { id: 101, query_id: 'run-ml-101', occurred_at: '2026-09-23T11:00:00+00:00', user_id: 'sso-abc', name: null, email: null,
+          source_key: 'sales_db', outcome: 'refused', error_type: 'guard', route: 'needs_analysis', skill: 'forecast', llm_model: 'gpt-5.1',
+          total_tokens: 220, input_tokens: 180, llm_latency_ms: 240, execution_time_ms: null, graph_time_ms: 470, row_count: null,
+          question: Q.guard, detail_available: false },
+    ];
+    const RUN_DETAILS = {
+        'run-sql-103': {
+            ...RUN_ITEMS[0],
+            answer: [{ t: 'West leads with ' }, { t: '12,400', hl: 'num' }, { t: ' in total sales.' }],
+            generated_query: 'SELECT region, SUM(sales) AS total\nFROM sales\nGROUP BY region\nORDER BY total DESC',
+            error_message: null,
+            metrics: { graph_time_ms: 1340, llm_latency_ms: 780, execution_time_ms: 46, row_count: 3, total_tokens: 840, input_tokens: 610 },
+            node_trace: [
+                { node: 'fused_router', elapsed_ms: 115, type: 'logic' },
+                { node: 'sql_generator', status: 'completed', duration_ms: 780 },
+                { node: 'execute_query', status: 'completed', duration_ms: 46, detail: '3 rows' },
+            ],
+        },
+        'run-dax-102': {
+            ...RUN_ITEMS[1],
+            answer: null,
+            generated_query: 'EVALUATE\nSUMMARIZECOLUMNS(Product[Category], "Sales", [Total Sales])',
+            query_language: 'dax',
+            error_message: 'The semantic model rejected the measure.',
+            metrics: { graph_time_ms: 910, llm_latency_ms: 620, execution_time_ms: 18, row_count: 0, total_tokens: 510, input_tokens: 402 },
+            node_trace: [
+                { node: 'fused_router', status: 'completed', duration_ms: 92, route: 'needs_dax' },
+                { node: 'dax_generator', status: 'completed', duration_ms: 620 },
+                { node: 'execute_dax', status: 'error', duration_ms: 18, error: 'Unknown measure' },
+            ],
+        },
+    };
     const ANALYTICS = {
         overview: (days) => ({
             days, start: day(days) + 'T00:00:00+00:00', end: day(0) + 'T00:00:00+00:00',
@@ -493,6 +534,21 @@
                 && (!connection || f.source_key === connection) && (!before || f.id < before));
             return { days, items, next_before: null };
         },
+        runs: (days, params) => {
+            const outcome = params.get('outcome'), connection = params.get('connection');
+            const before = Number(params.get('before')) || null;
+            const matches = RUN_ITEMS.filter((run) =>
+                (!outcome || run.outcome === outcome)
+                && (!connection || run.source_key === connection)
+                && (!before || run.id < before));
+            // Keep two records on the first unfiltered page so paging is always
+            // observable even though the production UI asks for up to 50.
+            const pageSize = !outcome && !connection ? 2 : 50;
+            const items = matches.slice(0, pageSize);
+            const next = matches.length > items.length ? items[items.length - 1].id : null;
+            return { days, items, next_before: next };
+        },
+        runDetail: (queryId) => RUN_DETAILS[queryId] || null,
         analysis: (days) => ({
             days,
             items: [

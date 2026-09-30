@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, Literal, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -20,6 +21,8 @@ from src.api import state
 from src.api.dependencies import get_usage_analytics, require_admin
 from src.api.models import (
     AnalyticsErrors,
+    AnalyticsExecutionDetail,
+    AnalyticsExecutionRuns,
     AnalyticsFeedbackFeed,
     AnalyticsOverview,
     AnalyticsSkills,
@@ -150,6 +153,56 @@ async def errors(
     d = _days(days)
     data = await _report(lambda: repo.error_breakdown(d, limit), "errors")
     return AnalyticsErrors(days=d, **data)
+
+
+@router.get("/runs", response_model=AnalyticsExecutionRuns)
+async def execution_runs(
+    days: Optional[int] = Query(None),
+    outcome: Optional[Literal["success", "error", "refused"]] = Query(None),
+    connection: Optional[str] = Query(None, max_length=255),
+    limit: int = Query(50, ge=1, le=200),
+    before: Optional[int] = Query(None, ge=1, description="Keyset cursor returned by the previous page"),
+    principal: Principal = Depends(require_admin),
+    repo=Depends(get_usage_analytics),
+):
+    """Newest-first retained execution runs. Free-text reads are audited."""
+    d = _days(days)
+    data = await _report(
+        lambda: repo.execution_runs(
+            d, outcome=outcome, connection=connection, limit=limit, before_id=before,
+        ),
+        "runs",
+    )
+    await _audit_read(
+        principal,
+        {
+            "report": "execution_runs",
+            "days": d,
+            "outcome": outcome,
+            "connection": connection,
+            "limit": limit,
+            "before": before,
+            "returned": len(data["items"]),
+        },
+    )
+    return AnalyticsExecutionRuns(days=d, **data)
+
+
+@router.get("/runs/{query_id}", response_model=AnalyticsExecutionDetail)
+async def execution_detail(
+    query_id: UUID,
+    principal: Principal = Depends(require_admin),
+    repo=Depends(get_usage_analytics),
+):
+    """One retained final run payload. Audit metadata excludes all bodies."""
+    data = await _report(lambda: repo.execution_detail(query_id), "run-detail")
+    if data is None:
+        raise HTTPException(status_code=404, detail="Execution run not found")
+    await _audit_read(
+        principal,
+        {"report": "execution_detail", "query_id": str(query_id), "returned": 1},
+    )
+    return AnalyticsExecutionDetail(**data)
 
 
 async def _audit_read(principal: Principal, detail: Dict[str, Any]) -> None:

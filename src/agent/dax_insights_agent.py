@@ -383,10 +383,11 @@ class DaxInsightsAgent:
             formatted = final_state.get("formatted_response") or {}
 
             raw_trace = list(final_state.get("trace") or [])
+            safe_trace = slim_trace(raw_trace)
             if raw_trace:
                 # Slim before enriching: enrichment attaches rendered prompts,
                 # so taking the projection first makes leaking one impossible.
-                await self._safe_persist_trace(query_id, slim_trace(raw_trace))
+                await self._safe_persist_trace(query_id, safe_trace)
                 _enrich_trace(raw_trace, final_state)
                 formatted["trace"] = raw_trace
 
@@ -396,6 +397,14 @@ class DaxInsightsAgent:
                 formatted.setdefault("needs_connect", True)
                 formatted.setdefault("connect_provider", "power-bi")
 
+            await self._safe_persist_execution_detail(
+                final_state=final_state,
+                formatted=formatted,
+                query_id=query_id,
+                session_id=session_id,
+                question=question,
+                trace=safe_trace,
+            )
             return formatted
 
         except Exception as e:  # noqa: BLE001
@@ -442,6 +451,55 @@ class DaxInsightsAgent:
             await self.history.update_node_trace(query_id=query_id, node_trace=node_trace)
         except Exception:  # noqa: BLE001
             logger.exception("Failed to persist node trace")
+
+    async def _safe_persist_execution_detail(
+        self,
+        *,
+        final_state: DaxAgentState,
+        formatted: Dict[str, Any],
+        query_id: Optional[UUID],
+        session_id: UUID,
+        question: str,
+        trace: List[Dict[str, Any]],
+    ) -> None:
+        """Write the final admin run payload without prompts or result rows."""
+        ledger = getattr(self, "usage_ledger", None)
+        if (
+            not query_id
+            or ledger is None
+            or not hasattr(ledger, "record_execution_detail")
+        ):
+            return
+        result = final_state.get("query_result") or {}
+        rows = (result.get("rows") or []) if isinstance(result, dict) else []
+        error = formatted.get("error")
+        outcome = "error" if final_state.get("exec_error") or error else "success"
+        raw_metrics = formatted.get("metrics")
+        metrics = dict(raw_metrics) if isinstance(raw_metrics, dict) else {}
+        start_time = final_state.get("start_time")
+        if start_time:
+            metrics["graph_time_ms"] = int((time.monotonic() - start_time) * 1000)
+        metrics["row_count"] = len(rows)
+        generated_query = final_state.get("generated_dax") or final_state.get("generated_sql")
+        try:
+            await ledger.record_execution_detail(
+                user_id=str(final_state.get("user_id") or ""),
+                source_key=self.source_key,
+                query_id=query_id,
+                session_id=session_id,
+                outcome=outcome,
+                route=final_state.get("route"),
+                skill=None,
+                query_language="dax" if generated_query else None,
+                question=question,
+                answer=formatted.get("answer"),
+                generated_query=generated_query,
+                error=error,
+                metrics=metrics,
+                trace=trace,
+            )
+        except Exception:  # noqa: BLE001 — analytics must never cost the answer
+            logger.debug("dax execution detail write failed", exc_info=True)
 
     async def _fetch_conversation_context(
         self, session_id: UUID, *, user_id: str, limit: int = 5

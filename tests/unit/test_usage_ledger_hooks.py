@@ -13,6 +13,7 @@ from uuid import UUID
 import pytest
 
 from src.agent.langgraph_agent.nodes.output import make_save_to_memory
+from src.agent.dax_insights_agent import DaxInsightsAgent
 
 TURN_ID = UUID("11111111-1111-1111-1111-111111111111")
 SAVED = {"id": "22222222-2222-2222-2222-222222222222", "thumb": "thumbs_up", "source_key": "sales_db",
@@ -109,6 +110,42 @@ def test_no_query_id_means_no_event():
     ledger = MagicMock(); ledger.record_query = AsyncMock()
     asyncio.run(_node(ledger)({"formatted_response": {"answer": "Hi"}}))
     ledger.record_query.assert_not_awaited()
+
+
+def test_dax_agent_persists_final_detail_without_result_rows_or_prompts():
+    ledger = MagicMock()
+    ledger.record_execution_detail = AsyncMock()
+    agent = object.__new__(DaxInsightsAgent)
+    agent.source_key = "powerbi-sales"
+    agent.usage_ledger = ledger
+    state = {
+        "user_id": "7",
+        "route": "needs_query",
+        "generated_dax": "EVALUATE ROW(\"Total\", [Total Sales])",
+        "query_result": {"rows": [{"Total": 42}]},
+        "start_time": None,
+    }
+    formatted = {
+        "answer": "Total sales are 42.",
+        "error": None,
+        "metrics": {"total_tokens": 12},
+        "prompt": {"system": "never persist"},
+        "results": {"rows": [{"Total": 42}]},
+    }
+    asyncio.run(agent._safe_persist_execution_detail(
+        final_state=state,
+        formatted=formatted,
+        query_id=TURN_ID,
+        session_id=SAVED["session_id"],
+        question="What are total sales?",
+        trace=[{"node": "dax_generator", "elapsed_ms": 5, "type": "llm"}],
+    ))
+    kwargs = ledger.record_execution_detail.await_args.kwargs
+    assert kwargs["query_language"] == "dax"
+    assert kwargs["generated_query"].startswith("EVALUATE")
+    assert kwargs["metrics"]["row_count"] == 1
+    assert not {"prompt", "results", "query_result", "node_prompts"} & set(kwargs)
+    assert 42 not in kwargs["trace"]
 
 
 # ── feedback routes mirror ───────────────────────────────────────────────

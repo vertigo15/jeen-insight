@@ -35,6 +35,7 @@ const API = {
     feedback: '/api/admin/analytics/feedback',
     analysis: '/api/admin/analytics/analysis',
     errors: '/api/admin/analytics/errors',
+    runs: '/api/admin/analytics/runs',
 };
 
 const fmtNum = (v) => (window.I18n && window.I18n.formatNumber ? window.I18n.formatNumber(v) : String(v ?? '—'));
@@ -45,6 +46,8 @@ const fmtCalendar = (v) => (window.I18n && window.I18n.formatCalendarDate ? wind
 const fmtPct = (v) => (v == null ? '—' : `${Math.round(v * 100)}%`);
 const fmtMs = (v) => (v == null ? '—' : v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)}ms`);
 const fmtRating = (v) => (v == null ? '—' : Number(v).toFixed(1));
+const fmtOptionalNum = (v) => (v == null ? '—' : fmtNum(v));
+const fmtOptionalCompact = (v) => (v == null ? '—' : fmtCompact(v));
 
 /**
  * RFC 4180 CSV of the given rows. Cells that a spreadsheet would evaluate as a
@@ -99,6 +102,16 @@ export class AnalyticsSection {
         this._feedbackNext = null;
         this._feedbackLoading = false;
         this._chartPoints = null;
+        this._view = 'overview';
+        this.runFilters = { outcome: '', connection: '' };
+        this._runItems = [];
+        this._runNext = null;
+        this._runsLoading = false;
+        this._runsLoadedFor = null;
+        this._runConnections = [];
+        this._selectedRunId = null;
+        this._runReturnFocusId = null;
+        this._overviewDays = null;
     }
 
     /**
@@ -108,6 +121,9 @@ export class AnalyticsSection {
     async render({ content, isCurrent }) {
         this._content = content;
         this._isCurrent = isCurrent || (() => true);
+        this._view = 'overview';
+        this._selectedRunId = null;
+        this._runsLoadedFor = null;
         this._disposeChart();
 
         content.innerHTML = `
@@ -123,74 +139,126 @@ export class AnalyticsSection {
                     <button type="button" class="sp-btn-ghost sp-btn-ghost-sm" id="sp-an-refresh">${h('settings.analytics.refresh')}</button>
                 </div>
             </div>
-            <div id="sp-an-status"></div>
-            <div id="sp-an-body" class="sp-an-body" hidden>
-                <section class="sp-an-kpis" id="sp-an-kpis" aria-label="${h('settings.analytics.kpisLabel')}"></section>
-                <section class="sp-card sp-an-card">
-                    <div class="sp-an-card-head">
-                        <h3 class="sp-an-card-title">${h('settings.analytics.activity')}</h3>
-                        <span class="sp-an-card-sub">${h('settings.analytics.activityDesc')}</span>
+            <div class="sp-an-views" role="tablist" aria-label="${h('settings.analytics.views.label')}">
+                <button type="button" class="sp-an-view-btn is-active" id="sp-an-tab-overview" role="tab" aria-selected="true" aria-controls="sp-an-overview-panel" data-an-view="overview">${h('settings.analytics.views.overview')}</button>
+                <button type="button" class="sp-an-view-btn" id="sp-an-tab-runs" role="tab" aria-selected="false" aria-controls="sp-an-runs-panel" data-an-view="runs" tabindex="-1">${h('settings.analytics.views.runs')}</button>
+            </div>
+            <div id="sp-an-overview-panel" role="tabpanel" aria-labelledby="sp-an-tab-overview">
+                <div id="sp-an-status"></div>
+                <div id="sp-an-body" class="sp-an-body" hidden>
+                    <section class="sp-an-kpis" id="sp-an-kpis" aria-label="${h('settings.analytics.kpisLabel')}"></section>
+                    <section class="sp-card sp-an-card">
+                        <div class="sp-an-card-head">
+                            <h3 class="sp-an-card-title">${h('settings.analytics.activity')}</h3>
+                            <span class="sp-an-card-sub">${h('settings.analytics.activityDesc')}</span>
+                        </div>
+                        <div id="sp-an-chart" class="sp-an-chart" role="img" aria-label="${h('settings.analytics.activity')}"></div>
+                    </section>
+                    <div class="sp-an-grid-2">
+                        <section class="sp-card sp-an-card">
+                            <div class="sp-an-card-head">
+                                <h3 class="sp-an-card-title">${h('settings.analytics.topUsers')}</h3>
+                                <button type="button" class="sp-btn-ghost sp-btn-ghost-sm" data-export="users" title="${h('settings.analytics.exportNote')}">${h('settings.analytics.exportCsv')}</button>
+                            </div>
+                            <div id="sp-an-users"></div>
+                        </section>
+                        <section class="sp-card sp-an-card">
+                            <div class="sp-an-card-head">
+                                <h3 class="sp-an-card-title">${h('settings.analytics.topConnections')}</h3>
+                                <button type="button" class="sp-btn-ghost sp-btn-ghost-sm" data-export="connections" title="${h('settings.analytics.exportNote')}">${h('settings.analytics.exportCsv')}</button>
+                            </div>
+                            <div id="sp-an-connections"></div>
+                        </section>
                     </div>
-                    <div id="sp-an-chart" class="sp-an-chart" role="img" aria-label="${h('settings.analytics.activity')}"></div>
-                </section>
-                <div class="sp-an-grid-2">
-                    <section class="sp-card sp-an-card">
-                        <div class="sp-an-card-head">
-                            <h3 class="sp-an-card-title">${h('settings.analytics.topUsers')}</h3>
-                            <button type="button" class="sp-btn-ghost sp-btn-ghost-sm" data-export="users" title="${h('settings.analytics.exportNote')}">${h('settings.analytics.exportCsv')}</button>
+                    <div class="sp-an-grid-2">
+                        <section class="sp-card sp-an-card">
+                            <div class="sp-an-card-head"><h3 class="sp-an-card-title">${h('settings.analytics.skills')}</h3></div>
+                            <div id="sp-an-skills"></div>
+                        </section>
+                        <section class="sp-card sp-an-card">
+                            <div class="sp-an-card-head"><h3 class="sp-an-card-title">${h('settings.analytics.errors')}</h3></div>
+                            <div id="sp-an-errors"></div>
+                        </section>
+                    </div>
+                    <section class="sp-card sp-an-card" id="sp-an-feedback-card">
+                        <div class="sp-an-card-head sp-an-card-head-wrap">
+                            <h3 class="sp-an-card-title">${h('settings.analytics.feedback')}</h3>
+                            <div class="sp-an-filters">
+                                <select class="sp-role-select" data-filter="thumb" aria-label="${h('settings.analytics.filter.thumb')}">
+                                    <option value="">${h('settings.analytics.filter.allThumbs')}</option>
+                                    <option value="thumbs_up">${h('settings.analytics.thumb.thumbs_up')}</option>
+                                    <option value="thumbs_down">${h('settings.analytics.thumb.thumbs_down')}</option>
+                                    <option value="cleared">${h('settings.analytics.thumb.cleared')}</option>
+                                </select>
+                                <select class="sp-role-select" data-filter="type" aria-label="${h('settings.analytics.filter.type')}">
+                                    <option value="">${h('settings.analytics.filter.allTypes')}</option>
+                                    ${['general', 'report_bug', 'ui_bug', 'other'].map((k) => `<option value="${k}">${h(`conversation.feedback.type.${k}`)}</option>`).join('')}
+                                </select>
+                                <select class="sp-role-select" data-filter="connection" aria-label="${h('settings.analytics.filter.connection')}">
+                                    <option value="">${h('settings.analytics.filter.allConnections')}</option>
+                                </select>
+                                <button type="button" class="sp-btn-ghost sp-btn-ghost-sm" data-export="feedback" title="${h('settings.analytics.exportNote')}">${h('settings.analytics.exportCsv')}</button>
+                            </div>
                         </div>
-                        <div id="sp-an-users"></div>
-                    </section>
-                    <section class="sp-card sp-an-card">
-                        <div class="sp-an-card-head">
-                            <h3 class="sp-an-card-title">${h('settings.analytics.topConnections')}</h3>
-                            <button type="button" class="sp-btn-ghost sp-btn-ghost-sm" data-export="connections" title="${h('settings.analytics.exportNote')}">${h('settings.analytics.exportCsv')}</button>
+                        <div id="sp-an-feedback"></div>
+                        <div class="sp-an-feed-foot">
+                            <button type="button" class="sp-btn-secondary sp-an-more" id="sp-an-more" hidden>${h('settings.analytics.loadMore')}</button>
                         </div>
-                        <div id="sp-an-connections"></div>
                     </section>
                 </div>
-                <div class="sp-an-grid-2">
-                    <section class="sp-card sp-an-card">
-                        <div class="sp-an-card-head"><h3 class="sp-an-card-title">${h('settings.analytics.skills')}</h3></div>
-                        <div id="sp-an-skills"></div>
-                    </section>
-                    <section class="sp-card sp-an-card">
-                        <div class="sp-an-card-head"><h3 class="sp-an-card-title">${h('settings.analytics.errors')}</h3></div>
-                        <div id="sp-an-errors"></div>
-                    </section>
-                </div>
-                <section class="sp-card sp-an-card" id="sp-an-feedback-card">
+            </div>
+            <div id="sp-an-runs-panel" role="tabpanel" aria-labelledby="sp-an-tab-runs" hidden>
+                <section class="sp-card sp-an-card sp-an-runs-card">
                     <div class="sp-an-card-head sp-an-card-head-wrap">
-                        <h3 class="sp-an-card-title">${h('settings.analytics.feedback')}</h3>
-                        <div class="sp-an-filters">
-                            <select class="sp-role-select" data-filter="thumb" aria-label="${h('settings.analytics.filter.thumb')}">
-                                <option value="">${h('settings.analytics.filter.allThumbs')}</option>
-                                <option value="thumbs_up">${h('settings.analytics.thumb.thumbs_up')}</option>
-                                <option value="thumbs_down">${h('settings.analytics.thumb.thumbs_down')}</option>
-                                <option value="cleared">${h('settings.analytics.thumb.cleared')}</option>
+                        <div>
+                            <h3 class="sp-an-card-title" id="sp-an-runs-title">${h('settings.analytics.runs.title')}</h3>
+                            <p class="sp-an-card-sub sp-an-runs-desc">${h('settings.analytics.runs.desc')}</p>
+                        </div>
+                        <div class="sp-an-filters" id="sp-an-runs-filters">
+                            <select class="sp-role-select" id="sp-an-run-outcome" aria-label="${h('settings.analytics.runs.filterOutcome')}">
+                                <option value="">${h('settings.analytics.runs.allOutcomes')}</option>
+                                ${['success', 'error', 'refused'].map((outcome) => `<option value="${outcome}"${outcome === this.runFilters.outcome ? ' selected' : ''}>${h(`settings.analytics.runs.outcome.${outcome}`)}</option>`).join('')}
                             </select>
-                            <select class="sp-role-select" data-filter="type" aria-label="${h('settings.analytics.filter.type')}">
-                                <option value="">${h('settings.analytics.filter.allTypes')}</option>
-                                ${['general', 'report_bug', 'ui_bug', 'other'].map((k) => `<option value="${k}">${h(`conversation.feedback.type.${k}`)}</option>`).join('')}
-                            </select>
-                            <select class="sp-role-select" data-filter="connection" aria-label="${h('settings.analytics.filter.connection')}">
+                            <select class="sp-role-select" id="sp-an-run-connection" aria-label="${h('settings.analytics.runs.filterConnection')}">
                                 <option value="">${h('settings.analytics.filter.allConnections')}</option>
                             </select>
-                            <button type="button" class="sp-btn-ghost sp-btn-ghost-sm" data-export="feedback" title="${h('settings.analytics.exportNote')}">${h('settings.analytics.exportCsv')}</button>
                         </div>
                     </div>
-                    <div id="sp-an-feedback"></div>
-                    <div class="sp-an-feed-foot">
-                        <button type="button" class="sp-btn-secondary sp-an-more" id="sp-an-more" hidden>${h('settings.analytics.loadMore')}</button>
+                    <div id="sp-an-runs-list">
+                        <div id="sp-an-runs-status" role="status" aria-live="polite"></div>
+                        <div id="sp-an-runs-table" aria-busy="false"></div>
+                        <div class="sp-an-feed-foot">
+                            <button type="button" class="sp-btn-secondary sp-an-more" id="sp-an-runs-more" hidden>${h('settings.analytics.runs.loadOlder')}</button>
+                            <span id="sp-an-runs-foot-status" class="sp-an-runs-foot-status" role="status" aria-live="polite"></span>
+                        </div>
+                    </div>
+                    <div id="sp-an-run-detail" hidden aria-busy="false">
+                        <div class="sp-an-run-detail-head">
+                            <button type="button" class="sp-btn-ghost sp-an-run-back" id="sp-an-run-back">${h('settings.analytics.runs.back')}</button>
+                            <div class="sp-an-run-detail-heading">
+                                <h3 class="sp-an-run-detail-title" id="sp-an-run-detail-title" tabindex="-1">${h('settings.analytics.runs.detailTitle')}</h3>
+                                <div class="sp-an-run-id-line">
+                                    <bdi dir="ltr" class="sp-an-mono sp-an-muted" id="sp-an-run-detail-id"></bdi>
+                                    <button type="button" class="sp-btn-ghost sp-btn-ghost-sm sp-an-copy" id="sp-an-copy-run-id">${h('settings.analytics.runs.copyId')}</button>
+                                </div>
+                                <div class="sp-an-run-context" id="sp-an-run-context"></div>
+                            </div>
+                        </div>
+                        <div id="sp-an-run-detail-body" role="region" aria-labelledby="sp-an-run-detail-title"></div>
                     </div>
                 </section>
             </div>`;
 
         this._wireToolbar();
+        this._fillRunConnectionFilter();
         await this._loadAll();
     }
 
     dispose() {
+        this._loadToken = Symbol('disposed');
+        this._feedToken = Symbol('disposed');
+        this._runsToken = Symbol('disposed');
+        this._detailToken = Symbol('disposed');
         this._disposeChart();
     }
 
@@ -198,6 +266,19 @@ export class AnalyticsSection {
 
     _wireToolbar() {
         const root = this._content;
+        root.querySelectorAll('[data-an-view]').forEach((btn) => {
+            btn.addEventListener('click', () => this._selectView(btn.dataset.anView));
+            btn.addEventListener('keydown', (event) => {
+                if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+                event.preventDefault();
+                const tabs = Array.from(root.querySelectorAll('[data-an-view]'));
+                const current = tabs.indexOf(btn);
+                const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+                    : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+                tabs[next].focus();
+                this._selectView(tabs[next].dataset.anView);
+            });
+        });
         root.querySelectorAll('.sp-an-range-btn').forEach((btn) => {
             btn.addEventListener('click', () => {
                 const days = Number(btn.dataset.days);
@@ -208,11 +289,16 @@ export class AnalyticsSection {
                     b.classList.toggle('is-active', active);
                     b.setAttribute('aria-pressed', String(active));
                 });
-                this._loadAll();
+                this._runsLoadedFor = null;
+                if (this._view === 'runs') this._loadRuns({ reset: true });
+                else this._loadAll();
             });
         });
         const refresh = root.querySelector('#sp-an-refresh');
-        if (refresh) refresh.addEventListener('click', () => this._loadAll());
+        if (refresh) refresh.addEventListener('click', () => {
+            if (this._view === 'runs') this._loadRuns({ reset: true });
+            else this._loadAll();
+        });
 
         root.querySelectorAll('[data-filter]').forEach((sel) => {
             sel.addEventListener('change', () => {
@@ -222,10 +308,54 @@ export class AnalyticsSection {
         });
         const more = root.querySelector('#sp-an-more');
         if (more) more.addEventListener('click', () => this._loadFeedback({ reset: false }));
+        const runsMore = root.querySelector('#sp-an-runs-more');
+        if (runsMore) runsMore.addEventListener('click', () => this._loadRuns({ reset: false }));
+        const runBack = root.querySelector('#sp-an-run-back');
+        if (runBack) runBack.addEventListener('click', () => this._closeRunDetail());
+        const copyRunId = root.querySelector('#sp-an-copy-run-id');
+        if (copyRunId) copyRunId.addEventListener('click', () => this._copyRunText(this._selectedRunId, copyRunId));
+        const runOutcome = root.querySelector('#sp-an-run-outcome');
+        if (runOutcome) runOutcome.addEventListener('change', () => {
+            this.runFilters.outcome = runOutcome.value;
+            this._loadRuns({ reset: true });
+        });
+        const runConnection = root.querySelector('#sp-an-run-connection');
+        if (runConnection) runConnection.addEventListener('change', () => {
+            this.runFilters.connection = runConnection.value;
+            this._loadRuns({ reset: true });
+        });
 
         root.querySelectorAll('[data-export]').forEach((btn) => {
             btn.addEventListener('click', () => this._export(btn.dataset.export));
         });
+        root.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && this._selectedRunId) {
+                event.preventDefault();
+                event.stopPropagation();
+                this._closeRunDetail();
+            }
+        });
+    }
+
+    _selectView(view) {
+        if (!['overview', 'runs'].includes(view) || view === this._view) return;
+        this._view = view;
+        this._content.querySelectorAll('[data-an-view]').forEach((btn) => {
+            const active = btn.dataset.anView === view;
+            btn.classList.toggle('is-active', active);
+            btn.setAttribute('aria-selected', String(active));
+            btn.tabIndex = active ? 0 : -1;
+        });
+        const overview = this._content.querySelector('#sp-an-overview-panel');
+        const runs = this._content.querySelector('#sp-an-runs-panel');
+        if (overview) overview.hidden = view !== 'overview';
+        if (runs) runs.hidden = view !== 'runs';
+        if (view === 'runs') {
+            if (this._runsLoadedFor !== this._runsLoadKey()) this._loadRuns({ reset: true });
+        } else {
+            if (this._overviewDays !== this.days) this._loadAll();
+            else if (this._chart) setTimeout(() => this._chart && this._chart.resize(), 0);
+        }
     }
 
     // ── Loading ───────────────────────────────────────────────────────────
@@ -261,6 +391,7 @@ export class AnalyticsSection {
         }
         if (!alive()) return;
         this._data.overview = overview;
+        this._overviewDays = this.days;
         if (status) status.innerHTML = '';
         if (body) body.hidden = false;
         this._renderKpis(overview);
@@ -282,6 +413,7 @@ export class AnalyticsSection {
         this._renderSkills(skills ? skills.items : [], !skills);
         this._renderErrors(errors, !errors);
         this._fillConnectionFilter(this._data.connections);
+        this._fillRunConnectionFilter();
         await this._loadFeedback({ reset: true, alive });
     }
 
@@ -559,6 +691,415 @@ export class AnalyticsSection {
             </li>`).join('')}</ul>`;
     }
 
+    // ── Execution runs ────────────────────────────────────────────────────
+
+    _runsLoadKey() {
+        return `${this.days}|${this.runFilters.outcome}|${this.runFilters.connection}`;
+    }
+
+    async _loadRuns({ reset } = {}) {
+        const table = this._content.querySelector('#sp-an-runs-table');
+        const status = this._content.querySelector('#sp-an-runs-status');
+        const footStatus = this._content.querySelector('#sp-an-runs-foot-status');
+        const more = this._content.querySelector('#sp-an-runs-more');
+        const list = this._content.querySelector('#sp-an-runs-list');
+        const detail = this._content.querySelector('#sp-an-run-detail');
+        if (!table || !status) return;
+        if (this._runsLoading && !reset) return;
+        const moreHadFocus = more && document.activeElement === more;
+        this._runsLoading = true;
+        const token = this._runsToken = Symbol('runs');
+        const alive = () => this._isCurrent() && this._runsToken === token;
+        table.setAttribute('aria-busy', 'true');
+        if (reset) {
+            this._detailToken = Symbol('detail-cancelled');
+            this._selectedRunId = null;
+            this._runItems = [];
+            this._runNext = null;
+            table.innerHTML = '';
+            status.innerHTML = `<span class="sp-an-sr-only">${h('settings.analytics.runs.loading')}</span><div class="skeleton sp-an-skeleton" aria-hidden="true"></div>`;
+            if (list) list.hidden = false;
+            if (detail) detail.hidden = true;
+        } else {
+            if (footStatus) footStatus.textContent = t('settings.analytics.runs.loadingOlder');
+        }
+        if (more) more.disabled = true;
+        try {
+            const data = await this._fetch(API.runs, {
+                outcome: this.runFilters.outcome,
+                connection: this.runFilters.connection,
+                limit: 50,
+                before: reset ? null : this._runNext,
+            });
+            if (!alive()) return;
+            const incoming = Array.isArray(data.items) ? data.items : [];
+            this._runItems = reset ? incoming : this._runItems.concat(incoming);
+            this._runNext = data.next_before;
+            this._runsLoadedFor = this._runsLoadKey();
+            this._rememberRunConnections(incoming);
+            this._fillRunConnectionFilter();
+            this._renderRuns();
+            status.innerHTML = `<span class="sp-an-sr-only">${h(reset ? 'settings.analytics.runs.shown' : 'settings.analytics.runs.loadedOlder', { count: incoming.length })}</span>`;
+            if (footStatus) footStatus.textContent = '';
+            if (moreHadFocus && !this._runNext) {
+                const buttons = Array.from(this._content.querySelectorAll('.sp-an-run-open'));
+                const lastOpen = buttons[buttons.length - 1];
+                if (lastOpen) lastOpen.focus();
+            }
+        } catch (e) {
+            if (!alive()) return;
+            const detailText = window.I18n && window.I18n.errorText
+                ? window.I18n.errorText({ status: e && e.status, payload: e && e.body, error: e })
+                : (e && e.message) || '';
+            const target = reset ? status : footStatus;
+            if (target) target.innerHTML = `<div class="sp-an-notice sp-an-notice-error sp-an-run-load-error">
+                <strong>${h('settings.analytics.runs.loadFailed')}</strong>
+                ${detailText ? `<p class="sp-an-plaintext">${esc(detailText)}</p>` : ''}
+                <button type="button" class="sp-btn-secondary sp-an-run-retry" data-run-list-retry>${h('settings.analytics.runs.tryAgain')}</button>
+            </div>`;
+            if (reset) table.innerHTML = '';
+            const retry = this._content.querySelector('[data-run-list-retry]');
+            if (retry) retry.addEventListener('click', () => this._loadRuns({ reset }));
+        } finally {
+            if (this._runsToken === token) {
+                this._runsLoading = false;
+                table.setAttribute('aria-busy', 'false');
+                if (more) {
+                    more.disabled = false;
+                    more.hidden = !this._runNext;
+                }
+            }
+        }
+    }
+
+    _rememberRunConnections(items) {
+        const known = new Set(this._runConnections);
+        items.forEach((item) => {
+            if (item && item.source_key) known.add(String(item.source_key));
+        });
+        if (this.runFilters.connection) known.add(this.runFilters.connection);
+        this._runConnections = Array.from(known).sort((a, b) => a.localeCompare(b));
+    }
+
+    _fillRunConnectionFilter() {
+        const select = this._content.querySelector('#sp-an-run-connection');
+        if (!select) return;
+        const keys = new Set(this._runConnections);
+        for (const item of this._data.connections || []) {
+            if (item && item.source_key) keys.add(String(item.source_key));
+        }
+        if (this.runFilters.connection) keys.add(this.runFilters.connection);
+        this._runConnections = Array.from(keys).sort((a, b) => a.localeCompare(b));
+        select.innerHTML = `<option value="">${h('settings.analytics.filter.allConnections')}</option>`
+            + this._runConnections.map((key) => `<option value="${esc(key)}"${key === this.runFilters.connection ? ' selected' : ''}>${esc(key)}</option>`).join('');
+    }
+
+    _renderRuns() {
+        const el = this._content.querySelector('#sp-an-runs-table');
+        if (!el) return;
+        if (!this._runItems.length) {
+            const filtered = Boolean(this.runFilters.outcome || this.runFilters.connection);
+            el.innerHTML = `<div class="sp-an-empty sp-an-run-empty">
+                ${h(filtered ? 'settings.analytics.runs.emptyFiltered' : 'settings.analytics.runs.emptyPeriod', { days: this.days })}
+                ${filtered ? `<button type="button" class="sp-btn-ghost sp-an-clear-run-filters">${h('settings.analytics.runs.clearFilters')}</button>` : ''}
+            </div>`;
+            const clear = el.querySelector('.sp-an-clear-run-filters');
+            if (clear) clear.addEventListener('click', () => {
+                this.runFilters = { outcome: '', connection: '' };
+                const outcome = this._content.querySelector('#sp-an-run-outcome');
+                const connection = this._content.querySelector('#sp-an-run-connection');
+                if (outcome) outcome.value = '';
+                if (connection) connection.value = '';
+                this._loadRuns({ reset: true });
+            });
+            return;
+        }
+        const columns = [
+            ['question', 'settings.analytics.runs.col.question'],
+            ['status', 'settings.analytics.runs.col.status'],
+            ['time', 'settings.analytics.runs.col.time'],
+            ['user', 'settings.analytics.runs.col.user'],
+            ['connection', 'settings.analytics.runs.col.connection'],
+            ['duration', 'settings.analytics.runs.col.duration'],
+            ['rows', 'settings.analytics.runs.col.rows'],
+            ['tokens', 'settings.analytics.runs.col.tokens'],
+        ];
+        el.innerHTML = `<div class="sp-an-table-wrap sp-an-runs-table-wrap"><table class="sp-users-table sp-an-table sp-an-runs-table" aria-labelledby="sp-an-runs-title">
+            <thead><tr>${columns.map(([key, label]) => `<th${['duration', 'rows', 'tokens'].includes(key) ? ' class="is-num"' : ''}>${h(label)}</th>`).join('')}</tr></thead>
+            <tbody>${this._runItems.map((run) => this._runRow(run)).join('')}</tbody>
+        </table></div>`;
+        el.querySelectorAll('.sp-an-run-open').forEach((button) => {
+            button.addEventListener('click', (event) => {
+                event.stopPropagation();
+                this._openRun(button.dataset.queryId);
+            });
+        });
+        el.querySelectorAll('[data-run-row]').forEach((row) => {
+            row.addEventListener('click', (event) => {
+                if (event.target.closest('button, a, select, input')) return;
+                const selection = window.getSelection && String(window.getSelection());
+                if (selection) return;
+                this._openRun(row.dataset.queryId);
+            });
+        });
+    }
+
+    _runRow(run) {
+        const id = String(run.query_id || '');
+        const user = run.name || run.email || run.user_id || '—';
+        const userSub = run.name && run.email ? `<span class="sp-an-run-user-email"><bdi dir="ltr">${esc(run.email)}</bdi></span>` : '';
+        const route = run.route || '—';
+        const skill = run.skill ? `<span class="sp-an-badge"><bdi dir="ltr">${esc(run.skill)}</bdi></span>` : '';
+        const label = t('settings.analytics.runs.openRun', { question: run.question || id });
+        const mobileMeta = [
+            user,
+            run.source_key,
+            route !== '—' ? route : null,
+            run.graph_time_ms != null ? fmtMs(run.graph_time_ms) : null,
+        ].filter(Boolean).join(' · ');
+        return `<tr class="sp-an-run-row" data-run-row data-query-id="${esc(id)}">
+            <td data-label="${h('settings.analytics.runs.col.question')}">
+                <button type="button" class="sp-an-run-open" data-query-id="${esc(id)}" aria-label="${esc(label)}">
+                    <span class="sp-an-run-question sp-an-plaintext" title="${esc(run.question || '')}">${esc(run.question || '—')}</span>
+                    <span class="sp-an-run-mobile-meta sp-an-plaintext">${esc(mobileMeta)}</span>
+                    <span class="sp-an-run-open-icon" aria-hidden="true">›</span>
+                </button>
+                <span class="sp-an-run-route"><bdi dir="ltr" class="sp-an-mono">${esc(route)}</bdi>${skill}</span>
+            </td>
+            <td data-label="${h('settings.analytics.runs.col.status')}">${runOutcomeBadge(run.outcome)}</td>
+            <td data-label="${h('settings.analytics.runs.col.time')}"><span class="sp-an-run-time"><span>${esc(fmtRelative(run.occurred_at))}</span><span>${esc(fmtDateTime(run.occurred_at))}</span></span></td>
+            <td data-label="${h('settings.analytics.runs.col.user')}"><span class="sp-an-run-user"><bdi class="sp-an-plaintext">${esc(user)}</bdi>${userSub}</span></td>
+            <td data-label="${h('settings.analytics.runs.col.connection')}"><bdi dir="ltr" class="sp-an-mono">${esc(run.source_key || '—')}</bdi></td>
+            <td class="is-num" data-label="${h('settings.analytics.runs.col.duration')}"><bdi dir="ltr">${esc(fmtMs(run.graph_time_ms))}</bdi></td>
+            <td class="is-num" data-label="${h('settings.analytics.runs.col.rows')}"><bdi dir="ltr">${esc(fmtOptionalNum(run.row_count))}</bdi></td>
+            <td class="is-num" data-label="${h('settings.analytics.runs.col.tokens')}"><bdi dir="ltr">${esc(fmtOptionalCompact(run.total_tokens))}</bdi></td>
+        </tr>`;
+    }
+
+    _openRun(queryId) {
+        if (!queryId || this._selectedRunId) return;
+        const run = this._runItems.find((item) => String(item.query_id) === String(queryId));
+        if (!run) return;
+        this._runReturnFocusId = String(queryId);
+        this._selectedRunId = String(queryId);
+        this._showRunDetailLoading(run);
+        if (run.detail_available === false) {
+            this._renderRunDetailUnavailable(run);
+            return;
+        }
+        this._loadRunDetail(run);
+    }
+
+    _showRunDetailLoading(run) {
+        const list = this._content.querySelector('#sp-an-runs-list');
+        const detail = this._content.querySelector('#sp-an-run-detail');
+        const filters = this._content.querySelector('#sp-an-runs-filters');
+        if (list) list.hidden = true;
+        if (filters) filters.hidden = true;
+        if (!detail) return;
+        detail.hidden = false;
+        detail.setAttribute('aria-busy', 'true');
+        this._updateRunDetailHeader(run);
+        const body = this._detailBody();
+        if (body) body.innerHTML = `<span class="sp-an-sr-only">${h('settings.analytics.runs.loadingDetail')}</span><div class="skeleton sp-an-skeleton" aria-hidden="true"></div>`;
+        const heading = detail.querySelector('#sp-an-run-detail-title');
+        if (heading) heading.focus();
+    }
+
+    async _loadRunDetail(summary) {
+        const token = this._detailToken = Symbol('run-detail');
+        const alive = () => this._isCurrent() && this._detailToken === token
+            && this._selectedRunId === String(summary.query_id);
+        this._setDetailBusy(true);
+        const loadingBody = this._detailBody();
+        if (loadingBody) loadingBody.innerHTML = `<span class="sp-an-sr-only">${h('settings.analytics.runs.loadingDetail')}</span><div class="skeleton sp-an-skeleton" aria-hidden="true"></div>`;
+        try {
+            const endpoint = `${API.runs}/${encodeURIComponent(summary.query_id)}`;
+            const res = await fetch(endpoint);
+            if (!res.ok) {
+                const error = new Error(`HTTP ${res.status}`);
+                error.status = res.status;
+                try { error.body = await res.json(); } catch (_) { error.body = null; }
+                throw error;
+            }
+            const data = await res.json();
+            if (!alive()) return;
+            if (data.detail_available === false) {
+                this._renderRunDetailUnavailable(Object.assign({}, summary, data));
+                return;
+            }
+            this._renderRunDetail(Object.assign({}, summary, data));
+        } catch (e) {
+            if (!alive()) return;
+            const detailText = window.I18n && window.I18n.errorText
+                ? window.I18n.errorText({ status: e && e.status, payload: e && e.body, error: e })
+                : (e && e.message) || '';
+            const body = this._detailBody();
+            if (body) body.innerHTML = `<div class="sp-an-notice sp-an-notice-error sp-an-run-detail-error">
+                <strong>${h('settings.analytics.runs.detailFailed')}</strong>
+                ${detailText ? `<p class="sp-an-plaintext">${esc(detailText)}</p>` : ''}
+                <button type="button" class="sp-btn-secondary" data-run-detail-retry>${h('settings.analytics.runs.tryAgain')}</button>
+            </div>`;
+            const retry = body && body.querySelector('[data-run-detail-retry]');
+            if (retry) retry.addEventListener('click', () => this._loadRunDetail(summary));
+            this._setDetailBusy(false);
+        }
+    }
+
+    _renderRunDetailUnavailable(run) {
+        this._updateRunDetailHeader(run);
+        const body = this._detailBody();
+        if (!body) return;
+        body.innerHTML = `<div class="sp-an-notice">
+            <strong>${h('settings.analytics.runs.detailUnavailable')}</strong>
+            <p>${h('settings.analytics.runs.detailUnavailableHelp')}</p>
+        </div>${this._runMetricsHtml(run)}`;
+        this._setDetailBusy(false);
+    }
+
+    _closeRunDetail() {
+        const focusId = this._runReturnFocusId;
+        this._detailToken = Symbol('detail-cancelled');
+        this._selectedRunId = null;
+        const list = this._content.querySelector('#sp-an-runs-list');
+        const detail = this._content.querySelector('#sp-an-run-detail');
+        const filters = this._content.querySelector('#sp-an-runs-filters');
+        if (list) list.hidden = false;
+        if (filters) filters.hidden = false;
+        if (detail) detail.hidden = true;
+        const button = Array.from(this._content.querySelectorAll('.sp-an-run-open'))
+            .find((candidate) => candidate.dataset.queryId === focusId);
+        if (button) button.focus();
+    }
+
+    _renderRunDetail(run) {
+        this._updateRunDetailHeader(run);
+        const bodyTarget = this._detailBody();
+        if (!bodyTarget) return;
+        const value = (key) => (run.metrics && run.metrics[key]) ?? run[key];
+        const error = run.error_message || run.error_type;
+        const query = run.generated_query;
+        const language = runQueryLanguage(run);
+        const trace = Array.isArray(run.node_trace) ? run.node_trace : [];
+        const traceHtml = trace.length
+            ? `<ol class="sp-an-run-trace" role="list">${trace.map((node, index) => {
+                const name = node.node || node.name || '—';
+                const duration = node.duration_ms ?? node.elapsed_ms ?? node.latency_ms;
+                const detailText = node.detail || node.message || node.error || node.route;
+                const failed = node.status === 'error' || Boolean(node.error);
+                return `<li class="sp-an-run-trace-item${failed ? ' is-error' : ''}">
+                    <span class="sp-an-run-trace-index" aria-hidden="true"></span><span class="sp-an-sr-only">${h('settings.analytics.runs.step', { number: index + 1 })}</span>
+                    <div><div class="sp-an-run-trace-main"><bdi dir="ltr" class="sp-an-mono">${esc(name)}</bdi>
+                        ${node.type ? `<span class="sp-an-badge"><bdi dir="ltr">${esc(node.type)}</bdi></span>` : ''}
+                        ${node.status ? `<span class="sp-an-badge${failed ? ' sp-an-run-outcome-error' : ''}">${esc(node.status)}</span>` : ''}
+                        ${duration != null ? `<bdi dir="ltr" class="sp-an-muted">${esc(fmtMs(duration))}</bdi>` : ''}
+                    </div>${detailText ? `<p class="sp-an-plaintext">${esc(formatRunValue(detailText))}</p>` : ''}</div>
+                </li>`;
+            }).join('')}</ol>`
+            : `<div class="sp-an-empty">${h('settings.analytics.runs.noTrace')}</div>`;
+        const answer = formatRunAnswer(run.answer);
+        const failureMessage = error || (run.outcome === 'refused' ? answer : '');
+        const errorNotice = ['error', 'refused'].includes(run.outcome) ? `<div class="sp-an-run-failure sp-an-run-failure-${esc(run.outcome)}">
+            <strong>${h(run.outcome === 'refused' ? 'settings.analytics.runs.refusedTitle' : 'settings.analytics.runs.errorTitle')}</strong>
+            ${failureMessage ? `<p class="sp-an-plaintext">${esc(failureMessage)}</p>` : ''}
+        </div>` : '';
+        const body = `<div class="sp-an-run-detail-grid">
+            ${errorNotice ? `<div class="sp-an-run-block-wide">${errorNotice}</div>` : ''}
+            <section class="sp-an-run-block sp-an-run-block-wide">
+                <h4>${h('settings.analytics.runs.question')}</h4>
+                <p class="sp-an-run-copy sp-an-plaintext">${esc(run.question || '—')}</p>
+            </section>
+            ${answer ? `<section class="sp-an-run-block sp-an-run-block-wide">
+                <h4>${h('settings.analytics.runs.answer')}</h4>
+                <p class="sp-an-run-copy sp-an-plaintext">${esc(answer)}</p>
+            </section>` : ''}
+            <section class="sp-an-run-block">
+                <h4>${h('settings.analytics.runs.status')}</h4>
+                <div class="sp-an-run-summary">${runOutcomeBadge(run.outcome)}
+                    ${run.llm_model ? `<bdi dir="ltr" class="sp-an-mono">${esc(run.llm_model)}</bdi>` : ''}
+                    ${run.route ? `<bdi dir="ltr" class="sp-an-mono">${esc(run.route)}</bdi>` : ''}
+                    ${run.skill ? `<span class="sp-an-badge"><bdi dir="ltr">${esc(run.skill)}</bdi></span>` : ''}
+                </div>
+            </section>
+            <section class="sp-an-run-block">
+                <h4>${h('settings.analytics.runs.timing')}</h4>
+                ${this._runMetricsHtml(run, value)}
+            </section>
+            ${query ? `<section class="sp-an-run-block sp-an-run-block-wide">
+                <div class="sp-an-run-block-head"><h4>${h(`settings.analytics.runs.query.${language}`)}</h4>
+                    <button type="button" class="sp-btn-ghost sp-btn-ghost-sm sp-an-copy" data-copy-query>${h('settings.analytics.runs.copyQuery')}</button>
+                </div>
+                <pre class="sp-an-run-query" dir="ltr" tabindex="0" role="region" aria-label="${h('settings.analytics.runs.queryRegion', { language: language.toUpperCase() })}"><code>${esc(formatRunValue(query))}</code></pre>
+            </section>` : ''}
+            <section class="sp-an-run-block sp-an-run-block-wide">
+                <h4>${h('settings.analytics.runs.trace')}</h4>
+                ${traceHtml}
+            </section>
+        </div>`;
+        bodyTarget.innerHTML = body;
+        const copyQuery = bodyTarget.querySelector('[data-copy-query]');
+        if (copyQuery) copyQuery.addEventListener('click', () => this._copyRunText(query, copyQuery));
+        this._setDetailBusy(false);
+    }
+
+    _detailBody() {
+        return this._content.querySelector('#sp-an-run-detail-body');
+    }
+
+    _setDetailBusy(busy) {
+        const detail = this._content.querySelector('#sp-an-run-detail');
+        if (detail) detail.setAttribute('aria-busy', String(Boolean(busy)));
+    }
+
+    _updateRunDetailHeader(run) {
+        const title = this._content.querySelector('#sp-an-run-detail-title');
+        const id = this._content.querySelector('#sp-an-run-detail-id');
+        const context = this._content.querySelector('#sp-an-run-context');
+        if (title) title.textContent = run.question || t('settings.analytics.runs.detailTitle');
+        if (id) id.textContent = run.query_id || '';
+        if (!context) return;
+        const user = run.name || run.email || run.user_id || '—';
+        const fields = [
+            [t('settings.analytics.runs.context.user'), user, false],
+            [t('settings.analytics.runs.context.email'), run.email || '—', true],
+            [t('settings.analytics.runs.context.connection'), run.source_key || '—', true],
+            [t('settings.analytics.runs.context.time'), `${fmtDateTime(run.occurred_at)} · ${fmtRelative(run.occurred_at)}`, false],
+            [t('settings.analytics.runs.context.model'), run.llm_model || '—', true],
+            [t('settings.analytics.runs.context.route'), run.skill || run.route || '—', true],
+        ];
+        context.innerHTML = fields.map(([label, value, ltr]) => `<span><strong>${esc(label)}</strong> <bdi${ltr ? ' dir="ltr"' : ' class="sp-an-plaintext"'}>${esc(value)}</bdi></span>`).join('');
+    }
+
+    _runMetricsHtml(run, valueFn) {
+        const value = valueFn || ((key) => run[key]);
+        const metrics = [
+            ['settings.analytics.runs.metric.total', value('graph_time_ms'), 'time'],
+            ['settings.analytics.runs.metric.llm', value('llm_latency_ms'), 'time'],
+            ['settings.analytics.runs.metric.execution', value('execution_time_ms'), 'time'],
+            ['settings.analytics.runs.metric.rows', value('row_count'), 'number'],
+            ['settings.analytics.runs.metric.tokens', value('total_tokens'), 'number'],
+            ['settings.analytics.runs.metric.inputTokens', value('input_tokens'), 'number'],
+        ];
+        return `<div class="sp-an-run-metrics">${metrics.map(([label, metric, kind]) => `<div class="sp-an-run-metric">
+            <span>${h(label)}</span>
+            <strong><bdi dir="ltr">${esc(kind === 'time' ? fmtMs(metric) : fmtOptionalNum(metric))}</bdi></strong>
+        </div>`).join('')}</div>`;
+    }
+
+    async _copyRunText(value, button) {
+        if (!value || !button) return;
+        const original = button.textContent;
+        try {
+            await navigator.clipboard.writeText(String(value));
+            button.textContent = t('settings.analytics.runs.copied');
+        } catch (_) {
+            button.textContent = t('settings.analytics.runs.copyFailed');
+        }
+        setTimeout(() => {
+            if (button.isConnected) button.textContent = original;
+        }, 1600);
+    }
+
     // ── Export (visible rows only) ────────────────────────────────────────
 
     _export(kind) {
@@ -607,4 +1148,31 @@ function thumbBadge(thumb) {
     if (!thumb) return '';
     const cls = thumb === 'thumbs_up' ? 'sp-an-badge-up' : thumb === 'thumbs_down' ? 'sp-an-badge-down' : 'sp-an-badge-cleared';
     return `<span class="sp-an-badge ${cls}">${h(`settings.analytics.thumb.${thumb}`)}</span>`;
+}
+
+function runOutcomeBadge(outcome) {
+    const value = ['success', 'error', 'refused'].includes(outcome) ? outcome : 'unknown';
+    return `<span class="sp-an-badge sp-an-run-outcome sp-an-run-outcome-${esc(value)}">${h(`settings.analytics.runs.outcome.${value}`)}</span>`;
+}
+
+function runQueryLanguage(run) {
+    const explicit = String(run.query_language || run.generated_query_type || '').toLowerCase();
+    if (explicit === 'dax' || explicit === 'sql') return explicit;
+    const query = typeof run.generated_query === 'string' ? run.generated_query.trim() : '';
+    return /(?:^|\s)EVALUATE(?:\s|$)/i.test(query) || /dax/i.test(String(run.route || '')) ? 'dax' : 'sql';
+}
+
+function formatRunValue(value) {
+    if (value == null) return '';
+    if (typeof value === 'string') return value;
+    try { return JSON.stringify(value, null, 2); } catch (_) { return String(value); }
+}
+
+function formatRunAnswer(answer) {
+    if (typeof answer === 'string') return answer;
+    if (!Array.isArray(answer)) return formatRunValue(answer);
+    return answer
+        .filter((fragment) => fragment && typeof fragment.t === 'string')
+        .map((fragment) => fragment.t)
+        .join('');
 }
