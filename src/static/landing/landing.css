@@ -494,6 +494,27 @@ a {
   line-height: 1.55;
 }
 
+.l-spectrum-note {
+  margin-top: 20px;
+  padding: 22px 24px;
+  display: grid;
+  grid-template-columns: minmax(180px, .32fr) minmax(0, 1fr);
+  gap: 24px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--soft);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.l-spectrum-note strong {
+  font-weight: 600;
+}
+
+.l-spectrum-note span {
+  color: var(--muted);
+}
+
 /* Screenshot feature stories */
 
 .l-feature {
@@ -577,6 +598,72 @@ a {
   color: var(--bg);
 }
 
+.l-analysis-groups {
+  margin-top: 64px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.l-analysis-card {
+  min-width: 0;
+  padding: 28px;
+  border: 1px solid color-mix(in srgb, var(--bg) 14%, transparent);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--bg) 5%, transparent);
+}
+
+.l-analysis-card .l-card-kicker {
+  color: color-mix(in srgb, var(--rose) 72%, var(--bg));
+}
+
+.l-analysis-card h3 {
+  min-height: 2.5em;
+  margin: 28px 0 0;
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+  line-height: 1.25;
+}
+
+.l-analysis-list {
+  margin: 28px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0;
+  list-style: none;
+}
+
+.l-analysis-list li {
+  padding: 17px 0;
+  border-top: 1px solid color-mix(in srgb, var(--bg) 12%, transparent);
+}
+
+.l-analysis-list strong,
+.l-analysis-list span {
+  display: block;
+}
+
+.l-analysis-list strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.l-analysis-list span {
+  margin-top: 6px;
+  color: color-mix(in srgb, var(--bg) 68%, transparent);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.l-analysis-disclaimer {
+  max-width: 880px;
+  margin: 24px 0 0;
+  color: color-mix(in srgb, var(--bg) 58%, transparent);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .l-inline-facts {
   margin-top: 30px;
   display: flex;
@@ -601,6 +688,10 @@ a {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 14px;
+}
+
+.l-cards-workflow {
+  grid-template-columns: repeat(3, 1fr);
 }
 
 .l-card {
@@ -824,6 +915,14 @@ a {
   .l-feature-shot {
     width: 100%;
   }
+
+  .l-analysis-groups {
+    grid-template-columns: 1fr;
+  }
+
+  .l-analysis-card h3 {
+    min-height: auto;
+  }
 }
 
 @media (max-width: 767px) {
@@ -952,6 +1051,12 @@ a {
     padding: 26px;
   }
 
+  .l-spectrum-note {
+    padding: 20px;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
   .l-feature,
   .l-feature-reverse {
     gap: 36px;
@@ -962,9 +1067,14 @@ a {
   }
 
   .l-card,
-  .l-outcome {
+  .l-outcome,
+  .l-analysis-card {
     min-height: 210px;
     padding: 26px;
+  }
+
+  .l-analysis-groups {
+    margin-top: 40px;
   }
 
   .l-faq {

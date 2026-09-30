@@ -40,7 +40,7 @@
       <div class="l-wrap l-hero-content">
         <span class="l-chip">Governed analytics, grounded in Jeen Data</span>
         <h1>Ask your data a question.<br>Get an answer you can defend.</h1>
-        <p>Jeen Insights is the natural-language analytics workspace powered by the Jeen Data semantic layer. It turns plain-language questions into charts, rows, SQL or Python, and traceable findings grounded in your curated tables, relationships, and business terms.</p>
+        <p>Jeen Insights is the natural-language analytics workspace powered by the Jeen Data semantic layer. Ask for a sales breakdown, continue with contextual follow-up questions, or move into governed ML and statistical analysis—all with charts, rows, SQL or Python, and traceable findings.</p>
         <div class="l-actions">
           <a class="l-button l-button-primary" href="/">Open Jeen Insights</a>
           <a class="l-button l-button-secondary"
@@ -83,27 +83,31 @@
 
     <section id="how" class="l-wrap l-section">
       <div class="l-section-heading">
-        <span class="l-eyebrow">How it works</span>
-        <h2>From a business question to a governed answer.</h2>
-        <p>Jeen Insights combines your semantic layer, approved models, and read-only data access in one traceable flow.</p>
+        <span class="l-eyebrow">From simple to complex</span>
+        <h2>Start with a fact. Follow the evidence. Support the decision.</h2>
+        <p>One governed workspace handles direct data questions, contextual follow-ups, and questions that need forecasting or deeper analytical reasoning.</p>
       </div>
       <ol class="l-steps">
         <li class="l-step">
-          <span class="l-step-number">01</span>
-          <h3>Ask in plain language</h3>
-          <p>Start with the business question—not a table name, query language, or dashboard filter.</p>
+          <span class="l-step-number">01 / Simple question</span>
+          <h3>“Show sales by retailer this quarter.”</h3>
+          <p>Get the answer as a chart and rows, with concise findings and the governed SQL behind the result.</p>
         </li>
         <li class="l-step">
-          <span class="l-step-number">02</span>
-          <h3>Grounded in Jeen Data</h3>
-          <p>The agent loads the connection's curated schema, relationships, business terms, and knowledge pairs before it plans the work.</p>
+          <span class="l-step-number">02 / Contextual follow-up</span>
+          <h3>“Which products drove the change?”</h3>
+          <p>Continue in the same conversation. Jeen carries forward the relevant result and business context instead of starting over.</p>
         </li>
         <li class="l-step">
-          <span class="l-step-number">03</span>
-          <h3>Answer with evidence</h3>
-          <p>Governed, read-only execution returns the chart or rows together with findings, generated SQL or Python, and a complete trace.</p>
+          <span class="l-step-number">03 / Decision support</span>
+          <h3>“How much inventory should we plan for next month?”</h3>
+          <p>Jeen can propose a governed demand forecast by retailer, with prediction intervals and model evidence, as forecast-informed input for the planner.</p>
         </li>
       </ol>
+      <div class="l-spectrum-note">
+        <strong>Every step starts in Jeen Data.</strong>
+        <span>The selected connection's curated definitions ground the question, while read-only controls and an inspectable trace keep the answer accountable. Inventory policy—including lead times, service levels, and operational constraints—remains with your team.</span>
+      </div>
     </section>
 
     <section id="jeen-data" class="l-section l-section-soft">
@@ -147,47 +151,81 @@
       </figure>
     </section>
 
-    <section class="l-section l-section-dark">
-      <div class="l-wrap l-feature">
-        <div class="l-feature-copy">
-          <span class="l-eyebrow">Advanced analytics</span>
-          <h2>Go beyond what a query can answer.</h2>
-          <p>When the question calls for forecasting, clustering, or anomaly detection, Jeen Insights can run governed Python analytics on the result set and return the model output in the same workspace.</p>
-          <ul class="l-check-list">
-            <li>Review and adjust the analysis setup</li>
-            <li>Keep the result connected to its source data</li>
-            <li>Inspect model details alongside the visualization</li>
-          </ul>
+    <section id="capabilities" class="l-section l-section-dark">
+      <div class="l-wrap">
+        <div class="l-feature">
+          <div class="l-feature-copy">
+            <span class="l-eyebrow">ML and advanced analytics</span>
+            <h2>Go beyond what one query can answer.</h2>
+            <p>For questions that need statistical reasoning, Jeen proposes a governed analysis from the methods enabled in your deployment. You review or adjust the setup before it runs, then get visual results, confidence information, caveats, and inspectable model details.</p>
+            <ul class="l-check-list">
+              <li>Forecast and monitor change over time</li>
+              <li>Explain patterns and quantify relationships</li>
+              <li>Segment entities and evaluate outcomes</li>
+            </ul>
+          </div>
+          <figure class="l-feature-shot l-feature-shot-dark">
+            <img src="{{ url_for('static', filename='landing/advanced-analytics.png') }}"
+                 alt="Jeen Insights anomaly detection result highlighting unusual changes in a daily sales time series."
+                 width="1200" height="750" loading="lazy" decoding="async">
+            <figcaption>Anomaly detection is one available analysis: expected range, actual values, and flagged points remain connected to the source data.</figcaption>
+          </figure>
         </div>
-        <figure class="l-feature-shot l-feature-shot-dark">
-          <img src="{{ url_for('static', filename='landing/advanced-analytics.png') }}"
-               alt="Jeen Insights anomaly detection result highlighting unusual changes in a daily sales time series."
-               width="1200" height="750" loading="lazy" decoding="async">
-          <figcaption>Anomaly detection with the expected range, actual values, and flagged points in one view.</figcaption>
-        </figure>
+
+        <div class="l-analysis-groups" aria-label="Supported ML and statistical analysis">
+          <article class="l-analysis-card">
+            <span class="l-card-kicker">Predict and monitor</span>
+            <h3>Plan ahead and spot meaningful change.</h3>
+            <ul class="l-analysis-list">
+              <li><strong>Forecasting</strong><span>Project demand or revenue with validated intervals using AutoARIMA, AutoETS, Theta, drift, or seasonal baselines.</span></li>
+              <li><strong>Anomaly detection</strong><span>Flag unusual periods against a seasonal or trend expectation with MSTL, LOWESS, or 3-sigma.</span></li>
+              <li><strong>Changepoint detection</strong><span>Find structural shifts in a trend with PELT.</span></li>
+              <li><strong>Seasonality analysis</strong><span>Separate trend, recurring cycles, and remainder with MSTL or STL.</span></li>
+            </ul>
+          </article>
+
+          <article class="l-analysis-card">
+            <span class="l-card-kicker">Explain and quantify</span>
+            <h3>Understand what changed and what predicts it.</h3>
+            <ul class="l-analysis-list">
+              <li><strong>Contribution analysis</strong><span>Decompose a period-to-period change across business dimensions.</span></li>
+              <li><strong>Correlation</strong><span>Measure how two metrics move together, including lagged relationships, with Pearson and Granger tests.</span></li>
+              <li><strong>Driver analysis</strong><span>Rank predictive factors with gradient boosting and held-out permutation importance.</span></li>
+              <li><strong>Regression</strong><span>Estimate interpretable relationships with OLS coefficients, intervals, and fit metrics.</span></li>
+            </ul>
+          </article>
+
+          <article class="l-analysis-card">
+            <span class="l-card-kicker">Segment and evaluate</span>
+            <h3>Compare groups, risks, retention, and outcomes.</h3>
+            <ul class="l-analysis-list">
+              <li><strong>Clustering</strong><span>Discover groups of similar customers, products, or stores with K-means or HDBSCAN.</span></li>
+              <li><strong>Classification</strong><span>Estimate a binary likelihood such as churn risk with interpretable logistic regression.</span></li>
+              <li><strong>Cohort retention</strong><span>Track how activity changes across signup cohorts and later periods.</span></li>
+              <li><strong>A/B testing</strong><span>Compare two variants with confidence intervals and a proportion z-test or Welch's t-test.</span></li>
+            </ul>
+          </article>
+        </div>
+
+        <p class="l-analysis-disclaimer">Supported methods depend on deployment configuration and data suitability. Correlation and predictive importance show association—not proof of causation.</p>
       </div>
     </section>
 
-    <section id="capabilities" class="l-wrap l-section">
+    <section class="l-wrap l-section">
       <div class="l-section-heading">
-        <span class="l-eyebrow">Capabilities</span>
-        <h2>Built for the analysis that follows the first answer.</h2>
+        <span class="l-eyebrow">One continuous workspace</span>
+        <h2>Work with the answer—not just the prompt.</h2>
       </div>
-      <div class="l-cards">
+      <div class="l-cards l-cards-workflow">
         <article class="l-card">
           <span class="l-card-kicker">Explore</span>
           <h3>Charts refined in words</h3>
           <p>Change the chart type, grouping, colors, labels, or filters without rebuilding the analysis.</p>
         </article>
         <article class="l-card">
-          <span class="l-card-kicker">Understand</span>
-          <h3>Findings and follow-ups</h3>
-          <p>Turn a result into a concise explanation, key observations, and relevant next questions.</p>
-        </article>
-        <article class="l-card">
           <span class="l-card-kicker">Inspect</span>
-          <h3>Rows, profiling, and schema</h3>
-          <p>Review the result table, column profiles, and the source schema without changing tools.</p>
+          <h3>Evidence stays attached</h3>
+          <p>Review rows, profiling, source schema, generated SQL or Python, validation state, and run details without changing tools.</p>
         </article>
         <article class="l-card">
           <span class="l-card-kicker">Continue</span>
@@ -240,6 +278,10 @@
         <details>
           <summary>What context does the model receive?</summary>
           <p>The active connection's curated catalog can include tables, columns, relationships, business terms, profiles, and knowledge pairs, together with the conversation context needed for the question.</p>
+        </details>
+        <details>
+          <summary>Does Jeen Insights optimize inventory?</summary>
+          <p>Jeen Insights can forecast demand by retailer or another business dimension and show the supporting intervals, trends, and model evidence. It provides forecast-informed decision support; your planning team applies lead times, service levels, costs, and operational constraints to set inventory policy.</p>
         </details>
         <details>
           <summary>Where can it run?</summary>
