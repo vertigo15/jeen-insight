@@ -91,6 +91,30 @@ def test_landing_is_public_english_and_contains_product_proof(client):
     assert "natural-language analytics workspace powered by the Jeen Data semantic layer" in body
     assert 'href="/"' in body and "Open Jeen Insights" in body
     assert "mailto:sales@jeen.ai?subject=Jeen%20Insights%20demo" in body
+    assert "Show sales by retailer this quarter." in body
+    assert "Which products drove the change?" in body
+    assert "How much inventory should we plan for next month?" in body
+    assert "forecast-informed input for the planner" in body
+    assert "Inventory policy" in body and "remains with your team" in body
+    assert "You review or adjust the setup before it runs" in body
+    assert "association—not proof of causation" in body
+
+    analysis_capabilities = (
+        "Forecasting",
+        "Anomaly detection",
+        "Changepoint detection",
+        "Seasonality analysis",
+        "Contribution analysis",
+        "Correlation",
+        "Driver analysis",
+        "Regression",
+        "Clustering",
+        "Classification",
+        "Cohort retention",
+        "A/B testing",
+    )
+    for capability in analysis_capabilities:
+        assert capability in body
 
     screenshot_names = (
         "insights-answer.png",
