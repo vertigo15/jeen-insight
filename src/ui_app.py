@@ -567,7 +567,11 @@ def _inject_i18n():
 @app.after_request
 def _language_headers(response: Response) -> Response:
     if (response.mimetype or "").startswith("text/html"):
-        response.headers["Content-Language"] = _current_locale()
+        # The public marketing page is intentionally English-only even when an
+        # anonymous visitor negotiates another application locale.
+        response.headers["Content-Language"] = (
+            "en" if request.endpoint == "landing" else _current_locale()
+        )
         response.vary.update({"Cookie", "Accept-Language"})
     return response
 
