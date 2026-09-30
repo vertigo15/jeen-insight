@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -48,11 +49,29 @@ DETAIL_ALLOWLIST = frozenset(
 )
 
 QUESTION_EXCERPT_CHARS = 500
+EXECUTION_ERROR_CHARS = 4000
 PRUNE_BATCH = 5000
 # Arbitrary, stable key for pg_try_advisory_lock so replicas don't prune together.
 PRUNE_LOCK_KEY = 0x4A45454E_0036  # "JEEN" + migration number
 
 _QUESTION_SQL = "(route IS NULL OR route = ANY($__ROUTES__))"
+
+EXECUTION_METRIC_ALLOWLIST = frozenset(
+    {
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "llm_latency_ms",
+        "execution_time_ms",
+        "graph_time_ms",
+        "retry_count",
+        "llm_call_count",
+        "row_count",
+        "route",
+        "database_type",
+        "skill",
+    }
+)
 
 
 def _as_uuid(value: Any) -> Optional[UUID]:
@@ -102,6 +121,62 @@ def filter_detail(detail: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         elif isinstance(value, (str, int, float, bool)):
             out[key] = value if not isinstance(value, str) else value[:120]
     return out
+
+
+def filter_execution_metrics(metrics: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Keep scalar run metrics only.
+
+    In particular, the response's nested ``memory`` and ``filter_grounding``
+    structures are excluded: they can contain question-derived values.
+    """
+    if not isinstance(metrics, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key in EXECUTION_METRIC_ALLOWLIST:
+        value = metrics.get(key)
+        if value is None or isinstance(value, (dict, list, tuple, set)):
+            continue
+        if isinstance(value, float) and not math.isfinite(value):
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            out[key] = value if not isinstance(value, str) else value[:128]
+    return out
+
+
+def filter_execution_trace(trace: Any) -> List[Dict[str, Any]]:
+    """Project a complete trace onto timing-only fields."""
+    out: List[Dict[str, Any]] = []
+    for event in trace if isinstance(trace, list) else []:
+        if not isinstance(event, dict) or not event.get("node"):
+            continue
+        out.append(
+            {
+                "node": str(event["node"])[:128],
+                "elapsed_ms": max(0, _as_int(event.get("elapsed_ms")) or 0),
+                "type": str(event.get("type") or "logic")[:32],
+            }
+        )
+    return out
+
+
+def filter_execution_answer(answer: Any) -> Any:
+    """Accept the QueryResponse answer contract, dropping unknown fragment keys."""
+    if answer is None or isinstance(answer, str):
+        return answer
+    if isinstance(answer, list):
+        fragments = []
+        for item in answer:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("t")
+            if not isinstance(text, str):
+                continue
+            fragment = {"t": text}
+            if isinstance(item.get("hl"), str):
+                fragment["hl"] = item["hl"][:16]
+            fragments.append(fragment)
+        return fragments
+    return None
 
 
 class UsageLedger:
@@ -261,6 +336,76 @@ class UsageLedger:
             json.dumps(filter_detail(detail)),
         )
 
+    async def record_execution_detail(
+        self,
+        *,
+        user_id: str,
+        source_key: Optional[str],
+        query_id: Any,
+        session_id: Any = None,
+        outcome: str,
+        route: Optional[str] = None,
+        skill: Optional[str] = None,
+        query_language: Optional[str] = None,
+        question: Any,
+        answer: Any = None,
+        generated_query: Any = None,
+        error: Any = None,
+        metrics: Optional[Dict[str, Any]] = None,
+        trace: Any = None,
+    ) -> None:
+        """Persist the final, data-free run inspection payload.
+
+        The explicit arguments and projections are the privacy boundary:
+        prompts and result containers cannot be passed through accidentally.
+        """
+        qid = _as_uuid(query_id)
+        if not user_id or qid is None:
+            return
+        mapped_outcome = outcome if outcome in ("success", "error", "refused") else "error"
+        language = query_language if query_language in ("sql", "dax") else None
+        bounded_error = str(error)[:EXECUTION_ERROR_CHARS] if error else None
+        query_text = str(generated_query) if generated_query else None
+        await self._execute(
+            """
+            INSERT INTO insights_execution_run_details (
+                query_id, user_id, source_key, session_id, outcome, route, skill,
+                query_language, question, answer, generated_query, error, metrics, trace
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7,
+                $8, $9, $10::jsonb, $11, $12, $13::jsonb, $14::jsonb
+            )
+            ON CONFLICT (query_id) DO UPDATE SET
+                user_id = EXCLUDED.user_id,
+                source_key = EXCLUDED.source_key,
+                session_id = EXCLUDED.session_id,
+                outcome = EXCLUDED.outcome,
+                route = EXCLUDED.route,
+                skill = EXCLUDED.skill,
+                query_language = EXCLUDED.query_language,
+                question = EXCLUDED.question,
+                answer = EXCLUDED.answer,
+                generated_query = EXCLUDED.generated_query,
+                error = EXCLUDED.error,
+                metrics = EXCLUDED.metrics,
+                trace = EXCLUDED.trace
+            """,
+            qid,
+            str(user_id),
+            (str(source_key) or None) if source_key else None,
+            _as_uuid(session_id),
+            mapped_outcome,
+            str(route)[:40] if route else None,
+            str(skill)[:64] if skill else None,
+            language,
+            str(question or ""),
+            json.dumps(filter_execution_answer(answer), ensure_ascii=False),
+            query_text,
+            bounded_error,
+            json.dumps(filter_execution_metrics(metrics), ensure_ascii=False, allow_nan=False),
+            json.dumps(filter_execution_trace(trace), ensure_ascii=False),
+        )
+
     async def prune(self, retention_days: int) -> int:
         """Delete rows older than *retention_days* in batches, under an
         advisory lock so replicas never prune concurrently. Returns rows deleted."""
@@ -274,29 +419,42 @@ class UsageLedger:
                 if not locked:
                     return 0
                 try:
-                    while True:
-                        status = await conn.execute(
-                            """
-                            DELETE FROM insights_usage_events
-                            WHERE id IN (
-                                SELECT id FROM insights_usage_events
-                                WHERE occurred_at < NOW() - make_interval(days => $1)
-                                ORDER BY id
-                                LIMIT $2
-                            )
-                            """,
-                            days, PRUNE_BATCH,
-                        )
-                        deleted = _rows_from_status(status)
-                        deleted_total += deleted
-                        if deleted < PRUNE_BATCH:
-                            break
+                    for table in ("insights_execution_run_details", "insights_usage_events"):
+                        try:
+                            while True:
+                                status = await conn.execute(
+                                    f"""
+                                    DELETE FROM {table}
+                                    WHERE id IN (
+                                        SELECT id FROM {table}
+                                        WHERE occurred_at < NOW() - make_interval(days => $1)
+                                        ORDER BY id
+                                        LIMIT $2
+                                    )
+                                    """,
+                                    days, PRUNE_BATCH,
+                                )
+                                deleted = _rows_from_status(status)
+                                deleted_total += deleted
+                                if deleted < PRUNE_BATCH:
+                                    break
+                        except Exception:  # noqa: BLE001
+                            if table == "insights_execution_run_details":
+                                # During a rolling migration, keep pruning the
+                                # migration-036 aggregate ledger.
+                                logger.debug("execution detail prune skipped", exc_info=True)
+                                continue
+                            raise
                 finally:
                     await conn.execute("SELECT pg_advisory_unlock($1)", PRUNE_LOCK_KEY)
         except Exception:  # noqa: BLE001
             logger.warning("usage ledger prune failed", exc_info=True)
         if deleted_total:
-            logger.info("usage ledger: pruned %d event(s) older than %d days", deleted_total, days)
+            logger.info(
+                "usage analytics: pruned %d retained row(s) older than %d days",
+                deleted_total,
+                days,
+            )
         return deleted_total
 
 
@@ -329,6 +487,25 @@ def _f(value: Any) -> Optional[float]:
 def _rate(num: Any, den: Any) -> Optional[float]:
     n, d = int(num or 0), int(den or 0)
     return (n / d) if d else None
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (TypeError, ValueError):
+            return value
+    return value
+
+
+def _json_dict(value: Any) -> Dict[str, Any]:
+    value = _json_value(value)
+    return value if isinstance(value, dict) else {}
+
+
+def _json_list(value: Any) -> List[Any]:
+    value = _json_value(value)
+    return value if isinstance(value, list) else []
 
 
 class UsageAnalyticsRepository:
@@ -672,6 +849,123 @@ class UsageAnalyticsRepository:
         return {
             "items": items,
             "next_before": items[-1]["id"] if len(items) == limit else None,
+        }
+
+    # ── execution runs ──────────────────────────────────────────────────────
+
+    async def execution_runs(
+        self,
+        days: int,
+        *,
+        outcome: Optional[str] = None,
+        connection: Optional[str] = None,
+        limit: int = 50,
+        before_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        _, start, _ = _window(days)
+        limit = max(1, min(int(limit), 200))
+        sql = """
+            SELECT e.id, e.query_id, e.occurred_at, e.user_id, au.name, au.email,
+                   e.source_key, e.outcome, e.error_type, e.route, e.skill,
+                   e.llm_model, e.total_tokens, e.input_tokens, e.llm_latency_ms,
+                   e.execution_time_ms, e.graph_time_ms, e.row_count, e.question,
+                   d.query_language, d.query_id IS NOT NULL AS detail_available
+            FROM insights_usage_events e
+            LEFT JOIN insights_execution_run_details d ON d.query_id = e.query_id
+            LEFT JOIN auth_users au ON au.id::text = e.user_id
+            WHERE e.event_type = 'query'
+              AND e.occurred_at >= $1
+              AND ($2::text IS NULL OR e.outcome = $2)
+              AND ($3::text IS NULL OR e.source_key = $3)
+              AND ($4::bigint IS NULL OR e.id < $4)
+            ORDER BY e.id DESC
+            LIMIT $5
+        """
+        rows = await self._run(
+            lambda conn: conn.fetch(
+                sql, start, outcome or None, connection or None, before_id, limit + 1
+            )
+        )
+        page = list(rows[:limit])
+        items = [
+            {
+                "id": int(r["id"]),
+                "query_id": str(r["query_id"]),
+                "occurred_at": r["occurred_at"].isoformat() if r["occurred_at"] else None,
+                "user_id": r["user_id"],
+                "name": r["name"],
+                "email": r["email"],
+                "source_key": r["source_key"],
+                "outcome": r["outcome"],
+                "error_type": r["error_type"],
+                "route": r["route"],
+                "skill": r["skill"],
+                "llm_model": r["llm_model"],
+                "query_language": r["query_language"],
+                "total_tokens": r["total_tokens"],
+                "input_tokens": r["input_tokens"],
+                "llm_latency_ms": r["llm_latency_ms"],
+                "execution_time_ms": r["execution_time_ms"],
+                "graph_time_ms": r["graph_time_ms"],
+                "row_count": r["row_count"],
+                "question": r["question"],
+                "detail_available": bool(r["detail_available"]),
+            }
+            for r in page
+        ]
+        return {
+            "items": items,
+            "next_before": int(page[-1]["id"]) if len(rows) > limit and page else None,
+        }
+
+    async def execution_detail(self, query_id: Any) -> Optional[Dict[str, Any]]:
+        qid = _as_uuid(query_id)
+        if qid is None:
+            return None
+        sql = """
+            SELECT e.id, d.query_id, e.occurred_at, e.user_id, au.name, au.email,
+                   e.source_key, d.session_id, e.outcome, e.error_type, e.route, e.skill,
+                   e.llm_model, e.total_tokens, e.input_tokens, e.llm_latency_ms,
+                   e.execution_time_ms, e.graph_time_ms, e.row_count,
+                   d.query_language, d.question, d.answer, d.generated_query,
+                   d.error, d.metrics, d.trace
+            FROM insights_execution_run_details d
+            JOIN insights_usage_events e
+              ON e.event_type = 'query' AND e.query_id = d.query_id
+            LEFT JOIN auth_users au ON au.id::text = e.user_id
+            WHERE d.query_id = $1
+        """
+        row = await self._run(lambda conn: conn.fetchrow(sql, qid))
+        if not row:
+            return None
+        return {
+            "id": int(row["id"]),
+            "query_id": str(row["query_id"]),
+            "occurred_at": row["occurred_at"].isoformat() if row["occurred_at"] else None,
+            "user_id": row["user_id"],
+            "name": row["name"],
+            "email": row["email"],
+            "source_key": row["source_key"],
+            "session_id": str(row["session_id"]) if row["session_id"] else None,
+            "outcome": row["outcome"],
+            "error_type": row["error_type"],
+            "route": row["route"],
+            "skill": row["skill"],
+            "llm_model": row["llm_model"],
+            "query_language": row["query_language"],
+            "question": row["question"],
+            "answer": _json_value(row["answer"]),
+            "generated_query": row["generated_query"],
+            "error_message": row["error"],
+            "total_tokens": row["total_tokens"],
+            "input_tokens": row["input_tokens"],
+            "llm_latency_ms": row["llm_latency_ms"],
+            "execution_time_ms": row["execution_time_ms"],
+            "graph_time_ms": row["graph_time_ms"],
+            "row_count": row["row_count"],
+            "detail_available": True,
+            "metrics": _json_dict(row["metrics"]),
+            "node_trace": _json_list(row["trace"]),
         }
 
     # ── ML skills ───────────────────────────────────────────────────────────

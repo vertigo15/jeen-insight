@@ -15,10 +15,15 @@ import pytest
 
 from src.analytics.usage_ledger import (
     DETAIL_ALLOWLIST,
+    EXECUTION_ERROR_CHARS,
+    EXECUTION_METRIC_ALLOWLIST,
     PRUNE_BATCH,
     QUESTION_ROUTES,
     UsageLedger,
     filter_detail,
+    filter_execution_answer,
+    filter_execution_metrics,
+    filter_execution_trace,
 )
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -92,6 +97,27 @@ def test_question_routes_cover_sql_ml_and_backfill_values():
     assert set(QUESTION_ROUTES) == {"needs_query", "needs_analysis", "sql"}
 
 
+def test_execution_detail_filters_exclude_prompts_rows_and_nested_values():
+    metrics = filter_execution_metrics({
+        "total_tokens": 12,
+        "route": "needs_query",
+        "memory": {"bound_values": ["EMEA"]},
+        "filter_grounding": {"values": ["Acme"]},
+        "rows": [{"secret": 1}],
+        "prompt": "schema and instructions",
+    })
+    assert metrics == {"total_tokens": 12, "route": "needs_query"}
+    assert set(metrics) <= EXECUTION_METRIC_ALLOWLIST
+    trace = filter_execution_trace([{
+        "node": "sql_generator", "elapsed_ms": 9, "type": "llm",
+        "prompt": "private schema", "detail": "SELECT secret", "rows": [["secret"]],
+    }])
+    assert trace == [{"node": "sql_generator", "elapsed_ms": 9, "type": "llm"}]
+    assert filter_execution_answer([{"t": "42", "hl": "num", "prompt": "drop"}]) == [
+        {"t": "42", "hl": "num"}
+    ]
+
+
 # ── writes ───────────────────────────────────────────────────────────────
 
 def test_record_query_inserts_with_on_conflict_and_truncated_question():
@@ -148,6 +174,30 @@ def test_record_analysis_maps_runner_outcomes():
     assert "'analysis'" in pool.calls[-1][0]
 
 
+def test_record_execution_detail_is_idempotent_bounded_and_data_free():
+    pool = FakePool()
+    ledger = UsageLedger(pool, schema_ready=True)
+    _run(ledger.record_execution_detail(
+        user_id="7", source_key="sales", query_id=QID, session_id=None,
+        outcome="success", route="needs_query", query_language="sql",
+        question="full question " * 100, answer=[{"t": "The answer is 42", "hl": "num", "prompt": "drop"}],
+        generated_query="SELECT SUM(amount) FROM sales",
+        error="x" * (EXECUTION_ERROR_CHARS + 20),
+        metrics={"total_tokens": 12, "memory": {"values": ["secret"]}, "prompt": "drop"},
+        trace=[{"node": "sql_generator", "elapsed_ms": 5, "type": "llm",
+                "prompt": "drop", "detail": "drop", "rows": [["drop"]]}],
+    ))
+    sql, args = pool.calls[0]
+    assert "INSERT INTO insights_execution_run_details" in sql
+    assert "ON CONFLICT (query_id) DO UPDATE" in sql
+    assert args[0] == QID and args[8] == "full question " * 100
+    assert json.loads(args[9]) == [{"t": "The answer is 42", "hl": "num"}]
+    assert len(args[11]) == EXECUTION_ERROR_CHARS
+    assert json.loads(args[12]) == {"total_tokens": 12}
+    assert json.loads(args[13]) == [{"node": "sql_generator", "elapsed_ms": 5, "type": "llm"}]
+    assert "prompt" not in repr(args) and "rows" not in repr(args)
+
+
 def test_writes_never_raise_and_are_noops_when_inactive():
     failing = UsageLedger(FakePool(fail=True), schema_ready=True)
     _run(failing.record_query(user_id="7", source_key="s", query_id=QID, outcome="success"))  # swallowed
@@ -159,6 +209,9 @@ def test_writes_never_raise_and_are_noops_when_inactive():
         _run(ledger.record_query(user_id="7", source_key="s", query_id=QID, outcome="success"))
         _run(ledger.record_feedback(user_id="7", source_key="s", query_id=QID, feedback_id=FID, thumb="thumbs_up"))
         _run(ledger.record_analysis(user_id="7", source_key="s", query_id=QID, skill="f", outcome="ok"))
+        _run(ledger.record_execution_detail(
+            user_id="7", source_key="s", query_id=QID, outcome="success", question="q",
+        ))
         assert _run(ledger.prune(30)) == 0
     assert off.calls == []
 
@@ -166,13 +219,16 @@ def test_writes_never_raise_and_are_noops_when_inactive():
 # ── prune ────────────────────────────────────────────────────────────────
 
 def test_prune_batches_under_an_advisory_lock_and_always_unlocks():
-    pool = FakePool(delete_plan=[PRUNE_BATCH, PRUNE_BATCH, 17])
+    # Details are pruned first, then aggregate events under the same lock.
+    pool = FakePool(delete_plan=[PRUNE_BATCH, 17, PRUNE_BATCH, 9])
     deleted = _run(UsageLedger(pool, schema_ready=True).prune(400))
-    assert deleted == 2 * PRUNE_BATCH + 17
+    assert deleted == 2 * PRUNE_BATCH + 26
     sqls = [c[0] for c in pool.calls]
     assert sqls[0].startswith("SELECT pg_try_advisory_lock")
     deletes = [c for c in pool.calls if c[0].startswith("DELETE")]
-    assert len(deletes) == 3                          # stopped after the short batch
+    assert len(deletes) == 4                          # each table stops after a short batch
+    assert "insights_execution_run_details" in deletes[0][0]
+    assert "insights_usage_events" in deletes[-1][0]
     assert all("LIMIT $2" in c[0] and c[1] == (400, PRUNE_BATCH) for c in deletes)
     assert sqls[-1].startswith("SELECT pg_advisory_unlock")
 
@@ -218,8 +274,35 @@ def test_migration_036_defines_the_ledger_its_guards_and_a_utc_safe_backfill():
     assert not re.search(r"\b(metadata_|settings_services|admin_)\w*", sql)
 
 
+def test_migration_039_defines_retained_data_free_execution_details():
+    sql = (ROOT / "db/migrations/insights/038_execution_run_details.sql").read_text()
+    assert "CREATE TABLE IF NOT EXISTS insights_execution_run_details" in sql
+    assert "GENERATED ALWAYS AS IDENTITY PRIMARY KEY" in sql
+    assert "UNIQUE (query_id)" in sql
+    assert "REFERENCES insights_conversation_sessions" not in sql
+    assert "question        TEXT         NOT NULL" in sql
+    assert "answer          JSONB" in sql
+    assert "generated_query TEXT" in sql
+    assert "char_length(error) <= 4000" in sql
+    assert "jsonb_typeof(metrics) = 'object'" in sql
+    assert "jsonb_typeof(trace) = 'array'" in sql
+    assert "(occurred_at DESC, id DESC)" in sql
+    assert "no prompts or result rows" in sql.lower()
+    # Existing retained turns are available immediately, but only allowlisted
+    # scalar metrics and the already-slim node trace are copied.
+    assert "FROM insights_conversation_sessions cs" in sql
+    assert "LEFT JOIN insights_turn_artifacts ta" in sql
+    assert "cs.created_at AT TIME ZONE 'UTC'" in sql
+    assert "jsonb_build_object(" in sql
+    assert "COALESCE(cs.node_trace, '[]'::jsonb)" in sql
+    assert "ON CONFLICT (query_id) DO NOTHING" in sql
+    assert "result_snapshot" not in sql
+    assert not re.search(r"\b(metadata_|settings_services|admin_)\w*", sql)
+
+
 def test_migration_files_are_sequential():
     names = sorted(p.name for p in (ROOT / "db/migrations/insights").glob("*.sql"))
     numbers = [int(name.split("_", 1)[0]) for name in names]
     assert numbers == list(range(1, len(names) + 1)), "migration numbers must be consecutive and unique"
     assert "036_usage_events.sql" in names
+    assert "038_execution_run_details.sql" in names

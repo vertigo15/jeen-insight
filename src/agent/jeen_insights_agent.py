@@ -512,16 +512,26 @@ class JeenInsightsAgent:
             # after the formatter — response_formatter, save_to_memory and
             # observability_log — are included in the developer log.
             raw_trace = list(final_state.get("trace") or [])
+            safe_trace = slim_trace(raw_trace)
             if raw_trace:
                 # Slim before enriching: enrichment attaches rendered prompts,
                 # so taking the projection first makes leaking one impossible.
-                await self._safe_persist_trace(query_id, slim_trace(raw_trace))
+                await self._safe_persist_trace(query_id, safe_trace)
                 _enrich_trace(raw_trace, final_state)
                 if answered_at is not None:
                     for event in raw_trace[answered_at:]:
                         event["after_answer"] = True
                 formatted["trace"] = raw_trace
 
+            await self._safe_persist_execution_detail(
+                final_state=final_state,
+                formatted=formatted,
+                query_id=query_id,
+                session_id=session_id,
+                question=question,
+                trace=safe_trace,
+                query_language="sql",
+            )
             return formatted
 
         except Exception as e:  # noqa: BLE001
@@ -616,6 +626,60 @@ class JeenInsightsAgent:
             await self.history.update_node_trace(query_id=query_id, node_trace=node_trace)
         except Exception:  # noqa: BLE001
             logger.exception("Failed to persist node trace")
+
+    async def _safe_persist_execution_detail(
+        self,
+        *,
+        final_state: AgentState,
+        formatted: Dict[str, Any],
+        query_id: Optional[UUID],
+        session_id: UUID,
+        question: str,
+        trace: List[Dict[str, Any]],
+        query_language: str,
+    ) -> None:
+        """Write the final admin run payload without prompts or result rows."""
+        ledger = getattr(self, "usage_ledger", None)
+        if (
+            not query_id
+            or ledger is None
+            or not hasattr(ledger, "record_execution_detail")
+        ):
+            return
+        result = final_state.get("query_result") or {}
+        rows = (result.get("rows") or []) if isinstance(result, dict) else []
+        error = formatted.get("error")
+        if final_state.get("analysis_guard_failure"):
+            outcome = "refused"
+        elif final_state.get("exec_error") or error:
+            outcome = "error"
+        else:
+            outcome = "success"
+        raw_metrics = formatted.get("metrics")
+        metrics = dict(raw_metrics) if isinstance(raw_metrics, dict) else {}
+        start_time = final_state.get("start_time")
+        if start_time:
+            metrics["graph_time_ms"] = int((time.monotonic() - start_time) * 1000)
+        metrics["row_count"] = len(rows)
+        try:
+            await ledger.record_execution_detail(
+                user_id=str(final_state.get("user_id") or ""),
+                source_key=self.source_key,
+                query_id=query_id,
+                session_id=session_id,
+                outcome=outcome,
+                route=final_state.get("route"),
+                skill=final_state.get("analysis_skill"),
+                query_language=query_language if final_state.get("generated_sql") else None,
+                question=question,
+                answer=formatted.get("answer"),
+                generated_query=final_state.get("generated_sql"),
+                error=error,
+                metrics=metrics,
+                trace=trace,
+            )
+        except Exception:  # noqa: BLE001 — analytics must never cost the answer
+            logger.debug("execution detail write failed", exc_info=True)
 
     async def _fetch_conversation_context(
         self, session_id: UUID, *, user_id: str, limit: int = 5

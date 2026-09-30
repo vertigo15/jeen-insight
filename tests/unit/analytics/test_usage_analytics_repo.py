@@ -77,6 +77,7 @@ def test_every_report_sets_a_local_statement_timeout():
         lambda: repo.overview(30), lambda: repo.timeseries(7), lambda: repo.top_users(30),
         lambda: repo.top_connections(30), lambda: repo.feedback_feed(30),
         lambda: repo.analysis_usage(30), lambda: repo.error_breakdown(30),
+        lambda: repo.execution_runs(30), lambda: repo.execution_detail("11111111-1111-1111-1111-111111111111"),
     ):
         pool.calls.clear()
         _run(call())
@@ -188,6 +189,71 @@ def test_feedback_feed_filters_are_optional_and_pages_by_id_desc():
     assert out["next_before"] == 42                                # page was full → cursor
     pool.rows = [[]]
     assert _run(repo.feedback_feed(30, limit=50))["next_before"] is None
+
+
+def test_execution_runs_filters_and_keyset_pages_without_detail_bodies():
+    rows = [
+        {
+            "id": 42, "query_id": "11111111-1111-1111-1111-111111111111",
+            "occurred_at": datetime(2026, 9, 25, tzinfo=timezone.utc),
+            "user_id": "7", "name": "Dana", "email": "dana@example.com",
+            "source_key": "sales", "outcome": "success", "route": "needs_query",
+            "error_type": None, "skill": None, "llm_model": "gpt-5.1",
+            "query_language": "sql", "question": "Revenue?",
+            "total_tokens": 12, "input_tokens": 8, "llm_latency_ms": 5,
+            "execution_time_ms": 2, "graph_time_ms": 10, "row_count": 1,
+            "detail_available": True,
+        },
+        {
+            "id": 41, "query_id": "22222222-2222-2222-2222-222222222222",
+            "occurred_at": datetime(2026, 9, 24, tzinfo=timezone.utc),
+            "user_id": "8", "name": None, "email": None, "source_key": "sales",
+            "outcome": "error", "route": "needs_query", "skill": None,
+            "error_type": "timeout", "llm_model": "gpt-5.1",
+            "query_language": None, "question": "Broken?",
+            "total_tokens": 9, "input_tokens": 7, "llm_latency_ms": 4,
+            "execution_time_ms": 1, "graph_time_ms": 8, "row_count": 0,
+            "detail_available": False,
+        },
+    ]
+    pool = FakePool(rows=[rows])
+    out = _run(UsageAnalyticsRepository(pool).execution_runs(
+        30, outcome="success", connection="sales", limit=1, before_id=50,
+    ))
+    sql, args = _queries(pool)[0]
+    assert "ORDER BY e.id DESC" in sql and "e.id < $4" in sql
+    assert "e.event_type = 'query'" in sql
+    assert "LEFT JOIN insights_execution_run_details d" in sql
+    assert "d.answer" not in sql and "d.generated_query," not in sql and "d.trace," not in sql
+    assert args[1:] == ("success", "sales", 50, 2)
+    assert out["items"][0]["query_id"].startswith("1111")
+    assert out["items"][0]["total_tokens"] == 12
+    assert out["items"][0]["detail_available"] is True
+    assert out["next_before"] == 42
+
+
+def test_execution_detail_returns_final_payload_by_query_id():
+    qid = "11111111-1111-1111-1111-111111111111"
+    pool = FakePool(rows=[{
+        "id": 42, "query_id": qid, "occurred_at": datetime(2026, 9, 25, tzinfo=timezone.utc),
+        "user_id": "7", "name": "Dana", "email": "dana@example.com",
+        "source_key": "sales", "session_id": None, "outcome": "success",
+        "error_type": None, "route": "needs_query", "skill": None,
+        "llm_model": "gpt-5.1", "query_language": "sql",
+        "question": "Revenue?", "answer": '"42"', "generated_query": "SELECT 42",
+        "error": None, "metrics": '{"total_tokens": 12}',
+        "trace": '[{"node":"sql_generator","elapsed_ms":5,"type":"llm"}]',
+        "total_tokens": 12, "input_tokens": 8, "llm_latency_ms": 5,
+        "execution_time_ms": 2, "graph_time_ms": 10, "row_count": 1,
+    }])
+    out = _run(UsageAnalyticsRepository(pool).execution_detail(qid))
+    sql, args = _queries(pool)[0]
+    assert "WHERE d.query_id = $1" in sql
+    assert str(args[0]) == qid
+    assert out["answer"] == "42" and out["generated_query"] == "SELECT 42"
+    assert out["metrics"]["total_tokens"] == 12
+    assert out["node_trace"][0]["node"] == "sql_generator"
+    assert out["detail_available"] is True
 
 
 def test_analysis_usage_merges_runs_with_current_thumbs_on_ml_answers():

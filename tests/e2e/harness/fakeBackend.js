@@ -398,9 +398,19 @@
         // Admin analytics (Settings › Analytics, migration 036). Deterministic
         // fixtures; specs can force the "migration not applied" path with
         // __ANALYTICS_UNAVAILABLE__ and read every request from __calls.
+        const analyticsRunDetail = new URL(url, location.origin).pathname.match(/^\/api\/admin\/analytics\/runs\/([^/]+)$/);
+        if (analyticsRunDetail) {
+            if (window.__ANALYTICS_UNAVAILABLE__) return json({ detail: 'Usage analytics not initialised' }, 503);
+            if (window.__ANALYTICS_RUNS_ERROR__ === 'detail') return json({ detail: 'Run detail unavailable' }, 500);
+            const item = F.ANALYTICS.runDetail(decodeURIComponent(analyticsRunDetail[1]));
+            return item ? json(item) : json({ detail: 'Run not found' }, 404);
+        }
         const analyticsMatch = url.match(/\/api\/admin\/analytics\/([a-z-]+)(?:\?|$)/);
         if (analyticsMatch) {
             if (window.__ANALYTICS_UNAVAILABLE__) return json({ detail: 'Usage analytics (migration 036_usage_events) not initialised' }, 503);
+            if (analyticsMatch[1] === 'runs' && window.__ANALYTICS_RUNS_ERROR__ === 'list') {
+                return json({ detail: 'Execution runs unavailable' }, 500);
+            }
             const params = new URL(url, location.origin).searchParams;
             const days = Number(params.get('days')) || 30;
             return json(F.ANALYTICS[analyticsMatch[1]] ? F.ANALYTICS[analyticsMatch[1]](days, params) : {});
