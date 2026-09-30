@@ -1,242 +1,277 @@
 <!DOCTYPE html>
-<!-- Public marketing page. Pinned to the light theme so it ignores any stored
-     dark preference; tokens + fonts come from the shared design-tokens.css. -->
-<html lang="en" data-theme="light">
+<!-- Public marketing page. It is intentionally English-only and pinned to the
+     light theme; fonts and tokens are shared with the product workspace. -->
+<html lang="en" dir="ltr" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Jeen Insights — Ask your data a question</title>
+  <meta name="description" content="Jeen Insights turns plain-language data questions into governed, traceable answers grounded in the Jeen Data semantic layer.">
+  <title>Jeen Insights — Governed answers from your data</title>
   <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='fonts/fonts.css') }}?v=1">
   <link rel="stylesheet" href="{{ url_for('static', filename='design-tokens.css') }}?v=2">
-  <link rel="stylesheet" href="{{ url_for('static', filename='landing/landing.css') }}?v=1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='landing/landing.css') }}?v=2">
 </head>
 <body>
+  <a class="l-skip-link" href="#main-content">Skip to content</a>
 
-  <!-- 1 — Sticky header -->
   <header class="l-header">
     <div class="l-header-inner">
-      <a class="l-brand" href="#top">
-        <img src="{{ url_for('static', filename='images/jeen-mark.png') }}" alt="">
+      <a class="l-brand" href="#top" aria-label="Jeen Insights home">
+        <img src="{{ url_for('static', filename='images/jeen-mark.png') }}" alt="" width="24" height="24">
         <span>Jeen Insights</span>
       </a>
-      <nav class="l-nav">
+      <nav class="l-nav" aria-label="Landing page">
         <a href="#how">How it works</a>
+        <a href="#jeen-data">Jeen Data</a>
         <a href="#capabilities">Capabilities</a>
-        <a href="#connections">Connections</a>
-        <a href="#architecture">Architecture</a>
-        <a class="l-pill" href="/">Try it on your data</a>
+        <a href="#trust">Trust</a>
       </nav>
+      <div class="l-header-actions">
+        <a class="l-header-link" href="/">Open Insights</a>
+        <a class="l-button l-button-primary l-button-small"
+           href="mailto:sales@jeen.ai?subject=Jeen%20Insights%20demo">Request a demo</a>
+      </div>
     </div>
   </header>
 
-  <main id="top" class="l-wrap">
+  <main id="main-content">
+    <section id="top" class="l-hero">
+      <div class="l-wrap l-hero-content">
+        <span class="l-chip">Governed analytics, grounded in Jeen Data</span>
+        <h1>Ask your data a question.<br>Get an answer you can defend.</h1>
+        <p>Jeen Insights is the natural-language analytics workspace powered by the Jeen Data semantic layer. It turns plain-language questions into charts, rows, SQL or Python, and traceable findings grounded in your curated tables, relationships, and business terms.</p>
+        <div class="l-actions">
+          <a class="l-button l-button-primary" href="/">Open Jeen Insights</a>
+          <a class="l-button l-button-secondary"
+             href="mailto:sales@jeen.ai?subject=Jeen%20Insights%20demo">Request a demo</a>
+        </div>
+      </div>
 
-    <!-- 2 — Hero -->
-    <section class="l-hero">
-      <span class="l-chip">Natural-language analytics</span>
-      <h1>Ask your data a question. Get the answer and the work behind it.</h1>
-      <p>Warehouses, data lakes, operational databases and BI dashboards, in one place. Jeen Insights answers plain-language questions over any registered connection — with the chart, the rows behind it, the query or Python that produced them, and the findings that follow.</p>
-      <div class="l-hero-cta">
-        <a class="l-pill" href="/">Try it on your data</a>
-        <a class="l-btn-outline" href="#how">See how it works</a>
+      <div class="l-wrap">
+        <figure class="l-hero-shot">
+          <div class="l-shot-toolbar" aria-hidden="true">
+            <span></span><span></span><span></span>
+            <strong>Jeen Insights workspace</strong>
+          </div>
+          <img src="{{ url_for('static', filename='landing/insights-answer.png') }}"
+               alt="Jeen Insights answering a sales question with a chart, key findings, and suggested follow-up questions."
+               width="1200" height="750" decoding="async" fetchpriority="high">
+          <figcaption>A complete answer in one workspace: visualization, findings, follow-ups, and the evidence behind the result.</figcaption>
+        </figure>
       </div>
     </section>
 
-    <!-- 3 — Product shot -->
-    <!-- Replace the placeholder body with a real screenshot of the answered v3
-         workspace saved to src/static/landing/workspace-shot.png. -->
-    <section class="l-shot-frame" aria-label="Jeen Insights workspace">
-      <div class="l-shot-bar" aria-hidden="true">
-        <span class="l-shot-dot"></span><span class="l-shot-dot"></span><span class="l-shot-dot"></span>
+    <section class="l-wrap l-proof-strip" aria-label="Product trust">
+      <div class="l-proof-item">
+        <span class="l-proof-icon" aria-hidden="true">01</span>
+        <div><strong>Grounded in Jeen Data</strong><span>Business context before generation</span></div>
       </div>
-      <div class="l-shot-body">
-        A screenshot of the answered workspace — chart, rows, SQL and key findings — appears here.
+      <div class="l-proof-item">
+        <span class="l-proof-icon" aria-hidden="true">02</span>
+        <div><strong>Read-only by design</strong><span>Governed execution on every source</span></div>
       </div>
-    </section>
-
-    <!-- 4 — Stat strip -->
-    <section class="l-stats">
-      <div class="l-stat">
-        <div class="l-stat-value">Any source</div>
-        <div class="l-stat-line">Warehouses, lakes, databases, dashboards</div>
+      <div class="l-proof-item">
+        <span class="l-proof-icon" aria-hidden="true">03</span>
+        <div><strong>Inspectable evidence</strong><span>Rows, SQL, Python, and full run trace</span></div>
       </div>
-      <div class="l-stat">
-        <div class="l-stat-value">Python</div>
-        <div class="l-stat-line">Machine-learning analytics on the result set</div>
-      </div>
-      <div class="l-stat">
-        <div class="l-stat-value">Insights</div>
-        <div class="l-stat-line">A summary and key findings with every answer</div>
-      </div>
-      <div class="l-stat">
-        <div class="l-stat-value">Follow-ups</div>
-        <div class="l-stat-line">Three to five next questions, one click each</div>
+      <div class="l-proof-item">
+        <span class="l-proof-icon" aria-hidden="true">04</span>
+        <div><strong>Runs in your environment</strong><span>Cloud, on-premises, or isolated</span></div>
       </div>
     </section>
 
-    <!-- 5 — How it works -->
-    <section id="how" class="l-section">
-      <div class="l-eyebrow">HOW IT WORKS</div>
-      <h2 class="l-h2">Four steps between a question and a defensible answer.</h2>
-      <div class="l-steps">
-        <div class="l-step">
-          <div class="l-step-num">01</div>
-          <div class="l-step-title">Ask in plain language</div>
-          <div class="l-step-body">A router classifies the question — answerable from memory, needs a query, out of scope, or unsafe.</div>
+    <section id="how" class="l-wrap l-section">
+      <div class="l-section-heading">
+        <span class="l-eyebrow">How it works</span>
+        <h2>From a business question to a governed answer.</h2>
+        <p>Jeen Insights combines your semantic layer, approved models, and read-only data access in one traceable flow.</p>
+      </div>
+      <ol class="l-steps">
+        <li class="l-step">
+          <span class="l-step-number">01</span>
+          <h3>Ask in plain language</h3>
+          <p>Start with the business question—not a table name, query language, or dashboard filter.</p>
+        </li>
+        <li class="l-step">
+          <span class="l-step-number">02</span>
+          <h3>Grounded in Jeen Data</h3>
+          <p>The agent loads the connection's curated schema, relationships, business terms, and knowledge pairs before it plans the work.</p>
+        </li>
+        <li class="l-step">
+          <span class="l-step-number">03</span>
+          <h3>Answer with evidence</h3>
+          <p>Governed, read-only execution returns the chart or rows together with findings, generated SQL or Python, and a complete trace.</p>
+        </li>
+      </ol>
+    </section>
+
+    <section id="jeen-data" class="l-section l-section-soft">
+      <div class="l-wrap l-feature">
+        <div class="l-feature-copy">
+          <span class="l-eyebrow">Jeen Data semantic layer</span>
+          <h2>Grounded in the definitions your business trusts.</h2>
+          <p>Jeen Data, curated through Schema Modeler, supplies the context for every registered connection: tables, columns, relationships, business terms, profiles, and knowledge pairs.</p>
+          <p>Jeen Insights loads that catalog before it plans a query or analysis. The model starts with your definitions—not a generic interpretation of the warehouse.</p>
+          <ul class="l-check-list">
+            <li>Curated once and shared across the Jeen platform</li>
+            <li>Scoped to the active connection at question time</li>
+            <li>Inspectable and correctable by your data team</li>
+          </ul>
         </div>
-        <div class="l-step">
-          <div class="l-step-num">02</div>
-          <div class="l-step-title">Curated metadata to a plan</div>
-          <div class="l-step-body">Tables, columns, relationships and business terms for that connection go into the prompt, and the agent picks its tool: a query, a DAX measure, or Python analytics.</div>
-        </div>
-        <div class="l-step">
-          <div class="l-step-num">03</div>
-          <div class="l-step-title">Governed execution</div>
-          <div class="l-step-body">Nothing runs until it has passed your governance policy, and it runs with read-only access to the source.</div>
-        </div>
-        <div class="l-step">
-          <div class="l-step-num">04</div>
-          <div class="l-step-title">Chart, rows, insight</div>
-          <div class="l-step-body">An eval node checks the result against intent, writes a summary and key findings, and proposes follow-up questions.</div>
-        </div>
+        <figure class="l-feature-shot">
+          <img src="{{ url_for('static', filename='landing/jeen-data-catalog.png') }}"
+               alt="Jeen Insights Metadata and Catalog settings showing a healthy Jeen catalog source and its available catalog tools."
+               width="1200" height="878" loading="lazy" decoding="async">
+          <figcaption>The Jeen Data catalog can be delivered from the shared metadata database or through the Jeen catalog service.</figcaption>
+        </figure>
       </div>
     </section>
 
-    <!-- 6 — Capabilities -->
-    <section id="capabilities" class="l-section">
-      <div class="l-eyebrow">CAPABILITIES</div>
-      <h2 class="l-h2">Built for the work that follows the first answer.</h2>
+    <section class="l-wrap l-section l-feature l-feature-reverse">
+      <div class="l-feature-copy">
+        <span class="l-eyebrow">Traceable evidence</span>
+        <h2>See exactly how the answer was produced.</h2>
+        <p>Open the evidence behind a result without leaving the workspace. Review the source rows, grounded filters, generated SQL, execution time, validation state, and complete run trace.</p>
+        <div class="l-inline-facts" aria-label="Traceability features">
+          <span>Generated query</span>
+          <span>Applied filters</span>
+          <span>Read-only validation</span>
+        </div>
+      </div>
+      <figure class="l-feature-shot">
+        <img src="{{ url_for('static', filename='landing/inspectable-sql.png') }}"
+             alt="Jeen Insights SQL and run details panel showing result metrics, the applied filter, and the validated read-only SQL query."
+             width="1200" height="750" loading="lazy" decoding="async">
+        <figcaption>Every data answer keeps the query and its execution context one click away.</figcaption>
+      </figure>
+    </section>
+
+    <section class="l-section l-section-dark">
+      <div class="l-wrap l-feature">
+        <div class="l-feature-copy">
+          <span class="l-eyebrow">Advanced analytics</span>
+          <h2>Go beyond what a query can answer.</h2>
+          <p>When the question calls for forecasting, clustering, or anomaly detection, Jeen Insights can run governed Python analytics on the result set and return the model output in the same workspace.</p>
+          <ul class="l-check-list">
+            <li>Review and adjust the analysis setup</li>
+            <li>Keep the result connected to its source data</li>
+            <li>Inspect model details alongside the visualization</li>
+          </ul>
+        </div>
+        <figure class="l-feature-shot l-feature-shot-dark">
+          <img src="{{ url_for('static', filename='landing/advanced-analytics.png') }}"
+               alt="Jeen Insights anomaly detection result highlighting unusual changes in a daily sales time series."
+               width="1200" height="750" loading="lazy" decoding="async">
+          <figcaption>Anomaly detection with the expected range, actual values, and flagged points in one view.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="capabilities" class="l-wrap l-section">
+      <div class="l-section-heading">
+        <span class="l-eyebrow">Capabilities</span>
+        <h2>Built for the analysis that follows the first answer.</h2>
+      </div>
       <div class="l-cards">
-        <div class="l-card">
-          <div class="l-card-title">Charts you refine in words</div>
-          <div class="l-card-body">Ask for a different chart type, a stacked view, or a filtered axis. The chart is regenerated from the same result set.</div>
+        <article class="l-card">
+          <span class="l-card-kicker">Explore</span>
+          <h3>Charts refined in words</h3>
+          <p>Change the chart type, grouping, colors, labels, or filters without rebuilding the analysis.</p>
+        </article>
+        <article class="l-card">
+          <span class="l-card-kicker">Understand</span>
+          <h3>Findings and follow-ups</h3>
+          <p>Turn a result into a concise explanation, key observations, and relevant next questions.</p>
+        </article>
+        <article class="l-card">
+          <span class="l-card-kicker">Inspect</span>
+          <h3>Rows, profiling, and schema</h3>
+          <p>Review the result table, column profiles, and the source schema without changing tools.</p>
+        </article>
+        <article class="l-card">
+          <span class="l-card-kicker">Continue</span>
+          <h3>History with context</h3>
+          <p>Return to useful questions and continue from prior results with their data context preserved.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="trust" class="l-section l-section-soft">
+      <div class="l-wrap">
+        <div class="l-section-heading">
+          <span class="l-eyebrow">Enterprise trust</span>
+          <h2>Grounded, governed, and traceable by design.</h2>
         </div>
-        <div class="l-card">
-          <div class="l-card-title">Insights and follow-ups</div>
-          <div class="l-card-body">Every answer carries a summary, numbered findings, and three to five clickable next questions.</div>
-        </div>
-        <div class="l-card">
-          <div class="l-card-title">Tables and schema browsing</div>
-          <div class="l-card-body">Search the connection's tables and inspect column-level schema without leaving the workspace.</div>
-        </div>
-        <div class="l-card">
-          <div class="l-card-title">Python and machine learning</div>
-          <div class="l-card-body">Questions that a query cannot answer — forecasts, clustering, anomaly detection — run as Python analytics on the result set.</div>
-        </div>
-        <div class="l-card">
-          <div class="l-card-title">Profiling on the result</div>
-          <div class="l-card-body">Per-column ranges, null counts and distributions for the rows you just pulled, in a dock under the grid.</div>
-        </div>
-        <div class="l-card">
-          <div class="l-card-title">Pinned questions and history</div>
-          <div class="l-card-body">Recent and pinned questions are kept per user and per connection, so a good question is reusable.</div>
-        </div>
-        <div class="l-card">
-          <div class="l-card-title">Full run trace</div>
-          <div class="l-card-body">Node-by-node timings, the generated SQL, and its provenance sit one click from the answer.</div>
+        <div class="l-outcomes">
+          <article class="l-outcome">
+            <span aria-hidden="true">01</span>
+            <h3>Semantic grounding</h3>
+            <p>Every question starts with the curated Jeen Data catalog for the selected connection.</p>
+          </article>
+          <article class="l-outcome">
+            <span aria-hidden="true">02</span>
+            <h3>Governed execution</h3>
+            <p>Generated work passes policy and safety checks before read-only execution.</p>
+          </article>
+          <article class="l-outcome">
+            <span aria-hidden="true">03</span>
+            <h3>Traceable evidence</h3>
+            <p>Rows, queries, timings, provenance, and findings remain attached to the answer.</p>
+          </article>
         </div>
       </div>
     </section>
 
-    <!-- 7 — Connections -->
-    <section id="connections" class="l-section">
-      <div class="l-eyebrow">CONNECTIONS</div>
-      <h2 class="l-h2">One workspace, every registered source.</h2>
-      <div class="l-connections">
-        <div class="l-copy">Each connection carries its own curated metadata, its own suggested questions, and its own history. Switching source is a dropdown in the top bar — the agent re-grounds on the metadata for that connection.</div>
-        <div class="l-conn-list">
-          <div class="l-conn-row">
-            <span class="l-conn-name">PostgreSQL</span>
-            <span class="l-conn-chip l-chip-live">Live</span>
-          </div>
-          <div class="l-conn-row">
-            <span class="l-conn-name">Power BI / DAX</span>
-            <span class="l-conn-chip l-chip-progress">In progress</span>
-          </div>
-          <div class="l-conn-row">
-            <span class="l-conn-name">Databricks</span>
-            <span class="l-conn-chip l-chip-progress">In progress</span>
-          </div>
-          <div class="l-conn-row">
-            <span class="l-conn-name">Trino</span>
-            <span class="l-conn-chip l-chip-progress">In progress</span>
-          </div>
-          <div class="l-conn-row">
-            <span class="l-conn-name">Snowflake</span>
-            <span class="l-conn-chip l-chip-roadmap">Roadmap</span>
-          </div>
-        </div>
+    <section class="l-wrap l-section">
+      <div class="l-section-heading">
+        <span class="l-eyebrow">FAQ</span>
+        <h2>What teams ask before they connect their data.</h2>
       </div>
-    </section>
-
-    <!-- 8 — Architecture -->
-    <section id="architecture" class="l-section">
-      <div class="l-eyebrow">ARCHITECTURE</div>
-      <h2 class="l-h2">A traced graph, not a black box.</h2>
-      <div class="l-nodes">
-        <div class="l-node"><div class="l-node-name">memory</div><div class="l-node-body">Summarise history over budget</div></div>
-        <div class="l-node"><div class="l-node-name">router</div><div class="l-node-body">Classify intent and safety</div></div>
-        <div class="l-node"><div class="l-node-name">catalog</div><div class="l-node-body">Load the connection's metadata bundle</div></div>
-        <div class="l-node"><div class="l-node-name">sql_gen</div><div class="l-node-body">Generate, retry up to three times</div></div>
-        <div class="l-node"><div class="l-node-name">validation</div><div class="l-node-body">Checked against your governance policy</div></div>
-        <div class="l-node"><div class="l-node-name">execution</div><div class="l-node-body">Read-only run on the source</div></div>
-        <div class="l-node"><div class="l-node-name">eval</div><div class="l-node-body">Intent match, findings, follow-ups</div></div>
-        <div class="l-node"><div class="l-node-name">output</div><div class="l-node-body">Format, save to memory, write trace</div></div>
-      </div>
-      <div class="l-layers">
-        <div class="l-layer"><div class="l-layer-title">Model layer</div><div class="l-layer-body">Model-agnostic.</div></div>
-        <div class="l-layer"><div class="l-layer-title">Metadata layer</div><div class="l-layer-body">Curated metadata from the shared DB.</div></div>
-        <div class="l-layer"><div class="l-layer-title">Deployment</div><div class="l-layer-body">Docker Compose or Helm on AKS, API + UI separate, Entra ID login.</div></div>
-      </div>
-    </section>
-
-    <!-- 9 — FAQ -->
-    <section class="l-section">
-      <div class="l-eyebrow">FAQ</div>
       <div class="l-faq">
-        <div class="l-faq-row">
-          <div class="l-faq-q">What does it know about our data?</div>
-          <div class="l-faq-a">Only the metadata your team curates for each connection. That grounding is inspectable and editable, so a wrong answer is traceable to a definition you can fix.</div>
-        </div>
-        <div class="l-faq-row">
-          <div class="l-faq-q">Can it change our data?</div>
-          <div class="l-faq-a">No. Access to every connection is read-only, and anything the agent generates is checked against your governance policy before it is allowed to run.</div>
-        </div>
-        <div class="l-faq-row">
-          <div class="l-faq-q">Which models can we use?</div>
-          <div class="l-faq-a">Whichever your tenant approves. The model provider is a deployment setting, and the agent is not tied to one vendor.</div>
-        </div>
-        <div class="l-faq-row">
-          <div class="l-faq-q">How does it learn our business terms?</div>
-          <div class="l-faq-a">Business terms and question/answer knowledge pairs are curated per connection and travel with the metadata bundle the agent loads.</div>
-        </div>
-        <div class="l-faq-row">
-          <div class="l-faq-q">Where does it run?</div>
-          <div class="l-faq-a">In your environment. Docker Compose for local and a Helm chart for AKS, with prompts editable from Settings without a redeploy.</div>
-        </div>
+        <details>
+          <summary>How do Jeen Insights and Jeen Data work together?</summary>
+          <p>Jeen Data is the semantic layer and curated catalog. Jeen Insights is the natural-language analytics workspace that uses that catalog to query registered sources and show the evidence behind each answer.</p>
+        </details>
+        <details>
+          <summary>Can Jeen Insights change source data?</summary>
+          <p>No. Data-source execution is read-only, and generated work passes the configured governance and validation checks before it can run.</p>
+        </details>
+        <details>
+          <summary>What context does the model receive?</summary>
+          <p>The active connection's curated catalog can include tables, columns, relationships, business terms, profiles, and knowledge pairs, together with the conversation context needed for the question.</p>
+        </details>
+        <details>
+          <summary>Where can it run?</summary>
+          <p>Jeen Insights is designed for deployment in your environment, including cloud, on-premises, and isolated enterprise configurations.</p>
+        </details>
       </div>
     </section>
 
-    <!-- 10 — Final CTA -->
-    <section class="l-cta">
-      <h2>See it answer a question against your own schema.</h2>
-      <p>Register one connection, load its curated metadata, and ask your own questions against it.</p>
-      <div class="l-cta-buttons">
-        <a class="l-cta-white" href="/">Start with one connection</a>
-        <a class="l-cta-ghost" href="/">View the onboarding</a>
+    <section class="l-wrap l-cta">
+      <span class="l-eyebrow">Your semantic layer. Your questions.</span>
+      <h2>Put Jeen Data to work in every answer.</h2>
+      <p>Already using Jeen? Open the workspace. Evaluating the platform? See how Jeen Insights works with your catalog and data estate.</p>
+      <div class="l-actions">
+        <a class="l-button l-button-inverse" href="/">Open Jeen Insights</a>
+        <a class="l-button l-button-ghost"
+           href="mailto:sales@jeen.ai?subject=Jeen%20Insights%20demo">Request a demo</a>
       </div>
     </section>
-
   </main>
 
-  <!-- 11 — Footer -->
   <footer class="l-footer">
-    <div class="l-footer-inner">
-      <img src="{{ url_for('static', filename='images/jeen-mark.png') }}" alt="">
-      <span>Jeen Insights</span>
-      <a class="l-foot-link" href="/">First-time user experience</a>
+    <div class="l-wrap l-footer-inner">
+      <a class="l-brand" href="#top">
+        <img src="{{ url_for('static', filename='images/jeen-mark.png') }}" alt="" width="24" height="24">
+        <span>Jeen Insights</span>
+      </a>
+      <p>Natural-language analytics, grounded in Jeen Data.</p>
+      <div class="l-footer-links">
+        <a href="/">Open Insights</a>
+        <a href="https://jeen.ai/">Jeen.ai</a>
+      </div>
     </div>
   </footer>
-
 </body>
 </html>
