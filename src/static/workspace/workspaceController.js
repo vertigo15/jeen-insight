@@ -750,8 +750,8 @@
             this._move('#question-history', '#v3-pinned-slot');
 
             const actions = [
-                ['#export-btn', t('common.export'), 'v3-icon-action', ICON.export],
-                ['#copy-results-btn', t('common.copy'), 'v3-icon-action', ICON.copy],
+                ['#export-btn', t('results.actions.exportLabel'), 'v3-icon-action', ICON.export],
+                ['#copy-results-btn', t('results.actions.copyLabel'), 'v3-icon-action', ICON.copy],
                 ['#send-result-btn', t('common.send'), '', null],
             ];
             actions.forEach(([selector, label, className, icon]) => {
@@ -2761,7 +2761,7 @@
             }
             const analysis = result.analysis && result.analysis.skill ? result.analysis : null;
             const mlPill = analysis
-                ? `<span class="v3-skill-chip">${esc(skillLabel[analysis.skill] || analysis.skill)}</span>${result.low_confidence || analysis.low_confidence ? `<span class="v3-lowconf-pill">${h('conversation.turn.lowConfidence')}</span>` : ''}`
+                ? `<span class="v3-skill-chip">${esc(skillLabel[analysis.skill] || analysis.skill)}</span>${result.low_confidence || analysis.low_confidence ? `<span class="v3-lowconf-pill" title="${h('analysis.strip.lowConfidenceTitle')}">${h('conversation.turn.lowConfidence')}</span>` : ''}`
                 : '';
             const insightsDirection = directionOf(findings.map(textOf).join(' '));
             const dots = PHASES.map((phase) => {
@@ -2901,7 +2901,7 @@
                     : turn.snapshotStatus === 'too_large' ? h('conversation.restored.freshTooLarge') : h('conversation.restored.snapshot');
                 const analysis = turn.result.analysis && turn.result.analysis.skill ? turn.result.analysis : null;
                 const pill = analysis && window.JeenAnalysisUI
-                    ? `<span class="v3-skill-chip">${esc(window.JeenAnalysisUI.SKILL_LABEL[analysis.skill] || analysis.skill)}</span>${turn.result.low_confidence || analysis.low_confidence ? `<span class="v3-lowconf-pill">${h('conversation.turn.lowConfidence')}</span>` : ''}`
+                    ? `<span class="v3-skill-chip">${esc(window.JeenAnalysisUI.SKILL_LABEL[analysis.skill] || analysis.skill)}</span>${turn.result.low_confidence || analysis.low_confidence ? `<span class="v3-lowconf-pill" title="${h('analysis.strip.lowConfidenceTitle')}">${h('conversation.turn.lowConfidence')}</span>` : ''}`
                     : '';
                 return `<div class="v3-run-strip">${pill}
                   <span class="v3-run-meta">${label}${turn.hasChart ? ` · ${h('conversation.restored.chart')}` : ''}</span>
@@ -4025,7 +4025,7 @@
                     : `<span class="v3-status">${cap.capped ? h('results.status.completedCapped') : h('results.status.completed')}</span>`;
             const metaHtml = streaming
                 ? `<span class="v3-result-meta">${h('results.status.rowsReady', { rows: rows.length })}</span>`
-                : `<span class="v3-result-meta">${h('results.status.meta', { rows: rows.length, exec: formatMs(metrics.execution_time_ms), llm: formatMs(metrics.llm_latency_ms) })}</span>`;
+                : this._resultTimingMeta(rows.length, metrics);
             metaRow.innerHTML = `
               ${statusHtml}
               ${mlStrip}
@@ -4473,6 +4473,15 @@
             overlay.querySelector('.v3-profile-close').addEventListener('click', close);
             overlay.addEventListener('click', (event) => { if (event.target === overlay) close(); });
             document.getElementById('profiling-header')?.click();
+        },
+
+        /** Row count stays plain text; the exec and llm fragments explain themselves. */
+        _resultTimingMeta(rows, metrics) {
+            const line = t('results.status.meta', { rows, exec: '\u0001', llm: '\u0002' });
+            const part = (text, tipKey) => `<span class="v3-token-count" tabindex="0" data-tip="${h(tipKey)}">${escFull(text)}</span>`;
+            return `<span class="v3-result-meta">${escFull(line)
+                .replace('\u0001', part(t('results.status.execPart', { time: formatMs(metrics.execution_time_ms) }), 'results.status.execTip'))
+                .replace('\u0002', part(t('results.status.llmPart', { time: formatMs(metrics.llm_latency_ms) }), 'results.status.llmTip'))}</span>`;
         },
 
         _setActionsEnabled(enabled) {

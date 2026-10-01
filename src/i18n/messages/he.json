@@ -536,7 +536,11 @@
       "analysing": "בניתוח",
       "failedAfterRows": "הניתוח נכשל",
       "rowsReady": "{rows, plural, one {שורה אחת} two {# שורות} other {# שורות}} · הסיכום והתובנות נכתבים…",
-      "meta": "{rows, plural, one {שורה אחת} two {# שורות} other {# שורות}} · הרצה {exec} · מודל {llm}",
+      "meta": "{rows, plural, one {שורה אחת} two {# שורות} other {# שורות}} · {exec} · {llm}",
+      "execPart": "הרצה {time}",
+      "llmPart": "מודל {time}",
+      "execTip": "זמן מסד הנתונים: כמה זמן לקחה הרצת השאילתה.",
+      "llmTip": "זמן המודל: כמה זמן לקח למודל השפה לכתוב את התשובה.",
       "staleNote": "התשובה המוצלחת האחרונה — השאלה החדשה נכשלה",
       "snapshotFrom": "תמונת מצב מ-{when}"
     },
