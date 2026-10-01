@@ -536,7 +536,11 @@
       "analysing": "Analysing",
       "failedAfterRows": "Analysis failed",
       "rowsReady": "{rows, plural, one {# row} other {# rows}} · writing summary and insights…",
-      "meta": "{rows, plural, one {# row} other {# rows}} · {exec} exec · {llm} llm",
+      "meta": "{rows, plural, one {# row} other {# rows}} · {exec} · {llm}",
+      "execPart": "{time} exec",
+      "llmPart": "{time} llm",
+      "execTip": "Database time: how long the query took to run.",
+      "llmTip": "Model time: how long the language model took to write this answer.",
       "staleNote": "Last successful answer — the newest question failed",
       "snapshotFrom": "Snapshot from {when}"
     },

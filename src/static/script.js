@@ -2437,7 +2437,7 @@ async function displayHistory() {
                 const safe = escapeHtml(q).replace(/'/g, "\\'");
                 return `<div class="history-item pinned-item" onclick="_jeenQuestionClick('${safe}')">
                     <span class="question-text" dir="auto" title="${escapeHtml(q)}">${escapeHtml(q)}<small>${when(q)}</small></span>
-                    <button class="pin-icon" data-pin-action="unpin" aria-label="${_th('pinned.unpin')}" onclick="unpinQuestion(event, '${safe}')">★</button>
+                    <button class="pin-icon" data-pin-action="unpin" aria-label="${_th('pinned.unpin')}" title="${_th('pinned.unpin')}" onclick="unpinQuestion(event, '${safe}')">★</button>
                 </div>`;
             }).join('');
         }
@@ -2449,7 +2449,7 @@ async function displayHistory() {
                 const safe = escapeHtml(q).replace(/'/g, "\\'");
                 return `<div class="history-item" onclick="_jeenQuestionClick('${safe}')">
                     <span class="question-text" dir="auto" title="${escapeHtml(q)}">${escapeHtml(q)}<small>${when(q)}</small></span>
-                    <button class="pin-icon" data-pin-action="pin" aria-label="${_th('pinned.pin')}" onclick="pinQuestion(event, '${safe}')">☆</button>
+                    <button class="pin-icon" data-pin-action="pin" aria-label="${_th('pinned.pin')}" title="${_th('pinned.pin')}" onclick="pinQuestion(event, '${safe}')">☆</button>
                 </div>`;
             }).join('');
         }
@@ -5174,13 +5174,10 @@ function updateThemeIcon(theme) {
     const iconEl = document.getElementById('theme-icon');
     const btn    = document.getElementById('theme-toggle');
     if (!iconEl || !btn) return;
-    if (theme === 'dark') {
-        iconEl.innerHTML = ICON_SUN;
-        btn.setAttribute('aria-label', _t('shell.theme.switchToLight'));
-    } else {
-        iconEl.innerHTML = ICON_MOON;
-        btn.setAttribute('aria-label', _t('shell.theme.switchToDark'));
-    }
+    const label = theme === 'dark' ? _t('shell.theme.switchToLight') : _t('shell.theme.switchToDark');
+    iconEl.innerHTML = theme === 'dark' ? ICON_SUN : ICON_MOON;
+    btn.setAttribute('aria-label', label);
+    btn.title = label;
 }
 
 function toggleTheme() {
