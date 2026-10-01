@@ -54,10 +54,10 @@
             <span></span><span></span><span></span>
             <strong>Jeen Insights workspace</strong>
           </div>
-          <img src="{{ url_for('static', filename='landing/insights-answer.png') }}"
-               alt="Jeen Insights answering a sales question with a chart, key findings, and suggested follow-up questions."
+          <img src="{{ url_for('static', filename='landing/insights-answer-2026-10.png') }}"
+               alt="Jeen Insights workspace answering a sales question with a chart, key findings, follow-up questions, and feedback controls."
                width="1200" height="750" decoding="async" fetchpriority="high">
-          <figcaption>A complete answer in one workspace: visualization, findings, follow-ups, and the evidence behind the result.</figcaption>
+          <figcaption>A complete Jeen Insights answer in one workspace: visualization, findings, follow-ups, feedback, and the evidence behind the result.</figcaption>
         </figure>
       </div>
     </section>
@@ -114,20 +114,22 @@
       <div class="l-wrap l-feature">
         <div class="l-feature-copy">
           <span class="l-eyebrow">Jeen Data semantic layer</span>
-          <h2>Grounded in the definitions your business trusts.</h2>
-          <p>Jeen Data, curated through Schema Modeler, supplies the context for every registered connection: tables, columns, relationships, business terms, profiles, and knowledge pairs.</p>
-          <p>Jeen Insights loads that catalog before it plans a query or analysis. The model starts with your definitions—not a generic interpretation of the warehouse.</p>
+          <h2>Every answer starts with your business context.</h2>
+          <p>Jeen Data is the curated semantic layer for every connected source. It gives Jeen Insights everything it needs to answer reliably: approved tables and columns, join paths, business definitions, real catalog values, and verified example queries.</p>
+          <p>Before Jeen Insights writes a query or runs an analysis, it loads this context for the selected connection. Questions are resolved against your definitions and real values, and generated work is checked against the catalog before it runs.</p>
           <ul class="l-check-list">
-            <li>Curated once and shared across the Jeen platform</li>
-            <li>Scoped to the active connection at question time</li>
-            <li>Inspectable and correctable by your data team</li>
+            <li>Approved structures, relationships, and business terms</li>
+            <li>Verified examples that capture how your team measures results</li>
+            <li>Profiled values that ground names, filters, and typos in real data</li>
+            <li>Visibility and sensitivity controls that protect restricted context</li>
+            <li>Maintained once and shared across the Jeen platform</li>
           </ul>
         </div>
         <figure class="l-feature-shot">
-          <img src="{{ url_for('static', filename='landing/jeen-data-catalog.png') }}"
-               alt="Jeen Insights Metadata and Catalog settings showing a healthy Jeen catalog source and its available catalog tools."
+          <img src="{{ url_for('static', filename='landing/jeen-data-grounding-2026-10.png') }}"
+               alt="Jeen Insights showing a Bikes filter grounded to a verified catalog value alongside validated read-only SQL."
                width="1200" height="878" loading="lazy" decoding="async">
-          <figcaption>The Jeen Data catalog can be delivered from the shared metadata database or through the Jeen catalog service.</figcaption>
+          <figcaption>Jeen Data grounds the question: the Bikes filter is matched to a real catalog value, then the generated SQL is validated before it runs.</figcaption>
         </figure>
       </div>
     </section>
@@ -269,7 +271,7 @@
       <div class="l-faq">
         <details>
           <summary>How do Jeen Insights and Jeen Data work together?</summary>
-          <p>Jeen Data is the semantic layer and curated catalog. Jeen Insights is the natural-language analytics workspace that uses that catalog to query registered sources and show the evidence behind each answer.</p>
+          <p>Jeen Data is the curated semantic layer for connected sources. It supplies approved structures, join paths, business terms, real values, and verified examples that Jeen Insights uses to plan, validate, and explain every answer.</p>
         </details>
         <details>
           <summary>Can Jeen Insights change source data?</summary>
@@ -277,7 +279,7 @@
         </details>
         <details>
           <summary>What context does the model receive?</summary>
-          <p>The active connection's curated catalog can include tables, columns, relationships, business terms, profiles, and knowledge pairs, together with the conversation context needed for the question.</p>
+          <p>The active connection's curated catalog can include approved tables, columns, relationships, business terms, profiled values, and verified example queries, together with the conversation context needed for the question.</p>
         </details>
         <details>
           <summary>Does Jeen Insights optimize inventory?</summary>

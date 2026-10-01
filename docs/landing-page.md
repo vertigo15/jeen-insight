@@ -11,14 +11,15 @@ framework, external font request, or build step.
 ## Product positioning
 
 Customer-facing copy uses **Jeen Data semantic layer** for the shared curated
-catalog. In the implementation and operator interface, that catalog is managed
-through **Schema Modeler** and delivered from the shared metadata database or a
-configured catalog service.
+context behind every answer. The page focuses on what that layer provides and
+how Insights uses it, rather than exposing operator tooling or delivery
+protocols.
 
-Jeen Data supplies the per-connection tables, columns, relationships, business
-terms, profiles, and knowledge pairs that ground an answer. Jeen Insights loads
-that context before planning governed, read-only execution against a registered
-source.
+Jeen Data supplies each connection's approved tables and columns, join paths,
+business definitions, profiled values, sensitivity context, and verified
+question-to-query examples. Jeen Insights loads that context before planning
+governed, read-only work, resolves question terms and filters against the
+catalog, and validates generated queries against its approved structures.
 
 The page therefore follows five messages:
 
@@ -83,17 +84,20 @@ UI routes continue to use the normal account/cookie/header locale resolution.
 - `src/static/fonts/fonts.css` — self-hosted Urbanist and Noto Sans Hebrew font
   faces.
 - `src/static/design-tokens.css` — shared product colors and typography aliases.
-- `src/static/landing/insights-answer.png` — answered workspace hero.
-- `src/static/landing/jeen-data-catalog.png` — catalog source and semantic-layer
-  proof.
+- `src/static/landing/insights-answer-2026-10.png` — current answered-workspace
+  hero with chart, findings, follow-ups, feedback, and evidence controls.
+- `src/static/landing/jeen-data-grounding-2026-10.png` — grounded catalog value,
+  validation metrics, and read-only SQL shown together.
 - `src/static/landing/inspectable-sql.png` — result rows, grounded filter, and
   generated SQL.
 - `src/static/landing/advanced-analytics.png` — anomaly-analysis result.
 
-The production screenshots are size-limited copies of the corresponding
-`.preview/shots/` references. The hero is loaded eagerly; below-fold images use
-native lazy loading and all images include intrinsic dimensions, useful alt
-text, and captions.
+The two dated screenshots are curated captures of the current workspace UI with
+deterministic demo data; the grounded filter, joins, predicate, result, and
+metrics are internally consistent. Dated filenames prevent browsers and CDNs
+from reusing older product images after a refresh. The hero is loaded eagerly;
+below-fold images use native lazy loading and all images include intrinsic
+dimensions, useful alt text, and captions.
 
 ## Page structure
 
@@ -102,7 +106,8 @@ text, and captions.
 3. Trust strip: Jeen Data grounding, read-only execution, inspectable evidence,
    and deployment control.
 4. Three-step simple-question, contextual-follow-up, and decision-support flow.
-5. `#jeen-data` explanation with the catalog screenshot.
+5. `#jeen-data` explanation with real-value grounding and query-validation
+   proof.
 6. SQL and run-evidence product proof.
 7. `#capabilities` advanced-analysis story, anomaly screenshot, and complete
    grouped skill overview.
@@ -139,6 +144,8 @@ The labels remain consistent in the header, hero, and closing block.
 - is anonymously reachable;
 - remains English under a Hebrew cookie and `Accept-Language`;
 - states the Jeen Data semantic-layer relationship;
+- describes the complete context Jeen Data provides without exposing internal
+  operator names or delivery protocols;
 - states the simple-to-complex question progression and forecast-informed
   inventory-planning boundary;
 - names all 12 registered analysis capabilities and preserves review,
