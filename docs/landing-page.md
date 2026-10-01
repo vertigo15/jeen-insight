@@ -20,13 +20,48 @@ terms, profiles, and knowledge pairs that ground an answer. Jeen Insights loads
 that context before planning governed, read-only execution against a registered
 source.
 
-The page therefore follows four messages:
+The page therefore follows five messages:
 
-1. Ask a business question in plain language.
-2. Ground the work in the curated Jeen Data catalog.
-3. Execute through the configured governance and read-only controls.
-4. Return the answer together with inspectable rows, SQL or Python, findings,
+1. Ask a direct business question in plain language.
+2. Continue with follow-up questions that retain the relevant result and
+   conversation context.
+3. Move into governed ML or statistical analysis when one query is not enough.
+4. Ground every path in the curated Jeen Data catalog and execute through the
+   configured governance and read-only controls.
+5. Return the answer together with inspectable rows, SQL or Python, findings,
    and run evidence.
+
+## Question spectrum and advanced analysis
+
+The `#how` section uses three concrete questions to explain the product range:
+
+- **Simple:** show sales by retailer for the current quarter.
+- **Follow-up:** ask which products drove the change in the same conversation.
+- **Decision support:** forecast demand by retailer to inform next-month
+  inventory planning.
+
+The final example is deliberately forecast-informed decision support, not an
+inventory-optimization claim. Jeen Insights provides projections, prediction
+intervals, trends, and model evidence; planning teams still apply lead times,
+service levels, costs, and operational constraints.
+
+The `#capabilities` section mirrors the skill registry in
+`src/analysis/contracts.py`. It presents the 12 supported skills in three
+customer-facing groups:
+
+- **Predict and monitor:** forecast, anomaly detection, changepoint detection,
+  and seasonality.
+- **Explain and quantify:** contribution analysis, correlation, driver
+  analysis, and regression.
+- **Segment and evaluate:** clustering, classification, cohort retention, and
+  A/B testing.
+
+Business outcomes lead each group, with engine names such as AutoARIMA,
+AutoETS, MSTL, K-means, HDBSCAN, gradient boosting, OLS, logistic regression,
+and statistical tests as supporting detail. The copy distinguishes statistical
+analysis from fitted ML, avoids causal claims, and explains that enabled skills
+depend on deployment configuration and data suitability. The user reviews or
+adjusts the proposed setup before execution.
 
 ## Route and access
 
@@ -66,11 +101,12 @@ text, and captions.
 2. Product definition, dual CTAs, and a real answered-workspace screenshot.
 3. Trust strip: Jeen Data grounding, read-only execution, inspectable evidence,
    and deployment control.
-4. Three-step question-to-answer flow.
+4. Three-step simple-question, contextual-follow-up, and decision-support flow.
 5. `#jeen-data` explanation with the catalog screenshot.
 6. SQL and run-evidence product proof.
-7. Advanced Python analytics product proof.
-8. `#capabilities` feature grid.
+7. `#capabilities` advanced-analysis story, anomaly screenshot, and complete
+   grouped skill overview.
+8. Complementary workflow features for chart refinement, evidence, and history.
 9. `#trust` outcomes: semantic grounding, governed execution, traceability.
 10. Accessible FAQ disclosures.
 11. Closing CTA and footer.
@@ -103,6 +139,10 @@ The labels remain consistent in the header, hero, and closing block.
 - is anonymously reachable;
 - remains English under a Hebrew cookie and `Accept-Language`;
 - states the Jeen Data semantic-layer relationship;
+- states the simple-to-complex question progression and forecast-informed
+  inventory-planning boundary;
+- names all 12 registered analysis capabilities and preserves review,
+  deployment, and non-causal qualifications;
 - exposes the product and demo CTAs; and
 - references product screenshots that are served successfully.
 
