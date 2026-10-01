@@ -1,5 +1,5 @@
 ---
-description: Test types in this repo and where a new test of each type goes (unit, offline eval, integration, mocked UI e2e, live smoke/e2e/feature/regression/security)
+description: Test types in this repo and where a new test of each type goes (unit, offline eval, integration, mocked UI e2e, live smoke/e2e/feature/regression/security, stress)
 globs: tests/**,evals/**
 alwaysApply: false
 ---
@@ -18,6 +18,7 @@ Full guide: `tests/README.md`. When asked for "a <type> test for X", place it as
 | live e2e question / conversation | data only: `tests/e2e/live/kp.cases.js` (knowledge-pair question), `questions.js` (SQL / ML case), `conversations.js` (multi-turn) | `npm run test:live` |
 | live feature test | a `test()` in the matching `tests/e2e/live/features.<results|history|llm|admin>.live.spec.js` | `npm run test:live:features` |
 | live security check | `tests/e2e/live/security.live.spec.js` | `npm run test:live:security` |
+| stress / load / concurrency test (many users in parallel, accuracy and speed per level) | `tests/stress/` (plain Node runner; questions come from `tests/e2e/live/kp.cases.js`, grading from `sqlEquivalence.js`); offline checks in `tests/stress/selftest.js` | `cd tests/stress && npm run stress` (`npm test` for the offline checks) |
 
 ## Live-suite rules (`tests/e2e/live/`)
 
