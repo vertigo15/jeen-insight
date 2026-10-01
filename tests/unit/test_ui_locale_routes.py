@@ -89,6 +89,12 @@ def test_landing_is_public_english_and_contains_product_proof(client):
     assert _html_attrs(body) == ("en", "ltr")
     assert res.headers["Content-Language"] == "en"
     assert "natural-language analytics workspace powered by the Jeen Data semantic layer" in body
+    assert "It gives Jeen Insights everything it needs to answer reliably" in body
+    assert "real catalog values" in body
+    assert "generated work is checked against the catalog before it runs" in body
+    assert "Schema Modeler" not in body
+    assert "schema-modeler" not in body
+    assert "MCP Server" not in body
     assert 'href="/"' in body and "Open Jeen Insights" in body
     assert "mailto:sales@jeen.ai?subject=Jeen%20Insights%20demo" in body
     assert "Show sales by retailer this quarter." in body
@@ -117,8 +123,8 @@ def test_landing_is_public_english_and_contains_product_proof(client):
         assert capability in body
 
     screenshot_names = (
-        "insights-answer.png",
-        "jeen-data-catalog.png",
+        "insights-answer-2026-10.png",
+        "jeen-data-grounding-2026-10.png",
         "inspectable-sql.png",
         "advanced-analytics.png",
     )
