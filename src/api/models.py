@@ -944,6 +944,52 @@ class AnalyticsErrors(BaseModel):
     top_failing_questions: List[AnalyticsFailingQuestion]
 
 
+class AnalyticsExecutionRun(BaseModel):
+    id: int
+    query_id: str
+    occurred_at: Optional[str] = None
+    user_id: str
+    name: Optional[str] = None
+    email: Optional[str] = None
+    source_key: Optional[str] = None
+    outcome: Literal["success", "error", "refused"]
+    error_type: Optional[str] = None
+    route: Optional[str] = None
+    skill: Optional[str] = None
+    llm_model: Optional[str] = None
+    query_language: Optional[Literal["sql", "dax"]] = None
+    total_tokens: Optional[int] = None
+    input_tokens: Optional[int] = None
+    llm_latency_ms: Optional[int] = None
+    execution_time_ms: Optional[int] = None
+    graph_time_ms: Optional[int] = None
+    row_count: Optional[int] = None
+    question: str
+    detail_available: bool = False
+
+
+class AnalyticsExecutionRuns(BaseModel):
+    days: int
+    items: List[AnalyticsExecutionRun] = Field(default_factory=list)
+    # Pass back as ``before`` for the next older keyset page.
+    next_before: Optional[int] = None
+
+
+class AnalyticsExecutionTraceEvent(BaseModel):
+    node: str
+    elapsed_ms: int = 0
+    type: str = "logic"
+
+
+class AnalyticsExecutionDetail(AnalyticsExecutionRun):
+    session_id: Optional[str] = None
+    answer: Any = None
+    generated_query: Optional[str] = None
+    error_message: Optional[str] = None
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+    node_trace: List[AnalyticsExecutionTraceEvent] = Field(default_factory=list)
+
+
 class OnboardingPatch(BaseModel):
     """Partial update to a user's onboarding (FTUE) state.
 

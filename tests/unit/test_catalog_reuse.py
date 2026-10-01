@@ -284,7 +284,7 @@ def _sql_tool_call(sql: str) -> Dict[str, Any]:
     }
 
 
-def _build_agent(history):
+def _build_agent(history, usage_ledger=None):
     from src.agent.jeen_insights_agent import JeenInsightsAgent
     from src.agent.langgraph_agent.prompt_loader import PromptLoader
 
@@ -326,6 +326,7 @@ def _build_agent(history):
         history_service=history,
         user_resolver=user_resolver,
         prompt_loader=PromptLoader(),
+        usage_ledger=usage_ledger,
     )
 
 
@@ -495,7 +496,10 @@ class TestPreGraphCatalogFailure:
     @pytest.mark.asyncio
     async def test_persisted_trace_carries_timings_but_no_prompts(self):
         history = _history_mock()
-        agent = _build_agent(history)
+        ledger = MagicMock()
+        ledger.record_query = AsyncMock()
+        ledger.record_execution_detail = AsyncMock()
+        agent = _build_agent(history, usage_ledger=ledger)
 
         in_graph, _loader = _loader_patch(_BUNDLE)
         with in_graph, \
@@ -511,6 +515,17 @@ class TestPreGraphCatalogFailure:
         assert {e["node"] for e in stored} >= {"pre_graph_setup", "catalog_lookup", "sql_generator"}
         for entry in stored:
             assert set(entry) == {"node", "elapsed_ms", "type"}
+
+        ledger.record_execution_detail.assert_awaited_once()
+        detail = ledger.record_execution_detail.await_args.kwargs
+        assert detail["question"] == "What are total sales?"
+        assert detail["generated_query"] == "SELECT SUM(SalesAmount) FROM FactSales"
+        assert "answer" in detail
+        assert {e["node"] for e in detail["trace"]} >= {
+            "pre_graph_setup", "catalog_lookup", "sql_generator", "observability_log",
+        }
+        assert not {"prompt", "results", "query_result", "node_prompts"} & set(detail)
+        assert all(set(event) == {"node", "elapsed_ms", "type"} for event in detail["trace"])
 
         # The response still gets the rich, prompt-bearing trace.
         pre_graph_event = next(ev for ev in result["trace"] if ev["node"] == "pre_graph_setup")
