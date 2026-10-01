@@ -1,0 +1,5 @@
+node_modules/
+# saved sessions of the admin and stress accounts (cookies + CSRF token)
+.auth/
+# one directory per run: run.json, answers.jsonl, summary.json, report.md
+results/

@@ -1,0 +1,17 @@
+{
+  "name": "jeen-insight-stress",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Stress test: 1, 5 and 10 users ask the curated knowledge-pair questions in parallel through the UI's streaming endpoint; accuracy and latency per level. Reuses tests/e2e/live (run npm install there first).",
+  "scripts": {
+    "stress": "node run.js",
+    "stress:quick": "STRESS_QUESTIONS_PER_USER=${STRESS_QUESTIONS_PER_USER:-4} node run.js",
+    "stress:users": "node run.js users",
+    "stress:report": "node run.js report",
+    "stress:teardown": "node run.js teardown",
+    "test": "node --test selftest.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
