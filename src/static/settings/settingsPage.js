@@ -3364,7 +3364,10 @@ export class SettingsPage {
                 <div id="sp-users-body" style="display:none">
                     <table class="sp-users-table">
                         <thead><tr>
-                            <th>${h('settings.users.member')}</th><th>${h('settings.users.role')}</th><th style="width:40px"></th>
+                            <th>${h('settings.users.member')}</th>
+                            <th>${h('settings.users.insightsRole')}</th>
+                            <th>${h('settings.users.metadataRole')}</th>
+                            <th style="width:40px"></th>
                         </tr></thead>
                         <tbody id="sp-users-rows"></tbody>
                     </table>
@@ -3373,11 +3376,22 @@ export class SettingsPage {
                         <input id="sp-add-name"     class="sp-add-user-input sp-add-full" type="text" dir="auto" placeholder="${h('settings.users.fullName')}" />
                         <input id="sp-add-email"    class="sp-add-user-input" type="text" dir="ltr" placeholder="${h('login.emailLabel')}" />
                         <input id="sp-add-password" class="sp-add-user-input" type="password" dir="ltr" placeholder="${h('settings.users.passwordPlaceholder')}" />
-                        <select id="sp-add-role" class="sp-add-user-select">
-                            <option value="viewer">${h('settings.users.roles.viewer')}</option>
-                            <option value="editor" selected>${h('settings.users.roles.editor')}</option>
-                            <option value="admin">${h('settings.users.roles.admin')}</option>
-                        </select>
+                        <label class="sp-role-field">
+                            <span>${h('settings.users.insightsRole')}</span>
+                            <select id="sp-add-role" class="sp-add-user-select">
+                                <option value="viewer">${h('settings.users.roles.viewer')}</option>
+                                <option value="editor" selected>${h('settings.users.roles.editor')}</option>
+                                <option value="admin">${h('settings.users.roles.admin')}</option>
+                            </select>
+                        </label>
+                        <label class="sp-role-field">
+                            <span>${h('settings.users.metadataRole')}</span>
+                            <select id="sp-add-metadata-role" class="sp-add-user-select">
+                                <option value="viewer" selected>${h('settings.users.roles.viewer')}</option>
+                                <option value="editor">${h('settings.users.roles.editor')}</option>
+                                <option value="admin">${h('settings.users.roles.admin')}</option>
+                            </select>
+                        </label>
                         <div class="sp-add-full" style="display:flex;align-items:center;gap:var(--space-3)">
                             <button class="sp-add-user-submit" id="sp-add-submit">${h('settings.users.addUser')}</button>
                             <span class="sp-users-error" id="sp-add-error"></span>
@@ -3425,12 +3439,8 @@ export class SettingsPage {
             const hueStyle = `background:hsl(${u.avatar_hue ?? 220},55%,52%);color:#fff`;
             const youBadge = isMe ? `<span class="sp-user-you">${h('settings.users.you')}</span>` : '';
 
-            const roleSelect = `
-                <select class="sp-role-select" data-uid="${u.id}" ${isMe ? 'disabled' : ''}>
-                    <option value="admin"   ${u.role === 'admin'   ? 'selected' : ''}>${h('settings.users.roles.admin')}</option>
-                    <option value="editor"  ${u.role === 'editor'  ? 'selected' : ''}>${h('settings.users.roles.editor')}</option>
-                    <option value="viewer"  ${u.role === 'viewer'  ? 'selected' : ''}>${h('settings.users.roles.viewer')}</option>
-                </select>`;
+            const roleSelect = _appRoleSelect(u, 'insights', u.role, isMe);
+            const metadataSelect = _appRoleSelect(u, 'metadata', u.metadata_role || 'viewer', isMe);
 
             const delBtn = isMe ? '' : `
                 <button class="sp-user-del-btn" data-uid="${u.id}" title="${h('settings.users.removeUser')}">
@@ -3454,23 +3464,29 @@ export class SettingsPage {
                     </div>
                 </td>
                 <td>${roleSelect}</td>
+                <td>${metadataSelect}</td>
                 <td>${delBtn}</td>
             </tr>`;
         }).join('');
 
         // Wire role changes
-        tbody.querySelectorAll('.sp-role-select').forEach(sel => {
+        tbody.querySelectorAll('.sp-role-select, .sp-metadata-role-select').forEach(sel => {
             sel.addEventListener('change', async () => {
                 const uid  = Number(sel.dataset.uid);
+                const app  = sel.dataset.app || 'insights';
                 const role = sel.value;
+                const appLabel = t(app === 'metadata' ? 'settings.users.metadataRole' : 'settings.users.insightsRole');
                 try {
                     const r = await fetch(`/api/users/${uid}/role`, {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ role }),
+                        body: JSON.stringify({ app, role }),
                     });
                     if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
-                    _showToast(t('settings.users.roleUpdated', { role: t(`settings.users.roles.${role}`) }), 'success');
+                    _showToast(t('settings.users.roleUpdated', {
+                        app: appLabel,
+                        role: t(`settings.users.roles.${role}`),
+                    }), 'success');
                 } catch (e) {
                     _showToast(t('settings.users.roleUpdateFailed', { detail: iso(e.message) }), 'error');
                     await this._loadUsers(); // revert UI
@@ -3507,6 +3523,7 @@ export class SettingsPage {
             const email    = (document.getElementById('sp-add-email')?.value    || '').trim();
             const password = (document.getElementById('sp-add-password')?.value || '');
             const role     =  document.getElementById('sp-add-role')?.value     || 'viewer';
+            const metadataRole = document.getElementById('sp-add-metadata-role')?.value || 'viewer';
 
             if (!name || !email || !password) { err.textContent = t('settings.users.allRequired'); return; }
             if (password.length < 8)           { err.textContent = t('settings.users.passwordTooShort'); return; }
@@ -3516,7 +3533,7 @@ export class SettingsPage {
                 const r = await fetch('/api/users', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, email, password, role }),
+                    body: JSON.stringify({ name, email, password, role, metadata_role: metadataRole }),
                 });
                 const data = await r.json();
                 if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
@@ -3577,6 +3594,14 @@ export class SettingsPage {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+function _appRoleSelect(user, app, role, disabled) {
+    const cls = app === 'metadata' ? 'sp-metadata-role-select' : 'sp-role-select';
+    const options = ['admin', 'editor', 'viewer'].map((value) =>
+        `<option value="${value}" ${role === value ? 'selected' : ''}>${h(`settings.users.roles.${value}`)}</option>`
+    ).join('');
+    return `<select class="${cls}" data-uid="${user.id}" data-app="${app}" ${disabled ? 'disabled' : ''}>${options}</select>`;
+}
 
 function _esc(text) {
     const d = document.createElement('div');

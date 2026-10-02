@@ -54,6 +54,27 @@ ingress:
   hosts: []
   tls: []
 
+# Kubernetes Gateway API exposure. The application remains plain HTTP behind
+# the Gateway; TLS terminates at the HTTPS listener and the HTTP listener
+# redirects clients to HTTPS.
+gateway:
+  enabled: false
+  className: ""
+  hostname: ""
+  annotations: {}
+  infrastructureAnnotations: {}
+  tls:
+    secretName: ""
+    keyVault:
+      enabled: false
+      name: ""
+      tenantId: ""
+      usePodIdentity: false
+      useVMManagedIdentity: false
+      userAssignedIdentityID: ""
+      certificateObjectName: ""
+      keyObjectName: ""
+
 # OpenShift Route — use instead of ingress on OpenShift (route.openshift.io/v1).
 route:
   enabled: false

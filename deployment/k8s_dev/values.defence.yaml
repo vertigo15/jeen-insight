@@ -1,9 +1,8 @@
 # Defence AKS overlay (cluster aks-openmetadata-dev161-weu, kube context
 # defence-aks-openmetadata-dev161). Follows the conventions of the Schema
 # Modeler release in the same cluster: images from the attached ACR (no pull
-# secret), no ingress controller — the UI is an internal Azure LoadBalancer
-# reached over the VPN as http://jeen-insights.dev161.internal — and the
-# `apps` node pool.
+# secret), Gateway API with Istio app routing and self-signed TLS, private
+# VPN-only DNS, and the `role=apps` workload node pool.
 #
 #   helm dependency build deployment/k8s_dev
 #   helm upgrade --install jeen-insights deployment/k8s_dev \
@@ -17,7 +16,8 @@
 # Secrets: the hand-created `jeen-insights-secrets` Secret (metadata DB
 # credentials shared with Schema Modeler, plus the generated FLASK_SECRET_KEY,
 # INTERNAL_API_SECRET, INTERNAL_ANALYTICS_SECRET, APP_ENCRYPTION_KEY and
-# SETUP_BOOTSTRAP_TOKEN). No Key Vault / External Secrets in this cluster.
+# SETUP_BOOTSTRAP_TOKEN). Application secrets remain hand-managed; the UI TLS
+# certificate and key are synced separately from Key Vault by the CSI driver.
 
 global:
   environment: defence-dev
@@ -34,7 +34,7 @@ global:
   strategy:
     type: Recreate
   nodeSelector:
-    agentpool: apps
+    role: apps
   env:
     JEEN_DEV_MODE: "false"
     INTERNAL_AUTH_ENABLED: "true"
@@ -91,7 +91,7 @@ jeen-insights-api:
       cpu: "1"
       memory: 1Gi
   nodeSelector:
-    agentpool: apps
+    role: apps
   networkPolicy:
     enabled: false
 
@@ -108,7 +108,7 @@ jeen-insights-analytics:
     ANALYSIS_MAX_SERIES_ROWS: "1500"
     ANALYSIS_MAX_CONCURRENT: "2"
   nodeSelector:
-    agentpool: apps
+    role: apps
   # Ingress from the API pods only, no egress (enforced when the cluster's
   # CNI implements NetworkPolicy; otherwise inert).
   networkPolicy:
@@ -124,11 +124,10 @@ jeen-insights-ui:
   env:
     UI_PORT: "8501"
     RATELIMIT_STORAGE_URI: memory://
-    # Browser-facing URL over the VPN (internal DNS record → LoadBalancer IP).
-    # Plain HTTP like the other apps in this cluster, so the session cookie
-    # must not be marked Secure.
-    PUBLIC_APP_URL: http://jeen-insights.dev161.internal
-    SESSION_COOKIE_SECURE: "false"
+    # Browser-facing URL over the VPN. TLS terminates at the internal Gateway;
+    # plaintext HTTP is accepted only to redirect clients to HTTPS.
+    PUBLIC_APP_URL: https://jeen-insights.dev161.internal
+    SESSION_COOKIE_SECURE: "true"
     # Direct Entra (MSAL) sign-in is off; Entra users arrive through Keycloak.
     AZURE_AD_CLIENT_ID: ""
     AZURE_AD_TENANT_ID: ""
@@ -158,9 +157,29 @@ jeen-insights-ui:
       readOnly: true
   service:
     port: 80
-    type: LoadBalancer
+    type: ClusterIP
+    annotations: {}
+  gateway:
+    enabled: true
+    className: approuting-istio
+    hostname: jeen-insights.dev161.internal
     annotations:
       service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+      service.beta.kubernetes.io/azure-load-balancer-ipv4: 10.42.6.19
+    infrastructureAnnotations:
+      service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+      service.beta.kubernetes.io/azure-load-balancer-ipv4: 10.42.6.19
+    tls:
+      secretName: jeen-insights-ui-tls
+      keyVault:
+        enabled: true
+        name: kv-jeen-defense-dev-30ff
+        tenantId: 65703eb9-76d8-4d4a-a438-2750a1401174
+        usePodIdentity: false
+        useVMManagedIdentity: true
+        userAssignedIdentityID: 9c6e24ab-62d6-44d8-a33b-f72134c660fa
+        certificateObjectName: jeen-insights-tls-crt
+        keyObjectName: jeen-insights-tls-key
   ingress:
     enabled: false
   resources:
@@ -171,6 +190,6 @@ jeen-insights-ui:
       cpu: "1"
       memory: 1Gi
   nodeSelector:
-    agentpool: apps
+    role: apps
   networkPolicy:
     enabled: false

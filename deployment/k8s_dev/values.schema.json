@@ -159,6 +159,7 @@
         },
         "networkPolicy": { "$ref": "#/definitions/networkPolicy" },
         "ingress": { "$ref": "#/definitions/ingress" },
+        "gateway": { "$ref": "#/definitions/gateway" },
         "route": { "$ref": "#/definitions/route" },
         "extraVolumes": {
           "type": "array",
@@ -344,6 +345,59 @@
         },
         "tls": { "type": "array", "items": { "type": "object" } }
       }
+    },
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "hostname": { "type": "string" },
+        "annotations": { "$ref": "#/definitions/stringMap" },
+        "infrastructureAnnotations": { "$ref": "#/definitions/stringMap" },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "secretName": { "type": "string" },
+            "keyVault": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "name": { "type": "string" },
+                "tenantId": { "type": "string" },
+                "usePodIdentity": { "type": "boolean" },
+                "useVMManagedIdentity": { "type": "boolean" },
+                "userAssignedIdentityID": { "type": "string" },
+                "certificateObjectName": { "type": "string" },
+                "keyObjectName": { "type": "string" }
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "enabled": { "const": true } },
+            "required": ["enabled"]
+          },
+          "then": {
+            "required": ["className", "hostname", "tls"],
+            "properties": {
+              "className": { "minLength": 1 },
+              "hostname": { "minLength": 1 },
+              "tls": {
+                "required": ["secretName"],
+                "properties": {
+                  "secretName": { "minLength": 1 }
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "route": {
       "type": "object",

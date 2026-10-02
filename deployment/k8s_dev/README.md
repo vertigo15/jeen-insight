@@ -127,6 +127,29 @@ before exposing the ingress.
 The ingress disables response buffering and raises proxy read/send timeouts for
 the UI's streaming insight responses.
 
+The defence overlay uses the cluster's `approuting-istio` GatewayClass. An
+internal Gateway terminates HTTPS for `jeen-insights.dev161.internal`, and its
+port 80 listener returns a permanent redirect to HTTPS. The UI Service remains
+private as a ClusterIP.
+
+Defence TLS material is not committed or rendered directly by Helm. A
+`SecretProviderClass` reads `jeen-insights-tls-crt` and
+`jeen-insights-tls-key` from `kv-jeen-defense-dev-30ff` through the existing
+user-assigned VM managed identity and syncs `Secret/jeen-insights-ui-tls`.
+The certificate is self-signed, matching the dashboard deployment, and its SAN
+must contain `jeen-insights.dev161.internal`. It encrypts traffic but is not
+browser-trusted, so clients show a certificate warning unless its certificate
+is installed explicitly as trusted. Key Vault storage does not make a
+self-signed certificate browser-trusted.
+
+Use a staged cutover: first deploy and validate the Gateway at its reserved
+private IP while retaining the old UI LoadBalancer and HTTP runtime settings
+through temporary Helm overrides. Test `/health` with the real hostname mapped
+to the Gateway IP. Then update the Keycloak and Zitadel redirect URIs and the
+private DNS record, apply the final defence values, and remove the old
+LoadBalancer. Validate the HTTP redirect, expected self-signed certificate,
+OIDC login, secure session cookie, and a long-running streamed insight.
+
 ## Optional platform controls
 
 - HPA and PDB rendering is disabled by default. Enable a PDB only when the

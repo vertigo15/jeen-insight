@@ -469,12 +469,31 @@ def slim_trace(events: list) -> List[Dict[str, Any]]:
             elapsed = int(event.get("elapsed_ms") or 0)
         except (TypeError, ValueError):
             elapsed = 0
-        slim.append({
+        item = {
             "node": str(node),
             "elapsed_ms": elapsed,
             "type": str(event.get("type") or "logic"),
-        })
+        }
+        # True only when this step's provisional rows were handed to the UI.
+        if event.get("shown") is True:
+            item["shown"] = True
+        slim.append(item)
     return slim
+
+
+def stamp_customer_table(result: Any, event: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a node update whose trace event records a delivered table.
+
+    ``customer_table_shown`` is a wrapper signal, not agent state: it is
+    removed here so LangGraph never merges it into the graph.
+    """
+    out = {} if result is None else dict(result)
+    shown = out.pop("customer_table_shown", False) is True
+    stamped = dict(event)
+    if shown:
+        stamped["shown"] = True
+    out["trace"] = [stamped]
+    return out
 
 
 def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[name-defined]

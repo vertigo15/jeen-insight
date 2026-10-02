@@ -824,6 +824,7 @@ class TestTrivialResultCheck:
         out = trivial_result_check(state)
         assert out["is_trivial"] is False
         assert out["partial_revision"] == 3
+        assert out["customer_table_shown"] is True
         assert seen == [{
             "query_id": "q-1",
             "session_id": "s-1",
@@ -845,6 +846,7 @@ class TestTrivialResultCheck:
         out = trivial_result_check(state)
         assert seen[0]["revision"] == 0
         assert out["partial_revision"] == 1
+        assert out["customer_table_shown"] is True
 
     def test_no_partial_without_callback(self):
         out = trivial_result_check({
@@ -852,6 +854,7 @@ class TestTrivialResultCheck:
             "generated_sql": "SELECT 1",
         })
         assert "partial_revision" not in out
+        assert "customer_table_shown" not in out
 
     def test_no_partial_for_empty_rows(self):
         seen = []
@@ -862,6 +865,7 @@ class TestTrivialResultCheck:
         })
         assert seen == []
         assert "partial_revision" not in out
+        assert "customer_table_shown" not in out
 
     def test_no_partial_for_ml_results(self):
         # ML charts and their persistence depend on the artifact save_to_memory
@@ -875,6 +879,7 @@ class TestTrivialResultCheck:
         })
         assert seen == []
         assert "partial_revision" not in out
+        assert "customer_table_shown" not in out
 
     def test_partial_callback_failure_never_breaks_the_node(self):
         def boom(_payload):
@@ -887,6 +892,7 @@ class TestTrivialResultCheck:
         })
         assert out["is_trivial"] is True
         assert out["partial_revision"] == 1
+        assert "customer_table_shown" not in out
 
 
 # ── feedback_classifier ───────────────────────────────────────────────────────

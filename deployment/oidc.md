@@ -121,7 +121,9 @@ UI values, not the PEM contents. Client secrets belong in the UI's
 - **Defence AKS:** OIDC client secrets are keys in the broader hand-managed
   `jeen-insights-secrets` Secret; that object also contains the deployment's
   database and application secrets. The separate `jeen-insights-idp-ca`
-  ConfigMap contains `ca-bundle.pem`. Use the callback URLs derived from the
+  ConfigMap contains `ca-bundle.pem`. The registered callbacks must be
+  `https://jeen-insights.dev161.internal/auth/keycloak/callback` and
+  `https://jeen-insights.dev161.internal/auth/zitadel/callback`, matching the
   defence `PUBLIC_APP_URL`; do not store user passwords in either object.
 
 See [configuration](configuration.md) for every OIDC variable and precedence.

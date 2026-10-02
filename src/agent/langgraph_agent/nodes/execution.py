@@ -107,7 +107,7 @@ def trivial_result_check(state: AgentState) -> Dict[str, Any]:
     out: Dict[str, Any] = {"is_trivial": trivial}
     if rows and not state.get("analysis_result") and callable(state.get("partial_callback")):
         revision = int(state.get("partial_revision") or 0)
-        emit_partial(
+        delivered = emit_partial(
             state,
             {
                 "query_id": state.get("query_id"),
@@ -119,6 +119,9 @@ def trivial_result_check(state: AgentState) -> Dict[str, Any]:
             },
         )
         out["partial_revision"] = revision + 1
+        # Popped onto the trace event by the node wrapper. Not agent state.
+        if delivered:
+            out["customer_table_shown"] = True
     return out
 
 

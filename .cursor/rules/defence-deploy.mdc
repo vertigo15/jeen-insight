@@ -10,21 +10,27 @@ nothing else:
 
 | | |
 |---|---|
-| App URL | http://jeen-insights.dev161.internal/ (private DNS A record → internal LB of `svc/jeen-insights-ui`) |
+| App URL | https://jeen-insights.dev161.internal/ (private DNS A record → internal `approuting-istio` Gateway; HTTP redirects to HTTPS) |
 | Cluster | AKS `aks-openmetadata-dev161-weu`, kube context `defence-aks-openmetadata-dev161` |
 | Namespace / release | `jeen-insights` / Helm release `jeen-insights` from `deployment/k8s_dev` |
-| Overlay | `deployment/k8s_dev/values.defence.yaml` (Recreate strategy, `apps` node pool, no ingress) |
+| Overlay | `deployment/k8s_dev/values.defence.yaml` (Recreate strategy, `role=apps` node pool, Gateway API) |
 | Registry | `acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-{api,ui,analytics}` |
-| Secrets | hand-managed `jeen-insights-secrets` (DB, KEK, OIDC client secrets) and ConfigMap `jeen-insights-idp-ca`; never templated |
+| Secrets | hand-managed `jeen-insights-secrets`, ConfigMap `jeen-insights-idp-ca`, and self-signed TLS certificate/key synced from `kv-jeen-defense-dev-30ff`; never templated |
 | Metadata DB | `10.42.2.4` `jeen_data_metadata`, shared with the LIVE Schema Modeler — Insights-owned objects only |
 | DNS zone | private zone `dev161.internal` in RG `cts-dev-metadata-environment` |
 
 ## Procedure
 
-1. Build **linux/amd64** images from the working tree with an immutable tag
+1. Before a TLS cutover, confirm Key Vault secrets `jeen-insights-tls-crt` and
+   `jeen-insights-tls-key` exist, the certificate SAN contains
+   `jeen-insights.dev161.internal`, and the private key matches the certificate.
+   This certificate is self-signed like the dashboard certificate, so browsers
+   warn unless it is explicitly installed as trusted. The Gateway reserves
+   private IP `10.42.6.19`.
+2. Build **linux/amd64** images from the working tree with an immutable tag
    `$(date +%Y%m%d-%H%M)-$(git rev-parse --short HEAD)`; `az acr login` then push.
    Only rebuild the components whose code changed; keep the other tags.
-2. Schema changes go through the chart's disabled-by-default, non-hook Job,
+3. Schema changes go through the chart's disabled-by-default, non-hook Job,
    never through pods. Render only that template, then apply/wait/log it:
    `helm template jeen-insights deployment/k8s_dev --namespace jeen-insights --values deployment/k8s_dev/values.defence.yaml --values deployment/k8s_dev/values.migration.example.yaml --set-string migration.bundleId=<dns-safe-immutable-id> --set-string migration.image.repository=acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-api --set-string migration.image.tag=<api-tag> --set-string migration.existingSecret.name=jeen-insights-secrets --show-only templates/migration-job.yaml > /tmp/jeen-insights-migration.yaml`;
    `kubectl --context defence-aks-openmetadata-dev161 --namespace jeen-insights apply -f /tmp/jeen-insights-migration.yaml`;
@@ -33,12 +39,21 @@ nothing else:
    Review success before upgrading workloads. Pods run with both
    `RUN_MIGRATIONS_ON_START=false` and `SCHEMA_BOOTSTRAP_ON_START=false` and
    refuse to start if the baseline is missing.
-3. `helm dependency build deployment/k8s_dev` (the packaged subcharts go stale
-   when a chart template changes), then
+4. `helm dependency build deployment/k8s_dev` (the packaged subcharts go stale
+   when a chart template changes). For the first TLS cutover only, retain the
+   old UI LoadBalancer and HTTP runtime values with temporary `--set` overrides
+   while installing the Gateway. Verify the new endpoint before changing DNS:
+   `curl --resolve jeen-insights.dev161.internal:443:10.42.6.19 https://jeen-insights.dev161.internal/health`.
+   Register the HTTPS Keycloak and Zitadel callback URLs, update the private DNS
+   A record to `10.42.6.19`, then run the final upgrade without temporary
+   overrides:
    `helm upgrade --install jeen-insights deployment/k8s_dev --kube-context defence-aks-openmetadata-dev161 --namespace jeen-insights --values deployment/k8s_dev/values.defence.yaml --set jeen-insights-api.image.tag=… --set jeen-insights-ui.image.tag=… --set jeen-insights-analytics.image.tag=… --rollback-on-failure --wait --timeout 10m`.
-4. Verify: pods Ready, API log shows `baseline verified`, `model=gpt-5.1`,
-   `DB catalog mode`; `curl http://jeen-insights.dev161.internal/health`; then
-   `cd tests/e2e && LIVE_APP_URL=http://jeen-insights.dev161.internal LIVE_EMAIL=live-admin LIVE_PASSWORD=… npm run test:live:smoke`.
+5. Verify: pods Ready; Gateway and both HTTPRoutes are accepted; the API log
+   shows `baseline verified`, `model=gpt-5.1`, `DB catalog mode`;
+   `curl -I http://jeen-insights.dev161.internal/` returns a 301 to HTTPS;
+   `curl --insecure https://jeen-insights.dev161.internal/health` succeeds and
+   the served certificate has the expected fingerprint; then
+   `cd tests/e2e && LIVE_APP_URL=https://jeen-insights.dev161.internal LIVE_EMAIL=live-admin LIVE_PASSWORD=… npm run test:live:smoke`.
 
 ## Do not
 

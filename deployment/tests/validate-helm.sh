@@ -76,9 +76,10 @@ render_profile() {
   python3 "${VALIDATOR}" "${semantic_args[@]}"
 
   if [[ "${have_kubeconform}" == "true" ]]; then
-    # Standard Kubernetes schemas do not include OpenShift Route or ESO
-    # ExternalSecret. validate_render.py checks their API versions and critical
-    # fields before kubeconform skips those custom kinds.
+    # Standard Kubernetes schemas do not include OpenShift Route, ESO
+    # ExternalSecret, Gateway API, or Secrets Store CSI resources.
+    # validate_render.py checks their API versions and critical fields before
+    # kubeconform skips those custom kinds.
     "${KUBECONFORM_BIN}" \
       -strict \
       -summary \

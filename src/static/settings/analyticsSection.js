@@ -49,6 +49,137 @@ const fmtRating = (v) => (v == null ? '—' : Number(v).toFixed(1));
 const fmtOptionalNum = (v) => (v == null ? '—' : fmtNum(v));
 const fmtOptionalCompact = (v) => (v == null ? '—' : fmtCompact(v));
 
+const LINEAGE_STAGES = [
+    { id: 'setup', nodes: ['pre_graph_setup'] },
+    { id: 'understand', nodes: ['context_composer', 'memory_answer_generator', 'history_search', 'fused_router', 'capability_answer'] },
+    { id: 'find', nodes: ['catalog_lookup', 'dax_catalog_lookup', 'filter_planner', 'filter_grounder', 'catalog_help_answer', 'dax_entity_resolver'] },
+    { id: 'write', nodes: ['prior_data_binder', 'prompt_builder', 'analysis_planner', 'analysis_guard', 'analysis_sql', 'sql_generator', 'sqlglot_validate', 'dlp_check', 'dax_query_planner', 'dax_prompt_builder', 'dax_generator', 'dax_static_validate', 'dax_repair'] },
+    { id: 'run', nodes: ['execute_query', 'pbi_execute_query', 'execute_dax', 'analysis_run', 'empty_filter_result_check', 'empty_result_check', 'result_integrity_check', 'trivial_result_check'] },
+    { id: 'check', nodes: ['fused_eval_analytics', 'feedback_classifier', 'dax_feedback_router'] },
+    { id: 'final', nodes: ['response_formatter', 'save_to_memory', 'observability_log'] },
+];
+
+function lineageStageIndex(node) {
+    const index = LINEAGE_STAGES.findIndex((stage) => stage.nodes.includes(node));
+    return index === -1 ? LINEAGE_STAGES.length : index;
+}
+
+function stepMs(node) {
+    const value = Number(node.duration_ms ?? node.elapsed_ms ?? node.latency_ms);
+    return Number.isFinite(value) ? value : 0;
+}
+
+export function buildLineage(run, trace) {
+    const attempts = [];
+    let attempt = null;
+    let lastIndex = -1;
+    let elapsed = 0;
+    let shownCount = 0;
+    const ml = trace.some((node) => String(node.node || '').startsWith('analysis_'));
+    const rows = run.row_count == null || run.row_count === '' ? null : Number(run.row_count);
+    const hasRows = rows != null && Number.isFinite(rows) && rows > 0;
+    const zeroRows = rows != null && Number.isFinite(rows) && rows === 0;
+    const explicit = trace.some((node) => node.shown === true);
+    const trivialAt = trace.reduce((found, node, index) => (node.node === 'trivial_result_check' ? index : found), -1);
+    let estimated = false;
+    trace.forEach((node, index) => {
+        const stageIndex = lineageStageIndex(node.node || '');
+        if (!attempt || (lastIndex >= 0 && stageIndex < lastIndex)) {
+            attempt = { stages: [] };
+            attempts.push(attempt);
+            lastIndex = -1;
+        }
+        let stage = attempt.stages[attempt.stages.length - 1];
+        if (!stage || stage.index !== stageIndex) {
+            const known = LINEAGE_STAGES[stageIndex];
+            stage = { index: stageIndex, id: known ? known.id : 'other', steps: [], ms: 0 };
+            attempt.stages.push(stage);
+        }
+        elapsed += stepMs(node);
+        const step = { node, at: elapsed };
+        if (node.shown === true) {
+            shownCount += 1;
+            step.marker = shownCount === 1 ? 'shown' : 'updated';
+        } else if (!explicit && !ml && hasRows && index === trivialAt) {
+            estimated = true;
+            step.marker = 'estimated';
+        }
+        stage.steps.push(step);
+        stage.ms += stepMs(node);
+        lastIndex = stageIndex;
+    });
+    const finalTable = !explicit && !estimated && ml && hasRows && run.outcome === 'success' && attempts.length > 0;
+    if (finalTable) {
+        const lastAttempt = attempts[attempts.length - 1];
+        const stage = [...lastAttempt.stages].reverse().find((item) => item.id === 'final') || lastAttempt.stages[lastAttempt.stages.length - 1];
+        const step = stage.steps[stage.steps.length - 1];
+        if (step) step.marker = 'final';
+    }
+    let note = '';
+    if (!explicit && !estimated && !finalTable) note = zeroRows ? 'zero' : 'none';
+    return { attempts, note };
+}
+
+function lineageRouteLabel(route) {
+    if (!route) return '';
+    const key = `settings.analytics.runs.lineage.route.${route}`;
+    const label = t(key);
+    return label && label !== key ? label : route;
+}
+
+function renderLineage(run, trace) {
+    if (!trace.length) return `<div class="sp-an-empty">${h('settings.analytics.runs.noTrace')}</div>`;
+    const lineage = buildLineage(run, trace);
+    const failed = run.outcome === 'error' || run.outcome === 'refused';
+    const route = lineageRouteLabel(run.route);
+    const routeLine = route
+        ? `<p class="sp-an-lineage-route">${h('settings.analytics.runs.lineage.routeLabel', { route })}</p>`
+        : '';
+    const note = lineage.note
+        ? `<p class="sp-an-lineage-note">${h(`settings.analytics.runs.lineage.none${lineage.note === 'zero' ? 'Zero' : ''}`)}</p>`
+        : '';
+    const attempts = lineage.attempts.map((item, attemptIndex) => {
+        const heading = lineage.attempts.length > 1
+            ? `<p class="sp-an-lineage-attempt">${h('settings.analytics.runs.lineage.attempt', { number: attemptIndex + 1 })}</p>`
+            : '';
+        const stages = item.stages.map((stage, stageIndex) => {
+            const panelId = `sp-an-stage-${attemptIndex}-${stageIndex}`;
+            const open = attemptIndex > 0
+                || stage.steps.some((step) => step.marker)
+                || (failed && attemptIndex === lineage.attempts.length - 1 && stageIndex === item.stages.length - 1)
+                || (attemptIndex === 0 && stageIndex === 0);
+            const steps = stage.steps.map((step, stepIndex) => {
+                const node = step.node;
+                const name = node.node || node.name || '—';
+                const duration = node.duration_ms ?? node.elapsed_ms ?? node.latency_ms;
+                const detailText = node.detail || node.message || node.error || node.route;
+                const stepFailed = node.status === 'error' || Boolean(node.error);
+                const marker = step.marker
+                    ? `<li class="sp-an-lineage-marker">${h(`settings.analytics.runs.lineage.${step.marker === 'final' ? 'finalTable' : step.marker}`)} <bdi dir="ltr">${esc(fmtMs(step.at))}</bdi></li>`
+                    : '';
+                return `<li class="sp-an-run-trace-item${stepFailed ? ' is-error' : ''}">
+                    <span class="sp-an-run-trace-index" aria-hidden="true"></span><span class="sp-an-sr-only">${h('settings.analytics.runs.step', { number: stepIndex + 1 })}</span>
+                    <div><div class="sp-an-run-trace-main"><bdi dir="ltr" class="sp-an-mono">${esc(name)}</bdi>
+                        ${node.type ? `<span class="sp-an-badge"><bdi dir="ltr">${esc(node.type)}</bdi></span>` : ''}
+                        ${node.status ? `<span class="sp-an-badge${stepFailed ? ' sp-an-run-outcome-error' : ''}">${esc(node.status)}</span>` : ''}
+                        ${duration != null ? `<bdi dir="ltr" class="sp-an-muted">${esc(fmtMs(duration))}</bdi>` : ''}
+                    </div>${detailText ? `<p class="sp-an-plaintext">${esc(formatRunValue(detailText))}</p>` : ''}</div>
+                </li>${marker}`;
+            }).join('');
+            return `<section class="sp-an-stage">
+                <button type="button" class="sp-an-stage-toggle" aria-expanded="${open ? 'true' : 'false'}" aria-controls="${panelId}">
+                    <span>${h(`settings.analytics.runs.lineage.stage.${stage.id}`)}</span>
+                    <bdi dir="ltr" class="sp-an-muted">${esc(fmtMs(stage.ms))}</bdi>
+                </button>
+                <p class="sp-an-stage-hint">${h(`settings.analytics.runs.lineage.hint.${stage.id}`)}</p>
+                <ol id="${panelId}" class="sp-an-run-trace"${open ? '' : ' hidden'}>${steps}</ol>
+            </section>`;
+        }).join('');
+        return `${heading}${stages}`;
+    }).join('');
+    return `<div class="sp-an-lineage">${routeLine}${note}${attempts}</div>`;
+}
+
 /**
  * RFC 4180 CSV of the given rows. Cells that a spreadsheet would evaluate as a
  * formula (`=`, `+`, `-`, `@`, tab, CR) are prefixed with a quote so an
@@ -981,22 +1112,7 @@ export class AnalyticsSection {
         const query = run.generated_query;
         const language = runQueryLanguage(run);
         const trace = Array.isArray(run.node_trace) ? run.node_trace : [];
-        const traceHtml = trace.length
-            ? `<ol class="sp-an-run-trace" role="list">${trace.map((node, index) => {
-                const name = node.node || node.name || '—';
-                const duration = node.duration_ms ?? node.elapsed_ms ?? node.latency_ms;
-                const detailText = node.detail || node.message || node.error || node.route;
-                const failed = node.status === 'error' || Boolean(node.error);
-                return `<li class="sp-an-run-trace-item${failed ? ' is-error' : ''}">
-                    <span class="sp-an-run-trace-index" aria-hidden="true"></span><span class="sp-an-sr-only">${h('settings.analytics.runs.step', { number: index + 1 })}</span>
-                    <div><div class="sp-an-run-trace-main"><bdi dir="ltr" class="sp-an-mono">${esc(name)}</bdi>
-                        ${node.type ? `<span class="sp-an-badge"><bdi dir="ltr">${esc(node.type)}</bdi></span>` : ''}
-                        ${node.status ? `<span class="sp-an-badge${failed ? ' sp-an-run-outcome-error' : ''}">${esc(node.status)}</span>` : ''}
-                        ${duration != null ? `<bdi dir="ltr" class="sp-an-muted">${esc(fmtMs(duration))}</bdi>` : ''}
-                    </div>${detailText ? `<p class="sp-an-plaintext">${esc(formatRunValue(detailText))}</p>` : ''}</div>
-                </li>`;
-            }).join('')}</ol>`
-            : `<div class="sp-an-empty">${h('settings.analytics.runs.noTrace')}</div>`;
+        const traceHtml = renderLineage(run, trace);
         const answer = formatRunAnswer(run.answer);
         const failureMessage = error || (run.outcome === 'refused' ? answer : '');
         const errorNotice = ['error', 'refused'].includes(run.outcome) ? `<div class="sp-an-run-failure sp-an-run-failure-${esc(run.outcome)}">
@@ -1032,11 +1148,19 @@ export class AnalyticsSection {
                 <pre class="sp-an-run-query" dir="ltr" tabindex="0" role="region" aria-label="${h('settings.analytics.runs.queryRegion', { language: language.toUpperCase() })}"><code>${esc(formatRunValue(query))}</code></pre>
             </section>` : ''}
             <section class="sp-an-run-block sp-an-run-block-wide">
-                <h4>${h('settings.analytics.runs.trace')}</h4>
+                <h4>${h('settings.analytics.runs.lineage.title')}</h4>
                 ${traceHtml}
             </section>
         </div>`;
         bodyTarget.innerHTML = body;
+        bodyTarget.querySelectorAll('.sp-an-stage-toggle').forEach((button) => {
+            button.addEventListener('click', () => {
+                const open = button.getAttribute('aria-expanded') !== 'true';
+                button.setAttribute('aria-expanded', open ? 'true' : 'false');
+                const panel = document.getElementById(button.getAttribute('aria-controls'));
+                if (panel) panel.hidden = !open;
+            });
+        });
         const copyQuery = bodyTarget.querySelector('[data-copy-query]');
         if (copyQuery) copyQuery.addEventListener('click', () => this._copyRunText(query, copyQuery));
         this._setDetailBusy(false);

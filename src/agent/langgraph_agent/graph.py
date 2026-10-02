@@ -94,6 +94,7 @@ from src.agent.langgraph_agent.nodes.output import (
     make_save_to_memory,
     observability_log,
     response_formatter,
+    stamp_customer_table,
 )
 from src.agent.langgraph_agent.nodes.router import make_fused_router
 from src.agent.langgraph_agent.nodes.sql_gen import make_sql_generator
@@ -203,12 +204,10 @@ def _timed(name: str, fn: Any) -> Any:
                 node_type=ntype,
                 elapsed_ms=elapsed,
             )
-            out = {} if result is None else dict(result)
-            out["trace"] = [{
+            return stamp_customer_table(result, {
                 "node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype,
-                **usage_delta(state, out),
-            }]
-            return out
+                **usage_delta(state, {} if result is None else result),
+            })
         return _async_wrapper
     else:
         def _sync_wrapper(state):
@@ -239,12 +238,10 @@ def _timed(name: str, fn: Any) -> Any:
                 node_type=ntype,
                 elapsed_ms=elapsed,
             )
-            out = {} if result is None else dict(result)
-            out["trace"] = [{
+            return stamp_customer_table(result, {
                 "node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype,
-                **usage_delta(state, out),
-            }]
-            return out
+                **usage_delta(state, {} if result is None else result),
+            })
         return _sync_wrapper
 
 

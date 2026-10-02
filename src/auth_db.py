@@ -16,6 +16,12 @@ import bcrypt
 import psycopg
 
 
+# Insights authorizes from insights_user_app_roles. auth_users.role is the
+# Schema Modeler role on the shared account and is not an Insights permission.
+APP_ROLES = ("admin", "editor", "viewer")
+ROLE_APPS = ("insights", "metadata")
+
+
 # ── Connection ────────────────────────────────────────────────────────────────
 
 def _connect():
@@ -92,32 +98,91 @@ def check_connection() -> tuple[bool, str | None]:
 
 # ── Queries ───────────────────────────────────────────────────────────────────
 
-def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
-    """Return the auth_users row for *email*, or ``None``."""
-    with _connect() as conn:
-        row = conn.execute(
-            """
-            SELECT id, name, email, password_hash, role, status, avatar_hue,
-                   last_active_at, created_at, locale, date_format
-            FROM auth_users WHERE email = %s LIMIT 1
-            """,
-            (email,),
-        ).fetchone()
-    if not row:
-        return None
-    return {
+def normalize_app_role(role: Optional[str]) -> str:
+    """Map a stored role onto the three roles both applications use.
+
+    Schema Modeler's legacy ``user`` role is an editor. Anything else is a
+    viewer, so an unknown value never grants access.
+    """
+    if role in APP_ROLES:
+        return role
+    if role == "user":
+        return "editor"
+    return "viewer"
+
+
+def _account_from_row(row, *, with_password: bool) -> Dict[str, Any]:
+    """Map a login SELECT row. Column 4 is the Insights role; the last column is auth_users.role."""
+    account = {
         "id":            row[0],
         "name":          row[1],
         "email":         row[2],
-        "password_hash": row[3],
-        "role":          row[4] or "viewer",
+        "role":          normalize_app_role(row[4]),
         "status":        row[5],
         "avatar_hue":    row[6],
         "last_active_at": row[7].isoformat() if row[7] else None,
         "created_at":    row[8].isoformat() if row[8] else None,
         "locale":        row[9],
         "date_format":   row[10],
+        "metadata_role": normalize_app_role(row[11]),
     }
+    if with_password:
+        account["password_hash"] = row[3]
+    return account
+
+
+def _listed_user(row) -> Dict[str, Any]:
+    return {
+        "id":             row[0],
+        "name":           row[1],
+        "email":          row[2],
+        "role":           normalize_app_role(row[3]),
+        "status":         row[4],
+        "avatar_hue":     row[5],
+        "created_at":     row[6].isoformat() if row[6] else None,
+        "last_active_at": row[7].isoformat() if row[7] else None,
+        "locale":         row[8],
+        "metadata_role":  normalize_app_role(row[9]),
+    }
+
+
+def _insert_insights_role(conn, user_id: int, role: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO insights_user_app_roles (user_id, app, role)
+        VALUES (%s, 'insights', %s)
+        ON CONFLICT (user_id, app) DO UPDATE
+            SET role = EXCLUDED.role, updated_at = NOW()
+        """,
+        (user_id, role),
+    )
+
+
+def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+    """Return the account for *email*, or ``None``.
+
+    ``role`` is the Insights role. A person with no Insights row (created in
+    Metadata after the split) is a viewer here. ``metadata_role`` is
+    ``auth_users.role``, which Schema Modeler still enforces.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT u.id, u.name, u.email, u.password_hash,
+                   COALESCE(ir.role, 'viewer'),
+                   u.status, u.avatar_hue, u.last_active_at, u.created_at,
+                   u.locale, u.date_format, u.role
+            FROM auth_users u
+            LEFT JOIN insights_user_app_roles ir
+                   ON ir.user_id = u.id AND ir.app = 'insights'
+            WHERE u.email = %s
+            LIMIT 1
+            """,
+            (email,),
+        ).fetchone()
+    if not row:
+        return None
+    return _account_from_row(row, with_password=True)
 
 
 def get_user_preferences(user_id: int) -> Optional[Dict[str, Any]]:
@@ -165,29 +230,25 @@ def touch_last_active(user_id: int) -> None:
 
 
 def list_users() -> List[Dict[str, Any]]:
-    """Return all auth_users rows, ordered by id."""
+    """Return every account, ordered by id.
+
+    ``role`` is the Insights role. ``metadata_role`` is the Schema Modeler role
+    stored on ``auth_users.role``.
+    """
     with _connect() as conn:
         rows = conn.execute(
             """
-            SELECT id, name, email, role, status, avatar_hue,
-                   created_at, last_active_at, locale
-            FROM auth_users ORDER BY id
+            SELECT u.id, u.name, u.email,
+                   COALESCE(ir.role, 'viewer'),
+                   u.status, u.avatar_hue, u.created_at, u.last_active_at, u.locale,
+                   u.role
+            FROM auth_users u
+            LEFT JOIN insights_user_app_roles ir
+                   ON ir.user_id = u.id AND ir.app = 'insights'
+            ORDER BY u.id
             """
         ).fetchall()
-    return [
-        {
-            "id":            r[0],
-            "name":          r[1],
-            "email":         r[2],
-            "role":          r[3] or "viewer",
-            "status":        r[4],
-            "avatar_hue":    r[5],
-            "created_at":    r[6].isoformat() if r[6] else None,
-            "last_active_at": r[7].isoformat() if r[7] else None,
-            "locale":        r[8],
-        }
-        for r in rows
-    ]
+    return [_listed_user(r) for r in rows]
 
 
 def set_user_locale(user_id: int, locale: str) -> None:
@@ -216,8 +277,16 @@ def create_user(
     email: str,
     password: str,
     role: str = "viewer",
+    metadata_role: str = "viewer",
 ) -> Dict[str, Any]:
-    """Insert a new user and return the created row."""
+    """Insert a shared account and its Insights role.
+
+    ``role`` is the Insights role. ``metadata_role`` is written to
+    ``auth_users.role`` for Schema Modeler and defaults to viewer, so a new
+    Insights member is not given the same authority in Metadata.
+    """
+    insights_role = normalize_app_role(role) if role in APP_ROLES else "viewer"
+    metadata = metadata_role if metadata_role in APP_ROLES else "viewer"
     hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(12)).decode("utf-8")
     # Deterministic hue so avatars are stable (0–359).
     avatar_hue = abs(hash(email)) % 360
@@ -226,24 +295,29 @@ def create_user(
             """
             INSERT INTO auth_users (name, email, password_hash, role, status, avatar_hue)
             VALUES (%s, %s, %s, %s, 'active', %s)
-            RETURNING id, name, email, role, status, avatar_hue, created_at
+            RETURNING id, name, email, status, avatar_hue, created_at
             """,
-            (name, email, hashed, role, avatar_hue),
+            (name, email, hashed, metadata, avatar_hue),
         ).fetchone()
+        _insert_insights_role(conn, row[0], insights_role)
         conn.commit()
     return {
-        "id":         row[0],
-        "name":       row[1],
-        "email":      row[2],
-        "role":       row[3],
-        "status":     row[4],
-        "avatar_hue": row[5],
-        "created_at": row[6].isoformat() if row[6] else None,
+        "id":             row[0],
+        "name":           row[1],
+        "email":          row[2],
+        "role":           insights_role,
+        "metadata_role":  metadata,
+        "status":         row[3],
+        "avatar_hue":     row[4],
+        "created_at":     row[5].isoformat() if row[5] else None,
     }
 
 
 def get_or_create_sso_user(email: str, name: str, *, role: str = "viewer") -> Dict[str, Any]:
-    """Return an existing user or JIT-provision one for Microsoft SSO."""
+    """Return an existing user or JIT-provision one for Microsoft SSO.
+
+    The supplied role is the Insights role. A new account is a Metadata viewer.
+    """
     normalized = email.strip().lower()
     existing = get_user_by_email(normalized)
     if existing:
@@ -252,10 +326,25 @@ def get_or_create_sso_user(email: str, name: str, *, role: str = "viewer") -> Di
     return create_user(name, normalized, secrets.token_urlsafe(32), role=role)
 
 
-def update_user_role(user_id: int, role: str) -> None:
-    """Change the role of *user_id*."""
+def update_user_role(user_id: int, role: str, app: str = "insights") -> None:
+    """Change one application's role for *user_id*.
+
+    ``insights`` updates ``insights_user_app_roles`` only. ``metadata`` updates
+    ``auth_users.role``, which Schema Modeler reads. Neither write touches the
+    other application's role.
+    """
+    if app not in ROLE_APPS:
+        raise ValueError(f"app must be one of: {', '.join(ROLE_APPS)}")
+    if role not in APP_ROLES:
+        raise ValueError(f"role must be one of: {', '.join(APP_ROLES)}")
     with _connect() as conn:
-        conn.execute("UPDATE auth_users SET role = %s WHERE id = %s", (role, user_id))
+        if app == "insights":
+            _insert_insights_role(conn, user_id, role)
+        else:
+            conn.execute(
+                "UPDATE auth_users SET role = %s WHERE id = %s",
+                (role, user_id),
+            )
         conn.commit()
 
 
@@ -275,18 +364,27 @@ def email_exists(email: str) -> bool:
     return row is not None
 
 
-def active_admin_exists() -> bool:
-    """Return True when at least one usable (active) admin account exists.
+_INSIGHTS_ADMIN_SQL = """
+    SELECT 1
+    FROM auth_users u
+    JOIN insights_user_app_roles r
+      ON r.user_id = u.id AND r.app = 'insights'
+    WHERE r.role = 'admin' AND u.status = 'active'
+    LIMIT 1
+"""
 
-    Used to drive the first-run admin setup screen. Fails closed (returns True)
-    on DB errors so a transient outage can't expose the unauthenticated setup
-    flow — the operator will just see the normal login error instead.
+
+def active_admin_exists() -> bool:
+    """Return True when at least one usable (active) Insights admin exists.
+
+    A Metadata admin does not count. Used to drive the first-run admin setup
+    screen. Fails closed (returns True) on DB errors so a transient outage
+    can't expose the unauthenticated setup flow — the operator will just see
+    the normal login error instead.
     """
     try:
         with _connect() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM auth_users WHERE role = 'admin' AND status = 'active' LIMIT 1"
-            ).fetchone()
+            row = conn.execute(_INSIGHTS_ADMIN_SQL).fetchone()
         return row is not None
     except Exception:  # noqa: BLE001
         return True
@@ -312,25 +410,26 @@ def create_first_admin(name: str, email: str, password: str) -> Dict[str, Any]:
             # Serialize with every other setup attempt for the lock's lifetime
             # (released automatically at transaction end).
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SETUP_ADVISORY_LOCK_KEY,))
-            exists = conn.execute(
-                "SELECT 1 FROM auth_users WHERE role = 'admin' AND status = 'active' LIMIT 1"
-            ).fetchone()
+            exists = conn.execute(_INSIGHTS_ADMIN_SQL).fetchone()
             if exists:
                 raise RuntimeError("An admin account already exists")
+            # Metadata role stays viewer. This account is an Insights admin only.
             row = conn.execute(
                 """
                 INSERT INTO auth_users (name, email, password_hash, role, status, avatar_hue)
-                VALUES (%s, %s, %s, 'admin', 'active', %s)
-                RETURNING id, name, email, role, status, avatar_hue, created_at
+                VALUES (%s, %s, %s, 'viewer', 'active', %s)
+                RETURNING id, name, email, status, avatar_hue, created_at
                 """,
                 (name, email, hashed, avatar_hue),
             ).fetchone()
+            _insert_insights_role(conn, row[0], "admin")
     return {
-        "id":         row[0],
-        "name":       row[1],
-        "email":      row[2],
-        "role":       row[3],
-        "status":     row[4],
-        "avatar_hue": row[5],
-        "created_at": row[6].isoformat() if row[6] else None,
+        "id":            row[0],
+        "name":          row[1],
+        "email":         row[2],
+        "role":          "admin",
+        "metadata_role": "viewer",
+        "status":        row[3],
+        "avatar_hue":    row[4],
+        "created_at":    row[5].isoformat() if row[5] else None,
     }
