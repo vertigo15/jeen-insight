@@ -3,6 +3,9 @@
 {{- $env := mergeOverwrite (deepCopy (default dict .Values.global.env)) (dict "API_BASE_URL" $apiBaseUrl) (default dict .Values.env) }}
 {{- $nodeSelector := default (default dict .Values.global.nodeSelector) .Values.nodeSelector }}
 {{- $sc := default dict .Values.securityContext }}
+{{- $gateway := default dict .Values.gateway }}
+{{- $gatewayTLS := default dict $gateway.tls }}
+{{- $keyVault := default dict $gatewayTLS.keyVault }}
 {{- $route := default dict .Values.route }}
 {{- if .Values.serviceAccount.create }}
 apiVersion: v1
@@ -148,6 +151,11 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if and $gateway.enabled $keyVault.enabled }}
+            - name: tls-secrets-store
+              mountPath: /mnt/jeen-insights-tls
+              readOnly: true
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -155,6 +163,14 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 256Mi
+        {{- if and $gateway.enabled $keyVault.enabled }}
+        - name: tls-secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: {{ printf "%s-tls-kv" (include "jeen-insights-ui.fullname" .) | quote }}
+        {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -209,6 +225,125 @@ spec:
                   name: http
           {{- end }}
     {{- end }}
+{{- end }}
+{{- if $gateway.enabled }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "jeen-insights-ui.fullname" . }}
+  labels:
+    {{- include "jeen-insights-ui.labels" . | nindent 4 }}
+  {{- with $gateway.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  gatewayClassName: {{ required "gateway.className is required when gateway.enabled=true" $gateway.className | quote }}
+  {{- with $gateway.infrastructureAnnotations }}
+  infrastructure:
+    annotations:
+      {{- toYaml . | nindent 6 }}
+  {{- end }}
+  listeners:
+    - name: https
+      hostname: {{ required "gateway.hostname is required when gateway.enabled=true" $gateway.hostname | quote }}
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - group: ""
+            kind: Secret
+            name: {{ required "gateway.tls.secretName is required when gateway.enabled=true" $gatewayTLS.secretName | quote }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: http
+      hostname: {{ $gateway.hostname | quote }}
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "jeen-insights-ui.fullname" . }}
+  labels:
+    {{- include "jeen-insights-ui.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ include "jeen-insights-ui.fullname" . }}
+      sectionName: https
+  hostnames:
+    - {{ $gateway.hostname | quote }}
+  rules:
+    - backendRefs:
+        - group: ""
+          kind: Service
+          name: {{ include "jeen-insights-ui.fullname" . }}
+          port: {{ .Values.service.port }}
+          weight: 1
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ printf "%s-redirect" (include "jeen-insights-ui.fullname" .) }}
+  labels:
+    {{- include "jeen-insights-ui.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ include "jeen-insights-ui.fullname" . }}
+      sectionName: http
+  hostnames:
+    - {{ $gateway.hostname | quote }}
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+{{- if $keyVault.enabled }}
+---
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: {{ printf "%s-tls-kv" (include "jeen-insights-ui.fullname" .) }}
+  labels:
+    {{- include "jeen-insights-ui.labels" . | nindent 4 }}
+spec:
+  provider: azure
+  parameters:
+    keyvaultName: {{ required "gateway.tls.keyVault.name is required when Key Vault TLS sync is enabled" $keyVault.name | quote }}
+    objects: |
+      array:
+        - |
+          objectName: {{ required "gateway.tls.keyVault.certificateObjectName is required when Key Vault TLS sync is enabled" $keyVault.certificateObjectName }}
+          objectType: secret
+        - |
+          objectName: {{ required "gateway.tls.keyVault.keyObjectName is required when Key Vault TLS sync is enabled" $keyVault.keyObjectName }}
+          objectType: secret
+    tenantId: {{ required "gateway.tls.keyVault.tenantId is required when Key Vault TLS sync is enabled" $keyVault.tenantId | quote }}
+    usePodIdentity: {{ default false $keyVault.usePodIdentity | quote }}
+    useVMManagedIdentity: {{ default false $keyVault.useVMManagedIdentity | quote }}
+    {{- with $keyVault.userAssignedIdentityID }}
+    userAssignedIdentityID: {{ . | quote }}
+    {{- end }}
+  secretObjects:
+    - secretName: {{ $gatewayTLS.secretName }}
+      type: kubernetes.io/tls
+      data:
+        - objectName: {{ $keyVault.certificateObjectName }}
+          key: tls.crt
+        - objectName: {{ $keyVault.keyObjectName }}
+          key: tls.key
+{{- end }}
 {{- end }}
 {{- if $route.enabled }}
 ---

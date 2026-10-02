@@ -113,6 +113,13 @@ def test_execution_detail_filters_exclude_prompts_rows_and_nested_values():
         "prompt": "private schema", "detail": "SELECT secret", "rows": [["secret"]],
     }])
     assert trace == [{"node": "sql_generator", "elapsed_ms": 9, "type": "llm"}]
+    shown = filter_execution_trace([{
+        "node": "trivial_result_check", "elapsed_ms": 4, "type": "logic",
+        "shown": True, "prompt": "private schema", "rows": [["secret"]],
+    }])
+    assert shown == [{
+        "node": "trivial_result_check", "elapsed_ms": 4, "type": "logic", "shown": True,
+    }]
     assert filter_execution_answer([{"t": "42", "hl": "num", "prompt": "drop"}]) == [
         {"t": "42", "hl": "num"}
     ]

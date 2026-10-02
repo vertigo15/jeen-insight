@@ -1,7 +1,10 @@
 resourceCounts:
   ConfigMap: 3
   Deployment: 3
+  Gateway: 1
+  HTTPRoute: 2
   NetworkPolicy: 1
+  SecretProviderClass: 1
   Service: 3
   ServiceAccount: 3
 forbiddenKinds:
@@ -15,26 +18,24 @@ deployments:
     image: acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-api:validation
     strategy: Recreate
     nodeSelector:
-      agentpool: apps
+      role: apps
   jeen-insights-ui:
     image: acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-ui:validation
     strategy: Recreate
     nodeSelector:
-      agentpool: apps
+      role: apps
   jeen-insights-analytics:
     image: acrjeendefensedev30fff5c1.azurecr.io/jeen-insights/jeen-insights-analytics:validation
     strategy: Recreate
     nodeSelector:
-      agentpool: apps
+      role: apps
 services:
   jeen-insights-api:
     type: ClusterIP
     port: 8000
   jeen-insights-ui:
-    type: LoadBalancer
+    type: ClusterIP
     port: 80
-    annotations:
-      service.beta.kubernetes.io/azure-load-balancer-internal: "true"
   jeen-insights-analytics:
     type: ClusterIP
     port: 8100
@@ -44,8 +45,26 @@ configMaps:
     SCHEMA_BOOTSTRAP_ON_START: "false"
     ML_SKILLS_ENABLED: "true"
   jeen-insights-ui:
-    PUBLIC_APP_URL: http://jeen-insights.dev161.internal
-    SESSION_COOKIE_SECURE: "false"
+    PUBLIC_APP_URL: https://jeen-insights.dev161.internal
+    SESSION_COOKIE_SECURE: "true"
     API_BASE_URL: http://jeen-insights-api:8000
   jeen-insights-analytics:
     ANALYSIS_SANDBOX_AUDIENCE: jeen-insights-analytics
+gateway:
+  name: jeen-insights-ui
+  className: approuting-istio
+  hostname: jeen-insights.dev161.internal
+  tlsSecretName: jeen-insights-ui-tls
+  privateIP: 10.42.6.19
+routes:
+  backend: jeen-insights-ui
+  redirect: jeen-insights-ui-redirect
+secretProviderClass:
+  name: jeen-insights-ui-tls-kv
+  provider: azure
+  keyVaultName: kv-jeen-defense-dev-30ff
+  tenantId: 65703eb9-76d8-4d4a-a438-2750a1401174
+  userAssignedIdentityID: 9c6e24ab-62d6-44d8-a33b-f72134c660fa
+  certificateObjectName: jeen-insights-tls-crt
+  keyObjectName: jeen-insights-tls-key
+  tlsSecretName: jeen-insights-ui-tls

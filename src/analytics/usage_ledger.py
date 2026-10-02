@@ -149,13 +149,14 @@ def filter_execution_trace(trace: Any) -> List[Dict[str, Any]]:
     for event in trace if isinstance(trace, list) else []:
         if not isinstance(event, dict) or not event.get("node"):
             continue
-        out.append(
-            {
-                "node": str(event["node"])[:128],
-                "elapsed_ms": max(0, _as_int(event.get("elapsed_ms")) or 0),
-                "type": str(event.get("type") or "logic")[:32],
-            }
-        )
+        item = {
+            "node": str(event["node"])[:128],
+            "elapsed_ms": max(0, _as_int(event.get("elapsed_ms")) or 0),
+            "type": str(event.get("type") or "logic")[:32],
+        }
+        if event.get("shown") is True:
+            item["shown"] = True
+        out.append(item)
     return out
 
 

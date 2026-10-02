@@ -153,11 +153,19 @@ test.describe('Settings › Analytics (admin)', () => {
     await page.locator('[data-copy-query]').click();
     await expect(page.locator('[data-copy-query]')).toHaveText('Copied');
     expect(await page.evaluate(() => window.__copiedRunText)).toContain('SELECT region');
-    await expect(page.locator('.sp-an-run-trace-item')).toHaveCount(3);
+    await expect(page.locator('.sp-an-run-trace-item')).toHaveCount(4);
     await expect(page.locator('.sp-an-run-trace-item').nth(0)).toContainText('fused_router');
     await expect(page.locator('.sp-an-run-trace-item').nth(0)).toContainText('logic');
     await expect(page.locator('.sp-an-run-trace-item').nth(0)).toContainText('115ms');
     await expect(page.locator('.sp-an-run-trace-item').nth(2)).toContainText('execute_query');
+    await expect(page.getByRole('button', { name: 'Understanding the question' })).toHaveAttribute('aria-expanded', 'true');
+    const writeStage = page.getByRole('button', { name: 'Writing the query' });
+    await expect(writeStage).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('.sp-an-lineage-marker')).toContainText('Table shown to customer');
+    await expect(page.locator('.sp-an-lineage-route')).toContainText('Route: Database query');
+    await writeStage.click();
+    await expect(writeStage).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('.sp-an-run-trace-item').filter({ hasText: 'sql_generator' })).toBeVisible();
 
     await page.locator('#sp-an-run-back').click();
     await expect(page.locator('#sp-an-runs-list')).toBeVisible();
@@ -181,7 +189,10 @@ test.describe('Settings › Analytics (admin)', () => {
 
     await page.locator('.sp-an-run-row').click();
     await expect(page.locator('.sp-an-run-query')).toContainText('EVALUATE');
-    await expect(page.locator('.sp-an-run-block h4')).toContainText(['DAX', 'Node trace']);
+    await expect(page.locator('.sp-an-run-block h4')).toContainText(['DAX', 'Execution path']);
+    await expect(page.locator('.sp-an-lineage-note')).toContainText('No table shown (0 rows)');
+    await expect(page.locator('.sp-an-lineage-marker')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Running the query' })).toHaveAttribute('aria-expanded', 'true');
     await page.locator('#sp-an-run-back').click();
 
     await page.locator('#sp-an-run-connection').selectOption('powerbi_sales');
@@ -310,5 +321,8 @@ test.describe('Settings › Analytics (admin)', () => {
     await expect(page.locator('#sp-an-run-back')).toContainText('חזרה');
     await expect(page.locator('#sp-an-run-detail-title')).toBeFocused();
     await expect(page.locator('.sp-an-run-copy').first()).toHaveCSS('unicode-bidi', 'plaintext');
+    await expect(page.getByRole('button', { name: 'הבנת השאלה' })).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('.sp-an-lineage-marker')).toContainText('הטבלה הוצגה ללקוח');
+    await expect(page.locator('.sp-an-run-trace-item bdi.sp-an-mono').first()).toHaveAttribute('dir', 'ltr');
   });
 });

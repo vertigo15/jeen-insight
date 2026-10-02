@@ -1042,23 +1042,27 @@ def users_create():
     guard = _admin_required()
     if guard:
         return guard
-    from src.auth_db import create_user, email_exists
+    from src.auth_db import APP_ROLES, create_user, email_exists
     data = request.get_json() or {}
     name     = (data.get("name") or "").strip()
     email    = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
     role     = data.get("role") or "viewer"
+    metadata_role = data.get("metadata_role") or "viewer"
     if not name or not email or not password:
         return jsonify({"error": "name, email, and password are required"}), 400
     if len(password) < 8:
         return jsonify({"error": "Password must be at least 8 characters"}), 400
-    if role not in ("admin", "editor", "viewer"):
+    if role not in APP_ROLES or metadata_role not in APP_ROLES:
         return jsonify({"error": "role must be admin, editor, or viewer"}), 400
     try:
         if email_exists(email):
             return jsonify({"error": "An account with this email already exists"}), 409
-        user = create_user(name, email, password, role)
-        logger.info("user created: %s (%s) by %s", email, role, session.get("user_email"))
+        user = create_user(name, email, password, role, metadata_role=metadata_role)
+        logger.info(
+            "user created: %s insights=%s metadata=%s by %s",
+            email, role, metadata_role, session.get("user_email"),
+        )
         return jsonify(user), 201
     except Exception as exc:  # noqa: BLE001
         logger.exception("users_create failed")
@@ -1070,15 +1074,21 @@ def users_update_role(user_id: int):
     guard = _admin_required()
     if guard:
         return guard
-    from src.auth_db import update_user_role
+    from src.auth_db import APP_ROLES, ROLE_APPS, update_user_role
     data = request.get_json() or {}
+    app_name = data.get("app") or "insights"
     role = data.get("role") or ""
-    if role not in ("admin", "editor", "viewer"):
+    if app_name not in ROLE_APPS:
+        return jsonify({"error": "app must be insights or metadata"}), 400
+    if role not in APP_ROLES:
         return jsonify({"error": "role must be admin, editor, or viewer"}), 400
     try:
-        update_user_role(user_id, role)
-        logger.info("user %s role → %s by %s", user_id, role, session.get("user_email"))
-        return jsonify({"id": user_id, "role": role})
+        update_user_role(user_id, role, app=app_name)
+        logger.info(
+            "user %s %s role → %s by %s",
+            user_id, app_name, role, session.get("user_email"),
+        )
+        return jsonify({"id": user_id, "app": app_name, "role": role})
     except Exception as exc:  # noqa: BLE001
         logger.exception("users_update_role failed")
         return jsonify({"error": str(exc)}), 500

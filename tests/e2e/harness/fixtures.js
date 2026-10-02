@@ -480,6 +480,7 @@
                 { node: 'fused_router', elapsed_ms: 115, type: 'logic' },
                 { node: 'sql_generator', status: 'completed', duration_ms: 780 },
                 { node: 'execute_query', status: 'completed', duration_ms: 46, detail: '3 rows' },
+                { node: 'trivial_result_check', elapsed_ms: 4, type: 'logic', shown: true },
             ],
         },
         'run-dax-102': {

@@ -9,7 +9,7 @@ written to the database and kept for the life of the row.
 
 from __future__ import annotations
 
-from src.agent.langgraph_agent.nodes.output import slim_trace
+from src.agent.langgraph_agent.nodes.output import slim_trace, stamp_customer_table
 
 
 class TestSlimTrace:
@@ -55,3 +55,40 @@ class TestSlimTrace:
     def test_empty_input(self):
         assert slim_trace([]) == []
         assert slim_trace(None) == []
+
+    def test_keeps_a_delivered_table_flag_only(self):
+        events = [{
+            "node": "trivial_result_check",
+            "elapsed_ms": 4,
+            "type": "logic",
+            "shown": True,
+            "prompt": "do not store",
+            "detail": "SELECT secret",
+        }]
+        assert slim_trace(events) == [{
+            "node": "trivial_result_check", "elapsed_ms": 4, "type": "logic", "shown": True,
+        }]
+        assert slim_trace([{"node": "execute_query", "elapsed_ms": 1, "shown": False}]) == [
+            {"node": "execute_query", "elapsed_ms": 1, "type": "logic"},
+        ]
+
+
+class TestStampCustomerTable:
+    def test_records_shown_and_drops_the_wrapper_signal(self):
+        out = stamp_customer_table(
+            {"is_trivial": False, "customer_table_shown": True, "partial_revision": 1},
+            {"node": "trivial_result_check", "elapsed_ms": 3, "type": "logic"},
+        )
+        assert "customer_table_shown" not in out
+        assert out["trace"] == [{
+            "node": "trivial_result_check", "elapsed_ms": 3, "type": "logic", "shown": True,
+        }]
+
+    def test_omits_shown_when_the_table_was_not_delivered(self):
+        out = stamp_customer_table(
+            {"is_trivial": True},
+            {"node": "trivial_result_check", "elapsed_ms": 3, "type": "logic"},
+        )
+        assert out["trace"] == [{
+            "node": "trivial_result_check", "elapsed_ms": 3, "type": "logic",
+        }]

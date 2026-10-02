@@ -73,21 +73,26 @@ def emit_pre_graph(
 PartialCallback = Callable[[Dict[str, Any]], None]
 
 
-def emit_partial(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
+def emit_partial(state: Dict[str, Any], payload: Dict[str, Any]) -> bool:
     """Hand a provisional result (rows ready, narration pending) to the caller.
 
     Same contract as :func:`emit_progress`: synchronous, request-scoped and
     best-effort. The SSE route forwards it as a ``partial`` event so the UI
     can paint the table before the insights LLM call finishes.
+
+    Returns True only when the callback accepted the payload. A missing or
+    failing callback means the customer did not see the table.
     """
 
     callback = state.get("partial_callback")
     if not callable(callback):
-        return
+        return False
     try:
         callback(payload)
     except Exception:  # noqa: BLE001
         logger.debug("partial result callback failed", exc_info=True)
+        return False
+    return True
 
 
 __all__ = ["PartialCallback", "ProgressCallback", "emit_partial", "emit_pre_graph", "emit_progress"]

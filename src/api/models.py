@@ -979,6 +979,8 @@ class AnalyticsExecutionTraceEvent(BaseModel):
     node: str
     elapsed_ms: int = 0
     type: str = "logic"
+    # True when this step delivered the provisional table to the customer.
+    shown: bool = False
 
 
 class AnalyticsExecutionDetail(AnalyticsExecutionRun):
