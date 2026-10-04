@@ -55,6 +55,7 @@
         analysis_planner: 'generation',
         analysis_sql: 'generation',
         sql_generator: 'generation',
+        sql_repair: 'generation',
         dax_generator: 'generation',
         dax_repair: 'generation',
         sqlglot_validate: 'validation',
@@ -2761,8 +2762,8 @@
             }
             const analysis = result.analysis && result.analysis.skill ? result.analysis : null;
             const mlPill = analysis
-                ? `<span class="v3-skill-chip">${esc(skillLabel[analysis.skill] || analysis.skill)}</span>${result.low_confidence || analysis.low_confidence ? `<span class="v3-lowconf-pill" title="${h('analysis.strip.lowConfidenceTitle')}">${h('conversation.turn.lowConfidence')}</span>` : ''}`
-                : '';
+                ? `<span class="v3-skill-chip">${esc(skillLabel[analysis.skill] || analysis.skill)}</span>${this._lowConfidencePillHtml(result, analysis)}`
+                : this._lowConfidencePillHtml(result, null);
             const insightsDirection = directionOf(findings.map(textOf).join(' '));
             const dots = PHASES.map((phase) => {
                 const events = finished.filter((item) => (NODE_PHASE[item.node] || 'execution') === phase.id);
@@ -2887,6 +2888,13 @@
             return `<span class="v3-route-pill is-${path}" data-route-path="${esc(path)}" data-route-source="${esc(routing.source || '')}" title="${esc(title)}">${esc(label)}</span>`;
         },
 
+        /** "low confidence" pill: a guard override on an ML run, or an answer the SQL evaluator doubted. */
+        _lowConfidencePillHtml(result, analysis) {
+            if (!(result && result.low_confidence) && !(analysis && analysis.low_confidence)) return '';
+            const title = analysis ? 'analysis.strip.lowConfidenceTitle' : 'conversation.turn.lowConfidenceSqlTitle';
+            return `<span class="v3-lowconf-pill" title="${h(title)}">${h('conversation.turn.lowConfidence')}</span>`;
+        },
+
         _restoredStripHtml(turn) {
             const when = turn.snapshotAt ? this._formatWhen(turn.snapshotAt) : null;
             if (turn.resultKind === 'text') {
@@ -2901,8 +2909,8 @@
                     : turn.snapshotStatus === 'too_large' ? h('conversation.restored.freshTooLarge') : h('conversation.restored.snapshot');
                 const analysis = turn.result.analysis && turn.result.analysis.skill ? turn.result.analysis : null;
                 const pill = analysis && window.JeenAnalysisUI
-                    ? `<span class="v3-skill-chip">${esc(window.JeenAnalysisUI.SKILL_LABEL[analysis.skill] || analysis.skill)}</span>${turn.result.low_confidence || analysis.low_confidence ? `<span class="v3-lowconf-pill" title="${h('analysis.strip.lowConfidenceTitle')}">${h('conversation.turn.lowConfidence')}</span>` : ''}`
-                    : '';
+                    ? `<span class="v3-skill-chip">${esc(window.JeenAnalysisUI.SKILL_LABEL[analysis.skill] || analysis.skill)}</span>${this._lowConfidencePillHtml(turn.result, analysis)}`
+                    : this._lowConfidencePillHtml(turn.result, null);
                 return `<div class="v3-run-strip">${pill}
                   <span class="v3-run-meta">${label}${turn.hasChart ? ` · ${h('conversation.restored.chart')}` : ''}</span>
                   ${turn.canLoadData || turn.result?.sql ? `<button class="v3-text-btn" data-load-data="${turn.id}">${h('common.refresh')}</button>` : ''}

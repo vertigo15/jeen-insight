@@ -86,7 +86,7 @@ reachable only by the API and receives a separate audience-bound secret.
 ## The agent (the core value)
 
 The heart is a **LangGraph text-to-SQL state machine** built in
-`src/agent/langgraph_agent/graph.py`. `build_graph()` wires 27 nodes into a
+`src/agent/langgraph_agent/graph.py`. `build_graph()` wires 28 nodes into a
 `StateGraph` (full node/arc reference: [agent-state-flow.md](./agent-state-flow.md)).
 The flow on every question:
 

@@ -27,6 +27,7 @@ import base64
 import json
 import logging
 import re
+import time
 from typing import Any, AsyncGenerator, Dict, List, NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,88 @@ def classify_llm_error(exc: BaseException) -> str:
     if "timeout" in text or "timed out" in text:
         return "the model request timed out. The provider may be slow or unreachable."
     return str(exc)
+
+
+# ── Fallback eligibility ───────────────────────────────────────────────────────
+# Falling back to another model only helps when the *model or provider* is the
+# problem (dead key, missing deployment, throttling, outage, timeout). A request
+# the provider rejected as malformed (400/422), an over-long prompt or a content
+# filter hit will fail the same way on every model, and a Python programming
+# error is not a provider problem at all — retrying those just burns latency.
+_NON_FALLBACK_STATUS = frozenset({400, 413, 422})
+_NON_FALLBACK_TEXT = (
+    "context_length_exceeded", "maximum context length", "content_filter",
+    "content management policy", "responsibleaipolicyviolation",
+    "invalid_request_error",
+)
+_PROGRAMMING_ERRORS = (
+    TypeError, ValueError, KeyError, AttributeError, AssertionError,
+    NotImplementedError, LookupError,
+)
+_STATUS_IN_TEXT_RE = re.compile(r"(?:error code:|status(?: code)?[:= ])\s*(\d{3})", re.IGNORECASE)
+
+
+def _error_status(exc: BaseException) -> Optional[int]:
+    """HTTP status carried by a provider exception, from attributes or its text."""
+    for holder in (exc, getattr(exc, "response", None)):
+        status = getattr(holder, "status_code", None)
+        if isinstance(status, int):
+            return status
+    match = _STATUS_IN_TEXT_RE.search(str(exc))
+    return int(match.group(1)) if match else None
+
+
+def should_fall_back(exc: BaseException) -> bool:
+    """True when retrying the call on another healthy model can plausibly succeed."""
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError)):
+        return True
+    status = _error_status(exc)
+    if status is not None:
+        if status in _NON_FALLBACK_STATUS:
+            return False
+        return status in (401, 403, 404, 408, 409, 429) or status >= 500
+    text = str(exc).lower()
+    if any(marker in text for marker in _NON_FALLBACK_TEXT):
+        return False
+    if isinstance(exc, _PROGRAMMING_ERRORS):
+        return False
+    return True
+
+
+# ── Client cache ───────────────────────────────────────────────────────────────
+_CLIENT_CACHE_TTL_SECONDS = 300.0
+
+
+class _ChatClientCache:
+    """Small TTL cache of built chat clients, keyed by model name.
+
+    Building a client costs a DB credential fetch plus an SDK client, so the
+    fallback and streaming paths reuse one instead of rebuilding per call. A
+    short TTL picks up rotated credentials; a failing client is evicted at once.
+    """
+
+    def __init__(self, ttl_seconds: float = _CLIENT_CACHE_TTL_SECONDS) -> None:
+        self._ttl = ttl_seconds
+        self._items: Dict[Any, tuple] = {}
+
+    def get(self, key: Any) -> Optional[Any]:
+        item = self._items.get(key)
+        if item is None:
+            return None
+        stored_at, value = item
+        if time.monotonic() - stored_at > self._ttl:
+            self._items.pop(key, None)
+            return None
+        return value
+
+    def put(self, key: Any, value: Any) -> None:
+        self._items[key] = (time.monotonic(), value)
+
+    def evict(self, key: Any) -> None:
+        self._items.pop(key, None)
+
+    def clear(self) -> None:
+        self._items.clear()
 
 
 # ── Reasoning-model temperature handling ──────────────────────────────────────
@@ -442,6 +525,7 @@ class LangChainLlmService:
         self._chat_model    = chat_model
         self._provider_name = provider_name
         self._lock          = asyncio.Lock()
+        self._clients       = _ChatClientCache()
 
     # ── Factories ─────────────────────────────────────────────────────────
 
@@ -531,7 +615,9 @@ class LangChainLlmService:
     async def build_model_override_for_model_id(self, model_id: int) -> ModelOverride:
         """Build a ModelOverride for a specific ``admin_models.id``.
 
-        Used by ``PromptCache`` to wire per-prompt model assignments.
+        Used by ``PromptCache`` to wire per-prompt model assignments. Not
+        cached here: ``PromptCache`` already holds the result until it is
+        invalidated, and a reload must pick up rotated credentials.
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(_FETCH_BY_MODEL_ID, model_id)
@@ -542,6 +628,21 @@ class LangChainLlmService:
         row_dict = dict(row)
         chat_model = _build_chat_model(row_dict)
         return ModelOverride(chat_model=chat_model, provider_name=row_dict["provider_name"])
+
+    async def _client_for(self, name: str) -> Optional[tuple]:
+        """``(chat_model, provider_name)`` for a named model, cached for a few minutes.
+
+        Returns ``None`` when the model has no enabled credentials.
+        """
+        cached = self._clients.get(("name", name))
+        if cached is not None:
+            return cached
+        row = await _fetch_model_row(self._pool, name)
+        if not row:
+            return None
+        entry = (_build_chat_model(row), row["provider_name"])
+        self._clients.put(("name", name), entry)
+        return entry
 
     # ── Model switching ───────────────────────────────────────────────────
 
@@ -561,6 +662,7 @@ class LangChainLlmService:
                     f"No enabled credentials found for model {model_name!r}"
                 )
             new_model        = _build_chat_model(row)
+            self._clients.put(("name", model_name), (new_model, row["provider_name"]))
             old_name            = self._model_name
             self._chat_model    = new_model
             self._model_name    = model_name
@@ -660,6 +762,18 @@ class LangChainLlmService:
         try:
             return await _invoke(model)
         except Exception as primary_exc:  # noqa: BLE001
+            if not should_fall_back(primary_exc):
+                # The request itself is at fault (malformed, too long, filtered);
+                # another model would fail the same way. Keep the caller-facing
+                # contract: every provider failure surfaces as LLMUnavailableError.
+                logger.warning(
+                    "llm_service: model %r rejected the request (%s); not retrying elsewhere",
+                    model_name or "(override)", primary_exc,
+                )
+                raise LLMUnavailableError(
+                    f"Model {model_name or '(override)'} rejected the request — "
+                    f"{classify_llm_error(primary_exc)}"
+                ) from primary_exc
             if isinstance(primary_exc, asyncio.TimeoutError):
                 logger.warning(
                     "llm_service: model %r timed out after %ss; trying healthy fallback(s)",
@@ -675,11 +789,10 @@ class LangChainLlmService:
                 candidates = candidates[:max(0, int(max_fallbacks))]
             for cand in candidates:
                 try:
-                    row = await _fetch_model_row(self._pool, cand)
-                    if not row:
+                    client = await self._client_for(cand)
+                    if client is None:
                         continue
-                    cand_base = _build_chat_model(row)
-                    cand_provider = row["provider_name"]
+                    cand_base, cand_provider = client
                     cand_model = self._bind_model(
                         cand_base, cand_provider, cand, max_tokens, temperature, tools
                     )
@@ -692,6 +805,9 @@ class LangChainLlmService:
                     return ai_msg
                 except Exception as cand_exc:  # noqa: BLE001
                     logger.warning("llm_service: fallback %r also failed (%s)", cand, cand_exc)
+                    # Rebuild from fresh credentials next time rather than reuse
+                    # a client that just failed.
+                    self._clients.evict(("name", cand))
                     continue
             if isinstance(primary_exc, asyncio.TimeoutError):
                 reason = (
@@ -715,17 +831,18 @@ class LangChainLlmService:
         if current is not None and not current.healthy:
             for cand in await self._healthy_candidates(exclude=self._model_name):
                 try:
-                    row = await _fetch_model_row(self._pool, cand)
-                    if not row:
+                    client = await self._client_for(cand)
+                    if client is None:
                         continue
-                    cand_base = _build_chat_model(row)
-                    await self._promote(cand, cand_base, row["provider_name"])
+                    cand_base, cand_provider = client
+                    await self._promote(cand, cand_base, cand_provider)
                     logger.warning(
                         "llm_service: active %r unhealthy; streaming via %r",
                         current.name, cand,
                     )
-                    return cand_base, row["provider_name"], cand
+                    return cand_base, cand_provider, cand
                 except Exception:  # noqa: BLE001
+                    self._clients.evict(("name", cand))
                     continue
         return self._chat_model, self._provider_name, self._model_name
 

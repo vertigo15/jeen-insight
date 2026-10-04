@@ -70,6 +70,7 @@ PROMPT_NAMES = [
     "memory_answer",
     "prior_data_binder",
     "sql_generator",
+    "sql_repair",
     "analysis_planner",
     "analysis_narration",
     "chart_editor",

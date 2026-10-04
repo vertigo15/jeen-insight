@@ -206,6 +206,23 @@ class AgentState(TypedDict, total=False):
     generated_sql: Optional[str]
     clarification: Optional[str]        # LLM asked a clarifying question
     error_context: Optional[str]        # fed back into sql_generator on retry
+    # Normalised hashes of every SQL text generated this turn. A semantic retry
+    # that regenerates SQL already seen cannot change the result, so it is not
+    # re-run (``repeated_sql``): the earlier result is kept and flagged instead.
+    previous_sql_hashes: List[str]
+    repeated_sql: bool
+    # The first answer (SQL, rows, evaluator verdict) set aside when a semantic
+    # retry begins. If the retry fails or comes back with a clarification it is
+    # restored, flagged low-confidence, rather than losing a usable result.
+    semantic_fallback: Optional[Dict[str, Any]]
+    # Independent retry budgets (``retry_count`` / ``max_retries`` remain the
+    # overall cap): one focused SQL edit, one semantic rewrite.
+    # ``use_local_repair`` routes the current retry to ``sql_repair``;
+    # ``repair_failed`` sends a repair that produced nothing new to the generator.
+    use_local_repair: bool
+    sql_repair_attempts: int
+    semantic_retries: int
+    repair_failed: bool
 
     # ── Validation ────────────────────────────────────────────────────────
     sqlglot_error: Optional[str]

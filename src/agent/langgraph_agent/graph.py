@@ -38,8 +38,10 @@ Graph topology (simplified; ``fmt`` = response_formatter):
                                                                                          └─► fused_eval_analytics
                                                                                                 ├─(wrong, SQL path)─► feedback_classifier
                                                                                                 └─► fmt
-    feedback_classifier ─► sql_generator | catalog_lookup | filter_grounder | fmt
-    fmt ─► save_to_memory ─► observability_log ─► END
+    feedback_classifier ─► sql_repair | sql_generator | catalog_lookup | filter_grounder | fmt
+    sql_repair ─► sqlglot_validate  (unusable edit: ─► sql_generator)
+    fmt ─► save_to_memory ─┬─► END   (the two tail nodes run in parallel)
+        └─► observability_log ─┘
 
 Conversation memory: ``context_composer`` builds the turn ledger (question, SQL,
 answer, result shape and data availability of the last N turns) that the
@@ -52,9 +54,7 @@ pasted into prompts. See ``nodes/context.py``, ``nodes/memory_answer.py``,
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
 from typing import Any, List, Literal, Optional
 
 from langgraph.graph import END, START, StateGraph
@@ -94,18 +94,17 @@ from src.agent.langgraph_agent.nodes.output import (
     make_save_to_memory,
     observability_log,
     response_formatter,
-    stamp_customer_table,
 )
 from src.agent.langgraph_agent.nodes.router import make_fused_router
 from src.agent.langgraph_agent.nodes.sql_gen import make_sql_generator
+from src.agent.langgraph_agent.nodes.sql_repair import make_sql_repair
 from src.agent.langgraph_agent.nodes.validation import make_dlp_check, make_sqlglot_validate
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
+from src.agent.node_timing import timed
 from src.agent.prior_results import PriorResultStore, make_sql_rerun
-from src.agent.progress import emit_progress
 from src.agent.snapshot_sql import SnapshotSqlEngine
-from src.agent.token_usage import usage_delta
 from src.metadata import MetadataLoader
 from src.connectors import SqlRunner
 
@@ -125,124 +124,18 @@ logger = logging.getLogger(__name__)
 #   attempts 32 4 × (sql_generator, sqlglot_validate, dlp_check, execute_query,
 #               empty_filter_result_check, trivial_result_check,
 #               fused_eval_analytics, feedback_classifier)
-#   tail     3  response_formatter → save_to_memory → observability_log
+#   repair   1  sql_repair runs once per question; when its edit is unusable it
+#               hands the retry to sql_generator, one step more than a plain retry
+#   tail     2  response_formatter → (save_to_memory ∥ observability_log)
 #   = 59 supersteps (reground and recheck are mutually exclusive on a given empty
 #   result, so this over-counts). 72 leaves comfortable headroom.
 _GRAPH_LONGEST_LEGAL_PATH = 59
 _GRAPH_RECURSION_LIMIT = 72
 
 
-# ── Node metadata for the trace panel ────────────────────────────────────────
-# (icon, type)  type is one of: llm | db | logic
-_NODE_META: dict[str, tuple[str, str]] = {
-    "context_composer":        ("🧠", "logic"),
-    "fused_router":            ("🔀", "llm"),
-    "capability_answer":       ("💡", "llm"),
-    "catalog_help_answer":     ("📖", "logic"),
-    "memory_answer_generator": ("💬", "llm"),
-    "history_search":          ("🗂", "db"),
-    "catalog_lookup":          ("📦", "db"),
-    "filter_planner":          ("🎯", "llm"),
-    "filter_grounder":         ("🔎", "db"),
-    "prior_data_binder":       ("🧷", "llm"),
-    "prompt_builder":          ("🔧", "logic"),
-    "sql_generator":           ("🧠", "llm"),
-    "sqlglot_validate":        ("✅", "logic"),
-    "dlp_check":               ("🛡", "logic"),
-    "execute_query":           ("▶", "db"),
-    "empty_filter_result_check": ("🧭", "logic"),
-    "empty_result_check":       ("🩺", "llm"),
-    "trivial_result_check":    ("⚡", "logic"),
-    "fused_eval_analytics":    ("📊", "llm"),
-    "feedback_classifier":     ("🔁", "logic"),
-    "response_formatter":      ("📋", "logic"),
-    "save_to_memory":          ("💾", "db"),
-    "observability_log":       ("🪵", "logic"),
-    # ML skills branch
-    "analysis_planner":        ("🧪", "llm"),
-    "analysis_guard":          ("🚧", "db"),
-    "analysis_sql":            ("🔧", "logic"),
-    "analysis_run":            ("🧮", "ml"),
-}
-
-
-def _timed(name: str, fn: Any) -> Any:
-    """Wrap a node function so it appends a timing event to ``AgentState.trace``.
-
-    Each wrapped node returns ``{"trace": [event]}`` in addition to its own
-    updates. LangGraph's ``operator.add`` reducer on the ``trace`` field
-    concatenates these single-event lists into the full execution history.
-    """
-    icon, ntype = _NODE_META.get(name, ("●", "logic"))
-
-    if asyncio.iscoroutinefunction(fn):
-        async def _async_wrapper(state):
-            emit_progress(
-                state, node=name, status="node_started", icon=icon, node_type=ntype
-            )
-            t0 = time.monotonic()
-            try:
-                result = await fn(state)
-            except Exception as exc:
-                elapsed = round((time.monotonic() - t0) * 1000)
-                emit_progress(
-                    state,
-                    node=name,
-                    status="node_failed",
-                    icon=icon,
-                    node_type=ntype,
-                    elapsed_ms=elapsed,
-                    error=str(exc),
-                )
-                raise
-            elapsed = round((time.monotonic() - t0) * 1000)
-            emit_progress(
-                state,
-                node=name,
-                status="node_finished",
-                icon=icon,
-                node_type=ntype,
-                elapsed_ms=elapsed,
-            )
-            return stamp_customer_table(result, {
-                "node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype,
-                **usage_delta(state, {} if result is None else result),
-            })
-        return _async_wrapper
-    else:
-        def _sync_wrapper(state):
-            emit_progress(
-                state, node=name, status="node_started", icon=icon, node_type=ntype
-            )
-            t0 = time.monotonic()
-            try:
-                result = fn(state)
-            except Exception as exc:
-                elapsed = round((time.monotonic() - t0) * 1000)
-                emit_progress(
-                    state,
-                    node=name,
-                    status="node_failed",
-                    icon=icon,
-                    node_type=ntype,
-                    elapsed_ms=elapsed,
-                    error=str(exc),
-                )
-                raise
-            elapsed = round((time.monotonic() - t0) * 1000)
-            emit_progress(
-                state,
-                node=name,
-                status="node_finished",
-                icon=icon,
-                node_type=ntype,
-                elapsed_ms=elapsed,
-            )
-            return stamp_customer_table(result, {
-                "node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype,
-                **usage_delta(state, {} if result is None else result),
-            })
-        return _sync_wrapper
+# Node timing/trace instrumentation is shared with the DAX graph; the old name
+# stays importable for callers and tests.
+_timed = timed
 
 
 # ── Graph builder ─────────────────────────────────────────────────────────────
@@ -381,6 +274,7 @@ def build_graph(
         max_values=memory_max_bound_values, max_rows=memory_compute_max_rows))
     n("prompt_builder",          make_prompt_builder(prompt_loader))
     n("sql_generator",           make_sql_generator(llm, prompt_loader))
+    n("sql_repair",              make_sql_repair(llm, prompt_loader))
     n("sqlglot_validate",        make_sqlglot_validate(sqlglot_validation_enabled, require_catalog_for_query, enforce_schema_qualifier))
     n("dlp_check",               make_dlp_check(dlp_enabled, dlp_governed_columns))
     n("execute_query",           make_execute_query(sql_runner))
@@ -438,6 +332,7 @@ def build_graph(
     builder.add_conditional_edges("analysis_run", _route_from_analysis_run)
 
     builder.add_conditional_edges("sql_generator", _route_from_sql_gen)
+    builder.add_conditional_edges("sql_repair", _route_from_sql_repair)
     builder.add_conditional_edges("sqlglot_validate", _route_from_sqlglot)
     builder.add_conditional_edges("dlp_check", _route_from_dlp)
     builder.add_conditional_edges("execute_query", _route_from_execute)
@@ -450,8 +345,13 @@ def build_graph(
     builder.add_conditional_edges("fused_eval_analytics", _route_from_eval)
     builder.add_conditional_edges("feedback_classifier", _route_from_feedback)
 
+    # The tail nodes are independent: save_to_memory persists, observability_log
+    # reads only what the formatter produced. They run in one superstep, so the
+    # log no longer waits for the history writes, and both only append to the
+    # reduced ``trace``.
     builder.add_edge("response_formatter", "save_to_memory")
-    builder.add_edge("save_to_memory", "observability_log")
+    builder.add_edge("response_formatter", "observability_log")
+    builder.add_edge("save_to_memory", END)
     builder.add_edge("observability_log", END)
 
     compiled = builder.compile().with_config(
@@ -581,9 +481,17 @@ def _route_from_analysis_run(state: AgentState) -> Literal["response_formatter",
 
 
 def _route_from_sql_gen(state: AgentState) -> Literal["sqlglot_validate", "response_formatter"]:
+    if state.get("repeated_sql"):
+        return "response_formatter"  # identical SQL: keep the earlier result
     if state.get("generated_sql"):
         return "sqlglot_validate"
     return "response_formatter"  # clarification or empty
+
+
+def _route_from_sql_repair(state: AgentState) -> Literal["sqlglot_validate", "sql_generator"]:
+    # An edit that produced nothing new is not worth validating again: the full
+    # generator takes the retry with the original error context.
+    return "sql_generator" if state.get("repair_failed") else "sqlglot_validate"
 
 
 def _route_from_sqlglot(state: AgentState) -> Literal["response_formatter", "feedback_classifier", "dlp_check"]:
@@ -653,7 +561,7 @@ def _route_from_eval(state: AgentState) -> Literal["response_formatter", "feedba
 
 
 def _route_from_feedback(state: AgentState) -> Literal[
-    "response_formatter", "catalog_lookup", "filter_grounder", "sql_generator",
+    "response_formatter", "catalog_lookup", "filter_grounder", "sql_repair", "sql_generator",
 ]:
     feedback = state.get("feedback_type")
     if feedback == "exhausted":
@@ -662,6 +570,8 @@ def _route_from_feedback(state: AgentState) -> Literal[
         return "catalog_lookup"
     if feedback == "resolve_filters":
         return "filter_grounder"
+    if feedback in ("syntax", "exec") and state.get("use_local_repair"):
+        return "sql_repair"  # one focused edit before a full regeneration
     return "sql_generator"  # syntax | exec | semantic | empty_recheck
 
 

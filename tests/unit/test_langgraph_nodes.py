@@ -779,6 +779,95 @@ class TestDlpCheck:
         })
         assert result["dlp_blocked"] is False
 
+    @pytest.mark.parametrize("column", [
+        "user_password", "password_hash", "customer_ssn", "ssn_last4",
+        "credit_card_number", "client_secret", "api_key_id", "access_token_expiry",
+        "userPassword", "customerSSN", "apiKeyId",
+    ])
+    def test_blocks_governed_names_embedded_in_snake_or_camel_case(self, column):
+        """``\\b`` treats ``_`` as a word character, so these used to pass."""
+        check = make_dlp_check(enabled=True)
+        result = check({
+            "generated_sql": f"SELECT {column} FROM accounts",
+            "table_columns": {"accounts": [column.lower(), "id"]},
+        })
+        assert result["dlp_blocked"] is True, column
+
+    @pytest.mark.parametrize("column", [
+        "passenger", "spin_rate", "description", "shipping_address", "tokenizer",
+    ])
+    def test_does_not_block_names_that_only_contain_a_pattern_as_a_substring(self, column):
+        check = make_dlp_check(enabled=True)
+        result = check({
+            "generated_sql": f"SELECT {column} FROM accounts",
+            "table_columns": {"accounts": [column, "id"]},
+        })
+        assert result["dlp_blocked"] is False, column
+
+    def test_pin_in_a_longer_identifier_is_governed(self):
+        """Known trade-off of the snake_case boundary: ``pin_code`` / ``map_pin``
+        are treated as governed rather than risk missing a PIN column."""
+        check = make_dlp_check(enabled=True)
+        for column in ("pin_code", "map_pin"):
+            result = check({
+                "generated_sql": f"SELECT {column} FROM places",
+                "table_columns": {"places": [column]},
+            })
+            assert result["dlp_blocked"] is True, column
+
+    def test_config_governed_column_matches_exactly_not_inside_longer_names(self):
+        check = make_dlp_check(enabled=True, governed_columns=["name"])
+        for column in ("first_name", "product_name", "FirstName"):
+            result = check({
+                "generated_sql": f"SELECT {column} FROM customers",
+                "table_columns": {"customers": [column]},
+            })
+            assert result["dlp_blocked"] is False, column
+        result = check({
+            "generated_sql": "SELECT name FROM customers",
+            "table_columns": {"customers": ["name"]},
+        })
+        assert result["dlp_blocked"] is True
+
+    def test_config_governed_column_matches_camel_case_form(self):
+        check = make_dlp_check(enabled=True, governed_columns=["home_address"])
+        result = check({
+            "generated_sql": "SELECT HomeAddress FROM customers",
+            "table_columns": {"customers": ["HomeAddress"]},
+        })
+        assert result["dlp_blocked"] is True
+
+    @pytest.mark.parametrize("column", ["SSNLast4", "APIKey", "PINCode", "password1", "userPassword2"])
+    def test_blocks_acronym_and_digit_boundaries(self, column):
+        check = make_dlp_check(enabled=True)
+        result = check({
+            "generated_sql": f"SELECT {column} FROM accounts",
+            "table_columns": {"accounts": [column, "id"]},
+        })
+        assert result["dlp_blocked"] is True, column
+
+    def test_raw_scan_fallback_splits_camel_case(self):
+        """SQL sqlglot cannot parse is scanned as text, camelCase included."""
+        check = make_dlp_check(enabled=True)
+        result = check({"generated_sql": "SELECT userPassword FROM t WHERE ("})
+        assert result["dlp_blocked"] is True
+
+    def test_raw_scan_fallback_passes_clean_unparseable_sql(self):
+        check = make_dlp_check(enabled=True)
+        result = check({"generated_sql": "SELECT orderTotal, shippingAddress FROM t WHERE ("})
+        assert result["dlp_blocked"] is False
+
+    def test_sqlglot_validate_leaves_snake_case_governed_columns_to_dlp(self):
+        """A governed column absent from the catalog is reported by DLP, not as a
+        misleading 'column not found' that would trigger a pointless retry."""
+        validate = make_sqlglot_validate(enabled=True)
+        result = validate({
+            "generated_sql": "SELECT user_password FROM accounts",
+            "known_tables": ["accounts"],
+            "table_columns": {"accounts": ["id"]},
+        })
+        assert result["sqlglot_error"] is None
+
 
 # ── trivial_result_check ──────────────────────────────────────────────────────
 
@@ -927,6 +1016,106 @@ class TestFeedbackClassifier:
             eval_result={"answers_intent": False},
         ))
         assert result["feedback_type"] == "semantic"
+
+    def test_semantic_retry_includes_reason_and_previous_sql(self):
+        fc = make_feedback_classifier(max_retries=3)
+        result = fc(self._state(
+            generated_sql="SELECT a FROM t",
+            eval_result={"answers_intent": False, "mismatch_reason": "Wrong grain: monthly, not daily."},
+        ))
+        ctx = result["error_context"]
+        assert "Wrong grain: monthly, not daily." in ctx
+        assert "SELECT a FROM t" in ctx
+        assert "BEGIN_UNTRUSTED_DATA" in ctx
+        assert "different approach" in ctx
+
+    def test_semantic_retry_without_reason_still_asks_for_a_new_approach(self):
+        fc = make_feedback_classifier(max_retries=3)
+        result = fc(self._state(eval_result={"answers_intent": False}))
+        assert "BEGIN_UNTRUSTED_DATA" not in result["error_context"]
+        assert "different approach" in result["error_context"]
+
+    def test_first_exec_error_is_routed_to_local_repair(self):
+        fc = make_feedback_classifier(max_retries=3)
+        result = fc(self._state(exec_error="column x does not exist", generated_sql="SELECT x FROM t"))
+        assert result["feedback_type"] == "exec"        # feedback_type values are unchanged
+        assert result["use_local_repair"] is True
+        assert result["sql_repair_attempts"] == 1
+        assert result["retry_count"] == 1
+
+    def test_first_syntax_error_is_routed_to_local_repair(self):
+        fc = make_feedback_classifier(max_retries=3)
+        result = fc(self._state(sqlglot_error="Invalid expression", generated_sql="SELEC 1"))
+        assert result["feedback_type"] == "syntax"
+        assert result["use_local_repair"] is True
+
+    def test_repair_budget_is_one_per_question(self):
+        fc = make_feedback_classifier(max_retries=3)
+        result = fc(self._state(
+            exec_error="still broken", generated_sql="SELECT x FROM t", sql_repair_attempts=1, retry_count=1,
+        ))
+        assert result["use_local_repair"] is False
+        assert result["sql_repair_attempts"] == 1
+        assert result["retry_count"] == 2
+
+    def test_no_repair_without_sql_to_edit(self):
+        fc = make_feedback_classifier(max_retries=3)
+        assert fc(self._state(exec_error="boom"))["use_local_repair"] is False
+
+    def test_missing_table_goes_to_the_catalog_not_to_repair(self):
+        fc = make_feedback_classifier(max_retries=3)
+        result = fc(self._state(sqlglot_error="Table 'foo' not found in catalog.", generated_sql="SELECT 1 FROM foo"))
+        assert result["feedback_type"] == "missing_table"
+        assert result["use_local_repair"] is False
+
+    @pytest.mark.parametrize("error", [
+        "canceling statement due to statement timeout",
+        "Query timed out after 30s",
+        "Operation timeout",
+    ])
+    def test_timeouts_skip_repair_and_ask_for_a_lighter_query(self, error):
+        fc = make_feedback_classifier(max_retries=3)
+        result = fc(self._state(exec_error=error, generated_sql="SELECT * FROM big"))
+        assert result["feedback_type"] == "exec"
+        assert result["use_local_repair"] is False
+        assert result["sql_repair_attempts"] == 0       # the repair budget is untouched
+        assert error in result["error_context"]
+        assert "lighter query" in result["error_context"]
+
+    def test_semantic_budget_is_one_rewrite_then_the_result_stands(self):
+        fc = make_feedback_classifier(max_retries=3)
+        first = fc(self._state(eval_result={"answers_intent": False}))
+        assert first["feedback_type"] == "semantic"
+        assert first["semantic_retries"] == 1
+        assert first["use_local_repair"] is False
+
+        second = fc(self._state(
+            eval_result={"answers_intent": False}, semantic_retries=1, retry_count=first["retry_count"],
+        ))
+        assert second["feedback_type"] == "exhausted"
+        assert second["low_confidence"] is True
+        assert second["retry_count"] == first["retry_count"]    # no retry was spent
+
+    def test_semantic_budget_is_independent_of_the_error_retries(self):
+        """Fixing an error first must not use up the one semantic rewrite."""
+        fc = make_feedback_classifier(max_retries=3)
+        result = fc(self._state(
+            eval_result={"answers_intent": False}, retry_count=2, sql_repair_attempts=1, semantic_retries=0,
+        ))
+        assert result["feedback_type"] == "semantic"
+        assert result["retry_count"] == 3
+
+    def test_max_retries_still_caps_the_total(self):
+        fc = make_feedback_classifier(max_retries=2)
+        result = fc(self._state(retry_count=2, exec_error="err", generated_sql="SELECT 1"))
+        assert result["feedback_type"] == "exhausted"
+        assert result["use_local_repair"] is False
+
+    def test_stale_repair_flag_is_cleared_by_other_branches(self):
+        fc = make_feedback_classifier(max_retries=3)
+        result = fc(self._state(needs_filter_reground=True, use_local_repair=True))
+        assert result["feedback_type"] == "resolve_filters"
+        assert result["use_local_repair"] is False
 
     def test_exhausted_at_max_retries(self):
         fc = make_feedback_classifier(max_retries=2)
@@ -1145,6 +1334,32 @@ class TestExtractSql:
     def test_extracts_bare_select(self):
         response = {"content": "The query is: SELECT * FROM products WHERE active = TRUE;"}
         assert "SELECT" in _extract_sql(response).upper()
+
+    def test_bare_select_drops_leading_prose(self):
+        response = {"content": "The query is: SELECT * FROM products WHERE active = TRUE;"}
+        assert _extract_sql(response) == "SELECT * FROM products WHERE active = TRUE;"
+
+    def test_bare_cte_keeps_its_with_clause(self):
+        response = {"content": (
+            "Use this:\n"
+            "WITH recent AS (\n"
+            "  SELECT id FROM orders WHERE year = 2024\n"
+            ")\n"
+            "SELECT count(*) FROM recent;\n"
+            "Hope that helps."
+        )}
+        sql = _extract_sql(response)
+        assert sql.startswith("WITH recent AS (")
+        assert sql.endswith("SELECT count(*) FROM recent;")
+        assert "Hope that helps" not in sql
+
+    def test_bare_statement_is_not_cut_at_a_semicolon_inside_a_literal(self):
+        response = {"content": "SELECT id FROM t WHERE note = 'a;b'\n  AND x = 1;"}
+        assert _extract_sql(response) == "SELECT id FROM t WHERE note = 'a;b'\n  AND x = 1;"
+
+    def test_with_in_prose_is_not_mistaken_for_a_cte(self):
+        response = {"content": "Start with a filter, then SELECT id FROM t;"}
+        assert _extract_sql(response) == "SELECT id FROM t;"
 
     def test_returns_none_for_no_sql(self):
         response = {"content": "I need more information about the time period."}

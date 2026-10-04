@@ -40,7 +40,45 @@ _DLP_PATTERNS: List[str] = [
     r"\baccess_token\b",
 ]
 
-_DLP_RE = re.compile("|".join(_DLP_PATTERNS), re.IGNORECASE)
+_BOUNDARY_RE = re.compile(r"\\b")
+# Word boundaries inside a camelCase name: ``userPassword``, the end of an
+# acronym (``SSNLast4``, ``APIKey``) and letter-to-digit (``password1``).
+_CAMEL_SPLIT_RE = re.compile(
+    r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|(?<=[A-Za-z])(?=[0-9])"
+)
+
+
+def _identifier_bounded(pattern: str) -> str:
+    """Rewrite ``\\bword\\b`` so ``_`` counts as a separator, not a word character.
+
+    With plain ``\\b`` the pattern ``\\bpassword\\b`` misses ``user_password`` and
+    ``password_hash`` because ``_`` is a word character. Governed columns are
+    usually snake_case, so the boundary is "not adjacent to a letter or digit".
+    ``_DLP_PATTERNS`` itself stays untouched: the DAX path rewrites its ``_``
+    into a flexible separator.
+
+    Trade-off: names such as ``map_pin`` or ``pin_code`` are now governed too.
+    """
+    parts = _BOUNDARY_RE.split(pattern)
+    if len(parts) < 3:
+        return pattern
+    return (
+        parts[0]
+        + "(?<![A-Za-z0-9])"
+        + r"\b".join(parts[1:-1])
+        + "(?![A-Za-z0-9])"
+        + parts[-1]
+    )
+
+
+_DLP_RE = re.compile(
+    "|".join(_identifier_bounded(p) for p in _DLP_PATTERNS), re.IGNORECASE
+)
+
+
+def _is_governed_column(dlp_re: "re.Pattern[str]", name: str) -> bool:
+    """True when a column name is governed in snake_case, kebab or camelCase."""
+    return bool(dlp_re.search(name) or dlp_re.search(_CAMEL_SPLIT_RE.sub("_", name)))
 
 
 # ── sqlglot_validate ──────────────────────────────────────────────────────────
@@ -260,7 +298,7 @@ def _check_columns(stmt, table_columns: Dict[str, Set[str]], sqlglot) -> Optiona
         # Governed columns (e.g. 'password') are intentionally absent from the
         # catalog; let dlp_check own them instead of misreporting "not found"
         # (which would otherwise trigger a pointless catalog-retry loop).
-        if _DLP_RE.search(cname):
+        if _is_governed_column(_DLP_RE, col.name or ""):
             continue
         qualifier = (col.table or "").lower()
         if qualifier:
@@ -485,7 +523,8 @@ def _resolve_referenced_columns(
             continue
         # Explicitly referenced columns.
         for col in stmt.find_all(sqlglot.exp.Column):
-            name = (col.name or "").lower()
+            # Original case is kept so camelCase names can be split for DLP.
+            name = col.name or ""
             if name and name != "*":
                 referenced.add(name)
         # Expand any Star (SELECT * / t.*) to the catalog columns of the
@@ -500,12 +539,16 @@ def _resolve_referenced_columns(
 
 def _build_dlp_regex(extra_columns: Optional[List[str]]) -> "re.Pattern[str]":
     """Combine the built-in governed patterns with ops-provided column tags."""
-    patterns = list(_DLP_PATTERNS)
+    patterns = [_identifier_bounded(p) for p in _DLP_PATTERNS]
     for col in extra_columns or []:
         name = (col or "").strip()
         if name:
-            # Exact governed column name (word-boundary), regex-escaped.
-            patterns.append(rf"\b{re.escape(name)}\b")
+            # Ops tags name a column exactly: ``name`` must not govern
+            # ``first_name``, so ``_`` stays part of the identifier here.
+            # (camelCase columns are checked in their snake_case form too.)
+            patterns.append(
+                rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])"
+            )
     return re.compile("|".join(patterns), re.IGNORECASE)
 
 
@@ -541,7 +584,7 @@ def make_dlp_check(enabled: bool, governed_columns: Optional[List[str]] = None):
         if referenced is not None:
             # Column-aware path: only block on an actual governed column.
             for col in referenced:
-                if dlp_re.search(col):
+                if _is_governed_column(dlp_re, col):
                     error = (
                         f"Query blocked by data governance policy: "
                         f"references a governed column ('{col}')."
@@ -552,7 +595,7 @@ def make_dlp_check(enabled: bool, governed_columns: Optional[List[str]] = None):
             return {"dlp_blocked": False, "governance_error": None}
 
         # Fallback: coarse raw-text scan when the SQL couldn't be parsed.
-        match = dlp_re.search(sql)
+        match = dlp_re.search(sql) or dlp_re.search(_CAMEL_SPLIT_RE.sub("_", sql))
         if match:
             error = (
                 f"Query blocked by data governance policy: "

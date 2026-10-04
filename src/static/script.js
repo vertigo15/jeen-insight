@@ -3214,7 +3214,7 @@ function _buildTraceFlowHtml(events, metrics) {
 }
 
 function _traceNodeType(node) {
-    if (['fused_router', 'capability_answer', 'memory_answer_generator', 'prior_data_binder', 'sql_generator',
+    if (['fused_router', 'capability_answer', 'memory_answer_generator', 'prior_data_binder', 'sql_generator', 'sql_repair',
          'filter_planner', 'empty_result_check', 'analysis_planner',
          'fused_eval_analytics', 'dax_query_planner', 'dax_generator', 'dax_repair'].includes(node)) return 'llm';
     if (['pre_graph_setup', 'catalog_lookup', 'filter_grounder', 'execute_query', 'save_to_memory', 'history_search',
@@ -3862,6 +3862,7 @@ const _NODE_LABELS = {
     filter_grounder:         'Filter check',
     prompt_builder:          'Prompt build',
     sql_generator:           'SQL generation',
+    sql_repair:              'SQL repair',
     sqlglot_validate:        'SQL validate',
     dlp_check:               'Governance check',
     execute_query:           'Run SQL',

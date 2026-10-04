@@ -195,6 +195,9 @@ def make_fused_eval_analytics(llm: LangChainLlmService, prompt_loader: PromptLoa
                 follow_ups = [str(parsed["follow_up"])]
             else:
                 follow_ups = []
+            mismatch_reason = parsed.get("mismatch_reason")
+            if isinstance(mismatch_reason, str) and mismatch_reason.strip():
+                eval_result["mismatch_reason"] = mismatch_reason.strip()[:300]
             eval_result.update(
                 {
                     "answers_intent": bool(parsed.get("answers_intent", True)),

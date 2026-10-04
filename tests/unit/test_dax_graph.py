@@ -39,6 +39,58 @@ class TestCompiles:
         assert hasattr(graph, "ainvoke")
 
 
+class TestRecursionLimit:
+    def test_limit_covers_the_longest_budget_legal_path(self):
+        """A request that exhausts every retry budget must end with an 'exhausted'
+        answer, never a GraphRecursionError. Recount when a node is added to the
+        prefix or to a repair loop (see the comment next to the constant)."""
+        from src.agent.langgraph_agent_dax.graph import (
+            _DAX_GRAPH_LONGEST_LEGAL_PATH,
+            _DAX_GRAPH_RECURSION_LIMIT,
+        )
+        from src.agent.langgraph_agent_dax.nodes import feedback as fb
+        from src.agent.langgraph_agent_dax.nodes.dax_validate import DAX_MAX_STATIC_REPAIRS
+
+        max_retries = 4
+        prefix = ["context_composer", "fused_router", "memory_answer_generator", "dax_catalog_lookup",
+                  "dax_query_planner", "dax_entity_resolver", "dax_prompt_builder"]
+        run = ["dax_static_validate", "pbi_execute_query", "result_integrity_check",
+               "trivial_result_check", "fused_eval_analytics", "dax_feedback_router"]
+        first = ["dax_generator"] + run
+        upstream = {
+            "refresh_catalog": ["dax_catalog_lookup", "dax_query_planner", "dax_entity_resolver",
+                                "dax_prompt_builder", "dax_generator"],
+            "replan": ["dax_query_planner", "dax_entity_resolver", "dax_prompt_builder", "dax_generator"],
+            "resolve_entities": ["dax_entity_resolver", "dax_prompt_builder", "dax_generator"],
+            "regenerate": ["dax_generator"],
+        }
+        budgets = {
+            "refresh_catalog": fb._MAX_CATALOG_REFRESH,
+            "replan": fb._MAX_PLAN_REGENERATIONS,
+            "resolve_entities": fb._MAX_ENTITY_RESOLUTIONS - 1,  # the first run is the prefix's
+        }
+        # The first attempt's feedback is acting call #1; each loop ends in another.
+        # Fill the max_retries loops with the longest actions their budgets allow.
+        loops: list[int] = []
+        remaining = dict(budgets)
+        for _ in range(max_retries):
+            best = max(
+                (a for a, n in remaining.items() if n > 0),
+                key=lambda a: len(upstream[a]),
+                default="regenerate",
+            )
+            if best in remaining:
+                remaining[best] -= 1
+            loops.append(len(upstream[best]) + len(run))
+        static = 2 * DAX_MAX_STATIC_REPAIRS
+        # save_to_memory and observability_log run in parallel: one superstep.
+        tail = ["response_formatter", "save_to_memory|observability_log"]
+
+        longest = len(prefix) + len(first) + sum(loops) + static + len(tail)
+        assert longest == _DAX_GRAPH_LONGEST_LEGAL_PATH == 60
+        assert _DAX_GRAPH_RECURSION_LIMIT >= longest + 10
+
+
 class TestDaxCapabilityPrompt:
     def test_dax_loader_serves_power_bi_capability_prompt(self):
         # prompts_dax/capability_answer.md must shadow the SQL/ML-skill version:

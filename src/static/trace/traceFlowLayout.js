@@ -40,8 +40,8 @@
             },
             {
                 title: 'SQL + Safety',
-                hint: 'Generates SQL, validates syntax and tables, and checks DLP rules.',
-                nodes: ['sql_generator', 'sqlglot_validate', 'dlp_check'],
+                hint: 'Generates SQL, validates syntax and tables, and checks DLP rules; a failed query gets one focused repair first.',
+                nodes: ['sql_generator', 'sql_repair', 'sqlglot_validate', 'dlp_check'],
             },
             {
                 title: 'Execution + Checks',
@@ -117,12 +117,15 @@
             ['trivial_result_check', 'response_formatter', 'trivial / eval off'],
             ['fused_eval_analytics', 'response_formatter', 'answers intent'],
             ['fused_eval_analytics', 'feedback_classifier', 'wrong result'],
+            ['feedback_classifier', 'sql_repair', 'repair SQL'],
             ['feedback_classifier', 'sql_generator', 'retry SQL'],
+            ['sql_repair', 'sqlglot_validate', 're-validate'],
+            ['sql_repair', 'sql_generator', 'repair failed'],
             ['feedback_classifier', 'catalog_lookup', 'missing table'],
             ['feedback_classifier', 'filter_grounder', 're-ground filters'],
             ['feedback_classifier', 'response_formatter', 'exhausted'],
             ['response_formatter', 'save_to_memory', 'final payload'],
-            ['save_to_memory', 'observability_log', 'persisted'],
+            ['response_formatter', 'observability_log', 'log event'],
         ],
     };
 
@@ -219,7 +222,7 @@
             ['dax_feedback_router', 'dax_catalog_lookup', 'refresh catalog'],
             ['dax_feedback_router', 'response_formatter', 'exhausted'],
             ['response_formatter', 'save_to_memory', 'final payload'],
-            ['save_to_memory', 'observability_log', 'persisted'],
+            ['response_formatter', 'observability_log', 'log event'],
         ],
     };
 

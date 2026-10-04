@@ -37,14 +37,12 @@ Graph topology (``fmt`` = response_formatter, ``feedback`` = dax_feedback_router
     feedback → dax_repair | dax_generator | dax_query_planner |
                dax_entity_resolver | dax_catalog_lookup | fmt
 
-    fmt → save_to_memory → observability_log → END
+    fmt → save_to_memory ∥ observability_log → END   (parallel tail)
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
 from typing import Any, Literal, Optional
 
 from langgraph.graph import END, START, StateGraph
@@ -59,7 +57,6 @@ from src.agent.langgraph_agent.nodes.output import (
     make_save_to_memory,
     observability_log,
     response_formatter,
-    stamp_customer_table,
 )
 from src.agent.langgraph_agent.nodes.history import make_history_search
 from src.agent.langgraph_agent.nodes.memory_answer import (
@@ -90,118 +87,39 @@ from src.agent.langgraph_agent_dax.nodes.planner import make_dax_query_planner
 from src.agent.langgraph_agent_dax.prompt_loader import DaxPromptLoader
 from src.agent.langgraph_agent_dax.state import DaxAgentState
 from src.agent.llm_service import LangChainLlmService
+from src.agent.node_timing import timed
 from src.agent.prior_results import PriorResultStore
-from src.agent.progress import emit_progress
 from src.agent.snapshot_sql import SnapshotSqlEngine
-from src.agent.token_usage import usage_delta
 from src.connectors.powerbi_token import TokenProviderFactory
 from src.metadata import MetadataLoader
 
 logger = logging.getLogger(__name__)
 
 # The DAX graph uses multiple nodes for each bounded repair cycle
-# (feedback → repair/regenerate → validation → execution). This must exceed
-# LangGraph's default of 25 so the DAX retry budget, not graph recursion, ends
-# a request.
-_DAX_GRAPH_RECURSION_LIMIT = 64
+# (feedback → repair/regenerate → validation → execution). The retry budgets,
+# not LangGraph's recursion limit (default 25), must end a legitimate request.
+# Longest path that honours every budget (max_retries=4, 2 static repairs,
+# 2 replans, 1 catalog refresh, 1 extra entity resolution):
+#   prefix   7  context_composer → fused_router → memory_answer_generator (escape
+#               hatch) → dax_catalog_lookup → dax_query_planner →
+#               dax_entity_resolver → dax_prompt_builder
+#   first    7  dax_generator, dax_static_validate, pbi_execute_query,
+#               result_integrity_check, trivial_result_check,
+#               fused_eval_analytics, dax_feedback_router
+#   loops   40  four acting feedbacks, each re-entering upstream and then running
+#               validate → execute → integrity → trivial → eval → feedback (6):
+#               refresh_catalog 5+6, replan 4+6 (×2), resolve_entities 3+6
+#   static   4  2 × (dax_repair, dax_static_validate)
+#   tail     2  response_formatter → (save_to_memory ∥ observability_log)
+#   = 60 supersteps (an over-count: eval-driven loops only ever regenerate, and
+#   every resolver re-run spends the entity budget). 72 mirrors the SQL graph.
+_DAX_GRAPH_LONGEST_LEGAL_PATH = 60
+_DAX_GRAPH_RECURSION_LIMIT = 72
 
 
-_NODE_META: dict[str, tuple[str, str]] = {
-    "context_composer":        ("🧠", "logic"),
-    "fused_router":            ("🔀", "llm"),
-    "capability_answer":       ("💡", "llm"),
-    "catalog_help_answer":     ("📖", "logic"),
-    "memory_answer_generator": ("💬", "llm"),
-    "history_search":          ("🗂", "db"),
-    "dax_catalog_lookup":      ("📦", "db"),
-    "dax_query_planner":       ("🗺", "llm"),
-    "dax_entity_resolver":     ("🔍", "db"),
-    "dax_prompt_builder":      ("🔧", "logic"),
-    "dax_generator":           ("🧠", "llm"),
-    "dax_static_validate":     ("✅", "logic"),
-    "dax_repair":              ("🩹", "llm"),
-    "pbi_execute_query":       ("▶", "db"),
-    "result_integrity_check":  ("🔎", "logic"),
-    "trivial_result_check":    ("⚡", "logic"),
-    "fused_eval_analytics":    ("📊", "llm"),
-    "dax_feedback_router":     ("🔁", "logic"),
-    "response_formatter":      ("📋", "logic"),
-    "save_to_memory":          ("💾", "db"),
-    "observability_log":       ("🪵", "logic"),
-}
-
-
-def _timed(name: str, fn: Any) -> Any:
-    """Wrap a node so it appends a timing event to ``trace`` (like the SQL graph)."""
-    icon, ntype = _NODE_META.get(name, ("●", "logic"))
-    if asyncio.iscoroutinefunction(fn):
-        async def _async_wrapper(state):
-            emit_progress(
-                state, node=name, status="node_started", icon=icon, node_type=ntype
-            )
-            t0 = time.monotonic()
-            try:
-                result = await fn(state)
-            except Exception as exc:
-                elapsed = round((time.monotonic() - t0) * 1000)
-                emit_progress(
-                    state,
-                    node=name,
-                    status="node_failed",
-                    icon=icon,
-                    node_type=ntype,
-                    elapsed_ms=elapsed,
-                    error=str(exc),
-                )
-                raise
-            elapsed = round((time.monotonic() - t0) * 1000)
-            emit_progress(
-                state,
-                node=name,
-                status="node_finished",
-                icon=icon,
-                node_type=ntype,
-                elapsed_ms=elapsed,
-            )
-            return stamp_customer_table(result, {
-                "node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype,
-                **usage_delta(state, {} if result is None else result),
-            })
-        return _async_wrapper
-
-    def _sync_wrapper(state):
-        emit_progress(
-            state, node=name, status="node_started", icon=icon, node_type=ntype
-        )
-        t0 = time.monotonic()
-        try:
-            result = fn(state)
-        except Exception as exc:
-            elapsed = round((time.monotonic() - t0) * 1000)
-            emit_progress(
-                state,
-                node=name,
-                status="node_failed",
-                icon=icon,
-                node_type=ntype,
-                elapsed_ms=elapsed,
-                error=str(exc),
-            )
-            raise
-        elapsed = round((time.monotonic() - t0) * 1000)
-        emit_progress(
-            state,
-            node=name,
-            status="node_finished",
-            icon=icon,
-            node_type=ntype,
-            elapsed_ms=elapsed,
-        )
-        return stamp_customer_table(result, {
-            "node": name, "elapsed_ms": elapsed, "icon": icon, "type": ntype,
-            **usage_delta(state, {} if result is None else result),
-        })
-    return _sync_wrapper
+# Node timing/trace instrumentation is shared with the SQL graph; the old name
+# stays importable for callers and tests.
+_timed = timed
 
 
 def build_dax_graph(
@@ -304,8 +222,10 @@ def build_dax_graph(
     builder.add_conditional_edges("fused_eval_analytics", _route_from_eval)
     builder.add_conditional_edges("dax_feedback_router", _route_from_feedback)
 
+    # Independent tail nodes run in one superstep (see the SQL graph).
     builder.add_edge("response_formatter", "save_to_memory")
-    builder.add_edge("save_to_memory", "observability_log")
+    builder.add_edge("response_formatter", "observability_log")
+    builder.add_edge("save_to_memory", END)
     builder.add_edge("observability_log", END)
 
     compiled = builder.compile().with_config(

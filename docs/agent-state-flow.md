@@ -5,7 +5,7 @@ the LangGraph state graph built by `build_graph()` in
 [`src/agent/langgraph_agent/graph.py`](../src/agent/langgraph_agent/graph.py):
 every question passes through it from `START` to `END`.
 
-**27 nodes · 63 arcs · 20 conditional routers · recursion limit 72 · no
+**28 nodes · 67 arcs · 21 conditional routers · recursion limit 72 · no
 checkpointer.**
 
 > Related docs:
@@ -30,7 +30,7 @@ every question on that connection. There is no LangGraph checkpointer:
 multi-turn continuity comes from the conversation window loaded *before* `START`
 and written back by `save_to_memory` at the end.
 
-The 27 nodes fall into five phases. At runtime a question follows **one** route
+The 28 nodes fall into five phases. At runtime a question follows **one** route
 through them — the phases below are logical groupings, not parallel stages.
 
 | Phase | Nodes |
@@ -38,7 +38,7 @@ through them — the phases below are logical groupings, not parallel stages.
 | Memory & routing | `context_composer`, `fused_router`, `capability_answer`, `catalog_help_answer`, `memory_answer_generator`, `history_search` |
 | Catalog & filters | `catalog_lookup`, `filter_planner`, `filter_grounder`, `prior_data_binder`, `prompt_builder` |
 | ML skills branch | `analysis_planner`, `analysis_guard`, `analysis_sql`, `analysis_run` |
-| SQL generation & execution | `sql_generator`, `sqlglot_validate`, `dlp_check`, `execute_query`, `empty_filter_result_check`, `empty_result_check`, `trivial_result_check`, `fused_eval_analytics`, `feedback_classifier` |
+| SQL generation & execution | `sql_generator`, `sql_repair`, `sqlglot_validate`, `dlp_check`, `execute_query`, `empty_filter_result_check`, `empty_result_check`, `trivial_result_check`, `fused_eval_analytics`, `feedback_classifier` |
 | Output tail | `response_formatter`, `save_to_memory`, `observability_log` |
 
 The only genuinely concurrent work happens **before** `START`:
@@ -178,6 +178,7 @@ flowchart TD
 
     subgraph SQLexec [SQL generation and execution]
         PB[prompt_builder] --> SG[sql_generator · LLM]
+        SR[sql_repair · LLM]
         SG -->|sql| SV[sqlglot_validate]
         SV -->|valid| DC[dlp_check]
         DC -->|safe| EQ[execute_query · DB]
@@ -202,15 +203,20 @@ flowchart TD
     TRC -->|trivial or eval off| RF
     FEA -->|answers intent or ML / memory path| RF
     FEA -->|wrong| FC
-    FC -->|syntax / exec / semantic / empty_recheck| SG
+    FC -->|syntax / exec, repair budget left| SR
+    FC -->|syntax / exec after repair / timeout, semantic, empty_recheck| SG
+    SR -->|repaired SQL| SV
+    SR -->|no usable edit| SG
     FC -->|missing_table| CL
     FC -->|resolve_filters| FG
     FC -->|exhausted| RF
 
-    subgraph Tail [Output tail]
-        RF[response_formatter] --> STM[save_to_memory · DB] --> OL[observability_log]
+    subgraph Tail [Output tail, run in parallel]
+        RF[response_formatter] --> STM[save_to_memory · DB]
+        RF --> OL[observability_log]
     end
-    OL --> E([END])
+    STM --> E([END])
+    OL --> E
 ```
 
 The subgraphs are logical groupings, not simultaneous execution. For a given
@@ -252,7 +258,8 @@ Fields are written by the nodes noted; every node reads the full state.
 | ML skills | `analysis_skill`, `analysis_params`, `analysis_resume`, `analysis_confirmed`, `analysis_confirm_required`, `analysis_override_guards`, `analysis_proposal`, `analysis_clarification`, `analysis_guard_failure`, `analysis_guard_results`, `analysis_span`, `analysis_result`, `analysis_definition`, `analysis_dropped_filters`, `analysis_error`, `low_confidence`, `parent_query_id`, `analysis_enabled_override` | `analysis_planner` / `guard` / `sql` / `run`. |
 | Catalog / prompt | `metadata_bundle`, `system_prompt`, `structured_prompt`, `dialect_rules`, `known_tables`, `known_columns`, `table_columns`, `catalog_source_used`, `catalog_cache`, `catalog_load_ms`, `catalog_available`, `catalog_error`, `catalog_blocked`, `catalog_seeded` | `catalog_lookup` + `prompt_builder`. Validation allowlists + the prompt the SQL model sees. |
 | Filter planning / grounding | `filter_plan`, `resolved_filters`, `unresolved_filters`, `filter_ambiguities`, `filter_candidates`, `filter_choices`, `filter_preferences`, `filter_clarification`, `filter_clarification_required`, `filter_resolution_attempts`, `empty_filter_diagnostics`, `needs_filter_reground`, `plan_assumptions`, `filter_metrics` + the runtime controls (`filter_value_visibility`, `filter_unverified_execution`, `filter_source_probe_enabled`, `filter_max_domain_values`, `filter_match_threshold`, `filter_lookup_timeout_ms`, `filter_cache_ttl_seconds`, …) | `filter_planner` + `filter_grounder` + `prior_data_binder`. Verified predicates + disclosures. |
-| SQL loop | `retry_count`, `generated_sql`, `clarification`, `error_context` | `sql_generator` + retry nodes. |
+| SQL loop | `retry_count`, `generated_sql`, `clarification`, `error_context`, `previous_sql_hashes`, `repeated_sql` | `sql_generator` + retry nodes. Every generated statement is fingerprinted; a semantic retry that returns SQL already run keeps the earlier result (`repeated_sql`, low confidence) instead of re-running it. |
+| Retry budgets | `use_local_repair`, `sql_repair_attempts`, `semantic_retries`, `repair_failed` | `feedback_classifier` / `sql_repair`. One focused repair and one semantic rewrite per question; `retry_count` / `LANGGRAPH_MAX_RETRIES` stays the overall cap. |
 | Validation | `sqlglot_error`, `dlp_blocked`, `governance_error` | `sqlglot_validate` + `dlp_check`. |
 | Execution | `query_result`, `exec_error`, `execution_time_ms` | `execute_query` (+ `analysis_run`). |
 | Empty-result recheck | `empty_result_diagnostics`, `needs_sql_recheck`, `empty_recheck_context`, `empty_hint` | `empty_result_check`. |
@@ -378,7 +385,7 @@ rows through `PriorResultStore` (cache → snapshot → re-run) and picks an act
 
 ---
 
-## 7. Node reference (all 27 nodes)
+## 7. Node reference (all 28 nodes)
 
 Type is one of **LLM** (calls a model), **DB** (queries a database / catalog),
 **logic** (pure Python), **ML** (analysis engine). "Router LLM" = the cheaper
@@ -419,6 +426,7 @@ Type is one of **LLM** (calls a model), **DB** (queries a database / catalog),
 | Node | Type | What it does |
 |------|------|--------------|
 | `sql_generator` | LLM (primary) | Tool-calling SQL generation. Prior turns are replayed from the ledger as `run_sql` tool-call / tool-result pairs (memory-computed SQL is kept as plain text, not a runnable call). On a retry — or an empty recheck — the structured `error_context` is injected. Extracts SQL from the tool call, a fenced block, or a bare `SELECT`. |
+| `sql_repair` | LLM (primary) | One focused edit of the failing SQL after a first `syntax` / `exec` error (`sql_repair` prompt). Sees only the question, the failing SQL, the (fenced) error, dialect rules, the columns and relationships of the tables that SQL references, and the verified filter plan — not the full catalog or the ledger. Follows the `sql_repair` model override, else the `jeen_insights_system` one. Output goes back through `sqlglot_validate`; no usable or an identical statement sets `repair_failed` and the retry goes to `sql_generator`. Runs at most once per question; timeouts skip it. |
 | `sqlglot_validate` | logic | Parse check; exactly one read-only statement (no DML/DDL, incl. in CTEs); schema/catalog-qualifier guard; table existence against `known_tables`; conservative column existence; and **resolved-filter preservation** (rejects SQL that drops, widens or reorders a verified predicate). |
 | `dlp_check` | logic | Resolves the columns the query actually touches (expanding `SELECT *` against the catalog) and blocks only when one matches a governed pattern (built-in + `DLP_GOVERNED_COLUMNS`). Falls back to a raw-text scan when the SQL can't be parsed. |
 | `execute_query` | DB | Runs the SQL read-only via `SqlRunner` with `limit` / `max_result_rows` / `statement_timeout_ms`; accumulates `execution_time_ms` across retries; sets `exec_error` + `error_context` on failure. |
@@ -426,7 +434,7 @@ Type is one of **LLM** (calls a model), **DB** (queries a database / catalog),
 | `empty_result_check` | LLM (router) | Only on a genuine 0-row result. `_is_suspicious_empty` (aggregate/`GROUP BY`/INNER join with no user filter) gates a single LLM call that may set `needs_sql_recheck` and an `empty_hint`. Own one-pass budget (`empty_result_diagnostics`); never fails the answer. |
 | `trivial_result_check` | logic | ≤1 row and ≤5 columns → `is_trivial=True` to skip the eval LLM call. |
 | `fused_eval_analytics` | LLM (primary) | **SQL mode**: full-data statistics + a row sample → `answers_intent`, summary, insights, follow-ups (`fused_eval_analytics` prompt). **ML mode** (`analysis_result` present): restates the engine's `facts`/`validation`/`caveats` via `analysis_narration`, never sees rows, and never triggers a retry. |
-| `feedback_classifier` | logic | Routes recovery. `needs_filter_reground` → `resolve_filters`; `needs_sql_recheck` → `empty_recheck` (both own budgets, `retry_count` untouched); else increments `retry_count` and sets `syntax` / `missing_table` / `exec` / `semantic`, or `exhausted` at `LANGGRAPH_MAX_RETRIES`. |
+| `feedback_classifier` | logic | Routes recovery. `needs_filter_reground` → `resolve_filters`; `needs_sql_recheck` → `empty_recheck` (both own budgets, `retry_count` untouched); else increments `retry_count` and sets `syntax` / `missing_table` / `exec` / `semantic`, or `exhausted` at `LANGGRAPH_MAX_RETRIES`. A first `syntax` / `exec` error also sets `use_local_repair` (→ `sql_repair`, budget `sql_repair_attempts` = 1); a timeout skips the repair and regenerates with a lighter-query note. A `semantic` mismatch (the evaluator's `mismatch_reason` and the previous SQL go into the retry brief) gets one rewrite (`semantic_retries` = 1); a second ends the turn with the result kept and flagged `low_confidence`. |
 
 ### Output tail
 
@@ -438,7 +446,7 @@ Type is one of **LLM** (calls a model), **DB** (queries a database / catalog),
 
 ---
 
-## 8. Routing functions (all 20 conditional routers)
+## 8. Routing functions (all 21 conditional routers)
 
 Each `add_conditional_edges` in `build_graph` uses one function that returns the
 next node name. Conditions are evaluated top-to-bottom; the first match wins.
@@ -458,7 +466,8 @@ next node name. Conditions are evaluated top-to-bottom; the first match wins.
 | `_route_from_analysis_guard` | `response_formatter` (guard failure / confirm card / analysis_error) / `analysis_sql`. |
 | `_route_from_analysis_sql` | `response_formatter` (analysis_error) / `sqlglot_validate`. |
 | `_route_from_analysis_run` | `response_formatter` (guard failure / error) / `trivial_result_check`. |
-| `_route_from_sql_gen` | `sqlglot_validate` (generated_sql) / `response_formatter` (clarification or empty). |
+| `_route_from_sql_gen` | `sqlglot_validate` (generated_sql) / `response_formatter` (clarification or empty, or `repeated_sql` — identical SQL on a semantic retry). |
+| `_route_from_sql_repair` | `sql_generator` (`repair_failed`) / `sqlglot_validate`. |
 | `_route_from_sqlglot` | `response_formatter` (error **and** on_branch — a deterministic builder can't be LLM-repaired) / `feedback_classifier` (error, SQL path) / `dlp_check` (valid). |
 | `_route_from_dlp` | `response_formatter` (dlp_blocked) / `execute_query`. |
 | `_route_from_execute` | `response_formatter` (exec_error **and** on_branch) / `feedback_classifier` (exec_error, SQL path) / `analysis_run` (rows, on_branch) / `empty_filter_result_check`. |
@@ -466,13 +475,13 @@ next node name. Conditions are evaluated top-to-bottom; the first match wins.
 | `_route_from_empty_result` | `feedback_classifier` (needs_sql_recheck) / `trivial_result_check`. |
 | `_route_from_trivial` | `response_formatter` (is_trivial or eval off, honouring the per-request override) / `fused_eval_analytics`. |
 | `_route_from_eval` | `response_formatter` (on_branch, on_memory_branch, or `answers_intent != false`) / `feedback_classifier` (`answers_intent == false`). |
-| `_route_from_feedback` | `response_formatter` (exhausted) / `catalog_lookup` (missing_table) / `filter_grounder` (resolve_filters) / `sql_generator` (syntax / exec / semantic / empty_recheck). |
+| `_route_from_feedback` | `response_formatter` (exhausted) / `catalog_lookup` (missing_table) / `filter_grounder` (resolve_filters) / `sql_repair` (syntax / exec with `use_local_repair`) / `sql_generator` (syntax / exec / semantic / empty_recheck). |
 
 The static edges (`add_edge`): `context_composer → fused_router`,
 `capability_answer → response_formatter`, `catalog_help_answer →
 response_formatter`, `history_search → response_formatter`, `prompt_builder →
-sql_generator`, `response_formatter → save_to_memory`, `save_to_memory →
-observability_log`, `observability_log → END`.
+sql_generator`, `response_formatter → save_to_memory`, `response_formatter →
+observability_log`, `save_to_memory → END`, `observability_log → END`.
 
 ---
 
@@ -541,9 +550,13 @@ Conditions are evaluated in order; the first match wins.
 | `feedback_classifier` | `response_formatter` | `exhausted` |
 | `feedback_classifier` | `catalog_lookup` | `missing_table` |
 | `feedback_classifier` | `filter_grounder` | `resolve_filters` |
-| `feedback_classifier` | `sql_generator` | `syntax` / `exec` / `semantic` / `empty_recheck` |
-| `response_formatter` | `save_to_memory` | always |
-| `save_to_memory` | `observability_log` | always |
+| `feedback_classifier` | `sql_repair` | `syntax` / `exec` with `use_local_repair` |
+| `feedback_classifier` | `sql_generator` | `syntax` / `exec` (repair spent, or timeout) / `semantic` / `empty_recheck` |
+| `sql_repair` | `sqlglot_validate` | repaired SQL |
+| `sql_repair` | `sql_generator` | `repair_failed` (no SQL, or SQL already tried) |
+| `response_formatter` | `save_to_memory` | always (parallel with `observability_log`) |
+| `response_formatter` | `observability_log` | always (parallel with `save_to_memory`) |
+| `save_to_memory` | `END` | always |
 | `observability_log` | `END` | always |
 
 ---
@@ -678,9 +691,16 @@ silently skipped.
 
 ### 10.5 Retry & recovery loops (bounded)
 
-- **SQL repair** — `feedback_classifier` increments `retry_count`; syntax,
-  execution and semantic failures return to `sql_generator`; the fourth failure
-  (`LANGGRAPH_MAX_RETRIES = 3`) is terminal (`exhausted`).
+- **SQL repair** — `feedback_classifier` increments `retry_count`; the fourth
+  failure (`LANGGRAPH_MAX_RETRIES = 3`) is terminal (`exhausted`). Inside that
+  cap two independent budgets apply: the first syntax or execution error goes to
+  `sql_repair` (a focused edit with only the referenced tables' columns,
+  `sql_repair_attempts < 1`; a timeout skips it and regenerates with a
+  lighter-query note), and a semantic mismatch gets one rewrite
+  (`semantic_retries < 1`) that carries the evaluator's `mismatch_reason` and the
+  previous SQL. A second mismatch, or a rewrite that returns SQL already run,
+  keeps the earlier result and marks it `low_confidence`. Everything else returns
+  to `sql_generator`.
 - **Catalog refresh** — `missing_table` reloads the catalog (clearing the seed
   ticket) and re-plans filters on the same budget; `prior_data_binder` re-applies
   existing bindings without a model call.
@@ -699,7 +719,10 @@ not LangGraph's default 25. The longest path that honours every budget
 (`max_retries=3`, one filter reground, one empty-result recheck) is
 `_GRAPH_LONGEST_LEGAL_PATH = 59` supersteps (an over-count, since reground and
 recheck are mutually exclusive on a given empty result), leaving comfortable
-headroom.
+headroom. `sql_repair` adds one step when its edit is unusable and hands the
+retry to `sql_generator`; the parallel `save_to_memory` / `observability_log`
+tail takes one step instead of two, which nets out. The text-to-DAX graph has its
+own `_DAX_GRAPH_LONGEST_LEGAL_PATH = 60` against the same limit of 72.
 
 ### 10.6 Catalog sourcing (DB vs MCP)
 
@@ -797,6 +820,7 @@ fallback); each LLM node stores its rendered prompt in `node_prompts`.
 | `prior_data_binder.md` | `prior_data_binder` |
 | `jeen_insights_system.md` | `prompt_builder` (injected catalog + filter contract) |
 | `sql_generator.md` | `sql_generator` (retry / empty-recheck message) |
+| `sql_repair.md` | `sql_repair` (focused one-shot SQL edit) |
 | `analysis_planner.md` | `analysis_planner` |
 | `fused_eval_analytics.md` | `fused_eval_analytics` (SQL results) |
 | `analysis_narration.md` | `fused_eval_analytics` (ML results) |
