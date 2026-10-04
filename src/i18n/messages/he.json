@@ -1440,6 +1440,7 @@
       "role": "תפקיד",
       "insightsRole": "Insights",
       "metadataRole": "מטאדטה",
+      "metadataAdminOnly": "רק מנהל מטאדטה יכול לשנות תפקידים במטאדטה או למחוק חשבונות. החשבונות משותפים עם המטאדטה.",
       "fullName": "שם מלא",
       "passwordPlaceholder": "סיסמה (8 תווים לפחות)",
       "roles": {

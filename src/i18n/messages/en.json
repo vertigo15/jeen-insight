@@ -1440,6 +1440,7 @@
       "role": "Role",
       "insightsRole": "Insights",
       "metadataRole": "Metadata",
+      "metadataAdminOnly": "Only a Metadata admin can change Metadata roles or delete accounts. Accounts are shared with Metadata.",
       "fullName": "Full name",
       "passwordPlaceholder": "Password (min 8 chars)",
       "roles": {

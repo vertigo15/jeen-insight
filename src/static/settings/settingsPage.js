@@ -3417,8 +3417,10 @@ export class SettingsPage {
             if (loading) loading.style.display = 'none';
             if (body) body.style.display = 'block';
 
-            this._renderUserRows(users);
-            this._wireAddForm();
+            const me = window._currentUser || {};
+            const metadataAdmin = users.find(u => u.id === me.id)?.metadata_role === 'admin';
+            this._renderUserRows(users, metadataAdmin);
+            this._wireAddForm(metadataAdmin);
         } catch (e) {
             if (seq !== this._renderSeq) return;
             const loading = document.getElementById('sp-users-loading');
@@ -3427,11 +3429,12 @@ export class SettingsPage {
         }
     }
 
-    _renderUserRows(users) {
+    _renderUserRows(users, metadataAdmin) {
         if (!this._onTab('users')) return;
         const me = window._currentUser || {};
         const tbody = document.getElementById('sp-users-rows');
         if (!tbody) return;
+        const metadataOnlyTitle = metadataAdmin ? '' : h('settings.users.metadataAdminOnly');
 
         tbody.innerHTML = users.map(u => {
             const isMe = u.id === me.id;
@@ -3440,10 +3443,13 @@ export class SettingsPage {
             const youBadge = isMe ? `<span class="sp-user-you">${h('settings.users.you')}</span>` : '';
 
             const roleSelect = _appRoleSelect(u, 'insights', u.role, isMe);
-            const metadataSelect = _appRoleSelect(u, 'metadata', u.metadata_role || 'viewer', isMe);
+            const metadataSelect = _appRoleSelect(
+                u, 'metadata', u.metadata_role || 'viewer', isMe || !metadataAdmin, metadataOnlyTitle,
+            );
 
             const delBtn = isMe ? '' : `
-                <button class="sp-user-del-btn" data-uid="${u.id}" title="${h('settings.users.removeUser')}">
+                <button class="sp-user-del-btn" data-uid="${u.id}" ${metadataAdmin ? '' : 'disabled'}
+                        title="${metadataAdmin ? h('settings.users.removeUser') : metadataOnlyTitle}">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <polyline points="3 6 5 6 21 6"/>
@@ -3512,10 +3518,19 @@ export class SettingsPage {
         });
     }
 
-    _wireAddForm() {
+    _wireAddForm(metadataAdmin) {
         const btn = document.getElementById('sp-add-submit');
         const err = document.getElementById('sp-add-error');
         if (!btn) return;
+        const metadataSelect = document.getElementById('sp-add-metadata-role');
+        if (metadataSelect) {
+            if (!metadataAdmin) metadataSelect.value = 'viewer';
+            metadataSelect.disabled = !metadataAdmin;
+            metadataSelect.title = metadataAdmin ? '' : t('settings.users.metadataAdminOnly');
+        }
+        // _loadUsers re-runs after every change; wire the click handler once.
+        if (btn.dataset.wired) return;
+        btn.dataset.wired = '1';
 
         btn.addEventListener('click', async () => {
             err.textContent = '';
@@ -3595,12 +3610,13 @@ export class SettingsPage {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function _appRoleSelect(user, app, role, disabled) {
+function _appRoleSelect(user, app, role, disabled, title = '') {
     const cls = app === 'metadata' ? 'sp-metadata-role-select' : 'sp-role-select';
     const options = ['admin', 'editor', 'viewer'].map((value) =>
         `<option value="${value}" ${role === value ? 'selected' : ''}>${h(`settings.users.roles.${value}`)}</option>`
     ).join('');
-    return `<select class="${cls}" data-uid="${user.id}" data-app="${app}" ${disabled ? 'disabled' : ''}>${options}</select>`;
+    const titleAttr = title ? ` title="${title}"` : '';
+    return `<select class="${cls}" data-uid="${user.id}" data-app="${app}" ${disabled ? 'disabled' : ''}${titleAttr}>${options}</select>`;
 }
 
 function _esc(text) {

@@ -46,8 +46,13 @@ def client(monkeypatch):
     ui_app.app.config["WTF_CSRF_ENABLED"] = True
 
 
+def _caller_metadata_role(monkeypatch, role):
+    monkeypatch.setattr(auth_db, "get_metadata_role", lambda uid: role)
+
+
 def test_role_patch_targets_one_application(client, monkeypatch):
     calls = []
+    _caller_metadata_role(monkeypatch, "admin")
     monkeypatch.setattr(
         auth_db,
         "update_user_role",
@@ -92,3 +97,51 @@ def test_create_user_sends_separate_roles(client, monkeypatch):
         "metadata_role": "viewer",
         "email": "ada@example.com",
     }
+
+
+def test_insights_only_admin_cannot_touch_metadata(client, monkeypatch):
+    calls = []
+    _caller_metadata_role(monkeypatch, "viewer")
+    monkeypatch.setattr(auth_db, "email_exists", lambda email: False)
+    monkeypatch.setattr(auth_db, "create_user", lambda *a, **k: calls.append(("create", a, k)))
+    monkeypatch.setattr(
+        auth_db, "update_user_role", lambda uid, role, app="insights": calls.append((uid, app, role)),
+    )
+    monkeypatch.setattr(auth_db, "delete_user", lambda uid: calls.append(("delete", uid)))
+
+    metadata_patch = client.patch("/api/users/5/role", json={"app": "metadata", "role": "admin"})
+    insights_patch = client.patch("/api/users/5/role", json={"role": "editor"})
+    create_admin = client.post("/api/users", json={
+        "name": "Eve", "email": "eve@example.com", "password": "long-enough",
+        "role": "viewer", "metadata_role": "admin",
+    })
+    delete = client.delete("/api/users/5")
+
+    assert metadata_patch.status_code == 403
+    assert create_admin.status_code == 403
+    assert delete.status_code == 403
+    assert insights_patch.status_code == 200
+    assert calls == [(5, "insights", "editor")]
+
+
+def test_metadata_admin_can_delete_a_shared_account(client, monkeypatch):
+    deleted = []
+    _caller_metadata_role(monkeypatch, "admin")
+    monkeypatch.setattr(auth_db, "delete_user", deleted.append)
+
+    assert client.delete("/api/users/5").status_code == 200
+    assert deleted == [5]
+
+
+@pytest.mark.parametrize("app", ["insights", "metadata"])
+def test_no_one_changes_their_own_role(client, monkeypatch, app):
+    calls = []
+    _caller_metadata_role(monkeypatch, "admin")
+    monkeypatch.setattr(
+        auth_db, "update_user_role", lambda uid, role, app="insights": calls.append(uid),
+    )
+
+    res = client.patch("/api/users/1/role", json={"app": app, "role": "viewer"})
+
+    assert res.status_code == 400
+    assert calls == []
