@@ -294,12 +294,13 @@ class ConnectionService:
         cfg = decode_config(row.get("connection_config"))
         fields = public_connection_fields(cfg, row.get("service_type"))
         logger.info(
-            "Built data-source runner source_key=%s database_type=%s host=%s port=%s catalog=%s schema=%s",
+            "Built data-source runner source_key=%s database_type=%s host=%s port=%s catalog=%s schema=%s auth=%s",
             row["name"],
             getattr(runner, "database_type", row.get("service_type")),
             fields.get("host"),
             fields.get("port"),
             fields.get("catalog"),
             fields.get("schema"),
+            getattr(runner, "auth", None),
         )
         return runner

@@ -564,7 +564,8 @@ class TestPreGraphCatalogFailure:
         # The final trace is the early one plus the steps that ran after it.
         assert [ev["node"] for ev in result["trace"][:len(early)]] == early
         assert not any(ev.get("after_answer") for ev in result["trace"][:len(early)])
-        assert [ev["node"] for ev in result["trace"][len(early):]] == ["save_to_memory", "observability_log"]
+        # The two tail nodes run in parallel, so only their set is fixed.
+        assert sorted(ev["node"] for ev in result["trace"][len(early):]) == ["observability_log", "save_to_memory"]
         assert all(ev.get("after_answer") for ev in result["trace"][len(early):])
 
     @pytest.mark.asyncio

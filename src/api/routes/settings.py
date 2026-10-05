@@ -115,6 +115,18 @@ PROMPT_REGISTRY: List[Dict[str, Any]] = [
         "path": _PROMPTS_DIR / "sql_generator.md",
     },
     {
+        "name": "sql_repair",
+        "label": "SQL Repair",
+        "group": "AI Agent",
+        "description": (
+            "One focused edit of a SQL statement that failed validation or "
+            "execution, run before a full retry. Sees only the failing SQL, the "
+            "database error, and the catalog slice for the tables it uses, and "
+            "changes as little as possible."
+        ),
+        "path": _PROMPTS_DIR / "sql_repair.md",
+    },
+    {
         "name": "analysis_planner",
         "label": "ML Skill Planner",
         "group": "AI Agent",

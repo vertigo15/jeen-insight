@@ -348,8 +348,17 @@ def update_user_role(user_id: int, role: str, app: str = "insights") -> None:
         conn.commit()
 
 
+def get_metadata_role(user_id: int) -> Optional[str]:
+    """Return the Schema Modeler role on ``auth_users.role``, or ``None`` if the account is gone."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT role FROM auth_users WHERE id = %s LIMIT 1", (user_id,)
+        ).fetchone()
+    return normalize_app_role(row[0]) if row else None
+
+
 def delete_user(user_id: int) -> None:
-    """Hard-delete *user_id* from auth_users."""
+    """Hard-delete *user_id* from auth_users, which removes the account from both apps."""
     with _connect() as conn:
         conn.execute("DELETE FROM auth_users WHERE id = %s", (user_id,))
         conn.commit()

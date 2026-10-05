@@ -13,6 +13,7 @@ The ``render`` method performs Python ``str.format(**kwargs)`` substitution.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Default prompts directory — same folder that holds jeen_insights_system.md
 _DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+_HEADER_COMMENT_RE = re.compile(r"\A\s*<!--.*?-->\s*", re.DOTALL)
 
 
 class PromptLoader:
@@ -90,13 +92,19 @@ class PromptLoader:
         """
         return self._format(name, self.get(name), kwargs)
 
-    async def arender(self, name: str, **kwargs: object) -> str:
+    async def arender(self, name: str, *, strip_header: bool = False, **kwargs: object) -> str:
         """Async render that prefers the DB version when a cache is attached.
 
         Falls back to the disk template when no cache is attached or the DB
         lookup fails, so the graph never breaks if the DB is unavailable.
+
+        ``strip_header`` drops the template's leading ``<!-- … -->`` maintainer
+        comment *before* substitution, for prompts whose comment must not reach
+        the model (and must not be cut short by a ``-->`` inside a value).
         """
         template = await self._aget(name)
+        if strip_header:
+            template = _HEADER_COMMENT_RE.sub("", template, count=1)
         return self._format(name, template, kwargs)
 
     async def model_override_for(self, name: str):

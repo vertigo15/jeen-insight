@@ -24,6 +24,12 @@ catalogs:
     relationships:
       - "salesorders.customerid -> customers.customerid"
       - "salesorders.productid -> products.productid"
+  # Governed columns present in the catalog, so only DLP (not the column
+  # allowlist) can stop them.
+  accounts:
+    database_type: postgres
+    tables:
+      accounts: [accountid, name, user_password, ssn_last4, region]
 
 cases:
   # ── Safety: read-only + structural guardrails ────────────────────────────
@@ -80,6 +86,24 @@ cases:
     catalog: sales
     sql: "SELECT password FROM customers"
     expect: block
+
+  - id: block-governed-snake-case-column
+    type: safety
+    catalog: accounts
+    sql: "SELECT accountid, user_password FROM accounts"
+    expect: block
+
+  - id: block-governed-ssn-last4
+    type: safety
+    catalog: accounts
+    sql: "SELECT ssn_last4 FROM accounts WHERE region = 'EU'"
+    expect: block
+
+  - id: allow-ungoverned-account-columns
+    type: safety
+    catalog: accounts
+    sql: "SELECT accountid, name, region FROM accounts"
+    expect: allow
 
   - id: block-truncate
     type: safety

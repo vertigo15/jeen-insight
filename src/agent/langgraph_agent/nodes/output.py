@@ -405,6 +405,11 @@ def response_formatter(state: AgentState) -> Dict[str, Any]:
         formatted["status"] = "completed"
         formatted["analysis"] = view
         formatted["low_confidence"] = bool(state.get("low_confidence") or view.get("low_confidence"))
+    elif state.get("repeated_sql") or state.get("low_confidence"):
+        # The eval doubted this result and no retry improved it (identical SQL,
+        # or the semantic budget is spent), so the answer is the best available
+        # one — say so rather than hide it.
+        formatted["low_confidence"] = True
 
     # Eval output, named to match GenerateInsightsResponse so the two endpoints
     # that expose this analysis return one shape. These must also be declared on
@@ -658,6 +663,16 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
                 ev["detail"] = prefix + "no SQL or clarification"
                 ev["status"] = "warn"
 
+        elif node == "sql_repair":
+            sql = state.get("generated_sql")
+            if state.get("repair_failed") or not sql:
+                ev["detail"] = "no usable edit — regenerating"
+                ev["status"] = "warn"
+            else:
+                short = sql.replace("\n", " ")[:100]
+                ev["detail"] = "repaired — " + short + ("…" if len(sql) > 100 else "")
+                ev["sql"] = sql
+
         elif node == "sqlglot_validate":
             err = state.get("sqlglot_error")
             if err:
@@ -707,7 +722,8 @@ def _enrich_trace(events: list, state: "AgentState") -> None:  # type: ignore[na
         elif node == "feedback_classifier":
             fb = state.get("feedback_type", "?")
             retry = state.get("retry_count", 0)
-            ev["detail"] = f"type={fb}  retry={retry}"
+            route = " → repair" if state.get("use_local_repair") else ""
+            ev["detail"] = f"type={fb}  retry={retry}{route}"
             ev["feedback_type"] = fb
             if fb in ("syntax", "exec", "semantic", "missing_table"):
                 ev["status"] = "retry"

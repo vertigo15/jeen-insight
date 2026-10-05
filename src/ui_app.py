@@ -1023,6 +1023,18 @@ def auth_set_date_format():
 # ── User management routes (— served by Flask, not proxied) ──────────────────
 # All mutate/list operations require an admin session (defense-in-depth on top
 # of the FastAPI Principal checks for API-served routes).
+#
+# The account row is shared with Schema Modeler. An Insights admin manages the
+# Insights role; the Metadata role and deleting the shared account also need the
+# caller to be a Metadata admin, read fresh from the DB on every request.
+
+_METADATA_ADMIN_REQUIRED = "Only a Metadata admin can change Metadata roles or delete shared accounts"
+
+
+def _caller_is_metadata_admin() -> bool:
+    from src.auth_db import get_metadata_role
+
+    return get_metadata_role(int(session["user_id"])) == "admin"
 
 @app.route("/api/users", methods=["GET"])
 def users_list():
@@ -1056,6 +1068,8 @@ def users_create():
     if role not in APP_ROLES or metadata_role not in APP_ROLES:
         return jsonify({"error": "role must be admin, editor, or viewer"}), 400
     try:
+        if metadata_role != "viewer" and not _caller_is_metadata_admin():
+            return jsonify({"error": _METADATA_ADMIN_REQUIRED, "code": "METADATA_ADMIN_REQUIRED"}), 403
         if email_exists(email):
             return jsonify({"error": "An account with this email already exists"}), 409
         user = create_user(name, email, password, role, metadata_role=metadata_role)
@@ -1082,7 +1096,11 @@ def users_update_role(user_id: int):
         return jsonify({"error": "app must be insights or metadata"}), 400
     if role not in APP_ROLES:
         return jsonify({"error": "role must be admin, editor, or viewer"}), 400
+    if user_id == session.get("user_id"):
+        return jsonify({"error": "You cannot change your own role"}), 400
     try:
+        if app_name == "metadata" and not _caller_is_metadata_admin():
+            return jsonify({"error": _METADATA_ADMIN_REQUIRED, "code": "METADATA_ADMIN_REQUIRED"}), 403
         update_user_role(user_id, role, app=app_name)
         logger.info(
             "user %s %s role → %s by %s",
@@ -1103,6 +1121,8 @@ def users_delete(user_id: int):
     if user_id == session.get("user_id"):
         return jsonify({"error": "You cannot delete your own account"}), 400
     try:
+        if not _caller_is_metadata_admin():
+            return jsonify({"error": _METADATA_ADMIN_REQUIRED, "code": "METADATA_ADMIN_REQUIRED"}), 403
         delete_user(user_id)
         logger.info("user %s deleted by %s", user_id, session.get("user_email"))
         return jsonify({"id": user_id, "deleted": True})

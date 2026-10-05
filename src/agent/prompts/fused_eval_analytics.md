@@ -56,6 +56,7 @@ Color rules for summary fragments:
 **Rules:**
 - Set `answers_intent` to `false` ONLY when the result set is empty despite expecting data, or when the results clearly do not match what was asked.
 - Set `answers_intent` to `true` for all other cases, including partial results.
+- When (and only when) `answers_intent` is `false`, add a `mismatch_reason` string (≤ 30 words) saying concretely what is wrong or missing — for example a missing filter, the wrong grain, or a wrong metric. It is used to correct the query. Omit it when `answers_intent` is `true`.
 - Keep `summary` under 60 words.
 - Keep each `insights` item under 30 words and include at least one specific number.
 - Each `suggestions` item is an actionable recommendation, ≤ 20 words, not a question.

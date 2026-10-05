@@ -436,7 +436,8 @@ class TestRetryBehavior:
         mock_services.llm.generate.side_effect = [
             _router_resp("needs_query"),
             _sql_tool_resp(sql),   # attempt 1
-            _sql_tool_resp(sql),   # attempt 2
+            _sql_tool_resp(sql),   # sql_repair: the same SQL, so it hands over to sql_generator
+            _sql_tool_resp(sql),   # attempt 2 (sql_generator)
         ]
         mock_services.sql_runner.run_sql.side_effect = [
             {"error": "column does not exist"},
@@ -475,6 +476,249 @@ class TestRetryBehavior:
         assert resp["sql"] == sql_good
         assert resp["metrics"]["retry_count"] == 1
         assert resp["error"] is None
+
+
+def _eval_mismatch_resp(reason: str = "Missing the 2008 filter.") -> Dict[str, Any]:
+    return {
+        "content": json.dumps({
+            "answers_intent": False,
+            "mismatch_reason": reason,
+            "summary": "These are all years, not 2008.",
+            "insights": [],
+            "follow_up_questions": [],
+        }),
+        "finish_reason": "stop",
+        "usage": {"prompt_tokens": 400, "completion_tokens": 80, "total_tokens": 480},
+    }
+
+
+_TWO_ROWS = {
+    "columns": ["OrderYear", "total"],
+    "rows": [{"OrderYear": 2007, "total": 25000000}, {"OrderYear": 2008, "total": 29000000}],
+    "row_count": 2,
+}
+
+
+class TestSemanticRetry:
+    @pytest.mark.asyncio
+    async def test_retry_prompt_carries_reason_and_previous_sql(self, mock_services, prompt_loader):
+        sql_first = "SELECT OrderYear, SUM(SalesAmount) AS total FROM FactSales GROUP BY OrderYear"
+        sql_second = (
+            "SELECT OrderYear, SUM(SalesAmount) AS total FROM FactSales "
+            "WHERE OrderYear = 2008 GROUP BY OrderYear"
+        )
+        mock_services.llm.generate.side_effect = [
+            _router_resp("needs_query"),
+            _sql_tool_resp(sql_first),
+            _eval_mismatch_resp("Missing the 2008 filter."),
+            _sql_tool_resp(sql_second),
+            _eval_resp("2008 sales were $29M."),
+        ]
+        mock_services.sql_runner.run_sql.return_value = _TWO_ROWS
+
+        graph = _build(mock_services, prompt_loader, max_retries=3)
+        result = await graph.ainvoke(_initial_state())
+        resp = result["formatted_response"]
+
+        retry_messages = mock_services.llm.generate.call_args_list[3].kwargs["messages"]
+        retry_prompt = retry_messages[-1]["content"]
+        assert "Missing the 2008 filter." in retry_prompt
+        assert "<<<BEGIN_UNTRUSTED_DATA>>>" in retry_prompt
+        assert sql_first in retry_prompt
+        assert resp["sql"] == sql_second
+        assert resp["metrics"]["retry_count"] == 1
+        assert not resp.get("low_confidence")
+
+    @pytest.mark.asyncio
+    async def test_identical_sql_on_semantic_retry_keeps_earlier_result(self, mock_services, prompt_loader):
+        sql = "SELECT OrderYear, SUM(SalesAmount) AS total FROM FactSales GROUP BY OrderYear"
+        mock_services.llm.generate.side_effect = [
+            _router_resp("needs_query"),
+            _sql_tool_resp(sql),
+            _eval_mismatch_resp(),
+            # Same query again, only laid out differently: must not execute twice.
+            _sql_tool_resp(sql.replace(" FROM", "\nFROM").replace("SELECT", "select") + ";"),
+        ]
+        mock_services.sql_runner.run_sql.return_value = _TWO_ROWS
+
+        graph = _build(mock_services, prompt_loader, max_retries=3)
+        result = await graph.ainvoke(_initial_state())
+        resp = result["formatted_response"]
+
+        assert mock_services.sql_runner.run_sql.await_count == 1
+        assert mock_services.llm.generate.await_count == 4   # no second eval call
+        assert resp["sql"] == sql
+        assert resp["results"]["row_count"] == 2
+        assert resp["low_confidence"] is True
+        assert "not 2008" in resp["answer"]
+
+
+    @pytest.mark.asyncio
+    async def test_a_second_semantic_mismatch_keeps_the_result_as_low_confidence(self, mock_services, prompt_loader):
+        sql_a = "SELECT OrderYear, SUM(SalesAmount) AS total FROM FactSales GROUP BY OrderYear"
+        sql_b = "SELECT OrderYear, COUNT(*) AS total FROM FactSales GROUP BY OrderYear"
+        mock_services.llm.generate.side_effect = [
+            _router_resp("needs_query"),
+            _sql_tool_resp(sql_a),
+            _eval_mismatch_resp("Wrong metric."),
+            _sql_tool_resp(sql_b),
+            _eval_mismatch_resp("Still the wrong metric."),
+        ]
+        mock_services.sql_runner.run_sql.return_value = _TWO_ROWS
+
+        graph = _build(mock_services, prompt_loader, max_retries=3)
+        result = await graph.ainvoke(_initial_state())
+        resp = result["formatted_response"]
+
+        assert mock_services.llm.generate.await_count == 5   # semantic budget is one retry
+        assert resp["sql"] == sql_b
+        assert resp["results"]["row_count"] == 2
+        assert resp["low_confidence"] is True
+        assert resp["error"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_clarification_on_the_retry_restores_the_first_answer(self, mock_services, prompt_loader):
+        sql = "SELECT OrderYear, SUM(SalesAmount) AS total FROM FactSales GROUP BY OrderYear"
+        mock_services.llm.generate.side_effect = [
+            _router_resp("needs_query"),
+            _sql_tool_resp(sql),
+            _eval_mismatch_resp(),
+            _text_resp("Which year do you mean?"),
+        ]
+        mock_services.sql_runner.run_sql.return_value = _TWO_ROWS
+
+        graph = _build(mock_services, prompt_loader, max_retries=3)
+        result = await graph.ainvoke(_initial_state())
+        resp = result["formatted_response"]
+
+        assert resp["sql"] == sql
+        assert resp["results"]["row_count"] == 2
+        assert resp["low_confidence"] is True
+        assert mock_services.sql_runner.run_sql.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_retry_that_fails_at_the_cap_restores_the_first_answer(self, mock_services, prompt_loader):
+        sql_a = "SELECT OrderYear, SUM(SalesAmount) AS total FROM FactSales GROUP BY OrderYear"
+        sql_b = "SELECT OrderYear, SUM(SalesAmount) AS total FROM FactSales WHERE OrderYear = 2008 GROUP BY OrderYear"
+        mock_services.llm.generate.side_effect = [
+            _router_resp("needs_query"),
+            _sql_tool_resp(sql_a),
+            _eval_mismatch_resp(),
+            _sql_tool_resp(sql_b),
+        ]
+        mock_services.sql_runner.run_sql.side_effect = [_TWO_ROWS, {"error": "connection reset"}]
+
+        graph = _build(mock_services, prompt_loader, max_retries=1)
+        result = await graph.ainvoke(_initial_state())
+        resp = result["formatted_response"]
+
+        assert resp["sql"] == sql_a
+        assert resp["results"]["row_count"] == 2
+        assert resp["low_confidence"] is True
+        assert resp["error"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_mismatch_at_the_retry_cap_is_flagged_low_confidence(self, mock_services, prompt_loader):
+        sql = "SELECT OrderYear, SUM(SalesAmount) AS total FROM FactSales GROUP BY OrderYear"
+        mock_services.llm.generate.side_effect = [
+            _router_resp("needs_query"),
+            _sql_tool_resp(sql),
+            _eval_mismatch_resp(),
+        ]
+        mock_services.sql_runner.run_sql.return_value = _TWO_ROWS
+
+        graph = _build(mock_services, prompt_loader, max_retries=0)
+        result = await graph.ainvoke(_initial_state())
+        resp = result["formatted_response"]
+
+        assert resp["sql"] == sql
+        assert resp["low_confidence"] is True
+
+
+class TestSqlRepair:
+    _BAD = "SELECT SalesAmmount FROM FactSales"
+    _GOOD = "SELECT SalesAmount FROM FactSales LIMIT 10"
+    _ROWS = {"columns": ["SalesAmount"], "rows": [{"SalesAmount": 100}, {"SalesAmount": 200}], "row_count": 2}
+
+    @pytest.mark.asyncio
+    async def test_exec_error_gets_a_focused_repair_instead_of_a_full_regeneration(
+        self, mock_services, prompt_loader
+    ):
+        mock_services.llm.generate.side_effect = [
+            _router_resp("needs_query"),
+            _sql_tool_resp(self._BAD),
+            _sql_tool_resp(self._GOOD),     # sql_repair
+            _eval_resp(),
+        ]
+        mock_services.sql_runner.run_sql.side_effect = [
+            {"error": 'column "salesammount" does not exist'},
+            self._ROWS,
+        ]
+
+        graph = _build(mock_services, prompt_loader, max_retries=3, sqlglot_enabled=False)
+        result = await graph.ainvoke(_initial_state())
+        resp = result["formatted_response"]
+
+        repair_system = mock_services.llm.generate.call_args_list[2].kwargs["messages"][0]["content"]
+        assert repair_system.startswith("You repair one SQL statement")
+        assert self._BAD in repair_system
+        assert "salesammount" in repair_system
+        assert "FactSales.SalesAmount" in repair_system
+        assert "DimProduct.ProductKey - Type" not in repair_system   # unreferenced table's columns stay out
+        assert "<!--" not in repair_system                           # maintainer header is not sent
+        assert resp["sql"] == self._GOOD
+        assert resp["metrics"]["retry_count"] == 1
+        assert resp["metrics"]["llm_call_count"] == 4
+        assert resp["error"] is None
+
+    @pytest.mark.asyncio
+    async def test_unchanged_repair_falls_back_to_the_full_generator(self, mock_services, prompt_loader):
+        mock_services.llm.generate.side_effect = [
+            _router_resp("needs_query"),
+            _sql_tool_resp(self._BAD),
+            _sql_tool_resp(self._BAD + " ;"),   # repair returns the same statement
+            _sql_tool_resp(self._GOOD),         # sql_generator takes the retry
+            _eval_resp(),
+        ]
+        mock_services.sql_runner.run_sql.side_effect = [
+            {"error": 'column "salesammount" does not exist'},
+            self._ROWS,
+        ]
+
+        graph = _build(mock_services, prompt_loader, max_retries=3, sqlglot_enabled=False)
+        result = await graph.ainvoke(_initial_state())
+        resp = result["formatted_response"]
+
+        generator_retry = mock_services.llm.generate.call_args_list[3].kwargs["messages"]
+        assert generator_retry[0]["content"].startswith("You are Jeen Insights")
+        assert "failed with the following error" in generator_retry[-1]["content"]
+        assert 'column "salesammount" does not exist' in generator_retry[-1]["content"]
+        assert mock_services.sql_runner.run_sql.await_count == 2   # the unchanged SQL was not re-run
+        assert resp["sql"] == self._GOOD
+
+    @pytest.mark.asyncio
+    async def test_only_one_repair_per_question(self, mock_services, prompt_loader):
+        mock_services.llm.generate.side_effect = [
+            _router_resp("needs_query"),
+            _sql_tool_resp(self._BAD),
+            _sql_tool_resp("SELECT SalesAmmunt FROM FactSales"),   # sql_repair: still wrong
+            _sql_tool_resp(self._GOOD),                            # second retry: full generator
+            _eval_resp(),
+        ]
+        mock_services.sql_runner.run_sql.side_effect = [
+            {"error": "column does not exist"},
+            {"error": "column does not exist"},
+            self._ROWS,
+        ]
+
+        graph = _build(mock_services, prompt_loader, max_retries=3, sqlglot_enabled=False)
+        result = await graph.ainvoke(_initial_state())
+
+        calls = mock_services.llm.generate.call_args_list
+        systems = [c.kwargs["messages"][0]["content"] for c in calls]
+        assert sum(s.startswith("You repair one SQL statement") for s in systems) == 1
+        assert systems[3].startswith("You are Jeen Insights")
+        assert result["formatted_response"]["metrics"]["retry_count"] == 2
 
 
 class TestTrivialResult:
@@ -614,11 +858,17 @@ class TestRecursionLimit:
                    "empty_result_check", "feedback_classifier"]
         attempt = ["sql_generator", "sqlglot_validate", "dlp_check", "execute_query", "empty_filter_result_check",
                    "trivial_result_check", "fused_eval_analytics", "feedback_classifier"]
-        tail = ["response_formatter", "save_to_memory", "observability_log"]
+        # sql_repair runs once per question; an edit that yields nothing new hands
+        # the retry to sql_generator, one step more than a plain retry.
+        repair = ["sql_repair"]
+        # save_to_memory and observability_log run in parallel: one superstep.
+        tail = ["response_formatter", "save_to_memory|observability_log"]
         max_retries = 3
         # reground and recheck are mutually exclusive on a given empty result, so
         # counting both is a conservative over-estimate of the true longest path.
-        longest = len(prefix) + len(reground) + len(recheck) + (1 + max_retries) * len(attempt) + len(tail)
+        longest = (
+            len(prefix) + len(reground) + len(recheck) + (1 + max_retries) * len(attempt) + len(repair) + len(tail)
+        )
         assert longest == _GRAPH_LONGEST_LEGAL_PATH == 59
         assert _GRAPH_RECURSION_LIMIT > longest
 

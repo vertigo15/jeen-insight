@@ -99,6 +99,7 @@ export function turnFromServer(dto, conversationId) {
             suggestions: dto.suggestions || [],
             followups: dto.followups || [],
             trace: [],
+            low_confidence: Boolean(dto.low_confidence),
             ...ml,
         },
     };
@@ -126,6 +127,8 @@ export function applyArtifact(turn, artifact) {
         turn.result.analysis = artifact.analysis;
         turn.result.status = 'completed';
         turn.result.low_confidence = Boolean(artifact.low_confidence || artifact.analysis.low_confidence);
+    } else if (artifact.low_confidence) {
+        turn.result.low_confidence = true;
     }
     turn.snapshotStatus = artifact.snapshot_status || turn.snapshotStatus;
     turn.snapshotAt = artifact.snapshot_at || turn.snapshotAt;

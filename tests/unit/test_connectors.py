@@ -9,8 +9,10 @@ from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.nodes.validation import make_sqlglot_validate
 from src.connectors.base import SqlRunner
 from src.connectors.dialects import dialect_rules_for, sqlglot_dialect_for
+from src.connectors.base import ConnectorConnectionError, UnsupportedConnectionType
 from src.connectors.factory import (
     _build_databricks,
+    _build_trino,
     get_connector_definition,
     normalize_database_type,
     public_connection_fields,
@@ -86,6 +88,201 @@ def test_public_connection_fields_are_sanitized():
     assert fields["host"] == "adb-123.azuredatabricks.net"
     assert fields["http_path"] == "/sql/1.0/warehouses/abc"
     assert "accessToken" not in fields
+
+
+def test_trino_builder_keeps_password_auth_when_mode_is_absent():
+    runner = _build_trino(
+        source_key="sales",
+        cfg={
+            "host": "trino.internal",
+            "username": "analyst",
+            "password": "secret",
+            "catalog": "hive",
+            "databaseSchema": "mart",
+            "clientCertPath": "/mnt/trino-mtls/client.crt",
+            "clientKeyPath": "/mnt/trino-mtls/client.key",
+        },
+    )
+
+    assert runner.auth == "basic"
+    assert runner.password == "secret"
+    assert runner.client_cert_path is None
+    assert runner.verify is True
+
+
+def test_trino_builder_selects_mtls_and_ignores_a_leftover_password():
+    runner = _build_trino(
+        source_key="sales",
+        cfg={
+            "authenticationMode": "mtls",
+            "host": "trino.internal",
+            "username": "analyst",
+            "password": "leftover",
+            "catalog": "hive",
+            "databaseSchema": "mart",
+            "verify": "false",
+            "clientCertPath": "/mnt/trino-mtls/client.crt",
+            "clientKeyPath": "/mnt/trino-mtls/client.key",
+            "caCertPath": "/mnt/trino-mtls/ca.crt",
+        },
+    )
+
+    assert runner.auth == "mtls"
+    assert runner.password is None
+    assert runner.access_token is None
+    assert runner.http_scheme == "https"
+    assert runner.client_cert_path == "/mnt/trino-mtls/client.crt"
+    assert runner.client_key_path == "/mnt/trino-mtls/client.key"
+    # An explicit verify:false disables server checks even when a CA path is set.
+    assert runner.verify is False
+
+
+def test_trino_builder_uses_a_ca_path_for_server_verification():
+    runner = _build_trino(
+        source_key="sales",
+        cfg={
+            "authenticationMode": "basic",
+            "host": "trino.internal",
+            "username": "analyst",
+            "password": "secret",
+            "verify": "/etc/jeen/trino-ca.pem",
+        },
+    )
+
+    assert runner.auth == "basic"
+    assert runner.verify == "/etc/jeen/trino-ca.pem"
+
+
+def test_trino_builder_infers_mtls_from_mounted_paths_without_a_password():
+    runner = _build_trino(
+        source_key="sales",
+        cfg={
+            "host": "trino.internal",
+            "username": "analyst",
+            "client_cert_path": "/mnt/trino-mtls/client.crt",
+            "client_key_path": "/mnt/trino-mtls/client.key",
+            "ca_cert_path": "/mnt/trino-mtls/ca.crt",
+        },
+    )
+
+    assert runner.auth == "mtls"
+    assert runner.verify == "/mnt/trino-mtls/ca.crt"
+
+
+def test_trino_builder_rejects_mtls_without_certificate_paths():
+    with pytest.raises(UnsupportedConnectionType, match="clientCertPath"):
+        _build_trino(
+            source_key="sales",
+            cfg={
+                "authenticationMode": "mtls",
+                "host": "trino.internal",
+                "username": "analyst",
+            },
+        )
+
+
+def test_trino_builder_rejects_mtls_over_http():
+    with pytest.raises(UnsupportedConnectionType, match="https"):
+        _build_trino(
+            source_key="sales",
+            cfg={
+                "authenticationMode": "mtls",
+                "host": "trino.internal",
+                "username": "analyst",
+                "httpScheme": "http",
+                "clientCertPath": "/mnt/trino-mtls/client.crt",
+                "clientKeyPath": "/mnt/trino-mtls/client.key",
+            },
+        )
+
+
+def test_trino_mtls_connect_presents_the_client_certificate(monkeypatch, tmp_path):
+    from src.connectors.trino import TrinoSqlRunner
+
+    cert = tmp_path / "client.crt"
+    key = tmp_path / "client.key"
+    ca = tmp_path / "ca.crt"
+    cert.write_text("cert")
+    key.write_text("key")
+    ca.write_text("ca")
+    captured = {}
+
+    class FakeCertificateAuth:
+        def __init__(self, cert_path, key_path):
+            captured["cert"] = cert_path
+            captured["key"] = key_path
+
+    def fake_connect(**kwargs):
+        captured["kwargs"] = kwargs
+        return object()
+
+    import trino.auth
+    import trino.dbapi
+
+    monkeypatch.setenv("TRINO_MTLS_MOUNT_PATH", str(tmp_path))
+    monkeypatch.setattr(trino.auth, "CertificateAuthentication", FakeCertificateAuth)
+    monkeypatch.setattr(trino.dbapi, "connect", fake_connect)
+
+    runner = TrinoSqlRunner(
+        source_key="sales",
+        host="trino.internal",
+        username="analyst",
+        password="leftover",
+        auth="mtls",
+        client_cert_path=str(cert),
+        client_key_path=str(key),
+        verify=str(ca),
+    )
+    runner._connect()
+
+    assert captured["cert"] == str(cert)
+    assert captured["key"] == str(key)
+    assert isinstance(captured["kwargs"]["auth"], FakeCertificateAuth)
+    assert captured["kwargs"]["verify"] == str(ca)
+    assert captured["kwargs"]["http_scheme"] == "https"
+    assert "password" not in captured["kwargs"]
+
+
+def test_trino_mtls_connect_refuses_a_missing_key(monkeypatch, tmp_path):
+    from src.connectors.trino import TrinoSqlRunner
+
+    monkeypatch.setenv("TRINO_MTLS_MOUNT_PATH", str(tmp_path))
+    cert = tmp_path / "client.crt"
+    cert.write_text("cert")
+    runner = TrinoSqlRunner(
+        source_key="sales",
+        host="trino.internal",
+        username="analyst",
+        auth="mtls",
+        client_cert_path=str(cert),
+        client_key_path=str(tmp_path / "missing.key"),
+    )
+
+    with pytest.raises(ConnectorConnectionError, match="client private key"):
+        runner._connect()
+
+
+def test_trino_mtls_connect_refuses_a_file_outside_the_mount(monkeypatch, tmp_path):
+    from src.connectors.trino import TrinoSqlRunner
+
+    mount = tmp_path / "mnt"
+    mount.mkdir()
+    outside = tmp_path / "client.crt"
+    outside.write_text("cert")
+    key = mount / "client.key"
+    key.write_text("key")
+    monkeypatch.setenv("TRINO_MTLS_MOUNT_PATH", str(mount))
+    runner = TrinoSqlRunner(
+        source_key="sales",
+        host="trino.internal",
+        username="analyst",
+        auth="mtls",
+        client_cert_path=str(outside),
+        client_key_path=str(key),
+    )
+
+    with pytest.raises(ConnectorConnectionError, match="inside"):
+        runner._connect()
 
 
 def test_databricks_builder_accepts_host_port_config():

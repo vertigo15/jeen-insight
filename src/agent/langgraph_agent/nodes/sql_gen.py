@@ -10,12 +10,15 @@ The memory-answer node lives in ``nodes/memory_answer.py``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 
 from src.agent.langgraph_agent.nodes.context import ledger_for, render_turn_tool_result
+from src.agent.langgraph_agent.nodes.feedback import restore_earlier_result
 from src.agent.langgraph_agent.prompt_loader import PromptLoader
 from src.agent.langgraph_agent.state import AgentState
 from src.agent.llm_service import LangChainLlmService
@@ -24,6 +27,15 @@ from src.agent.token_usage import merge_usage
 from src.tools.sql_tool import RunSqlTool
 
 logger = logging.getLogger(__name__)
+
+
+# A CTE (``WITH name [(cols)] AS (``) must be kept whole, so it wins over the
+# SELECT inside it. ``WITH`` in ordinary prose does not match: it needs ``AS (``.
+_BARE_STATEMENT_START_RE = re.compile(
+    r"\bWITH\s+(?:RECURSIVE\s+)?[\w\"`\[\]]+\s*(?:\([^)]*\)\s*)?AS\s*(?:NOT\s+MATERIALIZED\s*|MATERIALIZED\s*)?\("
+    r"|\bSELECT\b",
+    re.IGNORECASE,
+)
 
 
 def _extract_sql(response: Dict[str, Any]) -> Optional[str]:
@@ -55,22 +67,42 @@ def _extract_sql(response: Dict[str, Any]) -> Optional[str]:
         if end > start:
             return text[start:end].strip()
 
-    # 3. Bare SELECT
-    if "SELECT" in text.upper():
+    # 3. Bare statement: starts at the first WITH-CTE or SELECT, ends at a line
+    # that closes with ``;`` (a ``;`` inside a literal does not end it).
+    start = _BARE_STATEMENT_START_RE.search(text)
+    if start:
         sql_lines: List[str] = []
-        in_sql = False
-        for line in text.splitlines():
-            if "SELECT" in line.upper():
-                in_sql = True
-            if in_sql:
-                sql_lines.append(line)
-                if ";" in line:
-                    break
+        for line in text[start.start():].splitlines():
+            sql_lines.append(line)
+            if line.rstrip().endswith(";"):
+                break
         candidate = "\n".join(sql_lines).strip()
         if candidate:
             return candidate
 
     return None
+
+
+def sql_fingerprint(sql: Optional[str], database_type: Optional[str] = None) -> Optional[str]:
+    """Stable hash of a SQL statement that ignores layout, keyword case and a
+    trailing semicolon, but not literal values or identifier case that the
+    engine treats as significant."""
+    if not sql or not sql.strip():
+        return None
+    try:
+        import sqlglot  # noqa: PLC0415
+
+        from src.connectors.dialects import sqlglot_dialect_for  # noqa: PLC0415
+
+        dialect = sqlglot_dialect_for(database_type)
+        canonical = "; ".join(
+            stmt.sql(dialect=dialect) for stmt in sqlglot.parse(sql, dialect=dialect) if stmt is not None
+        )
+    except Exception:  # noqa: BLE001 — unparseable SQL still gets a layout-insensitive hash
+        canonical = ""
+    if not canonical:
+        canonical = re.sub(r"\s+", " ", sql).strip().rstrip(";").strip()
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 # ── sql_generator ─────────────────────────────────────────────────────────────
@@ -194,11 +226,39 @@ def make_sql_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
         content = (response.get("content") or "").strip()
         usage = response.get("usage") or {}
 
-        # Base update — always reset previous validation / execution state
-        updates: Dict[str, Any] = {
+        usage_updates: Dict[str, Any] = {
             "llm_call_count": (state.get("llm_call_count") or 0) + 1,
             "llm_latency_ms": (state.get("llm_latency_ms") or 0) + latency_ms,
             "token_usage": merge_usage(state.get("token_usage") or {}, usage),
+            "node_prompts": {**(state.get("node_prompts") or {}), "sql_generator": user_msg},
+        }
+
+        seen_hashes: List[str] = list(state.get("previous_sql_hashes") or [])
+        fingerprint = sql_fingerprint(sql, db_type) if sql else None
+
+        # A semantic retry that regenerates SQL it already ran cannot change the
+        # result. Keep the earlier result (and the evaluator's verdict on it)
+        # instead of re-executing and re-evaluating to the same outcome.
+        if (
+            fingerprint
+            and fingerprint in seen_hashes
+            and state.get("feedback_type") == "semantic"
+            and state.get("query_result")
+        ):
+            logger.info("sql_generator: semantic retry returned identical SQL — keeping earlier result")
+            return {
+                **usage_updates,
+                "repeated_sql": True,
+                "low_confidence": True,
+                "error_context": None,
+                "previous_sql_hashes": seen_hashes,
+            }
+
+        # Base update — always reset previous validation / execution state
+        updates: Dict[str, Any] = {
+            **usage_updates,
+            "previous_sql_hashes": [*seen_hashes, fingerprint] if fingerprint else seen_hashes,
+            "repeated_sql": False,
             "sqlglot_error": None,
             "exec_error": None,
             "dlp_blocked": False,
@@ -207,6 +267,19 @@ def make_sql_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
             "is_trivial": False,
             "eval_result": None,
         }
+
+        if not sql:
+            # A retry that yields no SQL (clarification or empty reply) must not
+            # cost the answer the first attempt already produced.
+            restored = restore_earlier_result(state, replace_current=True)
+            if restored:
+                logger.info("sql_generator: retry returned no SQL — restoring the earlier result")
+                return {
+                    **usage_updates,
+                    **restored,
+                    "repeated_sql": True,  # routes straight to response_formatter
+                    "previous_sql_hashes": seen_hashes,
+                }
 
         if sql:
             updates["generated_sql"] = sql
@@ -223,13 +296,6 @@ def make_sql_generator(llm: LangChainLlmService, prompt_loader: PromptLoader):
             )
             updates["generated_sql"] = None
             logger.warning("sql_generator: empty response (retry=%d)", retry_count)
-
-        # Save the user-facing part of the prompt (system prompt is already in
-        # structured_prompt / Query Prompt tab; save the user message here).
-        updates["node_prompts"] = {
-            **(state.get("node_prompts") or {}),
-            "sql_generator": user_msg,
-        }
 
         return updates
 

@@ -53,7 +53,7 @@ const LINEAGE_STAGES = [
     { id: 'setup', nodes: ['pre_graph_setup'] },
     { id: 'understand', nodes: ['context_composer', 'memory_answer_generator', 'history_search', 'fused_router', 'capability_answer'] },
     { id: 'find', nodes: ['catalog_lookup', 'dax_catalog_lookup', 'filter_planner', 'filter_grounder', 'catalog_help_answer', 'dax_entity_resolver'] },
-    { id: 'write', nodes: ['prior_data_binder', 'prompt_builder', 'analysis_planner', 'analysis_guard', 'analysis_sql', 'sql_generator', 'sqlglot_validate', 'dlp_check', 'dax_query_planner', 'dax_prompt_builder', 'dax_generator', 'dax_static_validate', 'dax_repair'] },
+    { id: 'write', nodes: ['prior_data_binder', 'prompt_builder', 'analysis_planner', 'analysis_guard', 'analysis_sql', 'sql_generator', 'sql_repair', 'sqlglot_validate', 'dlp_check', 'dax_query_planner', 'dax_prompt_builder', 'dax_generator', 'dax_static_validate', 'dax_repair'] },
     { id: 'run', nodes: ['execute_query', 'pbi_execute_query', 'execute_dax', 'analysis_run', 'empty_filter_result_check', 'empty_result_check', 'result_integrity_check', 'trivial_result_check'] },
     { id: 'check', nodes: ['fused_eval_analytics', 'feedback_classifier', 'dax_feedback_router'] },
     { id: 'final', nodes: ['response_formatter', 'save_to_memory', 'observability_log'] },
