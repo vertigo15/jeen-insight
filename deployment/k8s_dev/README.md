@@ -161,6 +161,12 @@ OIDC login, secure session cookie, and a long-running streamed insight.
   a read-only root filesystem, bounded `/tmp`, and startup/liveness/readiness
   probes.
 
+## Trino mTLS
+
+When Schema Modeler saves a Trino connection as mTLS, the API uses that
+client certificate. Mount the certificate Secret on `jeen-insights-api` and
+follow [docs/trino-mtls.md](../../docs/trino-mtls.md).
+
 ## Schema migrations on a shared metadata DB
 
 All shared-DB overlays set `RUN_MIGRATIONS_ON_START=false` and

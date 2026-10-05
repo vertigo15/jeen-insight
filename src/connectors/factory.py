@@ -10,7 +10,12 @@ from src.connectors.base import SqlRunner, UnsupportedConnectionType
 from src.connectors.databricks import DatabricksSqlRunner
 from src.connectors.dialects import dialect_rules_for, sqlglot_dialect_for
 from src.connectors.postgres import PostgresSqlRunner
-from src.connectors.trino import TrinoSqlRunner
+from src.connectors.trino import (
+    TrinoSqlRunner,
+    normalize_trino_auth,
+    normalize_trino_verify,
+    trino_mtls_paths,
+)
 
 
 @dataclass(frozen=True)
@@ -181,17 +186,31 @@ def _build_trino(*, source_key: Optional[str], cfg: Dict[str, Any]) -> TrinoSqlR
     catalog = coerce_str(cfg.get("catalog") or cfg.get("database"))
     schema = coerce_str(cfg.get("databaseSchema") or cfg.get("schema"))
     request_timeout = coerce_float(cfg.get("requestTimeout") or cfg.get("request_timeout")) or 30.0
+    auth = normalize_trino_auth(cfg)
+    cert_path, key_path = trino_mtls_paths(cfg)
+    if auth == "mtls" and (not cert_path or not key_path):
+        raise UnsupportedConnectionType(
+            "Trino mTLS connection_config requires 'clientCertPath' and 'clientKeyPath'."
+        )
+    http_scheme = (coerce_str(cfg.get("httpScheme") or cfg.get("http_scheme")) or "https").lower()
+    if auth == "mtls" and http_scheme != "https":
+        raise UnsupportedConnectionType("Trino mTLS requires httpScheme 'https'.")
     return TrinoSqlRunner(
         source_key=source_key,
         host=host,
         port=port or 443,
         username=username,
-        password=coerce_str(cfg.get("password")),
-        access_token=coerce_str(cfg.get("accessToken") or cfg.get("access_token") or cfg.get("token")),
+        password=None if auth == "mtls" else coerce_str(cfg.get("password")),
+        access_token=None if auth == "mtls" else coerce_str(
+            cfg.get("accessToken") or cfg.get("access_token") or cfg.get("token")
+        ),
         catalog=catalog,
         schema=schema,
-        http_scheme=coerce_str(cfg.get("httpScheme") or cfg.get("http_scheme")) or "https",
-        auth=coerce_str(cfg.get("auth") or cfg.get("authType") or cfg.get("auth_type")),
+        http_scheme=http_scheme,
+        auth=auth,
+        client_cert_path=cert_path if auth == "mtls" else None,
+        client_key_path=key_path if auth == "mtls" else None,
+        verify=normalize_trino_verify(cfg),
         request_timeout=request_timeout,
         max_workers=coerce_int(cfg.get("maxWorkers") or cfg.get("max_workers")) or 4,
     )
