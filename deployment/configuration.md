@@ -89,6 +89,7 @@ into the Job; they do not belong in workload pods.
 | `ANALYTICS_PORT` | O | no | `8100` | analytics | `env`; listen port |
 | `LOG_LEVEL` | O | no | `INFO` | all | `env` |
 | `LOG_FORMAT` | O | no | `auto`; production `json` | all | `env` |
+| `METRICS_PORT` | O | no | `9090`; Helm sets it from `global.metrics` | all | `env`; Prometheus `/metrics` port, never published by a Service; `0` disables |
 | `DEFAULT_LOCALE` | O | no | `en` | API, UI | `env`; user preference overrides after login |
 
 `PUBLIC_APP_URL` must be the URL users actually open, including scheme and any

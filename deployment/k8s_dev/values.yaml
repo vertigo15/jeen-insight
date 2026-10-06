@@ -12,6 +12,8 @@ global:
   nodeSelector: {}
   env:
     LOG_LEVEL: INFO
+    # One JSON object per line on stdout, collected by the cluster's log agent.
+    LOG_FORMAT: json
     METADATA_DB_SSL: "true"
     JEEN_DEV_MODE: "false"
     INTERNAL_AUTH_ENABLED: "true"
@@ -22,6 +24,23 @@ global:
     rollingUpdate:
       maxUnavailable: 0
       maxSurge: 1
+  # Prometheus metrics. Every pod serves /metrics on `port` (a container port
+  # only; no Service exposes it) and carries prometheus.io/* scrape annotations.
+  metrics:
+    enabled: true
+    port: 9090
+    # When a component's NetworkPolicy is enabled, only these namespaces may
+    # reach the metrics port. Azure Monitor managed Prometheus runs in kube-system.
+    scrapeNamespaces:
+      - kube-system
+    # For a Prometheus that reads PodMonitor objects instead of annotations.
+    # Azure Monitor managed Prometheus: azmonitoring.coreos.com/v1;
+    # Prometheus Operator: monitoring.coreos.com/v1.
+    podMonitor:
+      enabled: false
+      apiVersion: azmonitoring.coreos.com/v1
+      interval: 30s
+      labels: {}
   existingSecret:
     # This Secret is created outside Helm or by the optional ExternalSecret.
     name: jeen-insights-secrets

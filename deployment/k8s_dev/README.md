@@ -150,6 +150,38 @@ private DNS record, apply the final defence values, and remove the old
 LoadBalancer. Validate the HTTP redirect, expected self-signed certificate,
 OIDC login, secure session cookie, and a long-running streamed insight.
 
+## Logs and metrics
+
+Every pod writes one JSON object per line to stdout (`LOG_FORMAT=json`), with
+`ts`, `level`, `logger`, `message` and the `request_id` that follows a request
+from the UI to the API. That includes gunicorn's and uvicorn's own lines, so the
+cluster's log agent (Azure Monitor Container Insights on AKS) can parse every
+line. No component writes per-request access lines; request counts and latency
+come from the metrics.
+
+With `global.metrics.enabled` (default on), each pod serves Prometheus metrics
+on `global.metrics.port` (9090):
+
+- `jeen_http_requests_total{method,route,status}` and
+  `jeen_http_request_duration_seconds{method,route}`, labelled with the route
+  template (`/api/conversations/{id}`), never the raw path. For the UI's
+  streamed answers the duration ends when the response starts.
+- The standard Python process and runtime metrics (API and analytics; the UI
+  aggregates its gunicorn workers in Prometheus multiprocess mode).
+
+The port is a named container port (`metrics`) and is not part of any Service,
+so it is reachable from the pod network but never through the UI's address.
+Pods carry `prometheus.io/scrape`, `prometheus.io/port` and `prometheus.io/path`
+annotations. When a component's NetworkPolicy is enabled, only the namespaces
+in `global.metrics.scrapeNamespaces` (default `kube-system`) may reach the port.
+
+A scraper must be running in the cluster. On AKS, enable Azure Monitor managed
+Prometheus and let it read the annotations in this namespace through the
+`ama-metrics-settings-configmap` (`podannotationnamespaceregex`). For a
+Prometheus that reads PodMonitor objects, set
+`global.metrics.podMonitor.enabled=true` and the matching
+`global.metrics.podMonitor.apiVersion`.
+
 ## Optional platform controls
 
 - HPA and PDB rendering is disabled by default. Enable a PDB only when the

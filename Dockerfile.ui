@@ -50,8 +50,8 @@ RUN python -m compileall -q src \
 
 USER 1001:0
 
-# Expose UI port
-EXPOSE 8501
+# UI port, and the Prometheus metrics port (not published by the Service)
+EXPOSE 8501 9090
 
 # Run the UI with gunicorn (production WSGI server).
 #
@@ -62,7 +62,12 @@ EXPOSE 8501
 #
 # gthread + a generous --timeout keeps the streaming insights (SSE) responses
 # alive; --max-requests is checked between requests so it never cuts a stream.
+#
+# src/ui_gunicorn_conf.py gives gunicorn's own lines the app's JSON format and
+# serves /metrics on METRICS_PORT from the master. No access log: request
+# counts and latency come from the metrics instead.
 CMD ["gunicorn", "src.ui_app:app", \
+     "--config", "python:src.ui_gunicorn_conf", \
      "--bind", "0.0.0.0:8501", \
      "--workers", "1", \
      "--worker-class", "gthread", \
@@ -71,6 +76,4 @@ CMD ["gunicorn", "src.ui_app:app", \
      "--graceful-timeout", "30", \
      "--keep-alive", "5", \
      "--max-requests", "1000", \
-     "--max-requests-jitter", "100", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-"]
+     "--max-requests-jitter", "100"]

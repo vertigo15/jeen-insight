@@ -72,7 +72,8 @@ RUN python -m compileall -q src scripts \
 
 USER 1001:0
 
-EXPOSE 8000
+# API port, and the Prometheus metrics port (not published by the Service)
+EXPOSE 8000 9090
 
 ENTRYPOINT ["/app/scripts/api-entrypoint.sh"]
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

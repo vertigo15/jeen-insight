@@ -74,6 +74,8 @@ _RESERVED_RECORD_KEYS = {
     "message", "msg", "name", "pathname", "process", "processName",
     "relativeCreated", "stack_info", "thread", "threadName", "taskName",
     "request_id",
+    # uvicorn's ANSI-coloured copy of the message; noise in a JSON line.
+    "color_message",
 }
 
 
@@ -205,6 +207,19 @@ def configure_logging(
             mode and ``json`` otherwise.
         dev_mode: overrides ``$JEEN_DEV_MODE`` for the ``auto`` decision.
     """
+    logging.config.dictConfig(logging_dict(level=level, fmt=fmt, dev_mode=dev_mode))
+
+
+def logging_dict(
+    level: Optional[str] = None,
+    fmt: Optional[str] = None,
+    dev_mode: Optional[bool] = None,
+) -> dict:
+    """The ``dictConfig`` that :func:`configure_logging` applies.
+
+    Exposed so gunicorn can install the same configuration in its master
+    process (``logconfig_dict``) before any worker imports the app.
+    """
     resolved_level = _resolve_level(level or os.getenv("LOG_LEVEL", "INFO"))
     resolved_fmt = (fmt or os.getenv("LOG_FORMAT", "auto")).strip().lower()
     if resolved_fmt not in ("auto", "json", "console"):
@@ -214,7 +229,7 @@ def configure_logging(
         resolved_fmt = "console" if is_dev else "json"
     formatter = "json" if resolved_fmt == "json" else "console"
 
-    logging.config.dictConfig({
+    return {
         "version": 1,
         # Keep module-level loggers created before this call alive.
         "disable_existing_loggers": False,
@@ -250,4 +265,4 @@ def configure_logging(
             "msal": {"level": "WARNING"},
             "urllib3": {"level": "WARNING"},
         },
-    })
+    }
