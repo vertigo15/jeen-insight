@@ -38,7 +38,7 @@ reachable only by the API and receives a separate audience-bound secret.
 
 ## The three services
 
-**1. UI layer** — `src/ui_app.py` (a single ~54 KB Flask app)
+**1. UI layer** — `src/ui_app.py` (a single Flask app)
 
 - Flask + Gunicorn (gthread worker) as the production WSGI server (`Dockerfile.ui`).
 - Acts as a **proxy/BFF**: handles login/session, CSRF (flask-wtf), login
@@ -50,9 +50,10 @@ reachable only by the API and receives a separate audience-bound secret.
 **2. API layer** — `src/main.py` → `src/api/`
 
 - FastAPI + Uvicorn.
-- Assembled by a factory (`src/api/app_factory.py`) that wires ~14 routers under
-  `src/api/routes/` (query, insights, charts, connections, connectors, history,
-  health, settings, mcp, saved_analyses, etc.).
+- Assembled by a factory (`src/api/app_factory.py`) that wires 18 routers under
+  `src/api/routes/` (query, analysis, insights, charts, conversations, history,
+  connections, connectors, me_connections, actions, settings, runtime_settings,
+  mcp, saved_analyses, admin_analytics, onboarding, autocomplete, health).
 - `src/api/lifespan.py` handles startup: DB schema/prompt seeding and compiling the
   LangGraph graph. Shared services live in `src/api/state.py`.
 
@@ -155,7 +156,7 @@ The flow on every question:
 12. **response_formatter → save_to_memory → observability_log**.
 
 There's a `feedback_classifier` node that creates repair loops (bounded by the
-retry budgets; the recursion limit of 64 sits above the longest budget-legal path).
+retry budgets; the recursion limit of 72 sits above the longest budget-legal path).
 Each node is wrapped by `_timed()` to emit a live execution trace for the UI's
 trace panel.
 
@@ -180,8 +181,9 @@ Notable extras:
   directly by `/api/generate-insights`.
 - A parallel **text-to-DAX agent** for Power BI (`src/agent/langgraph_agent_dax/`,
   `src/agent/dax_insights_agent.py`).
-- The README says "no RAG / no embeddings" — curated metadata is injected directly
-  into the prompt.
+- No RAG / no embeddings — curated metadata is injected directly into the
+  prompt.
+- A one-page list of every product feature: [features.md](./features.md).
 
 ## LLM abstraction
 
@@ -265,8 +267,8 @@ baseline written by `/generate-chart` / `/edit-chart`.
 
 ## Frontend
 
-The UI is **vanilla JS, no framework** — a large `src/static/script.js` (~268 KB) +
-`style.css` (~215 KB), plus modular controllers under `src/static/` (chart-feature,
+The UI is **vanilla JS, no framework** — a large `src/static/script.js` +
+`style.css`, plus modular controllers under `src/static/` (chart-feature,
 chat, insights, profiling, settings, workspace). Charting uses vendored **ECharts**
 and **D3**. Templates are server-rendered Jinja (`index.html`, `login.html`,
 `setup.html`). There's also an optional OSM map layer with a server-side tile proxy

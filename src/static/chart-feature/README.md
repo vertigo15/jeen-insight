@@ -1,198 +1,79 @@
-# Chart Feature Implementation
+# Chart feature
 
-## Overview
-This feature adds chart visualization capabilities to query results with a two-tier system:
-- **Tier 1**: Instant auto-generated charts (frontend only)
-- **Tier 2**: AI-enhanced charts (optional, via LLM API)
+Browser-side charting for query results and ML answers. Vanilla ES modules, no
+build step. ECharts is vendored under `src/static/vendor/echarts`, so air-gapped
+deployments need no CDN.
 
-## Architecture
+## How a chart is made
 
-### Clean Separation of Concerns
+1. **Generate (server).** `POST /api/generate-chart` builds the chart spec and
+   config on the server (`src/api/chart_builder.py`: chart type, value formats,
+   ML band charts). The result is persisted as the turn's chart baseline.
+2. **Render (client).** `chartManager.js` is the orchestrator. It analyses the
+   rows (`utils/dataAnalyzer.js`), renders with `components/ChartContainer.js`,
+   and applies value formatting (`utils/valueFormat.js`).
+3. **Refine.** Users change the chart in three ways, none of which can alter the
+   data:
+   - **Quick options** (`ChartOptionsPanel`, `utils/chartQuickOptions.js`):
+     column mapping, data labels, legend, zoom, sort, named palettes
+     (`utils/chartPalettes.js`). No network call.
+   - **Chart chat** (`components/ChartChat.js`): "Refine this chart" in plain
+     language. `utils/chartIntentMatcher.js` resolves common requests (also in
+     Hebrew) in code; anything else calls `POST /api/edit-chart` once with a
+     compact, data-free manifest and gets back a list of validated operations
+     (`utils/chartEditOperations.js`), applied to a cloned session and published
+     only after a successful render.
+   - **AI enhance** (`EnhanceButton`, `chartEnhancerPrompt.js`):
+     `POST /api/enhance-chart` restyles the config; failures fall back to the
+     generated chart.
+4. **Derived series** are computed locally from the real rows: moving averages,
+   trend lines and cumulative sums (`utils/chartOperators.js`), and what-if
+   scenarios and annotations (`utils/chartScenarios.js`). The real series is
+   never modified.
+5. **Session state** (`utils/chartSession.js`) keeps the immutable baseline next
+   to the working state, so switching turns keeps edits and **Reset** is exact.
+
+## Maps
+
+- Built-in ECharts maps (`assets/maps/`, `utils/mapAssets.js`) are served from
+  `/static`; see `assets/maps/NOTICE.md` for data sources and licenses.
+- Optional raster OpenStreetMap view (`utils/osmMapRenderer.js`) through a
+  same-origin tile proxy (`/api/map-tiles/...`), so provider keys never reach
+  the browser. Controls live in `components/MapOptionsPanel.js`. Enable and
+  configure it with the `OSM_*` variables in `deployment/configuration.md`.
+- Location search uses `/api/map-search`.
+
+## Layout
+
 ```
 chart-feature/
-├── components/          # UI components (no business logic)
-│   ├── ChartToggle.js
-│   ├── ChartContainer.js
-│   ├── ChartTypeSelector.js
-│   └── EnhanceButton.js
-├── services/            # Business logic (no DOM dependencies)
-│   ├── chartConfigGenerator.js
-│   └── chartEnhancerService.js
-├── prompts/             # LLM prompts (easily editable)
-│   └── chartEnhancerPrompt.js
-├── utils/               # Pure utility functions
-│   ├── dataAnalyzer.js
-│   └── echartsValidator.js
-├── types/               # TypeScript/JSDoc definitions
-│   └── chart.types.js
-├── chartManager.js      # Main orchestrator
-└── README.md
+├── chartManager.js           orchestrator
+├── chartTypes.js             canonical chart type list
+├── components/               ChartContainer, ChartToggle, ChartTypeSelector,
+│                             ChartOptionsPanel, MapOptionsPanel, ChartChat, EnhanceButton
+├── services/                 chartConfigGenerator, chartEnhancerService
+├── prompts/                  chartEnhancerPrompt.js
+├── utils/                    analysis, formatting, palettes, operators, scenarios,
+│                             suggestions, intent matcher, edit operations, session,
+│                             series labels (ML), map renderer and assets
+├── types/chart.types.js      JSDoc types
+└── assets/                   map data and notices
 ```
 
-## Key Features
+## Languages
 
-### 1. Automatic Chart Type Detection
-- **Line Chart**: Date/time + numeric data
-- **Pie Chart**: Category (≤10 unique) + numeric data
-- **Bar Chart**: Category (>10 unique) + numeric data, or default
+Interface strings come from the locale catalogs (`src/i18n/messages`), and the
+ML band-chart series names are translated at render time
+(`utils/seriesLabels.js`), so saved and restored charts follow the current
+interface language.
 
-### 2. Data Analysis
-- Detects column types: numeric, category, date
-- Identifies suitable X and Y axis columns
-- Validates data is chartable (needs 2+ columns, at least 1 numeric)
+## Prompts
 
-### 3. Two-Tier Chart Generation
+The server-side editor prompts are `chart_editor` and `chart_map_editor` in
+Settings → Prompts (see [`PROMPTS.md`](../../../PROMPTS.md)).
 
-#### Tier 1: Auto-Generation (Default)
-- Instant rendering, no API calls
-- Basic but professional chart configs
-- Proper axis labels and formatting
-- Responsive design
+## Tests
 
-#### Tier 2: AI Enhancement (On-Demand)
-- Click "✨ Enhance with AI" button
-- LLM improves:
-  - Titles and descriptions
-  - Color schemes
-  - Number formatting
-  - Axis labels and units
-  - Tooltip customization
-- Results cached in sessionStorage
-
-### 4. User Preferences
-- **localStorage**: Remembers last view mode (table/chart)
-- **sessionStorage**: Caches enhanced chart configs per query/type
-
-### 5. Edge Case Handling
-- Single column: Chart disabled
-- No numeric columns: Chart disabled
-- Empty results: "No data to display"
-- LLM fails: Falls back to Tier 1 config
-- Network timeouts: Graceful fallback
-
-## Data Flow
-
-```
-Query Results
-    ↓
-Data Analyzer (detect types, suggest chart)
-    ↓
-Chart Config Generator (Tier 1 - basic config)
-    ↓
-Chart Container (render with ECharts)
-    ↓
-[Optional] User clicks "Enhance"
-    ↓
-Chart Enhancer Service (Tier 2 - call API)
-    ↓
-Validator (validate LLM response)
-    ↓
-Chart Container (re-render with enhanced config)
-```
-
-## API Integration
-
-### Backend Endpoint
-**POST /api/enhance-chart**
-
-Request:
-```json
-{
-  "columns": [
-    {"name": "date", "type": "date"},
-    {"name": "sales", "type": "numeric"}
-  ],
-  "sample_data": [[...], [...], ...],
-  "chart_type": "line",
-  "current_config": {...}
-}
-```
-
-Response:
-```json
-{
-  "enhanced_config": {...}
-}
-```
-
-### Main API Implementation
-The main Vanna API backend needs to implement `/api/enhance-chart` endpoint that:
-1. Receives the request from UI
-2. Calls LLM with the prompt from `chartEnhancerPrompt.js`
-3. Returns enhanced ECharts JSON configuration
-
-## Usage
-
-### For Users
-1. Run a query
-2. Click "📈 Chart" button to switch views
-3. Select chart type from dropdown (Line/Bar/Pie)
-4. (Optional) Click "✨ Enhance with AI" for better styling
-5. Toggle back to "📊 Table" anytime
-
-### For Developers
-
-#### Modifying Prompts
-Edit `prompts/chartEnhancerPrompt.js` - no other code changes needed:
-```javascript
-export const CHART_ENHANCER_SYSTEM_PROMPT = `
-  Your prompt here...
-`;
-```
-
-#### Adding New Chart Types
-1. Add type to `types/chart.types.js`
-2. Add generation logic in `services/chartConfigGenerator.js`
-3. Update selector in `components/ChartTypeSelector.js`
-
-#### Customizing Auto-Detection Rules
-Edit `utils/dataAnalyzer.js` `suggestChartType()` function.
-
-## Logging
-
-All modules include comprehensive console logging with prefixes:
-- `[ChartManager]` - Main orchestration
-- `[DataAnalyzer]` - Data analysis
-- `[ChartConfigGenerator]` - Config generation
-- `[ChartEnhancerService]` - API calls
-- `[EChartsValidator]` - Validation
-- `[ChartContainer]` - Rendering
-- `[ChartToggle]`, `[ChartTypeSelector]`, `[EnhanceButton]` - UI components
-
-## Dependencies
-
-### External
-- **ECharts 5.x**: Loaded lazily from CDN when user first views chart
-
-### Internal
-- Vanilla JavaScript (ES6 modules)
-- No build step required
-- No framework dependencies
-
-## Browser Compatibility
-- Modern browsers with ES6 module support
-- ResizeObserver for responsive charts (graceful fallback)
-- AbortSignal timeout for API calls
-
-## Testing
-
-### Manual Testing Checklist
-- [ ] Table with 2+ columns, 1+ numeric → Chart enabled
-- [ ] Table with 1 column → Chart disabled
-- [ ] Table with no numeric columns → Chart disabled
-- [ ] Empty results → "No data to display"
-- [ ] Switch between Line/Bar/Pie
-- [ ] Enhance button shows loading state
-- [ ] Enhancement fails gracefully
-- [ ] View preference persists
-- [ ] Cache works (no duplicate API calls)
-- [ ] Responsive design works
-- [ ] Charts resize properly
-
-## Future Enhancements
-- Multiple Y-axis support
-- Stacked bar/line charts
-- Custom color picker
-- Chart export (PNG/SVG)
-- More chart types (scatter, area, etc.)
-- Drill-down interactions
+Frontend unit tests are in `tests/js/` (for example `test_chart_chat.mjs`), the
+server logic in `tests/unit/test_chart_*.py`, and the UI flows in
+`tests/e2e/specs/`. See [`tests/README.md`](../../../tests/README.md).

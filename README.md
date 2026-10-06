@@ -5,14 +5,26 @@ curated metadata (tables, columns, relationships, business terms, knowledge
 pairs) directly from the shared Jeen metadata database and lets a user ask
 questions in plain language against any registered data connection.
 
-> **Note:** the repository directory is still named `venna_test3` for legacy
-> reasons; the application itself, container names, and all user-facing
-> branding are **Jeen Insights**.
+> **Proprietary.** Jeen Insights is a private product of Jeen Ltd. See
+> [`LICENSE`](LICENSE). Do not publish or redistribute this repository.
+
+Documentation: [feature overview](docs/features.md) ·
+[architecture](docs/architecture-and-tech-stack.md) ·
+[agent flow](docs/agent-state-flow.md) · [ML skills](docs/ml-skills.md) ·
+[deployment](deployment/README.md) · [tests](tests/README.md).
 
 ## Features
 
-- 🤖 **LangGraph text-to-SQL pipeline** — 16-node graph (router → catalog → SQL gen
-  → validation → execution → eval → output) with retry logic and memory.
+A one-page list of every feature is in [`docs/features.md`](docs/features.md).
+Highlights:
+
+- 🤖 **LangGraph text-to-SQL pipeline** — a 28-node graph (context → router →
+  catalog → filter grounding → SQL gen → validation → execution → eval → output)
+  with separate repair and semantic retry budgets, conversation memory, ML-skill
+  and catalog-help branches. A sibling graph answers Power BI questions with DAX.
+  Node reference: [`docs/agent-state-flow.md`](docs/agent-state-flow.md).
+- 🧪 **ML analysis skills** — 12 validated statistical/ML skills run in an isolated
+  analytics sandbox ([`docs/ml-skills.md`](docs/ml-skills.md)).
 - 🌐 **Multi-provider LLM** — Azure OpenAI (default), OpenAI, Anthropic, Google
   Gemini, and any OpenAI-compatible endpoint via `LangChainLlmService`.
 - ✨ **Insights & follow-up questions** — post-execution eval node generates a
@@ -30,35 +42,36 @@ questions in plain language against any registered data connection.
   usage ledger `insights_usage_events` (migration 036), so numbers survive
   conversation retention. Metric definitions are shown as tooltips; see
   `deployment/migrations.md` for grants, retention and privacy notes.
-- 🐳 **Docker-first** — `docker compose up -d --build` brings up API + UI.
+- 🐳 **Docker-first** — `docker compose up -d --build` brings up the UI, the API
+  and the analytics sandbox. Kubernetes (AKS, EKS, OpenShift, Argo CD) is
+  documented in [`deployment/`](deployment/README.md).
 
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                             Docker Compose                                 │
-│  ┌──────────────────┐          ┌─────────────────────┐                    │
-│  │ jeen-insights-ui │─────────▶│  jeen-insights-api  │                    │
-│  │   (Flask UI)     │          │  (FastAPI + LangGraph│                    │
-│  │   :8501          │          │   agent)  :8001      │                    │
-│  └──────────────────┘          └──────────┬──────────┘                    │
-│                                            │                              │
-│                               ┌────────────▼────────────┐                │
-│                               │   LangGraph pipeline     │                │
-│                               │ memory → router →        │                │
-│                               │ catalog → sql_gen →      │                │
-│                               │ validate → execute →     │                │
-│                               │ eval (follow-ups) →      │                │
-│                               │ format → save → log      │                │
-│                               └────────────┬────────────┘                │
-│                                            │                              │
-│  ┌─────────────────────────────────────────▼──────────────────────────┐  │
-│  │  LangChainLlmService (Azure OpenAI / OpenAI / Anthropic / Google)  │  │
-│  │  Shared metadata DB  — curated metadata + insights_* tables        │  │
-│  │  Per-connection PostgreSQL data sources (resolved at runtime)       │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
-└───────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                               Docker Compose                              │
+│  ┌──────────────────┐  signed   ┌─────────────────────┐                   │
+│  │ jeen-insights-ui │  token    │  jeen-insights-api  │                   │
+│  │ Flask / Gunicorn │──────────▶│  FastAPI + LangGraph │                   │
+│  │ public  :8501    │           │  internal   :8001    │                   │
+│  └──────────────────┘           └───────┬───────┬──────┘                   │
+│                                         │       │                          │
+│                      ┌──────────────────▼─┐   ┌─▼───────────────────────┐ │
+│                      │ LangGraph pipeline │   │ jeen-insights-analytics │ │
+│                      │ 28 nodes (SQL);    │   │ ML sandbox  :8100       │ │
+│                      │ sibling graph (DAX)│   │ internal, no egress     │ │
+│                      └──────────┬─────────┘   └─────────────────────────┘ │
+│                                 │                                          │
+│  ┌──────────────────────────────▼──────────────────────────────────────┐ │
+│  │ LangChainLlmService (Azure OpenAI / OpenAI / Anthropic / Google)     │ │
+│  │ Shared metadata DB — curated metadata + insights_* tables            │ │
+│  │ Per-connection data sources: Postgres, Trino, Databricks, Power BI   │ │
+│  └──────────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
+
+More detail: [`docs/architecture-and-tech-stack.md`](docs/architecture-and-tech-stack.md).
 
 ## Quick Start
 
@@ -105,7 +118,9 @@ This creates `insights_conversation_sessions`, `insights_query_insights`,
 alter existing Insights-owned tables (e.g. `022_conversations_and_turn_artifacts`
 adds a parent foreign key to `insights_conversation_sessions` and re-keys legacy
 cross-connection session ids). The runner records each revision once and applies
-it in a transaction; it never touches the shared `metadata_*` tables.
+it in a transaction; it never touches the shared `metadata_*` tables. In
+Kubernetes the same migrations run as an explicit Job, see
+[`deployment/migrations.md`](deployment/migrations.md).
 
 Run the migrations **before** rolling out a build that depends on them. If
 migration 022 is missing, the API starts anyway and logs
@@ -125,13 +140,26 @@ Pick a connection from the dropdown in the top bar and ask a question.
 | GET    | `/api/connections`                                | List active connections (no secrets).                  |
 | GET    | `/api/connections/{source_key}`                   | Connection details + metadata row counts.              |
 | POST   | `/api/connections/{source_key}/refresh-metadata`  | Invalidate the metadata loader cache for a source.     |
-| POST   | `/api/query`                                      | Body: `{question, connection, session_id?}`.           |
-| GET    | `/api/tables?connection=<source_key>`             | List tables on the chosen data source.                 |
+| POST   | `/api/connections/{source_key}/warm-cache`        | Pre-load the catalog cache for a source.               |
+| POST   | `/api/query`, `/api/query/stream`                 | Body: `{question, connection, session_id?}`; the stream variant sends the table first, then insights. |
+| GET    | `/api/tables`, `/api/tables-rich`                 | List tables on the chosen data source (`connection=<source_key>`). |
 | GET    | `/api/schema/{table}?connection=<source_key>`     | Column-level schema.                                   |
-| POST   | `/api/generate-insights`                          | Body must include `connection` + `dataset` + `question`.|
-| POST   | `/api/generate-chart` / `/api/enhance-chart`      | Same: `connection` is required.                        |
+| POST   | `/api/generate-insights` (+ `/stream`)            | Body must include `connection` + `dataset` + `question`; `sql` runs the eval subgraph. |
+| POST   | `/api/empty-result-hint`, `/api/generate-profile` | Empty-result diagnosis; data profile of a result.      |
+| POST   | `/api/generate-chart`, `/api/enhance-chart`, `/api/edit-chart` (+ `/rebuild`) | Chart build, AI enhance and plain-language edit; `connection` is required. |
+| GET    | `/api/chart-capabilities`, `/api/map-tiles/…`, `/api/map-search` | Chart options; same-origin map tile proxy and geocoder. |
 | POST   | `/api/feedback`                                   | Records `thumbs_up` / `thumbs_down` / `edited` / `catalog_gap` (+ optional `notes`). |
-| GET    | `/api/admin/analytics/{overview,timeseries,top-users,top-connections,feedback,analysis,errors}?days=7\|30\|90` | Admin only. Usage / quality reports from the durable ledger; `feedback` reads are audited. 503 until migration 036 is applied. |
+| POST   | `/api/answer-feedback`                            | Rating and comment on one answer.                      |
+| POST   | `/api/analysis/run`, `/rerun`, `/chart`, `/forecast/accuracy` | Run or re-run an ML skill, chart it, check a forecast against actuals. |
+| GET/POST | `/api/analysis/suggestions`, `/routing`, `/skills`, `/skills/prefs` | Skill catalog, routing hints and per-user consent.     |
+| GET/POST/PATCH/DELETE | `/api/saved-analyses[/{id}]`       | Saved analyses with chart state.                       |
+| GET/POST | `/api/knowledge-questions`, `/api/knowledge-columns`, `/api/suggest-questions` | Knowledge-pair question and column suggestions. |
+| GET/PATCH | `/api/user/onboarding`                         | First-time experience progress.                        |
+| GET/PUT/POST | `/api/settings/prompts…`, `/models…`, `/runtime`, `/app-info` | Admin: prompts (versions, restore), model catalog and health, runtime limits. |
+| GET/POST/PUT/DELETE | `/api/mcp/…`                         | Admin: MCP servers, catalog source, cache TTL.         |
+| GET/POST/PUT/PATCH/DELETE | `/api/connectors/…`        | Admin: integrations, secrets, group roles, audit.      |
+| GET/POST | `/api/me/connections/…`, `/api/actions/…`       | Per-user OAuth linking; propose, preview, execute and continue a gated action. |
+| GET    | `/api/admin/analytics/{overview,timeseries,top-users,top-connections,feedback,analysis,errors,runs,runs/{query_id}}?days=7\|30\|90` | Admin only. Usage / quality reports from the durable ledger; `feedback` reads are audited. 503 until migration 036 is applied. |
 | GET    | `/api/conversation/{session_id}`                  | Legacy raw dump of one conversation (superseded below).|
 | GET    | `/api/conversations/last?connection=`             | Hydration payload for the user's newest conversation on a connection; spawns the retention prune. |
 | GET    | `/api/conversations?connection=` or `?all=true`   | Cursor-paged list of the user's conversations (`all` includes removed connections). |
@@ -139,7 +167,15 @@ Pick a connection from the dropdown in the top bar and ask a question.
 | GET    | `/api/conversations/{id}/turns/{turn_id}/artifact`| Result snapshot + chart baseline for one turn.         |
 | POST   | `/api/conversations/{id}/turns/{turn_id}/rerun`   | Re-execute the stored SQL/DAX (no LLM); refreshes the snapshot. |
 | PATCH / DELETE | `/api/conversations/{id}`                 | Rename / hard-delete (cascades to turns, insights, artifacts). |
-| GET/POST | `/api/user/recent-questions` / `…/pin-question` | Per-(user, connection) history.                        |
+| GET    | `/api/conversations/favorites`                    | The user's favourite answers.                          |
+| PUT / DELETE | `/api/conversations/{id}/turns/{turn_id}/favorite` | Star / unstar an answer.                          |
+| GET/POST | `/api/user/recent-questions`, `pinned-questions`, `pin-question`, `unpin-question`, `history-log` | Per-(user, connection) history. |
+| GET    | `/health`                                         | Liveness; the API is otherwise reachable only through the UI. |
+
+The UI adds `/api/ask`, `/api/ask/stream` (proxied to `/api/query`) and the
+account endpoints `/api/users`, `/api/users/{id}/role` for Settings › Users.
+The table lists the API's route groups; the route modules under
+`src/api/routes/` are the full reference.
 
 Every endpoint that operates on a dataset requires the `connection` parameter
 (the `source_key` from `metadata_sources`). Requests without it return 400.
@@ -178,15 +214,27 @@ chart quick-toggles and table formatting.
 
 ## What the agent does on every question
 
-1. **Memory check** — summarise conversation history if over token budget.
-2. **Router** — classify intent: `needs_query`, `from_memory`, `out_of_scope`, `unsafe`.
+1. **Context** — build the conversation-memory ledger from the last turns.
+2. **Router** — classify intent: `needs_query`, `needs_analysis` (ML skill),
+   `from_memory`, `history_lookup`, `capability`, `catalog_help`,
+   `out_of_scope`, `unsafe`, `greeting`.
 3. **Catalog lookup** — load per-connection metadata bundle from `metadata_*`.
-4. **SQL generator** — call the LLM with curated schema; retry on error (up to 3×).
-5. **Validation** — SQLGlot parse + table-name check + DLP governance scan.
-6. **Execution** — run SQL via `PostgresSqlRunner` (SELECT-only enforcement).
-7. **Eval** (`fused_eval_analytics`) — check intent match, summarise results,
+4. **Filter grounding** — bind literals in the question to real column values.
+5. **SQL generator** — call the LLM with the curated schema; a focused
+   `sql_repair` step fixes errors, with separate budgets for execution errors
+   and semantic mismatches.
+6. **Validation** — SQLGlot parse + table-name check + DLP governance scan.
+7. **Execution** — run SQL through the connection's `SqlRunner` (Postgres, Trino,
+   Databricks; SELECT-only enforcement).
+8. **Eval** (`fused_eval_analytics`) — check intent match, summarise results,
    generate 3–5 follow-up questions shown as clickable chips in the UI.
-8. **Output** — format response, save to memory, write observability trace.
+9. **Output** — format response, save to memory and the usage ledger, write the
+   observability trace.
+
+ML-skill questions take the analysis branch (planner → guard → SQL → sandboxed
+run); Power BI connections use the sibling text-to-DAX graph
+([`docs/agent-state-flow-dax.md`](docs/agent-state-flow-dax.md)). The full node
+and arc reference is [`docs/agent-state-flow.md`](docs/agent-state-flow.md).
 
 When the `POST /api/generate-insights` endpoint receives a `sql` field, it
 invokes the eval node directly as a standalone subgraph (bypassing the full
@@ -196,39 +244,46 @@ pipeline). Results without SQL fall back to the legacy `insight_service` path.
 
 ```
 jeen-insight/
-├── docker-compose.yml              jeen-insights-api (:8001) + jeen-insights-ui (:8501)
-├── Dockerfile / Dockerfile.ui
-├── .env                            METADATA_DB_* + AZURE_OPENAI_*
-├── requirements.txt                includes langgraph + langchain-*
-├── pyproject.toml                  pytest config (unit tests default; integration opt-in)
+├── docker-compose.yml              ui (:8501) + api (:8001) + analytics sandbox (:8100)
+├── Dockerfile / .ui / .analytics   one image per service
+├── .env / .env.example             METADATA_DB_*, LLM and identity settings
+├── LICENSE                         Jeen Ltd proprietary license
+├── requirements*.txt, pyproject.toml
+├── db/migrations/insights/         ordered SQL migrations (run as an explicit step)
+├── deployment/                     Helm chart, AKS/EKS/OpenShift/Argo CD guides, validators
+├── docs/                           feature overview, architecture, agent flows, ML skills
+├── evals/                          offline golden sets and the eval harness
+├── scripts/                        migration runner, e2e DB helper, diagram generator
 ├── src/
-│   ├── api/
-│   │   ├── app_factory.py
-│   │   ├── lifespan.py             startup: schema, prompt seeding, graph compile
-│   │   ├── state.py                module-level shared services
-│   │   ├── models.py               Pydantic request/response schemas
-│   │   └── routes/                 query, insights, charts, settings, health …
+│   ├── api/                        FastAPI factory, lifespan, middleware, chart builder,
+│   │                               maps, routes/ (query, insights, charts, conversations,
+│   │                               analysis, settings, mcp, connectors, …)
 │   ├── agent/
-│   │   ├── jeen_insights_agent.py  JeenInsightsAgent (wraps LangGraph pipeline)
-│   │   ├── langgraph_agent/
-│   │   │   ├── graph.py            build_graph (16-node) + build_insights_eval_graph
-│   │   │   ├── state.py            AgentState + InsightsState TypedDicts
-│   │   │   ├── prompt_loader.py    file-based prompt templates
-│   │   │   └── nodes/              catalog, eval, execution, feedback, memory,
-│   │   │                           output, router, sql_gen, validation
-│   │   ├── llm_service.py          LangChainLlmService (multi-provider)
+│   │   ├── jeen_insights_agent.py  SQL agent (wraps the LangGraph pipeline)
+│   │   ├── dax_insights_agent.py   Power BI text-to-DAX agent
+│   │   ├── langgraph_agent/        graph.py (28 nodes), state.py, nodes/, prompt_loader.py
+│   │   ├── langgraph_agent_dax/    DAX graph and nodes
+│   │   ├── llm_service.py          LangChainLlmService (multi-provider, fallback)
 │   │   ├── prompt_cache.py         DB-backed lazy cache for insights_prompts
-│   │   ├── insight_service.py      legacy insights path (no SQL context)
-│   │   └── prompts/                *.md prompt templates (seeded into DB)
-│   ├── connections/
-│   ├── metadata/
-│   ├── tools/sql_tool.py
-│   ├── ui_app.py                   Flask UI proxy
-│   └── static/                     script.js, style.css, chart-feature, insights/
+│   │   ├── prompts/, prompts_dax/  *.md prompt templates (seeded into DB)
+│   │   └── …                       conversation history, memory, onboarding, profiling
+│   ├── analysis/                   ML skill contracts, guards, engines, runner
+│   ├── analytics/                  durable usage ledger
+│   ├── analytics_service/          ML sandbox service
+│   ├── connections/, metadata/     connection resolution, curated catalog, MCP
+│   ├── connectors/                 SqlRunner engines + integration providers
+│   ├── security/                   internal auth, encryption, feature flags
+│   ├── i18n/                       English and Hebrew message catalogs
+│   ├── tools/                      sql_tool, dax_tool
+│   ├── ui_app.py                   Flask UI, login and proxy to the API
+│   └── static/, templates/         vanilla-JS frontend and Jinja templates
 ├── templates/insight_prompt.txt    legacy insights prompt
 └── tests/
     ├── unit/                       fast, offline (default pytest run)
-    └── integration/                requires live services (opt-in)
+    ├── integration/                requires live services (opt-in)
+    ├── e2e/                        mocked-UI specs and the live suite (Playwright)
+    ├── js/                         frontend unit tests
+    └── stress/                     multi-user accuracy and speed runner
 ```
 
 ## Development
@@ -245,7 +300,8 @@ python3 -m pytest tests/integration/ -m integration
 
 Unit tests run entirely offline — all LLM and DB calls are mocked. They cover
 individual LangGraph nodes, graph flow paths, route handlers, and LLM JSON
-parsing.
+parsing. The other test types (offline evals, mocked-UI e2e, live suite, stress)
+are described in [`tests/README.md`](tests/README.md).
 
 ### Prompt management
 
@@ -334,4 +390,5 @@ docker compose restart jeen-insights-api
 
 ## License
 
-MIT
+Proprietary. Copyright (c) 2026 Jeen Ltd. All rights reserved. This is a
+private product; see [`LICENSE`](LICENSE).
