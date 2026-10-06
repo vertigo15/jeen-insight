@@ -193,6 +193,39 @@ API logs a startup warning and the L2 write of that entry is rejected: the
 catalog is then cached in the API process only, so each restart downloads it
 again. Expand-only; every earlier key stays allowed.
 
+## Migration 038: execution run details (admin Analytics)
+
+`038_execution_run_details.sql` creates `insights_execution_run_details`, the
+admin-only drill-down behind the Analytics run list. Like the usage ledger it has
+no foreign key to the turn, so it outlives conversation retention. It stores only
+the final question and answer, the generated SQL or DAX, bounded error text
+(4 000 characters), scalar metrics and the slim timing trace; prompts and result
+rows are never written. The file also seeds rows from retained turns so the view
+is useful straight after rollout, and is repeat-safe (`query_id` is unique).
+Expand-only. The API role needs `INSERT`, `SELECT` and `DELETE` (the writer is
+the usage ledger, which also prunes it on the usage retention schedule). Until it
+is applied the run list and run detail reports return 503; the rest of Analytics
+and question answering are unaffected.
+
+## Migration 039: per-application roles
+
+`039_user_app_roles.sql` creates `insights_user_app_roles` (`user_id`, `app`,
+`role`) so the Insights role no longer overwrites `auth_users.role`, which Schema
+Modeler reads as the Metadata role. It references the shared `auth_users` table
+(`ON DELETE CASCADE`) but does not change it. Existing accounts are copied once
+with their current role (`user` becomes `editor`, anything unknown becomes
+`viewer`); a person with no Insights row is treated as `viewer`, so an account
+created later in Metadata is not granted that role inside Insights.
+
+Operational notes:
+
+- **Grants.** The UI role (psycopg: sign-in, Settings › Users) needs `SELECT`,
+  `INSERT`, `UPDATE` and `DELETE` on `insights_user_app_roles`.
+- **Boundary.** Insights changes the Metadata role only for a caller who is a
+  Metadata admin, and an account's own role cannot be changed through the API.
+  See [docs/local-users.md](../docs/local-users.md).
+- **Rollback.** There is none; the table is additive and old pods ignore it.
+
 ## Failure and recovery
 
 1. Stop before workload upgrade and save Job logs/events.

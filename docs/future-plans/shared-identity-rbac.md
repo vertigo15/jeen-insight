@@ -6,9 +6,9 @@ Jeen Insights and Jeen Schema Modeler (Metadata) share one account table, `auth_
 
 ## Work items
 
-- [ ] Check `insights_schema_migrations` on every environment for `038_user_app_roles.sql`; delete it, or keep it and retire its table with a later migration.
+- [ ] Check `insights_schema_migrations` on every environment for `039_user_app_roles.sql`; delete it, or keep it and retire its table with a later migration.
 - [ ] Run the identity set (`db/migrations/identity`, `auth_schema_migrations`) before the insights set in `scripts/run_insights_migrations.py`, with a fixed lock order and tests.
-- [ ] Write `identity/001` (tables, seeds, `auth_users` additions, `lower(email)` index, membership and audit indexes, audit trigger function, sync function and backfill, Entra and 038 imports) and `identity/002` (validate constraints). The API verifies the identity tables at start.
+- [ ] Write `identity/001` (tables, seeds, `auth_users` additions, `lower(email)` index, membership and audit indexes, audit trigger function, sync function and backfill, Entra and 039 imports) and `identity/002` (validate constraints). The API verifies the identity tables at start.
 - [ ] Rework Insights sign-in (`src/auth_db.py`, `src/ui_app.py`, `src/oidc_auth.py`, `src/entra_auth.py`): issuer + subject linking, membership checks, app-scoped IdP roles only, pending access on first SSO sign-in, `/setup`.
 - [ ] Put permissions in the session and internal token; `require_permission` on FastAPI routes; Flask permission checks with a fresh DB lookup for admin actions; 60-second recheck; frontend shows screens by permission.
 - [ ] Rebuild Settings → Users for Insights memberships (pending approvals, add by email, revoke, server-side checks, IdP-managed roles read-only, audit), with English and Hebrew strings.
@@ -68,7 +68,7 @@ Jeen Insights and Jeen Schema Modeler (Metadata) share one account table, `auth_
 **Removed later:**
 
 - `auth_accounts` in Phase 3, only where Metadata already runs on memberships
-- `insights_user_app_roles`, only if migration 038 was ever applied somewhere
+- `insights_user_app_roles`, only if migration 039 was ever applied somewhere
 
 ## Data model
 
@@ -224,32 +224,32 @@ flowchart TD
 - **Runbook:**
   - Check first that there are no case-insensitive duplicate emails.
   - Do not restart Schema Modeler while the Job runs.
-  - Confirm whether `038_user_app_roles.sql` appears in `insights_schema_migrations` on any environment. If it does, keep that file and retire the table with a later migration.
+  - Confirm whether `039_user_app_roles.sql` appears in `insights_schema_migrations` on any environment. If it does, keep that file and retire the table with a later migration.
 
 ### Phase 1: Insights app (same release)
 
-- **[src/auth_db.py](src/auth_db.py):**
+- **[src/auth_db.py](../../src/auth_db.py):**
   - identity and membership queries, the linking transaction, IdP role sync, audit writes
   - new accounts get `role='viewer'`, `status='pending'`, `provisioned_by='insights'`, so they stay out of Metadata until a Metadata admin approves them
   - never writes `auth_users.role`
-- **[src/ui_app.py](src/ui_app.py):**
+- **[src/ui_app.py](../../src/ui_app.py):**
   - local, Entra and OIDC callbacks follow the rules above
   - `/setup` counts active Insights admin memberships; if the email already has an account, it verifies that account's password and then grants Insights admin
   - "access pending" and "no access" pages
   - 60-second recheck in `_require_login`
   - permission checks replace `_admin_required`
-- **[src/oidc_auth.py](src/oidc_auth.py):**
+- **[src/oidc_auth.py](../../src/oidc_auth.py):**
   - return `iss`, `sub` and `email_verified`
   - read only the app's own role claims; log a warning when a realm role or group matches a configured role name
   - new variables: `OIDC_ZITADEL_PROJECT_ID` and `OIDC_<P>_VIEWER_ROLES`
-- **[src/entra_auth.py](src/entra_auth.py):** the identity is the tenant issuer plus `oid`.
-- **[src/security/internal_auth.py](src/security/internal_auth.py) and [src/api/dependencies.py](src/api/dependencies.py):**
+- **[src/entra_auth.py](../../src/entra_auth.py):** the identity is the tenant issuer plus `oid`.
+- **[src/security/internal_auth.py](../../src/security/internal_auth.py) and [src/api/dependencies.py](../../src/api/dependencies.py):**
   - a `permissions` claim and `require_permission(...)`
   - the settings, runtime, MCP, connectors and admin-analytics routes switch from `require_admin` to it
 - **UI:**
-  - [src/static/settings/settingsPage.js](src/static/settings/settingsPage.js): the Users tab shows Insights only, with pending approvals and revoke; screens are shown based on `permissions` from `/api/auth/me`
+  - [src/static/settings/settingsPage.js](../../src/static/settings/settingsPage.js): the Users tab shows Insights only, with pending approvals and revoke; screens are shown based on `permissions` from `/api/auth/me`
   - Hebrew and English strings, CSS
-- **Remove the uncommitted Metadata-role work:** the Metadata-role column, `038_user_app_roles.sql` (only if no environment has applied it), and `tests/unit/test_user_app_roles.py`.
+- **Remove the interim Metadata-role work:** the Metadata-role column, `039_user_app_roles.sql` (only if no environment has applied it), and `tests/unit/test_user_app_roles.py`.
 - **Docs and rules:** `deployment/migrations.md`, `deployment/oidc.md`, `deployment/configuration.md`, `deployment/k8s_dev/README.md`, the OpenShift docs, and `.cursor/rules/defence-deploy.mdc`. The identity set may touch `auth_users` and the new `auth_*` tables, never `auth_accounts` until the guarded Phase 3 drop.
 
 ### Phase 2: Schema Modeler (`/Users/Hertz/code/schema-modeler`)

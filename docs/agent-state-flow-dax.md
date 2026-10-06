@@ -26,12 +26,15 @@ flowchart TD
     cap --> fmt
     router -->|history_lookup| hist["history_search (shared)"]
     hist --> fmt
+    router -->|catalog_help| cat
     router -->|from_memory| mem["memory_answer_generator (shared)"]
     mem -->|replay / answer| fmt
     mem -->|computed table| triv
     mem -->|needs_query| cat
     router -->|needs_query| cat["dax_catalog_lookup"]
     cat -->|blocked| fmt
+    cat -->|catalog_help| chelp["catalog_help_answer (shared)"]
+    chelp --> fmt
     cat --> planner["dax_query_planner (required)"]
     planner -->|clarification_required| fmt
     planner -->|plan_ready| entity["dax_entity_resolver"]
@@ -68,8 +71,8 @@ flowchart TD
 ## Nodes
 
 **Shared (imported read-only, unchanged from the SQL graph):**
-`context_composer`, `fused_router`, `capability_answer`, `memory_answer_generator`,
-`history_search`, `trivial_result_check`, `fused_eval_analytics`,
+`context_composer`, `fused_router`, `capability_answer`, `catalog_help_answer`,
+`memory_answer_generator`, `history_search`, `trivial_result_check`, `fused_eval_analytics`,
 `response_formatter`, `save_to_memory`, `observability_log`.
 
 `capability_answer` ("what can you do?") is the same node as on the SQL graph, but

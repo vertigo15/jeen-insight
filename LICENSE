@@ -1,0 +1,47 @@
+Jeen Insights — Proprietary Software License
+
+Copyright (c) 2026 Jeen Ltd. All rights reserved.
+
+Jeen Insights (the "Software") is a private, proprietary product of Jeen Ltd
+("Jeen"). It is confidential and is not open source software. No license is
+granted to anyone except as set out in a separate written agreement signed by
+Jeen.
+
+1. Ownership. The Software, including its source code, object code, prompts,
+   schemas, migrations, documentation, designs, images and all related
+   intellectual property, is and remains the exclusive property of Jeen.
+
+2. No rights without agreement. Without Jeen's prior written permission you may
+   not use, copy, modify, merge, translate, publish, distribute, sublicense,
+   sell, lease, host, make available as a service, or create derivative works of
+   the Software, in whole or in part.
+
+3. Confidentiality. You may not disclose the Software or any part of it to any
+   third party, or post it to any public or third-party repository, package
+   index, registry or service, except to persons and systems that Jeen has
+   authorised in writing.
+
+4. No reverse engineering. You may not decompile, disassemble or otherwise
+   attempt to derive the source code of any compiled or packaged form of the
+   Software, except to the extent that applicable law forbids this restriction.
+
+5. Authorised deployments. Where Jeen has delivered the Software to a customer
+   or partner, use is limited to the deployment, environment and term stated in
+   the applicable agreement.
+
+6. Third-party components. The Software includes or depends on third-party
+   open source components (for example the vendored libraries under
+   src/static/vendor and the map data notice under src/static/chart-feature).
+   Those components remain under their own licenses, which are not changed by
+   this notice.
+
+7. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO
+   EVENT SHALL JEEN BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING
+   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+8. Termination. Any unauthorised use terminates whatever permission you may
+   otherwise have had. On request you must delete all copies of the Software.
+
+For licensing enquiries contact Jeen Ltd.
