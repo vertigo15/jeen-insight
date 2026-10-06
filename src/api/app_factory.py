@@ -34,6 +34,7 @@ from src.api.routes import (
 )
 from src.config import settings
 from src.logging_config import configure_logging
+from src.metrics import PrometheusMiddleware
 
 
 def create_app() -> FastAPI:
@@ -66,9 +67,11 @@ def create_app() -> FastAPI:
     # default-deny non-exempt routes.
     app.add_middleware(InternalAuthMiddleware)
 
-    # Correlation id: added last so it runs first (outermost), binding the
-    # request id before the auth boundary logs anything.
+    # Correlation id: binds the request id before the auth boundary logs anything.
     app.add_middleware(RequestContextMiddleware)
+
+    # Outermost, so requests the auth boundary refuses are counted too.
+    app.add_middleware(PrometheusMiddleware)
 
     # Routers — order doesn't matter, but grouping mirrors the file layout.
     app.include_router(health.router)

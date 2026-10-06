@@ -1,6 +1,9 @@
 {{- if .Values.enabled }}
 {{- $apiBaseUrl := default (printf "http://%s-jeen-insights-api:8000" .Release.Name) .Values.apiBaseUrl }}
-{{- $env := mergeOverwrite (deepCopy (default dict .Values.global.env)) (dict "API_BASE_URL" $apiBaseUrl) (default dict .Values.env) }}
+{{- $metrics := default dict .Values.global.metrics }}
+{{- $metricsOn := $metrics.enabled | default false }}
+{{- $metricsPort := int (default 9090 $metrics.port) }}
+{{- $env := mergeOverwrite (deepCopy (default dict .Values.global.env)) (dict "API_BASE_URL" $apiBaseUrl) (default dict .Values.env) (dict "METRICS_PORT" (ternary (toString $metricsPort) "0" $metricsOn)) }}
 {{- $nodeSelector := default (default dict .Values.global.nodeSelector) .Values.nodeSelector }}
 {{- $sc := default dict .Values.securityContext }}
 {{- $gateway := default dict .Values.gateway }}
@@ -85,6 +88,11 @@ spec:
       annotations:
         checksum/config: {{ toJson $env | sha256sum }}
         secrets.jeen.ai/version: {{ .Values.global.secretVersion | quote }}
+        {{- if $metricsOn }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ $metricsPort | quote }}
+        prometheus.io/path: /metrics
+        {{- end }}
       {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -106,6 +114,11 @@ spec:
             - name: http
               containerPort: 8501
               protocol: TCP
+            {{- if $metricsOn }}
+            - name: metrics
+              containerPort: {{ $metricsPort }}
+              protocol: TCP
+            {{- end }}
           envFrom:
             - secretRef:
                 name: {{ include "jeen-insights-ui.existingSecretName" . }}
@@ -448,6 +461,17 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ . | quote }}
+    {{- end }}
+    {{- if and $metricsOn $metrics.scrapeNamespaces }}
+    - from:
+        {{- range $metrics.scrapeNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: metrics
     {{- end }}
   egress:
     - to:

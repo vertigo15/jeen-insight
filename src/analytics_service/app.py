@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.analysis.contracts import CONTRACT_VERSION, SKILLS
 from src.analytics_service.executor import ExecutorConfig, ForkExecutor
+from src.metrics import PrometheusMiddleware
 from src.security.internal_auth import PrincipalError, verify_internal_token
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,7 @@ def create_app(executor: Optional[ForkExecutor] = None) -> FastAPI:
     app.state.executor = executor or ForkExecutor(ExecutorConfig(timeout_seconds=TIMEOUT_SECONDS, memory_mb=MEMORY_MB))
     app.state.semaphore = asyncio.Semaphore(max(1, MAX_CONCURRENT))
     app.add_middleware(BodyLimitMiddleware)
+    app.add_middleware(PrometheusMiddleware)
 
     def _auth(request: Request) -> None:
         if not AUTH_ENABLED:

@@ -158,6 +158,26 @@ def validate_common(
                     fail(
                         f"{profile}: Deployment/{name} must not import a whole Secret"
                     )
+        annotations = document["spec"]["template"]["metadata"].get("annotations", {})
+        if annotations.get("prometheus.io/scrape") == "true":
+            metrics_ports = [
+                port.get("containerPort")
+                for container in pod_spec.get("containers", [])
+                for port in container.get("ports", [])
+                if port.get("name") == "metrics"
+            ]
+            if str(annotations.get("prometheus.io/port")) not in {str(p) for p in metrics_ports}:
+                fail(
+                    f"{profile}: Deployment/{name} scrape annotation does not match "
+                    "a container port named metrics"
+                )
+
+    for (kind, name), document in indexed.items():
+        if kind != "Service":
+            continue
+        for port in document.get("spec", {}).get("ports", []):
+            if port.get("name") == "metrics" or port.get("targetPort") == "metrics":
+                fail(f"{profile}: Service/{name} must not publish the metrics port")
 
     for document in documents:
         kind = document["kind"]

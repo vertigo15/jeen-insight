@@ -11,6 +11,7 @@ fastapi==0.141.1
 uvicorn[standard]==0.52.4
 pydantic==2.13.5
 itsdangerous==2.2.0
+prometheus-client==0.26.0
 
 # Engines
 numpy==1.26.4

@@ -60,6 +60,8 @@ from src.logging_config import (
     reset_request_id,
 )
 
+from src.metrics import instrument_flask
+
 configure_logging()
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,9 @@ DEV_MODE = _env_bool("JEEN_DEV_MODE", default=True)
 SESSION_COOKIE_SECURE = _env_bool("SESSION_COOKIE_SECURE", default=not DEV_MODE)
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
+# First, so its start time is taken before CSRF, rate limiting or the login
+# guard can end the request early.
+instrument_flask(app)
 
 # Session-signing secret. A predictable key lets anyone forge an (admin) session
 # or an internal API token, so known/placeholder keys are rejected OUTRIGHT in
