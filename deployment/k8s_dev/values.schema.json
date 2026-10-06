@@ -51,6 +51,31 @@
             "optional": { "type": "boolean" }
           }
         },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+            "scrapeNamespaces": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "podMonitor": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "apiVersion": { "enum": ["azmonitoring.coreos.com/v1", "monitoring.coreos.com/v1"] },
+                "interval": { "type": "string", "pattern": "^[0-9]+(s|m)$" },
+                "labels": {
+                  "type": "object",
+                  "additionalProperties": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
         "externalSecrets": {
           "type": "object",
           "additionalProperties": false,

@@ -7,10 +7,15 @@ keeps working without modification.
 
 from __future__ import annotations
 
+from src import metrics
 from src.api import app
 from src.config import settings
 
 __all__ = ["app"]
+
+# Here rather than in the lifespan: only the server process imports this
+# module, so tests that build the app never bind the metrics port.
+metrics.serve()
 
 
 if __name__ == "__main__":
