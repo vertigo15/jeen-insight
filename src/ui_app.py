@@ -624,7 +624,7 @@ def login():
         )
 
     # POST: validate credentials
-    from src.auth_db import get_user_by_email, verify_password, touch_last_active
+    from src.auth_db import ensure_insights_role, get_user_by_email, verify_password, touch_last_active
 
     email    = (request.form.get("email") or "").strip()
     password = request.form.get("password") or ""
@@ -650,6 +650,10 @@ def login():
             elif user["status"] != "active":
                 error = _t("login.errors.disabled")
             else:
+                # Silently create an insights_user_app_roles row when this
+                # account was created in Jeen Metadata and has never logged
+                # into Insights before.  No-op for existing Insights users.
+                ensure_insights_role(user["id"])
                 _write_user_session(user, provider="local")
                 touch_last_active(user["id"])
                 logger.info("login: %s (%s) authenticated", user["email"], user["role"])

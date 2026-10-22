@@ -313,14 +313,48 @@ def create_user(
     }
 
 
+def ensure_insights_role(user_id: int, *, default: str = "viewer") -> None:
+    """Guarantee an ``insights_user_app_roles`` row exists for *user_id*.
+
+    Called on every Insights login so that a user created solely in Jeen
+    Metadata (who has no row in ``insights_user_app_roles``) gets an explicit
+    'viewer' entry.  Without this the role is an invisible ``COALESCE`` default
+    that Insights admins cannot see or change in the user-management panel.
+
+    Safe to call unconditionally: ``ON CONFLICT DO NOTHING`` makes it a no-op
+    for users who already have a row.  The ``default`` parameter is honoured
+    only when the row is actually inserted; existing rows are never downgraded.
+    """
+    role = default if default in APP_ROLES else "viewer"
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO insights_user_app_roles (user_id, app, role)
+            VALUES (%s, 'insights', %s)
+            ON CONFLICT (user_id, app) DO NOTHING
+            """,
+            (user_id, role),
+        )
+        conn.commit()
+
+
 def get_or_create_sso_user(email: str, name: str, *, role: str = "viewer") -> Dict[str, Any]:
-    """Return an existing user or JIT-provision one for Microsoft SSO.
+    """Return an existing user or JIT-provision one for SSO (Entra / OIDC).
 
     The supplied role is the Insights role. A new account is a Metadata viewer.
+
+    For an existing account (created in Jeen Metadata) we call
+    ``ensure_insights_role`` so the account gains an explicit
+    ``insights_user_app_roles`` row that Insights admins can then promote.
+    This eliminates the case where a Metadata user logs into Insights and
+    appears to have an invisible / unmanageable 'viewer' default.
     """
     normalized = email.strip().lower()
     existing = get_user_by_email(normalized)
     if existing:
+        # Silently create the Insights row when it is missing.  The call is a
+        # no-op for users who already have one (ON CONFLICT DO NOTHING).
+        ensure_insights_role(existing["id"], default="viewer")
         return existing
     # Unusable local password — SSO users sign in via Entra only.
     return create_user(name, normalized, secrets.token_urlsafe(32), role=role)

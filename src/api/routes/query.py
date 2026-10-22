@@ -34,7 +34,13 @@ async def query_database(
 ):
     """Compatibility JSON query endpoint."""
 
-    agent, user_id, user_context = await _prepare_query(request, principal)
+    try:
+        agent, user_id, user_context = await _prepare_query(request, principal)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("query: failed during request setup")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     try:
         return await _execute_query(
             request=request,
@@ -200,7 +206,17 @@ async def query_database_stream(
 ):
     """Stream real LangGraph node progress followed by the normal final result."""
 
-    agent, user_id, user_context = await _prepare_query(body, principal)
+    try:
+        agent, user_id, user_context = await _prepare_query(body, principal)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # _prepare_query is outside the event_stream generator, so any
+        # unexpected exception (e.g. DB pool failure in runner.initialize)
+        # would otherwise reach FastAPI's bare 500 handler. Convert it to a
+        # proper HTTPException so the caller receives a meaningful response.
+        logger.exception("query/stream: failed during request setup")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     def on_progress(event: dict[str, Any]) -> None:
