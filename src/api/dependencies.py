@@ -6,9 +6,12 @@ HTTP errors at the boundary, so route handlers can remain free of plumbing.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Mapping, Optional
 
 from fastapi import Depends, HTTPException, Request
+
+logger = logging.getLogger(__name__)
 
 from src.agent import (
     AgentRegistry,
@@ -301,3 +304,16 @@ async def resolve_agent(
         raise HTTPException(status_code=404, detail=str(e)) from e
     except UnsupportedConnectionType as e:
         raise HTTPException(status_code=501, detail=str(e)) from e
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        # runner.initialize() (e.g. asyncpg.create_pool) or build_graph() raised
+        # an unexpected exception. Surface it as 503 so the UI and caller get a
+        # meaningful message instead of FastAPI's bare "Internal Server Error".
+        logger.exception(
+            "resolve_agent: failed to build agent for source_key=%r", source_key
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Could not connect to data source {source_key!r}: {e}",
+        ) from e

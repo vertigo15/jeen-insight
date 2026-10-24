@@ -397,6 +397,53 @@ def test_query_stream_requires_authenticated_user(anon_client, fake_state):
     assert response.status_code == 401
 
 
+def test_query_returns_503_when_runner_init_fails(client, fake_state):
+    """A connection-pool failure during runner.initialize() must surface as 503.
+
+    Previously, any unexpected exception from get_agent() (e.g. asyncpg
+    failing to create the connection pool) propagated unhandled to FastAPI's
+    bare 500 handler, returning ``{"detail": "Internal Server Error"}`` with
+    no useful diagnostic. The fix in resolve_agent() converts these to 503.
+    """
+    fake_state.agent_registry.get_agent = AsyncMock(
+        side_effect=OSError("Connection refused to data-source DB")
+    )
+    resp = client.post(
+        "/api/query",
+        json={
+            "question": "whats in transit right now",
+            "connection": "defense-logistics-demo",
+            "user_context": {"user_id": "user-a"},
+        },
+    )
+    assert resp.status_code == 503
+    assert "defense-logistics-demo" in resp.json()["detail"]
+    assert "Connection refused" in resp.json()["detail"]
+
+
+def test_query_stream_returns_503_when_runner_init_fails(client, fake_state):
+    """The streaming endpoint must also surface agent-build failures as 503.
+
+    Previously ``_prepare_query`` was unguarded in ``query_database_stream``,
+    so an OSError from runner.initialize() bypassed the route's error handling
+    and reached FastAPI's default 500 handler — producing a bare
+    ``Internal Server Error`` with no node trace in the UI.
+    """
+    fake_state.agent_registry.get_agent = AsyncMock(
+        side_effect=OSError("Connection refused to data-source DB")
+    )
+    response = client.post(
+        "/api/query/stream",
+        json={
+            "question": "whats in transit right now",
+            "connection": "defense-logistics-demo",
+            "user_context": {"user_id": "user-a"},
+        },
+    )
+    assert response.status_code == 503
+    assert "Connection refused" in response.json()["detail"]
+
+
 def test_query_stream_emits_dataset_before_slow_enrichment(
     client, fake_state, monkeypatch
 ):

@@ -15,6 +15,9 @@ prometheus-client==0.26.0
 
 # Engines
 numpy==1.26.4
+# Transitive via statsforecast→fugue→triad; pinned because pyarrow>=18 drops
+# NumPy 1.x support (imports fail with "pyarrow requires NumPy 2.0 or newer").
+pyarrow==17.0.0
 pandas==2.3.3
 scipy==1.16.3
 statsmodels==0.15.0

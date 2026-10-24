@@ -133,6 +133,105 @@ def test_metadata_admin_can_delete_a_shared_account(client, monkeypatch):
     assert deleted == [5]
 
 
+# ---------------------------------------------------------------------------
+# ensure_insights_role tests
+# ---------------------------------------------------------------------------
+
+def test_ensure_insights_role_is_noop_for_existing_users(monkeypatch):
+    """When the user already has an Insights row, ensure_insights_role is a no-op."""
+    executed = []
+
+    class _FakeConn:
+        def execute(self, sql, params=None):
+            executed.append((sql.strip()[:60], params))
+        def commit(self):
+            pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    monkeypatch.setattr(auth_db, "_connect", lambda: _FakeConn())
+    auth_db.ensure_insights_role(42)
+    # Should have fired exactly one INSERT … ON CONFLICT DO NOTHING
+    assert len(executed) == 1
+    sql, params = executed[0]
+    assert "ON CONFLICT" in sql.upper() or "INSERT" in sql.upper()
+    assert params == (42, "viewer")
+
+
+def test_ensure_insights_role_respects_default_override(monkeypatch):
+    """The default role is forwarded to the INSERT."""
+    params_seen = []
+
+    class _FakeConn:
+        def execute(self, sql, params=None):
+            if params:
+                params_seen.append(params)
+        def commit(self): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    monkeypatch.setattr(auth_db, "_connect", lambda: _FakeConn())
+    auth_db.ensure_insights_role(7, default="editor")
+    assert params_seen and params_seen[0] == (7, "editor")
+
+
+def test_ensure_insights_role_sanitises_unknown_default(monkeypatch):
+    """An unrecognised default falls back to 'viewer', never raises."""
+    params_seen = []
+
+    class _FakeConn:
+        def execute(self, sql, params=None):
+            if params:
+                params_seen.append(params)
+        def commit(self): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    monkeypatch.setattr(auth_db, "_connect", lambda: _FakeConn())
+    auth_db.ensure_insights_role(3, default="superuser")
+    assert params_seen and params_seen[0] == (3, "viewer")
+
+
+def test_get_or_create_sso_user_calls_ensure_for_existing_account(monkeypatch):
+    """SSO login for a Metadata-only account triggers ensure_insights_role."""
+    ensure_calls = []
+    existing = {
+        "id": 11, "email": "meta@co.com", "name": "Meta User",
+        "role": "viewer", "metadata_role": "admin",
+        "status": "active", "avatar_hue": 10,
+        "password_hash": "x", "last_active_at": None,
+        "created_at": None, "locale": "en", "date_format": "dmy",
+    }
+    monkeypatch.setattr(auth_db, "get_user_by_email", lambda e: existing)
+    monkeypatch.setattr(auth_db, "ensure_insights_role",
+                        lambda uid, **kw: ensure_calls.append((uid, kw)))
+
+    result = auth_db.get_or_create_sso_user("meta@co.com", "Meta User")
+
+    assert result is existing
+    assert ensure_calls == [(11, {"default": "viewer"})]
+
+
+def test_get_or_create_sso_user_does_not_call_ensure_for_new_account(monkeypatch):
+    """A brand-new SSO user goes through create_user, which writes the row itself."""
+    ensure_calls = []
+    created = {
+        "id": 99, "email": "new@co.com", "name": "New", "role": "viewer",
+        "metadata_role": "viewer", "status": "active", "avatar_hue": 5,
+        "created_at": None,
+    }
+    monkeypatch.setattr(auth_db, "get_user_by_email", lambda e: None)
+    monkeypatch.setattr(auth_db, "create_user",
+                        lambda name, email, pw, role="viewer", metadata_role="viewer": created)
+    monkeypatch.setattr(auth_db, "ensure_insights_role",
+                        lambda uid, **kw: ensure_calls.append(uid))
+
+    result = auth_db.get_or_create_sso_user("new@co.com", "New")
+
+    assert result is created
+    assert ensure_calls == []   # create_user handles this itself
+
+
 @pytest.mark.parametrize("app", ["insights", "metadata"])
 def test_no_one_changes_their_own_role(client, monkeypatch, app):
     calls = []
