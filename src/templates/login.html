@@ -31,8 +31,8 @@
     }
 
     .login-card {
-      background: var(--color-surface);
-      border: 1px solid var(--color-border);
+      background: #fff8f5;
+      border: 1px solid #f5e6de;
       border-radius: var(--radius-lg);
       padding: 40px 36px 36px;
       box-shadow: var(--shadow-md);
@@ -46,19 +46,10 @@
       margin-bottom: 32px;
     }
     .login-logo {
-      width: 48px;
-      height: 48px;
-      border-radius: var(--radius-lg);
-      background: var(--btn-primary-bg);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 22px;
-      font-weight: 700;
-      color: var(--btn-primary-fg);
-      letter-spacing: 0;
-      font-family: var(--font-sans);
+      width: 72px;
+      height: 72px;
       flex-shrink: 0;
+      display: block;
     }
     .login-title {
       font-size: var(--text-xl);
@@ -102,9 +93,9 @@
       padding: 10px 12px;
       font-size: 14px;
       font-family: inherit;
-      border: 1px solid var(--color-border);
+      border: 1px solid #e8d5cc;
       border-radius: var(--radius-md);
-      background: var(--color-surface);
+      background: #ffffff;
       color: var(--color-text);
       outline: none;
       transition: border-color 0.15s, box-shadow 0.15s;
@@ -185,7 +176,7 @@
       content: "";
       flex: 1;
       height: 1px;
-      background: var(--color-border);
+      background: #e8d5cc;
     }
 
     .login-ms-btn {
@@ -196,9 +187,9 @@
       width: 100%;
       height: 40px;
       padding: 8px 16px;
-      border: 1px solid var(--color-border);
+      border: 1px solid #e8d5cc;
       border-radius: var(--radius-pill);
-      background: var(--color-surface);
+      background: #ffffff;
       color: var(--color-text);
       font-size: 14px;
       font-weight: 500;
@@ -224,6 +215,19 @@
       color: var(--color-muted);
     }
 
+    .login-db-warn {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      background: #fffbeb;
+      border: 1px solid #fcd34d;
+      border-radius: var(--radius-md);
+      padding: 10px 14px;
+      margin-bottom: 20px;
+      font-size: var(--text-base);
+      color: #92400e;
+    }
+
   </style>
 </head>
 <body>
@@ -232,12 +236,32 @@
 
       <!-- Brand -->
       <div class="login-brand">
-        <div class="login-logo">J</div>
+        <img
+          class="login-logo"
+          src="{{ url_for('static', filename='images/jeen-logo-anim.gif') }}"
+          alt="Jeen"
+          draggable="false"
+        >
         <div>
-          <h1 class="login-title">Jeen Insights</h1>
+          <h1 class="login-title">{{ t('onboarding.welcome.title') }}</h1>
           <p class="login-subtitle">{{ t('login.subtitle') }}</p>
         </div>
       </div>
+
+      <!-- DB health banner (mirrors Jeen Metadata's pattern) -->
+      {% if db_available is defined and not db_available %}
+      <div class="login-db-warn" role="alert">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0;margin-top:1px">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        <div>
+          <strong>{{ t('login.errors.dbUnreachable') }}</strong>
+          <span style="display:block;font-size:12px;margin-top:2px;opacity:.85">Sign-in may fail until the connection is restored.</span>
+        </div>
+      </div>
+      {% endif %}
 
       <!-- Error banner (only shown on failed attempt) -->
       {% if error %}
@@ -275,10 +299,29 @@
         id="oidc-login-{{ p.key }}"
         data-provider="{{ p.key }}"
       >
+        {% if p.key == 'keycloak' %}
+        {# Keycloak: shield/key icon #}
         <svg class="login-ms-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="8" cy="15" r="4"/><path d="M10.85 12.15 19 4"/><path d="M18 5l2 2"/><path d="M15 8l2 2"/>
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
         </svg>
+        {% elif p.key == 'zitadel' %}
+        {# Zitadel: stacked layers icon #}
+        <svg class="login-ms-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 2 3 7l9 5 9-5-9-5Z"/>
+          <path d="m3 17 9 5 9-5"/>
+          <path d="m3 12 9 5 9-5"/>
+        </svg>
+        {% else %}
+        {# Generic OIDC: globe icon #}
+        <svg class="login-ms-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9"/>
+          <path d="M3 12h18"/>
+          <path d="M12 3c2.5 2.5 3.75 5.5 3.75 9S14.5 18.5 12 21c-2.5-2.5-3.75-5.5-3.75-9S9.5 5.5 12 3Z"/>
+        </svg>
+        {% endif %}
         {{ t('login.continueWith', provider=p.label) }}
       </a>
       {% endfor %}

@@ -617,10 +617,13 @@ def login():
         # Already logged in — skip the login page.
         if "user_id" in session:
             return redirect(_safe_next(request.args.get("next")))
+        from src.auth_db import check_connection as _check_db
+        db_ok, _ = _check_db()
         return render_template(
             "login.html",
             error=None,
             entra_sso_enabled=_entra_sso_enabled(),
+            db_available=db_ok,
         )
 
     # POST: validate credentials
@@ -664,6 +667,7 @@ def login():
         "login.html",
         error=error,
         entra_sso_enabled=_entra_sso_enabled(),
+        db_available=not db_error,
     ), status
 
 
